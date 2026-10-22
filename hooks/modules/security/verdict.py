@@ -26,6 +26,7 @@ REMEDIATION: Dict[str, str] = {
     "sign.destroys": "Request a signature for this exact command naming what it destroys and how it is undone, or reach the outcome without the destructive step.",
     "sign.lands": "Request a signature for this exact command naming the shared or protected state it changes, or keep the change on your own branch or in scratch.",
     "sign.speaks": "Request a signature for this exact command naming who receives what it sends, or hand the message to the user to send.",
+    "sign.lands-on-protected": "Request a signature for this exact command naming the account or credential file it writes and what it puts there, or leave that file for the user to change.",
     "sign.foreign-code": "Request a signature naming the package and where it comes from, or use code already installed in the project.",
     "sign.lifecycle-body-verb": "Request a signature naming the lifecycle script that mutates, or install with lifecycle scripts disabled.",
     UNKNOWN_SPAN: "Write the word the decision depends on literally, with no variable, substitution or unrecognised flag, or request a signature naming it.",
@@ -37,6 +38,7 @@ REMEDIATION: Dict[str, str] = {
     "floor.comment-push-gate": "Cut comment and docstring lines until gaia lint comments passes, then push again.",
     "floor.gaia-db-write": "Change Gaia's database through the gaia CLI, never by writing the file.",
     "floor.subagent-memory-write": "Propose the memory in your contract's memory_delta; the orchestrator decides what is kept.",
+    "floor.dispatch-identity": "Run the command with GAIA_DISPATCH_AGENT and the environment as the dispatch set them; a Gaia CLI call carries your identity.",
     "floor.memory-skill-not-loaded": "Load Skill('memory') first, then run the memory write again.",
     "floor.subagent-resume-point": "Leave the resume point to the orchestrator and report the state in your contract.",
     "floor.contract-ownership": "Address your own contract with --draft-id <contract_id>.",
@@ -131,6 +133,8 @@ def effect_rule(verb: str, command: str) -> str:
     words |= {part.lower() for w in raw_words if _CAMEL.search(w) for part in _CAMEL_PART.findall(w)}
     if verb in ("registry-fetch", "git-config-code"):
         return "sign.foreign-code"
+    if verb == "account-path-write":
+        return "sign.lands-on-protected"
     if verb == "install" and "install" in lowered:
         installer = lowered[lowered.index("install") - 1] if lowered.index("install") else ""
         if installer.rsplit("/", 1)[-1] in _PACKAGE_INSTALLERS:
@@ -141,7 +145,7 @@ def effect_rule(verb: str, command: str) -> str:
         return "sign.destroys"
     interactive = verb == "exec" and any(t in _INTERACTIVE_FLAGS for t in lowered)
     sender = bool(lowered) and lowered[0].rsplit("/", 1)[-1] in _NETWORK_SENDERS
-    if interactive or sender or words & _SPEAK_WORDS or verb.lower() in _SPEAK_WORDS:
+    if interactive or sender or verb == "egress" or words & _SPEAK_WORDS or verb.lower() in _SPEAK_WORDS:
         return "sign.speaks"
     return "sign.lands"
 

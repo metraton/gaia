@@ -151,38 +151,62 @@ def computes_gaia_words(component: str) -> bool:
     return False
 
 
+_NAMES_IDENTITY = "names"
+_CLEARS_ENVIRONMENT = "clears"
+
+
 def clears_dispatch_identity(component: str) -> bool:
-    """True when *component* unsets, empties or overrides ``GAIA_DISPATCH_AGENT``, or clears the environment."""
+    """True when *component* names ``GAIA_DISPATCH_AGENT``, or clears the environment around a Gaia CLI call."""
     pairs = literal_words(component)
+    kind = _identity_touch(pairs)
+    return kind == _NAMES_IDENTITY or (kind == _CLEARS_ENVIRONMENT and _reaches_gaia(pairs))
+
+
+def _reaches_gaia(pairs: Sequence[Tuple[str, bool]]) -> bool:
+    words = [word for word, _ in pairs]
+    words += [inner for word in words if " " in word for inner, _ in literal_words(word)]
+    return any(_is_gaia_entry(words, index) for index in range(len(words)))
+
+
+def _identity_touch(pairs: Sequence[Tuple[str, bool]]) -> Optional[str]:
     words = [word for word, _ in pairs]
     leading = 0
     while leading < len(words) and _ASSIGNMENT.match(words[leading]):
         if words[leading].startswith(_IDENTITY + "="):
-            return True
+            return _NAMES_IDENTITY
         leading += 1
     rest = pairs[leading:]
-    if rest and rest[0][0] in _DECLARERS and any(
-            computed or word == _IDENTITY or word.startswith(_IDENTITY + "=")
-            for word, computed in rest[1:]):
-        return True
+    if rest and rest[0][0] in _DECLARERS:
+        if any(word == _IDENTITY or word.startswith(_IDENTITY + "=") for word, _ in rest[1:]):
+            return _NAMES_IDENTITY
+        if any(computed for _, computed in rest[1:]):
+            return _CLEARS_ENVIRONMENT
     if rest and rest[0][0] == "exec" and any(
             word.startswith("-") and "c" in word for word, _ in rest[1:2]):
-        return True
-    return any(os.path.basename(word) == "env" and _env_clears(pairs[index + 1:])
-               for index, (word, _) in enumerate(pairs))
+        return _CLEARS_ENVIRONMENT
+    kinds = {_env_touch(pairs[index + 1:]) for index, (word, _) in enumerate(pairs)
+             if os.path.basename(word) == "env"}
+    for kind in (_NAMES_IDENTITY, _CLEARS_ENVIRONMENT):
+        if kind in kinds:
+            return kind
+    return None
 
 
-def _env_clears(args: Sequence[Tuple[str, bool]]) -> bool:
+def _env_touch(args: Sequence[Tuple[str, bool]]) -> Optional[str]:
     index = 0
     while index < len(args):
         word = args[index][0]
         value = args[index + 1] if index + 1 < len(args) else ("", False)
-        if word in ("-", "-i", "--ignore-environment") or word.startswith(_IDENTITY + "="):
-            return True
+        if word.startswith(_IDENTITY + "="):
+            return _NAMES_IDENTITY
+        if word in ("-", "-i", "--ignore-environment"):
+            return _CLEARS_ENVIRONMENT
         if word.startswith("--unset"):
             named = word.partition("=")[2] if "=" in word else value[0]
-            if named == _IDENTITY or args[index][1] or ("=" not in word and value[1]):
-                return True
+            if named == _IDENTITY:
+                return _NAMES_IDENTITY
+            if args[index][1] or ("=" not in word and value[1]):
+                return _CLEARS_ENVIRONMENT
             index += 1 if "=" in word else 2
             continue
         if word in ("-C", "--chdir"):
@@ -190,17 +214,18 @@ def _env_clears(args: Sequence[Tuple[str, bool]]) -> bool:
             continue
         if word.startswith("-") and not word.startswith("--"):
             before, unset, attached = word[1:].partition("u")
+            if unset and (attached or value[0]) == _IDENTITY:
+                return _NAMES_IDENTITY
             if "i" in before or (not unset and "i" in word[1:]):
-                return True
-            if unset and ((attached or value[0]) == _IDENTITY or args[index][1]
-                          or (not attached and value[1])):
-                return True
+                return _CLEARS_ENVIRONMENT
+            if unset and (args[index][1] or (not attached and value[1])):
+                return _CLEARS_ENVIRONMENT
             index += 1 if attached or not unset else 2
             continue
         if not _ASSIGNMENT.match(word):
-            return False
+            return None
         index += 1
-    return False
+    return None
 
 
 def gaia_cli_argvs(words: Sequence[str]) -> List[List[str]]:

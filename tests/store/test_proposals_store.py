@@ -376,6 +376,23 @@ def test_proposals_store_literal_gaia_words_and_plain_reads_stay_free(command):
     assert _subagent_verdict(command, "developer").allowed is True
 
 
+@pytest.mark.parametrize("command, refused", [
+    ("env -i PATH=/usr/bin gaia contract view", True),
+    ("env -S 'gaia contract view'", False),
+    ("env -iS 'gaia contract view'", True),
+    ("export -n GAIA_DISPATCH_AGENT", True),
+    ("env -u GAIA_DISPATCH_AGENT ls", True),
+    ("env -i ls", False),
+    ("env -S '-i FOO=1 ls'", False),
+])
+def test_proposals_store_clearing_the_environment_is_refused_only_around_gaia(command, refused):
+    from modules.security.subagent_memory_write_guard import IDENTITY_REJECTION, check
+
+    result = _subagent_verdict(command, "developer")
+    assert (check(command, is_subagent=True, agent_type="developer")[1] == IDENTITY_REJECTION) is refused
+    assert (result.rule == "floor.dispatch-identity") is refused
+
+
 @pytest.mark.parametrize("command", [
     "$(which python3) deploy.py",
     "timeout 5 $(which tool) list",

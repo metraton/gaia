@@ -102,6 +102,7 @@ from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
 from ..security.memory_skill_guard import check as check_memory_skill_loaded
 from ..security.subagent_memory_write_guard import (
+    IDENTITY_REJECTION,
     check as check_subagent_memory_write,
 )
 from ..security.contract_ownership_guard import check as check_contract_ownership
@@ -1090,8 +1091,9 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=mem_write_reason,
-                rule="floor.subagent-memory-write",
-                suggestions=[
+                rule=("floor.dispatch-identity" if mem_write_reason == IDENTITY_REJECTION
+                      else "floor.subagent-memory-write"),
+                suggestions=[] if mem_write_reason == IDENTITY_REJECTION else [
                     "Write a `memorialize_suggestions` block into your "
                     "contract row with `gaia contract fill --json` instead.",
                 ],
@@ -2883,7 +2885,7 @@ def _categorical_refusal(command: str, cwd: str | None) -> BashValidationResult 
     parts = [command, *(part.strip() for part in get_shell_parser().parse(command))]
     blocked = next((verdict for verdict in map(is_blocked_command, parts) if verdict.is_blocked), None)
     if blocked is not None:
-        reason, rule = f"Command blocked by security policy: {blocked.category}", blocked_rule(blocked.category)
+        reason, rule = f"Command blocked by security policy: {blocked.category}", "floor.blocked"
     else:
         reason, rule = check_sensitive_read(command, cwd)[1], "floor.secret-read"
     if not reason:
