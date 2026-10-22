@@ -346,13 +346,18 @@ _BLAME_HEADER = re.compile(r"^([0-9a-f]{40,64}) \d+ (\d+)")
 Hunk = Tuple[int, int, int, int]
 
 
-def _diff_hunks(repo: str, base: str, head: str) -> Dict[str, List[Hunk]]:
-    """Per path, each hunk as (old_start, old_count, new_start, new_count)."""
-    diff = _git(repo, "diff", "--unified=0", "--no-renames", "--no-color", base, head, "--")
+def _diff_hunks(repo: str, base: str, head: str) -> Tuple[Dict[str, List[Hunk]], Dict[str, str]]:
+    """Per path, each hunk as (old_start, old_count, new_start, new_count), and each renamed path's old name."""
+    diff = _git(repo, "diff", "--unified=0", "-M", "--no-color", base, head, "--")
     hunks: Dict[str, List[Hunk]] = {}
+    origins: Dict[str, str] = {}
     old_path = new_path = ""
     for line in diff.splitlines():
-        if line.startswith("--- "):
+        if line.startswith("rename from "):
+            old_path = line.removeprefix("rename from ")
+        elif line.startswith("rename to "):
+            origins[line.removeprefix("rename to ")] = old_path
+        elif line.startswith("--- "):
             old_path = line[4:].removeprefix("a/")
         elif line.startswith("+++ "):
             new_path = line[4:].removeprefix("b/")
@@ -364,7 +369,7 @@ def _diff_hunks(repo: str, base: str, head: str) -> Dict[str, List[Hunk]]:
                     int(group) if group is not None else 1 for group in match.groups())
                 hunks[old_path if new_path == "/dev/null" else new_path].append(
                     (old_start, old_count, new_start, new_count))
-    return hunks
+    return hunks, origins
 
 
 def _added_lines(hunks: List[Hunk]) -> Set[int]:
@@ -455,7 +460,7 @@ def _lines_added_by(repo: str, start: str, head_sha: str, path: str, commits: Se
 
 
 def _texts_removed_by_new(repo: str, start: str, head_sha: str) -> Dict[str, Counter[str]]:
-    patch = _git(repo, "log", "--no-merges", "--format=", "-p", "--unified=0", "--no-renames",
+    patch = _git(repo, "log", "--no-merges", "--format=", "-p", "--unified=0", "-M",
                  "--no-color", head_sha, "--not", start, "--remotes", "--")
     removed: Dict[str, Counter[str]] = {}
     path, in_hunk = "", False
@@ -504,10 +509,11 @@ def _measure_range(repo: str, start: str, head_sha: str, label: str) -> Report:
     start_sha = _commit(repo, start)
     all_new = not report.excluded and _git(repo, "merge-base", start, head_sha).strip() == start_sha
     removed_texts = {} if all_new else _texts_removed_by_new(repo, start, head_sha)
-    for path, hunks in sorted(_diff_hunks(repo, start, head_sha).items()):
+    all_hunks, origins = _diff_hunks(repo, start, head_sha)
+    for path, hunks in sorted(all_hunks.items()):
         if not is_measured_path(path):
             continue
-        new_text, old_text = _blob(repo, head_sha, path), _blob(repo, start, path)
+        new_text, old_text = _blob(repo, head_sha, path), _blob(repo, start, origins.get(path, path))
         if _is_generated(new_text) or _is_generated(old_text):
             continue
         new_scan = scan_text(path, new_text) or Scan({}, set())

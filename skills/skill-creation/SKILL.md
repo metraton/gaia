@@ -75,7 +75,7 @@ For detailed guidance on tone by type, see `reference.md`.
 A skill whose process produces an artifact -- code, a document, a plan, a diagnosis, a review -- names where the process reads and who decides the result is right:
 
 - **The rawest source reachable**: code over its docs, live state over memory, the recorded contract or log over recollection. A process that starts from a summary inherits the summary's errors; reading code produces hypotheses, running it produces facts (`gaia-research`).
-- **A judge that is not the producer**: a check the reader runs (a test, a linter, a deterministic script shipped in `scripts/`), a fresh-context verifier (`verification-oracle` for a command, `verification-rubric` for a rubric), a counterexample search, or a reader who did not write the artifact. Where the check can ship as a script, ship it: `diagram-builder`'s deterministic checks prove the deck well formed, and the person's eye judges whether it says what was meant.
+- **A judge that is not the producer**: a check the reader runs (a test, a linter, a deterministic script shipped in `scripts/`), a fresh-context verifier (`verification-oracle` for a command, `verification-rubric` for a rubric), a counterexample search, or a reader who did not write the artifact. Where the check can ship as a script, ship it: `deck-builder`'s deterministic checks prove the deck well formed, and the person's eye judges whether it says what was meant.
 - **Activities, never a role.** "Act as a security reviewer" changes the voice and leaves the checks unstated; "list every trust crossing and try one malformed input at each" is the check.
 
 ## Step 4: Write the description field
@@ -119,7 +119,7 @@ For a Domain skill describing a real system, add the coverage test: extract what
 
 **Put elsewhere:** Project-specific config -> CLAUDE.md or agent inline. Single-agent-only behavior -> keep inline. Knowledge the LLM covers well from training -> not needed.
 
-**When creating a new skill:** Also update `skills/README.md` to add the new skill to the index. Load Skill('readme-writing') to do this correctly.
+**When creating a new skill:** Also update `skills/README.md` to add the new skill to the index. Load Skill('technical-writing') to do this correctly.
 
 ## Anti-Patterns
 

@@ -3,7 +3,7 @@
 // `window.__DOC__ = {...}` assignment, so index.html can load it via a
 // normal <script src> with zero runtime fetch/CORS concerns under file://.
 //
-// @version 2.1.0  (part of the diagram-builder skill; keep the engine generation
+// @version 2.1.0  (part of the deck-builder skill; keep the engine generation
 //                  in sync with engine/engine.js + tools/check-layout.mjs)
 //
 // Run: npm run build  (or: node engine/build-data.mjs)

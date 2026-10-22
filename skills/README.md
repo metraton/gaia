@@ -74,12 +74,12 @@ skills/
 ├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
-├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (phases agreed with the person + every piece and property + build lane + narrated video)
+├── deck-builder/          # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (phases agreed with the person + every piece and property + build lane + narrated video)
 │   ├── toolbox.md         # every piece and property: values, defaults, what each changes on screen; forms; measured limits
 │   ├── build.md           # for the builder: the build lane (build/model/census/contrast/test), the checks and how the census is read against the agreed tables; the fields live in toolbox.md
 │   ├── video.md           # the narrated video: script, voices, capture
 │   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/, seed data/ (see assets/README.md)
-├── dispatch/              # Technique (orchestrator): goals that complete the kernel, runnable acceptance, waves by disjoint files, one integration at a time per shared branch
+├── dispatch/              # Technique (orchestrator): goals that complete the kernel, runnable acceptance, waves by disjoint files, one integration at a time per shared branch; the goal craft moved out of the orchestrator's identity
 │   ├── reference.md       # goal tokens, acceptance forms, worktree and integration commands, wave and sizing numbers
 │   └── examples.md        # a two-writer wave onto one pull request, end to end
 ├── execution/             # Post-approval execution discipline
@@ -92,17 +92,17 @@ skills/
 ├── gaia-research/         # Technique: mine bookmarked GitHub repos for ideas Gaia can take, judged on their code rather than their README
 ├── gaia-audit/            # Audit one component (agent or skill) against its standard + live implementation
 ├── gaia-verify/           # Verify a Gaia installation across delivery surfaces
-├── git-conventions/       # Conventional Commits (on-demand workflow skill)
+├── ghostwriting/          # Technique: text another person receives in the user's name (chat, email, thread reply, status) -- recipient, medium, the user's voice, handed over to send
+├── git-conventions/       # Conventional Commits (on-demand workflow skill); the PR body is technical-writing's door
 ├── gmail-policy/          # Gmail domain policy (label-only, no delete)
 ├── gmail-triage/          # Interactive Gmail inbox triage
 ├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
+├── human-register/        # Discipline: the one register every human-facing output is written in -- the principle, the catalogue of forms, what marks a machine, the verifier checks, the three surfaces
 ├── investigation/         # Diagnosis methodology and pattern analysis
 ├── memory/                # Curate durable knowledge, live threads, and historical logs
 │   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
-├── readme-writing/        # How to write a README, branching by gate: repository root, component folder, or shipped template
-│   └── reference.md       # per gate (repo root / component folder / shipped template): a filled example + a blank skeleton
 ├── subagent-request-approval/ # Producer: the phrases a signature needs, their limits, and how to group T3 commands
 │   └── reference.md
 ├── reminders/             # Reminders and routines as notifications that come due when Gaia is next used
@@ -111,8 +111,10 @@ skills/
 ├── session-reflection/    # Recover, reconcile, curate, and hand off session continuity; on request, record the resume point and start the compaction
 ├── skill-creation/        # How to design and write new skills
 ├── technical-explanation/ # Technique: the shared vocabulary for explaining a system, process, architecture or failure -- four decisions before writing, the fixed order, two registers, inline drawing rules, and the handoff into the render lanes
-│   ├── reference.md       # field-level correspondence into diagram-builder and artifact-diagramming; the form catalogue by criterion
+│   ├── reference.md       # field-level correspondence into deck-builder and artifact-diagramming; the form catalogue by criterion
 │   └── examples.md        # three DevOps worked explanations + every anti-pattern before/after
+├── technical-writing/     # Documents people read later, one door each: README (repo root, component folder, shipped template), runbook, PR body, report or status, CHANGELOG entry
+│   └── reference.md       # per README door: a filled example + a blank skeleton
 ├── verification-oracle/   # Deterministically re-execute a command/code task_gates entry and compare actual vs expected exit code (loaded by gaia-verifier, the seeded verifier-role agent)
 ├── verification-rubric/   # Judge a semantic/self_review task_gates entry against its rubric, emit a justified pass/fail verdict (loaded by gaia-verifier, the seeded verifier-role agent)
 │   └── scripts/           # rubric_verdict.py -- pure criteria-parse + verdict-assembly reference implementation
@@ -134,17 +136,18 @@ needs it, even if also declared in frontmatter. The overlap is deliberate: listi
 | cloud-troubleshooter | agent-protocol, security-tiers, command-execution, investigation, fast-queries | — |
 | platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
 | gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
-| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
+| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review; technical-writing for a README the change touches |
 | gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, code-standards | code-standards, code-review, gaia-patterns, gaia-audit, agent-creation, skill-creation, gaia-release, gaia-verify as applicable |
 | gaia-verifier | agent-protocol, security-tiers, command-execution, verification-oracle, verification-rubric | — |
 | gaia-planner | agent-protocol, security-tiers, investigation, command-execution, gaia-planner | — |
-| gaia-orchestrator | — | code-review for explicit review; agent-response and flow-specific skills |
-| gaia-operator | agent-protocol, security-tiers, investigation, command-execution | memory, gmail-triage, gmail-policy, gws-setup, blog-writing, brief-spec |
+| gaia-orchestrator | — | human-register before anything a person reads; code-review for explicit review; agent-response and flow-specific skills |
+| gaia-operator | agent-protocol, security-tiers, investigation, command-execution | memory, gmail-triage, gmail-policy, gws-setup, blog-writing, ticket-writing, ghostwriting, technical-writing, deck-builder, brief-spec |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
 - `orchestrator-present-approval` — T3 approval presentation: open the question Gaia builds (up to four signatures) without printing any of it, and resume the requester once the user decides
-- `dispatch` — eight principles for dispatching turns that write, run in parallel or carry acceptance: the goal completes the kernel, acceptance is a command run directly or a named rubric, isolation by checkout and serialization by branch, waves bounded by shared files, verifier and CI as the last gates, the specialist owns its worktree, sizing, steering in flight; loaded by the orchestrator per its Dispatch section
+- `dispatch` — eight principles for dispatching turns that write, run in parallel or carry acceptance: the goal completes the kernel, acceptance is a command run directly or a named rubric, isolation by checkout and serialization by branch, waves bounded by shared files, verifier and CI as the last gates, the specialist owns its worktree, sizing, steering in flight; plus the goal craft (acceptance as a property, the premise as a claim, rationale destinations, references already opened, fan-out and lenses, resume) the orchestrator's identity used to list; loaded by the orchestrator per its Dispatch section
+- `human-register` — the register every human-facing output is written in, on all three surfaces (the conversation, text sent in the user's name, generated documents): the principle, the catalogue of forms, what marks a machine, the verifier checks; what is true of one user stays in their preference rows, applied on top. Loaded by the orchestrator before anything a person reads and again after a compaction, and by every writing skill below
 
 Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 - `code-review` — explicit review with snapshot, coverage, evidence-backed findings and a portable JSON report; Gaia carries the artifact through its usual contract, while standalone readers need no Gaia CLI or database
@@ -152,17 +155,19 @@ Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 - `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
 - `execution` — post-approval execution discipline
-- `git-conventions` — Conventional Commits format
+- `git-conventions` — Conventional Commits format; points at `technical-writing` for the PR body
 - `pending-approvals` — present and resolve pending approval requests
 - `gaia-check` — guided live certification of Gaia by area, first area approvals: blind specialists with ordinary reversible tasks, the orchestrator guides the user and checks with the CLI, in either host
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
 - `reminders` — turns a sentence into one `gaia notifications add` (a reminder or a routine, pointing at a skill, a memory or a project) and says how to act on what comes due: do now, snooze, done. Nothing runs unattended and there is no system scheduler; loaded on demand by description match
 - `gaia-research` — technique for mining one or more bookmarked GitHub repos (or, in the inverse direction, finding who solves a capability the user wants) for ideas Gaia can take: burden of proof set by the claim type, code read instead of README, evidential status marked on every idea. Ends at digested ideas and deliberately produces no brief or plan — `brief-spec` picks up downstream. Loaded on demand by description match, invocable directly via the Skill tool
 - `session-reflection` — session-arc recovery, two-way reconciliation against the live corpus, and memory curation proposal
+- `ghostwriting` — text another person receives in the user's name: who receives it and what they know, the kind of message, the user's voice with Gaia absent, formality by medium and recipient (casual and direct in chat, more formal with proper spacing in email, direct with an executive), the user's rows applied on top, the draft handed over in a copy block and never sent unasked; invocable directly via the Skill tool
+- `technical-writing` — the documents people read later, one door each: README (repository root, component folder, shipped template), runbook, PR body, report or status, CHANGELOG entry; each door's sections in order and its one load-bearing section, the concreteness test, the map-not-territory rule, freshness. Applies `human-register`; its explanatory parts follow `technical-explanation`; invocable directly via the Skill tool
 - `ticket-writing` — formula for human-readable Stories and Subtasks, tracker-agnostic; invocable directly via the Skill tool
-- `technical-explanation` — the shared discipline for explaining a system, a process, an architecture or a failure: four decisions before writing (intent, mode, representation by criterion, density), the fixed order what exists -> how it connects -> what happens -> why, level 1 as the plain register with the technical register beneath it, drawing rules for ASCII in a fenced block, and the on-request handoff into `diagram-builder` or the host's `artifact-diagramming`. Loaded by the orchestrator when its answer explains and by any specialist whose output explains; `readme-writing`, `ticket-writing` and `diagram-builder` reference it instead of restating it; invocable directly via the Skill tool
+- `technical-explanation` — the shared discipline for explaining a system, a process, an architecture or a failure: four decisions before writing (intent, mode, representation by criterion, density), the fixed order what exists -> how it connects -> what happens -> why, level 1 as the plain register with the technical register beneath it, drawing rules for ASCII in a fenced block, and the on-request handoff into `deck-builder` or the host's `artifact-diagramming`. Loaded by the orchestrator when its answer explains and by any specialist whose output explains; `technical-writing`, `ticket-writing`, `ghostwriting` and `deck-builder` reference it instead of restating it; invocable directly via the Skill tool
 - `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, invocable directly via the Skill tool
-- `diagram-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); runs the conversation in phases (understand, structure, conventions, shape, build, video) and carries every piece and property in `toolbox.md` so the agent can author it; checked deterministically (build, model, census, contrast), with a browser only for its optional narrated video; loaded on demand by description match, invocable directly via the Skill tool
+- `deck-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); runs the conversation in phases (understand, structure, conventions, shape, build, video) and carries every piece and property in `toolbox.md` so the agent can author it; checked deterministically (build, model, census, contrast), with a browser only for its optional narrated video; loaded on demand by description match, invocable directly via the Skill tool
 - `verification-oracle` — deterministically re-executes a `task_gates` entry of `verification_type` `command`/`code` (or a proposed contract `evidence_report.verification` block of the same types), comparing the actual exit code against the gate's expected value; the judgment-based `verification-rubric` skill's deterministic counterpart for `semantic`/`self_review` gates. Loaded by `gaia-verifier` (`agents/gaia-verifier.md`, `verifier: true`), the seeded verifier-role agent (Gaia harness B3, milestone M1)
 - `verification-rubric` — judges a `task_gates` entry of `verification_type` `semantic`/`self_review` against its rubric (`evidence_shape`) and emits a justified pass/fail verdict; the deterministic-oracle skill's judgment-based counterpart for `command`/`code` gates. Loaded by `gaia-verifier` (`agents/gaia-verifier.md`, `verifier: true`), the seeded verifier-role agent (Gaia harness B3, milestone M1)
 
@@ -174,7 +179,7 @@ Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 | Common | Most agents via `skills:` frontmatter | command-execution, investigation |
 | Domain | Per-agent via `skills:` frontmatter | gaia-patterns |
 | Workflow | On-demand (agent reads from disk) | subagent-request-approval, execution, git-conventions |
-| Orchestrator | On-demand via Skill tool | agent-response, orchestrator-present-approval, gaia-check |
+| Orchestrator | On-demand via Skill tool | agent-response, orchestrator-present-approval, gaia-check, human-register |
 
 **SKILL.md format:**
 

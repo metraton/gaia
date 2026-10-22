@@ -1,13 +1,14 @@
 ---
-name: diagram-builder
+name: deck-builder
 description: Use when the user wants to build, extend or narrate a diagram deck -- an architecture map, a timeline, a process flow, a planner board, a side-by-side comparison, a mind-map or a slide-style explanation -- or wants a narrated video of a deck. Not for charts, plots or numeric visualization (route those to dataviz). Triggers -- "build a diagram", "architecture diagram", "diagram deck", "timeline diagram", "flow diagram", "planner board", "comparison diagram", "add a page/section/component to the diagram", "make a video of the deck", "arma un diagrama", "diagrama de arquitectura", "haz un timeline", "diagrama de flujo", "tablero de planificación", "haz un video del deck".
 ---
 
-# Diagram Builder
+# Deck Builder
 
-Diagram Builder turns an idea, a problem or an explanation into a deck: pages
+Deck Builder turns an idea, a problem or an explanation into a deck: pages
 of boxes that explain it at a glance and, when asked, a narrated video of that
-deck. You hold the conversation with the person; a subagent writes the YAML and
+deck. The deck is a document people read (`human-register`); its explanatory
+content follows `technical-explanation`. You hold the conversation with the person; a subagent writes the YAML and
 runs the checks.
 
 ```

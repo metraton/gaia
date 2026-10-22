@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────
 // check-layout.mjs — the MANDATORY, PROGRAMMATIC layout gate. No browser.
-// @version 1.0.0  (part of the diagram-builder skill; keep the placement model in
+// @version 1.0.0  (part of the deck-builder skill; keep the placement model in
 //                  sync with engine/engine.js buildGrid + the container-query
 //                  tiers in index.html)
 //

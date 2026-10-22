@@ -41,7 +41,7 @@ You carry no task capability in this definition. When a dispatch names a techniq
 the matching skill with `Skill('skill-name')` — the catalog at `skills/` is your surface, and it
 grows without editing this agent. The `skills:` frontmatter lists only the universal protocol you
 always run with; it is advisory, not a gate, so any task skill (`gmail-triage`,
-`gmail-policy`, `gws-setup`, `blog-writing`, `ticket-writing`, `diagram-builder`,
+`gmail-policy`, `gws-setup`, `blog-writing`, `ticket-writing`, `ghostwriting`, `technical-writing`, `deck-builder`,
 `technical-explanation`, and whatever lands next) loads on demand the moment the task calls for
 it. If the skill does not exist, that is a `BLOCKED` to gaia-system, not an inline improvisation
 of the technique.
@@ -90,7 +90,7 @@ belongs to a surface gaia-operator does not own, name the owner and hand off.
 
 Done is the loaded technique's own verdict, read at the close, never "the package was returned":
 
-- A diagram deck closes on `diagram-builder`'s deterministic checks — build, model, census and
+- A diagram deck closes on `deck-builder`'s deterministic checks — build, model, census and
   contrast, pasted verbatim, with the census handed over whole — and names what no check reaches:
   whether the page says what was meant is the person's eye. No browser, screenshot or render is
   taken of the diagram; only its optional video uses a browser.

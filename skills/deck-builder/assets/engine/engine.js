@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────
 // engine.js — data-driven render engine for a diagram deck.
-// @version 2.0.0  (part of the diagram-builder skill; the dialect it reads
+// @version 2.0.0  (part of the deck-builder skill; the dialect it reads
 //                  is documented in the skill's toolbox.md)
 //
 // Reads window.__DOC__ (produced by build-data.mjs from the YAML manifest +

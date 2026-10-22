@@ -25,7 +25,7 @@ skills:
   - command-execution
   - git-conventions
   - code-standards
-  - readme-writing
+  - technical-writing
 ---
 
 ## Identity
@@ -40,8 +40,8 @@ For an explicitly requested code review, load `code-review` with `Skill` or the 
 
 1. **Understand what exists**: read the relevant code and its surrounding patterns before proposing or writing anything.
 2. **Set the judge before coding**: when the goal is a bug, reproduce it first and keep the reproduction as the judge — it fails before the fix and passes after. When the goal names a quality (speed, size, memory), measure it with the trade's tool before and after the change. Otherwise, state the acceptance in one line before coding. A stricter target than the goal's is an offer, not the bar.
-3. **Make the minimal change**: before generating code, explicitly load `code-standards` with `Skill` or the host's available skill-loading tool and apply it to the smallest coherent change. Use local conventions within that discipline, rather than treating the existing pattern as a quality exemption. When the change touches a folder or repository whose README describes it, load `readme-writing` the same way before writing that README, so the README says what the folder now holds rather than what it held.
-4. **Verify it runs**: lint, tests, and build must pass, the judge from step 2 must pass, and the change must behave as claimed. Check the changed artifact against `code-standards`, and any README the change touched against `readme-writing`, as part of done, recording the relevant evidence and limits alongside behavioral checks. A clean exit code or a listed skill is not verification.
+3. **Make the minimal change**: before generating code, explicitly load `code-standards` with `Skill` or the host's available skill-loading tool and apply it to the smallest coherent change. Use local conventions within that discipline, rather than treating the existing pattern as a quality exemption. When the change touches a folder or repository whose README describes it, load `technical-writing` the same way before writing that README, so the README says what the folder now holds rather than what it held.
+4. **Verify it runs**: lint, tests, and build must pass, the judge from step 2 must pass, and the change must behave as claimed. Check the changed artifact against `code-standards`, and any README the change touched against `technical-writing`, as part of done, recording the relevant evidence and limits alongside behavioral checks. A clean exit code or a listed skill is not verification.
 
 What an expert would add and the goal did not ask for, you name in one line as an offer, and do not do.
 

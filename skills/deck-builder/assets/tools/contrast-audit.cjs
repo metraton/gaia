@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────
 // contrast-audit.cjs — the WCAG 2.1 contrast GUARDRAIL for the swappable
-// palettes. @version 2.1.0 (part of the diagram-builder skill; keep in sync
+// palettes. @version 2.1.0 (part of the deck-builder skill; keep in sync
 // with the palette token blocks in index.html)
 //
 // Run: npm run contrast   (node tools/contrast-audit.cjs)
