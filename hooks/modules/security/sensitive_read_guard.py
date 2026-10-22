@@ -23,6 +23,7 @@ from typing import Any, List, Mapping, Optional, Tuple
 
 from .composition_rules import _strip_transparent_prefixes
 from .sensitive_paths import (
+    holds_credentials,
     first_sensitive_token,
     glob_selects_sensitive_name,
     pattern_reaches_sensitive_path,
@@ -72,13 +73,15 @@ _SSH_COPY_VALUE_FLAGS = frozenset({"-c", "-F", "-i", "-J", "-l", "-o", "-P", "-S
 _COPIERS = {
     "cp": frozenset({"-S", "--suffix"}),
     "mv": frozenset({"-S", "--suffix"}),
+    "install": frozenset({"-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"}),
     "scp": _SSH_COPY_VALUE_FLAGS,
     "sftp": _SSH_COPY_VALUE_FLAGS,
     "rsync": frozenset({"-e", "--rsh", "-f", "--filter", "--exclude", "--include", "-T", "--temp-dir",
                         "-B", "--block-size", "--password-file", "--log-file", "--port", "-M"}),
 }
 _COPY_TARGET_FLAGS = frozenset({"-t", "--target-directory"})
-_REMOTE_OPERAND = re.compile(r"^(?:[\w.-]+@)?[\w.-]{2,}:(?!//)|^rsync://")
+_TAR_VALUE_LETTERS = frozenset("fCbHKNVgX")
+_TAR_CREATE_LETTERS = frozenset("cru")
 # Windows shells and the flag after which the rest of the command line is the
 # command they run.
 _WINDOWS_SHELL_INLINE_FLAGS = {
@@ -153,9 +156,55 @@ def remote_copy_destination(command: str) -> str:
         if not tokens or command_name(tokens[0]) not in ("scp", "rsync"):
             continue
         operands, _ = _copy_operands(command_name(tokens[0]), tokens[1:])
-        if len(operands) >= 2 and _REMOTE_OPERAND.match(operands[-1]):
+        if len(operands) >= 2 and not _is_local_operand(operands[-1]):
             return component.strip()
     return ""
+
+
+def _is_local_operand(operand: str) -> bool:
+    """True for a plain local path; every other spelling (host:, [v6]:, scheme://) names another host."""
+    head = operand.split(":", 1)[0]
+    return ":" not in operand or "/" in head
+
+
+def copy_written_paths(command: str) -> List[str]:
+    """The local destinations the copy and transfer tools in *command* write."""
+    written: List[str] = []
+    for component in _OPERATOR_SPLIT.split(command):
+        tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
+        base = command_name(tokens[0]) if tokens else ""
+        if base not in _COPIERS or base == "sftp":
+            continue
+        operands, target_given = _copy_operands(base, tokens[1:])
+        if len(operands) >= 2 and not target_given and _is_local_operand(operands[-1]):
+            written.append(operands[-1])
+    return written
+
+
+def _first_copied_secret(sources: List[str], cwd: Optional[str]) -> str:
+    """The first source that is a secret, or a directory whose whole copy would carry one."""
+    return first_sensitive_token(sources, cwd) or next((s for s in sources if holds_credentials(s)), "")
+
+
+def _tar_sources(arguments: List[str]) -> List[str]:
+    """The files a tar that creates or appends to an archive reads; none for other modes."""
+    creating = False
+    sources: List[str] = []
+    remaining = iter(arguments)
+    for index, arg in enumerate(remaining):
+        if arg in ("--create", "--append", "--update"):
+            creating = True
+        elif arg.startswith("--"):
+            if "=" not in arg and arg in ("--file", "--directory", "--files-from", "--exclude-from"):
+                next(remaining, None)
+        elif arg.startswith("-") or index == 0:
+            letters = arg.lstrip("-")
+            creating = creating or bool(_TAR_CREATE_LETTERS.intersection(letters))
+            for _ in range(sum(letter in _TAR_VALUE_LETTERS for letter in letters)):
+                next(remaining, None)
+        else:
+            sources.append(arg)
+    return sources if creating else []
 
 
 def _copied_sources(base: str, arguments: List[str]) -> List[str]:
@@ -227,8 +276,10 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
         return first_sensitive_token(arguments, cwd)
     if base in _UPLOADERS:
         return first_sensitive_token(_sent_arguments(arguments), cwd)
+    if base == "tar":
+        return _first_copied_secret(_tar_sources(arguments), cwd)
     if base in _COPIERS:
-        return first_sensitive_token(_copied_sources(base, arguments), cwd)
+        return _first_copied_secret(_copied_sources(base, arguments), cwd)
     if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
         return ""
     if base == "sed" and any(_SED_IN_PLACE.match(arg) for arg in arguments):
@@ -267,7 +318,7 @@ def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]
     hit = reads_sensitive_path(command, cwd)
     if not hit:
         return True, None
-    return False, sensitive_read_denial(hit, sensitive_path_label(hit, cwd))
+    return False, sensitive_read_denial(hit, sensitive_path_label(hit, cwd) or "directory holding credentials")
 
 
 def check_file_tool(

@@ -176,6 +176,16 @@ def _home_entry_marks(path: str) -> frozenset:
     return marks
 
 
+def holds_credentials(path: str) -> bool:
+    """True when *path* is $HOME or a directory above a read-refused entry, so copying it whole copies secrets."""
+    relative = _home_relative(_canonical(path)) if path else ""
+    if relative == ".":
+        return True
+    return bool(relative) and any(
+        READ in uses and entry.startswith(relative.rstrip("/") + "/") for entry, uses in HOME_ENTRIES.items()
+    )
+
+
 def is_account_path(path: str) -> bool:
     """True when writing *path* hands out access to the user's own account.
 
