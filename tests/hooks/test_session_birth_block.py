@@ -152,8 +152,7 @@ def _sections(block: str) -> dict:
 
 
 def _user_part(block: str) -> str:
-    headers = session_manifest.BIRTH_SECTION_HEADERS
-    return block[block.index(headers[2]):]
+    return block[block.index(session_manifest.USER_HEADER):block.index(session_manifest.ENVIRONMENT_HEADER)]
 
 
 def test_the_block_has_exactly_the_four_sections_in_order(birth):
@@ -179,14 +178,14 @@ def test_project_memory_never_loads_at_birth_only_its_counts(birth):
     block = session_manifest.build_session_context()
     assert PROJECT_ANCHOR not in block
     assert THREAD_TEXT not in block
-    projects = _sections(block)[session_manifest.BIRTH_SECTION_HEADERS[0]]
+    projects = _sections(block)[session_manifest.PROJECTS_HEADER]
     gaia_line = next(line for line in projects.splitlines() if line.startswith("- gaia"))
     assert re.search(r"\b3\b", gaia_line), "the count must add the threads of both workspaces"
 
 
 def test_a_large_group_is_one_line_with_its_count(birth):
     block = session_manifest.build_session_context()
-    projects = _sections(block)[session_manifest.BIRTH_SECTION_HEADERS[0]]
+    projects = _sections(block)[session_manifest.PROJECTS_HEADER]
     lines = [line for line in projects.splitlines() if "github-repos" in line]
     assert len(lines) == 1
     assert re.search(r"\b30\b", lines[0].rsplit(":", 1)[-1])
@@ -195,7 +194,7 @@ def test_a_large_group_is_one_line_with_its_count(birth):
 
 def test_the_environment_names_the_real_data_home_and_its_database(birth):
     block = session_manifest.build_session_context()
-    environment = _sections(block)[session_manifest.BIRTH_SECTION_HEADERS[1]]
+    environment = _sections(block)[session_manifest.ENVIRONMENT_HEADER]
     assert str(birth.data) in environment
     assert str(birth.db) in environment
 

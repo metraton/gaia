@@ -115,7 +115,7 @@ def test_claude_code_compaction_refresh_carries_the_birth_user_sections_and_coun
     )
 
     assert sections in birth
-    assert "# Post-Compaction Context Refresh" in refresh
+    assert "# Gaia session context (source: compact)" in refresh
     assert sections in refresh
 
 
@@ -130,5 +130,5 @@ def test_opencode_compaction_refresh_carries_the_birth_user_sections_and_counts_
     )
 
     assert sections in birth
-    assert "# Post-Compaction Context Refresh" in refresh
+    assert "# Gaia session context (source: compact)" in refresh
     assert sections in refresh

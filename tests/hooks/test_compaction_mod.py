@@ -114,7 +114,7 @@ class TestTheRefreshDeliversTheSnapshotOnce:
         from modules.session.session_lifecycle import start_context
 
         monkeypatch.setattr(snapshot, "build_snapshot", lambda session_id: {"session_id": session_id})
-        monkeypatch.setattr(snapshot, "render_snapshot", lambda snap: f"## Session Snapshot\n{snap['session_id']}")
+        monkeypatch.setattr(snapshot, "render_resume_section", lambda snap, counts_only=False: f"## Session Snapshot\n{snap['session_id']}")
 
         refresh = start_context("compact", ["## Workspace\nnotice"], "session-1")
 

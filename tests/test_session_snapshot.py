@@ -351,7 +351,7 @@ def test_session_start_compact_output_contains_the_snapshot(db, tmp_path):
 
     assert proc.returncode == 0, proc.stderr
     context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "## Session Snapshot" in context
+    assert "## Resume point" in context
     assert "aaaaaaaaaaaaaaaaa.tokena" in context and "P-a" in context
     assert "bbbbbbbbbbbbbbbbb" not in context and "P-b" not in context
 
@@ -435,7 +435,7 @@ def test_both_hosts_deliver_the_refresh_with_the_whole_resume_point_once_after_c
     for context in (claude_context, opencode_context):
         assert expected in context
         assert resume in context
-        assert context.count("## Session Snapshot") == 1
+        assert context.count("## Resume point") == 1
         assert context.count(environment) == 1
         assert context.count("- gaia CLI: ") == 1
         for foreign in ("b0000000000000b01", "P-b", "resume b elsewhere"):

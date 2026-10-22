@@ -33,7 +33,7 @@ class StartOutcome:
 
 
 def start_session(start: SessionStart) -> StartOutcome:
-    """Run the start maintenance, then build the birth block or, for ``compact``, the refresh."""
+    """Run the start maintenance, then build the birth block for the start's source."""
     run_start_maintenance(start)
 
     from modules.core.plugin_setup import mark_data_home, run_first_time_setup
@@ -55,11 +55,12 @@ def start_session(start: SessionStart) -> StartOutcome:
         "## Leftovers": _leftovers_notice(start.workspace_dir),
     }
     shown = {title: text for title, text in notices.items() if text}
-    alarms = [f"{title}\n{text}" for title, text in shown.items()]
+    alarms = [f"{title}\n{text}" for title, text in shown.items() if title != "## Leftovers"]
+    leftovers = [f"{title}\n{text}" for title, text in shown.items() if title == "## Leftovers"]
     return StartOutcome(
         setup_message=setup_message,
         notices=shown,
-        context=start_context(start.source, alarms, start.session_id),
+        context=start_context(start.source, alarms, start.session_id, notices=leftovers),
     )
 
 
@@ -195,21 +196,17 @@ def _reconcile_install() -> tuple[str, str]:
     return upgrade_notice, workspace_notice
 
 
-def start_context(source: str, alarms: list, session_id: str = "") -> str:
-    """Return the birth block, or after compaction the refresh carrying ``session_id``'s snapshot; "" when building fails.
+def start_context(source: str, alarms: list, session_id: str = "", notices: list = ()) -> str:
+    """Return ``session_id``'s birth block for ``source``, a compaction included; "" when building fails.
 
-    Compaction takes the refresh because the birth block's project scan was
-    already delivered at the true start; its environment and the user's rows
-    come back with the refresh, since the compaction discarded the message
-    that carried them.
+    ``notices`` are the ones the host also shows the user, so the block drops
+    them first when it runs out of room.
     """
     try:
-        if source == "compact":
-            from modules.context.compact_context_builder import build_compact_context
-            refresh = build_compact_context(session_id=session_id, record_injection=True)
-            return "\n\n".join(b for b in (*alarms, refresh) if b)
         from modules.session.session_manifest import build_session_context
-        return build_session_context(alarms=alarms, record_injection=True, session_id=session_id)
+        return build_session_context(
+            source=source, alarms=alarms, notices=notices, record_injection=True, session_id=session_id,
+        )
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)
         return ""

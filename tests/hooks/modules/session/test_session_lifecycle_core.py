@@ -45,7 +45,6 @@ def calls(monkeypatch, tmp_path):
     stub("modules.session.plugin_upgrade", "reconcile_plugin_install", "")
     monkeypatch.setattr("modules.core.plugin_setup.recorded_in_manifest", contextlib.nullcontext)
     stub("modules.session.session_manifest", "build_session_context", "BIRTH")
-    stub("modules.context.compact_context_builder", "build_compact_context", "REFRESH")
 
     monkeypatch.setenv("CLAUDE_SESSION_ID", "from-the-environment")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
@@ -113,18 +112,25 @@ def test_birth_builds_the_manifest_with_the_notices_as_alarms(calls, tmp_path):
     outcome = session_lifecycle.start_session(_start(tmp_path))
 
     birth = [kwargs for name, _, kwargs in calls if name == "build_session_context"]
-    assert birth == [{"alarms": ["## Data home\nhome moved"], "record_injection": True, "session_id": "explicit-sid"}]
+    assert birth == [{
+        "source": "startup", "alarms": ["## Data home\nhome moved"], "notices": [],
+        "record_injection": True, "session_id": "explicit-sid",
+    }]
     assert outcome.context == "BIRTH"
     assert outcome.notices == {"## Data home": "home moved"}
     assert outcome.setup_message == "setup done"
 
 
-def test_compaction_takes_the_refresh_branch_instead_of_the_birth_block(calls, tmp_path):
+def test_compaction_is_a_birth_whose_leftovers_the_block_may_drop(calls, monkeypatch, tmp_path):
+    monkeypatch.setattr(session_lifecycle, "_leftovers_notice", lambda d: "2 worktrees")
+
     outcome = session_lifecycle.start_session(_start(tmp_path, source="compact"))
 
-    assert "build_session_context" not in _names(calls)
-    assert "build_compact_context" in _names(calls)
-    assert outcome.context == "## Data home\nhome moved\n\nREFRESH"
+    birth = [kwargs for name, _, kwargs in calls if name == "build_session_context"]
+    assert [(b["source"], b["alarms"], b["notices"]) for b in birth] == [
+        ("compact", ["## Data home\nhome moved"], ["## Leftovers\n2 worktrees"]),
+    ]
+    assert outcome.notices["## Leftovers"] == "2 worktrees"
 
 
 def test_an_undeclared_root_becomes_a_workspace_alarm(calls, monkeypatch, tmp_path):

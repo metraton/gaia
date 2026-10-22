@@ -464,12 +464,12 @@ class TestBuildSessionContext:
         monkeypatch.setattr(session_manifest, "build_schema_direction_block", lambda: "")
 
     def test_alarms_lead_and_empty_sections_leave_no_gap(self, monkeypatch):
-        monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "")
+        monkeypatch.setattr(session_manifest, "projects_renderer", lambda: lambda _max: "")
         monkeypatch.setattr(session_manifest, "build_environment_section", lambda session_id="": "ENV")
 
         result = build_session_context(alarms=["ALARM"])
 
-        assert result == "ALARM\n\nENV"
+        assert result == "# Gaia session context (source: startup)\n\nALARM\n\nENV"
         assert "\n\n\n" not in result
 
     def test_alarms_still_ship_when_assembling_the_rest_fails(self, monkeypatch):
@@ -481,7 +481,7 @@ class TestBuildSessionContext:
         assert build_session_context(alarms=["ALARM"]) == "ALARM"
 
     def test_returns_empty_when_there_is_nothing_to_say(self, monkeypatch):
-        monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "")
+        monkeypatch.setattr(session_manifest, "projects_renderer", lambda: lambda _max: "")
         monkeypatch.setattr(session_manifest, "build_environment_section", lambda session_id="": "")
 
         assert build_session_context() == ""

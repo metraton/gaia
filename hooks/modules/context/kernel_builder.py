@@ -41,7 +41,8 @@ row:
 ``# Your skills`` is a further block, rendered only for a host that preloads
 no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
 with its description, so the turn knows at birth which bodies to load. Claude
-Code preloads those bodies itself, so ``build_kernel_context`` never carries it.
+Code preloads those bodies itself, so ``build_kernel_context`` carries it only
+``with_skills``.
 
 Everything renders from the ROW (goal from ``dispatch_prompt``, scope from
 ``kernel_sections`` persisted at birth) plus three reads: ``task_gates`` for
@@ -66,6 +67,8 @@ import textwrap
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from .user_sections import CONTEXT_BUDGET
+
 logger = logging.getLogger(__name__)
 
 KERNEL_HEADING = "# Your Contract"
@@ -78,8 +81,8 @@ ENVIRONMENT_HEADING = "# Environment"
 PROJECT_NOTES_BUDGET = 600
 _PROJECT_NOTE_LINE_MAX = 150
 
-# Claude Code caps hook-injected context at 10,000 chars, the budget a kernel is
-# held to on either host; the skills block takes the share USER_ROWS_BUDGET
+KERNEL_BUDGET = CONTEXT_BUDGET
+# The skills block takes the share of KERNEL_BUDGET that USER_ROWS_BUDGET
 # takes. Inlined bodies cannot fit it: security-tiers alone is over 50,000.
 SKILLS_BLOCK_BUDGET = 4_000
 _SKILLS_PREAMBLE = (
@@ -391,12 +394,13 @@ def _agent_cli_extras(agent_name: str, agents_dir: "Path | None") -> list:
 
 def build_skills_block(
     agent_name: str, *, agents_dir: "Path | None" = None,
-    skills_dir: "Path | None" = None,
+    skills_dir: "Path | None" = None, names_only: bool = False,
 ) -> str:
     """Render ``# Your skills`` from the agent's ``skills:`` frontmatter, or "" when it names none.
 
-    Each skill is listed with its description; when that would exceed
-    ``SKILLS_BLOCK_BUDGET`` the names alone are listed, so none drops out.
+    Each skill is listed with its description; under ``names_only``, or when
+    that would exceed ``SKILLS_BLOCK_BUDGET``, the names alone are listed, so
+    none drops out.
     """
     declared = _agent_frontmatter(agent_name, agents_dir).get("skills")
     if not isinstance(declared, list):
@@ -413,7 +417,7 @@ def build_skills_block(
         )
         described.append(f"- {name}: {description}" if description else f"- {name}")
     block = "\n".join(head + described)
-    if len(block) <= SKILLS_BLOCK_BUDGET:
+    if len(block) <= SKILLS_BLOCK_BUDGET and not names_only:
         return block
     return "\n".join(head + [f"- {name}" for name in names])
 
@@ -471,17 +475,27 @@ def _record_kernel_telemetry(
             )
 
 
-def build_memory_block(*, db_path=None) -> str:
-    """Render ``# How the user works`` from the executor-addressed user rows, or ""."""
+def _executor_rows(db_path=None) -> list:
     from gaia.store.reader import user_anchor_rows
 
-    from .user_sections import render_user_sections
-
-    rows = [
+    return [
         r for r in user_anchor_rows(db_path, audience="executor")
         if (r.get("body") or "").strip()
     ]
-    sections = render_user_sections(rows)
+
+
+def build_memory_block(*, db_path=None, max_chars: Optional[int] = None) -> str:
+    """Render ``# How the user works`` from the executor-addressed user rows, or "".
+
+    Within ``max_chars`` when given, by leaving out whole rows, stalest first.
+    """
+    from .user_sections import fit_user_sections, render_user_sections
+
+    rows = _executor_rows(db_path)
+    if max_chars is None:
+        sections = render_user_sections(rows)
+    else:
+        sections, rows = fit_user_sections(rows, max_chars - len(MEMORY_HEADING) - 2)
     if not sections:
         return ""
     _record_kernel_telemetry(
@@ -500,16 +514,16 @@ def _project_note_line(name: str, description: str) -> str:
 
 
 def build_project_notes_block(
-    row: Mapping[str, Any], *, db_path=None,
+    row: Mapping[str, Any], *, db_path=None, max_chars: int = PROJECT_NOTES_BUDGET,
 ) -> str:
     """Render ``# Standing notes`` for the dispatch's project, or "" when it has none.
 
     The notes are the project's live anchors (``gaia.store.reader``), matched
     by the same ``canonical_project_key`` as ``gaia context project`` and
     ``gaia memory get-relevant --initiative``, freshest first. As many lines
-    as fit ``PROJECT_NOTES_BUDGET`` are kept, the tail counting the rest and
-    naming the command that lists them; the whole block, tail included, never
-    exceeds the budget.
+    as fit ``max_chars`` are kept, the tail counting the rest and naming the
+    command that lists them; the block exceeds ``max_chars`` only when the
+    tail alone does.
     """
     dispatch_project = row.get("dispatch_project")
     if not dispatch_project:
@@ -540,7 +554,7 @@ def build_project_notes_block(
         line = _project_note_line(note["name"], note.get("description") or "")
         is_last = kept == len(notes) - 1
         size = len("\n".join(shown + [line] + ([] if is_last else [tail(len(notes))])))
-        if size > PROJECT_NOTES_BUDGET:
+        if size > max_chars:
             break
         shown.append(line)
         kept += 1
@@ -561,19 +575,25 @@ def build_environment_block() -> str:
     return f"{ENVIRONMENT_HEADING}\n\n{line}" if line else ""
 
 
+def _joined(*blocks: str) -> str:
+    return "\n\n".join(b for b in blocks if b)
+
+
 def build_kernel_context(
     row: Mapping[str, Any],
     *,
     agent_name: str = "",
     agents_dir: "Path | None" = None,
     db_path=None,
+    with_skills: bool = False,
 ) -> Optional[str]:
-    """The kernel payload: contract, user rows, notes, environment and CLI, blank-line joined.
+    """The kernel payload: contract, user rows, notes, environment, CLI and, ``with_skills``, the skills block.
 
-    The host keeps the head of an over-long hook context, so the order is the
-    order of what a turn can least do without: its identity and goal, the user's
-    rows, the project's notes, then the CLI index, which ``gaia --help`` can
-    always rebuild.
+    The order is the order of what a turn can least do without, and the whole
+    stays within ``KERNEL_BUDGET`` by shrinking in a fixed order: the CLI index
+    becomes its ``gaia --help`` line, the skills lose their descriptions, the
+    notes keep only the command that lists them, then whole user rows leave,
+    stalest first. The contract block itself is never shrunk.
 
     Returns None when the contract block itself cannot render (no identity on
     the row) -- the CLI/memory blocks never ship without it.
@@ -581,12 +601,24 @@ def build_kernel_context(
     kernel = build_dispatch_kernel(row, db_path=db_path)
     if not kernel:
         return None
+    from .user_sections import render_user_sections
+
     workspace = str(row.get("workspace") or "")
-    blocks = [
-        kernel,
-        build_memory_block(db_path=db_path),
-        build_project_notes_block(row, db_path=db_path),
-        build_environment_block(),
-        build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace),
-    ]
-    return "\n\n".join(b for b in blocks if b)
+    memory_size = len(MEMORY_HEADING) + 2 + len(render_user_sections(_executor_rows(db_path)))
+    notes = build_project_notes_block(row, db_path=db_path)
+    environment = build_environment_block()
+    cli = build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace)
+    skills = build_skills_block(agent_name, agents_dir=agents_dir) if with_skills else ""
+
+    def over() -> bool:
+        return len(_joined(kernel, notes, environment, cli, skills)) + 2 + memory_size > KERNEL_BUDGET
+
+    if over():
+        cli = f"{CLI_HEADING}\n\n{_CLI_BASE_LINES[-1]}"
+    if over() and skills:
+        skills = build_skills_block(agent_name, agents_dir=agents_dir, names_only=True)
+    if over() and notes:
+        notes = build_project_notes_block(row, db_path=db_path, max_chars=0)
+    room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 2
+    memory = build_memory_block(db_path=db_path, max_chars=room)
+    return _joined(kernel, memory, notes, environment, cli, skills)

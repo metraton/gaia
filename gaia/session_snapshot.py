@@ -1,8 +1,8 @@
 """Host-neutral, session-scoped snapshot of the work a compaction must not lose.
 
 One session's open contracts, pending signatures, active brief/plan/task and
-the orchestrator's last written resume point, rendered for both hosts'
-compaction deliveries and printed by ``gaia session snapshot``.
+the orchestrator's last written resume point, rendered as the session birth
+block's resume section and printed by ``gaia session snapshot``.
 """
 
 from __future__ import annotations
@@ -194,24 +194,21 @@ def _listed(title: str, lines: list[str], trailer: str = "") -> str:
     return f"{title}:\n" + "\n".join(shown) if shown else f"{title}: none"
 
 
-def render_snapshot(snapshot: dict[str, Any]) -> str:
-    """The markdown block a compaction delivers: every section, 'none' when empty, the resume point whole, and at most 1500 further characters cut on line boundaries."""
-    task = snapshot["active_task"]
-    if task:
-        goal = (task["goal"] or "").strip().splitlines()
-        active = (
-            f"Active: brief {task['brief']} ({task['workspace']}), plan {task['plan_id']}, "
-            f"task {task['task_id']} (order {task['task_order']})"
-            + (f" -- {_clip(goal[0], _GOAL_MAX_CHARS)}" if goal else "")
-        )
-    else:
-        active = "Active: none"
-    resume = snapshot["resume_point"]
+def _active_line(task: dict[str, Any] | None) -> str:
+    if not task:
+        return "Active: none"
+    goal = (task["goal"] or "").strip().splitlines()
+    return (
+        f"Active: brief {task['brief']} ({task['workspace']}), plan {task['plan_id']}, "
+        f"task {task['task_id']} (order {task['task_order']})"
+        + (f" -- {_clip(goal[0], _GOAL_MAX_CHARS)}" if goal else "")
+    )
+
+
+def _list_sections(snapshot: dict[str, Any]) -> list[str]:
     quiet = len(snapshot.get("older_unbound", []))
     waiting_first = sorted(snapshot["open_contracts"], key=lambda c: c["agent_state"] not in _WAITING_STATES)
-    sections = [
-        active,
-        "Resume point:\n" + resume if resume else "Resume point: none",
+    return [
         _listed("Pending signatures", [
             f"- {a['id']} (agent {a['agent_id'] or 'unknown'}, {a['created_at']})"
             for a in snapshot["pending_signatures"]
@@ -226,8 +223,45 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
             if quiet else ""
         )),
     ]
-    block = "## Session Snapshot\n" + "\n\n".join(sections)
+
+
+def _count_sections(snapshot: dict[str, Any]) -> list[str]:
+    quiet = len(snapshot.get("older_unbound", []))
+    return [
+        f"Pending signatures: {len(snapshot['pending_signatures'])}\n"
+        f"Open contracts: {len(snapshot['open_contracts'])}"
+        + (f" (+{quiet} unbound, quiet for 24h)" if quiet else "")
+        + f"\nList them with `gaia session snapshot --session-id {snapshot['session_id']}`"
+    ]
+
+
+def _cap(block: str, resume: str | None) -> str:
     limit = _BLOCK_MAX_CHARS + len(resume or "")
     if len(block) > limit:
         block = block[: limit - len(_TRUNCATED)].rsplit("\n", 1)[0] + _TRUNCATED
     return block
+
+
+def render_snapshot(snapshot: dict[str, Any]) -> str:
+    """The markdown block `gaia session snapshot` prints: every section, 'none' when empty, the resume point whole, and at most 1500 further characters cut on line boundaries."""
+    resume = snapshot["resume_point"]
+    sections = [
+        _active_line(snapshot["active_task"]),
+        "Resume point:\n" + resume if resume else "Resume point: none",
+        *_list_sections(snapshot),
+    ]
+    return _cap("## Session Snapshot\n" + "\n\n".join(sections), resume)
+
+
+def render_resume_section(snapshot: dict[str, Any], *, counts_only: bool = False) -> str:
+    """The birth block's resume section: the resume point whole, the active task, then the lists or their counts; "" when the session has nothing to resume."""
+    resume = snapshot["resume_point"]
+    if not (resume or snapshot["active_task"] or snapshot["pending_signatures"]
+            or snapshot["open_contracts"] or snapshot.get("older_unbound")):
+        return ""
+    sections = [
+        resume or "No resume point recorded.",
+        _active_line(snapshot["active_task"]),
+        *(_count_sections(snapshot) if counts_only else _list_sections(snapshot)),
+    ]
+    return _cap("## Resume point\n" + "\n\n".join(sections), resume)

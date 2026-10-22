@@ -15,9 +15,14 @@ from __future__ import annotations
 USER_HEADER = "## The user"
 PREFERENCES_HEADER = "## User preferences"
 
-# The share of the host's per-string context cap the user's rows are sized
-# for. Past it they still ship whole -- half a rule reads as a whole one --
-# and overflow_line names the excess so it is curated rather than cut.
+# Claude Code replaces a hook's additionalContext string over 10,000 chars
+# with a 2,000-char preview and a file path, without telling the model; every
+# context Gaia injects is held under this, on either host.
+CONTEXT_BUDGET = 9_500
+
+# The share of that cap the user's rows are sized for. Past it they still ship
+# whole while the block has room, and overflow_line names the excess so it is
+# curated rather than cut.
 USER_ROWS_BUDGET = 4_000
 
 
@@ -30,8 +35,31 @@ def overflow_line(total: int) -> str:
     )
 
 
-def render_user_sections(rows: list[dict]) -> str:
-    """The facts section then the preferences section, each body whole; "" when no row has a body."""
+def omitted_line(names: list[str]) -> str:
+    """The one line that names the user rows left out of a full context."""
+    return (
+        f"(Left out to fit the host's context cap, stalest first: {', '.join(names)}. "
+        f"Read one with `gaia memory show <slug>`; consolidate them with `gaia memory`.)"
+    )
+
+
+def fit_user_sections(rows: list[dict], max_chars: int) -> tuple[str, list[dict]]:
+    """The sections within ``max_chars`` and the rows they carry, dropping whole rows from the end.
+
+    ``rows`` come freshest first (``gaia.store.reader.user_anchor_rows``), so
+    the stalest row leaves first; a row is never cut.
+    """
+    kept = [row for row in rows if (row.get("body") or "").strip()]
+    omitted: list[str] = []
+    text = render_user_sections(kept)
+    while kept and len(text) > max_chars:
+        omitted.insert(0, kept.pop()["name"])
+        text = render_user_sections(kept, omitted)
+    return text, kept
+
+
+def render_user_sections(rows: list[dict], omitted: list[str] = ()) -> str:
+    """The facts section then the preferences section, each body whole, then the line naming ``omitted``."""
     from gaia.store.memory_claims import PREFERENCE_KIND, memory_claim_kind
 
     facts: list[str] = []
@@ -51,6 +79,8 @@ def render_user_sections(rows: list[dict]) -> str:
         if bodies
     ]
     total = sum(len(body) for body in facts + preferences)
-    if total > USER_ROWS_BUDGET:
+    if omitted:
+        sections.append(omitted_line(list(omitted)))
+    elif total > USER_ROWS_BUDGET:
         sections.append(overflow_line(total))
     return "\n\n".join(sections)

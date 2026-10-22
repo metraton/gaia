@@ -1,25 +1,30 @@
-"""The session birth block: what every session knows the moment it opens.
+"""The session birth block: what every session knows the moment it opens, and again after each compaction.
 
-``build_session_context`` assembles it with no knowledge of the host; a host
-adapter only delivers the string (Claude Code through its SessionStart hook,
-OpenCode attached to the main session's first message) and ``gaia session
-preview`` prints it. Four sections, in this order:
+``build_session_context`` assembles it with no knowledge of the host, for
+every start source -- a compaction is one more birth of the same session; a
+host adapter only delivers the string (Claude Code through its SessionStart
+hook, OpenCode attached to the main session's first message, and to the first
+one after a compaction) and ``gaia session preview`` prints it. After a
+heading naming the source and the alarms that condition every write (a
+database upgrade, a schema mismatch), in this order:
 
-- Projects -- each project's name, one line about it and its live-pending
-  count, counted by canonical project key across every workspace. A large
-  group is one line with its size. Project memory itself (anchors, threads)
-  never loads here; it arrives when that project is worked on.
+- The user / User preferences -- the user's standing rows, each whole (see
+  ``modules.context.user_sections``, shared with the dispatch kernel).
+- Resume point -- the session's snapshot (``gaia.session_snapshot``): its
+  resume point, active task, pending signatures and open contracts; absent
+  when the session has nothing to resume.
 - Environment -- where the session stands: machine, installation (version,
   channel, root), folder, the `gaia` CLI path, the real data home and its
   database, the tools on PATH (one line), and one line of pending recurring
   work when there is any.
-- The user / User preferences -- the user's standing rows, whole (see
-  ``modules.context.user_sections``, shared with the dispatch kernel).
+- Projects -- each project's name, one line about it and its live-pending
+  count, counted by canonical project key across every workspace. A large
+  group is one line with its size. Project memory itself (anchors, threads)
+  never loads here; it arrives when that project is worked on.
 
-Alarms that condition every write (a database upgrade, a schema mismatch)
-come first, outside the four sections. The whole block is sized under
-``BIRTH_BUDGET`` because the host replaces a longer string with a short
-preview; the user's rows never shrink to fit, the project roster does.
+The whole block is sized under ``BIRTH_BUDGET`` because the host replaces a
+longer string with a short preview; ``build_session_context`` names the
+order in which it shrinks.
 
 Every builder is fail-safe: it returns "" on any error and never raises, so a
 session always starts. Building the block writes nothing unless the caller
@@ -36,7 +41,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from ..context.user_sections import PREFERENCES_HEADER, USER_HEADER
+from ..context.user_sections import CONTEXT_BUDGET, PREFERENCES_HEADER, USER_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -387,12 +392,9 @@ def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
 
 PROJECTS_HEADER = "## Projects"
 ENVIRONMENT_HEADER = "## Environment"
-BIRTH_SECTION_HEADERS = (PROJECTS_HEADER, ENVIRONMENT_HEADER, USER_HEADER, PREFERENCES_HEADER)
-
-# Claude Code replaces a hook's additionalContext string over 10,000 chars
-# with a 2,000-char preview and a file path, without telling the model; the
-# margin keeps the whole block clear of that cap.
-BIRTH_BUDGET = 9_500
+RESUME_HEADER = "## Resume point"
+BIRTH_SECTION_HEADERS = (USER_HEADER, PREFERENCES_HEADER, ENVIRONMENT_HEADER, PROJECTS_HEADER)
+BIRTH_BUDGET = CONTEXT_BUDGET
 
 
 def _installation_label() -> Optional[str]:
@@ -848,13 +850,18 @@ def build_projects_section(max_chars: int) -> str:
     workspace (``gaia.store.reader.count_pending_by_initiative``), so it
     equals what ``gaia memory get-relevant --initiative <name>`` returns.
     When the roster does not fit it degrades in steps -- names without their
-    lines, then every group as one line, then a single count -- and the
-    pointer to a project's ficha always lands.
+    lines, then every group as one line, then a pointer that only counts --
+    and the pointer always lands, whatever ``max_chars`` is.
     """
+    return projects_renderer()(max_chars)
+
+
+def projects_renderer():
+    """``build_projects_section`` as a function of ``max_chars`` over one read of the projects."""
     try:
         collected = _collect_projects()
         if not collected:
-            return ""
+            return lambda max_chars: ""
         from gaia.store.reader import count_pending_by_initiative
         from gaia.store.writer import normalize_initiative
 
@@ -904,19 +911,20 @@ def build_projects_section(max_chars: int) -> str:
             parts.append(pointer)
             return "\n\n".join(parts)
 
-        for detail in ("lines", "names", "groups"):
-            text = render(detail)
-            if len(text) <= max_chars:
-                return text
-        return "\n\n".join([
+        rendered = [render(detail) for detail in ("lines", "names", "groups")]
+        floor = "\n\n".join([
             PROJECTS_HEADER,
             f"{len(live)} projects in {len(group_order)} workspaces; list them with "
             f"`{cli} context get`",
             pointer,
         ])
+
+        def fit(max_chars: int) -> str:
+            return next((text for text in rendered if len(text) <= max_chars), floor)
+        return fit
     except Exception as exc:
         logger.debug("build_projects_section failed (non-fatal): %s", exc)
-        return ""
+        return lambda max_chars: ""
 
 
 def build_schema_direction_block() -> str:
@@ -981,32 +989,67 @@ def record_user_rows_injected(rows: list[dict]) -> None:
             logger.debug("user row injection telemetry failed (non-fatal)", exc_info=True)
 
 
-def build_session_context(
-    *, alarms: Sequence[str] = (), record_injection: bool = False, session_id: str = "",
-) -> str:
-    """Assemble the session birth block; "" when every part is empty. Never raises.
+def _snapshot(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    try:
+        from gaia.session_snapshot import build_snapshot
 
-    ``alarms`` are notices the host adapter produced before the block (a
-    database upgrade it just ran); they lead, with the schema-mismatch notice,
-    ahead of the four sections, and still ship alone if assembling the rest
-    fails. The project roster gets whatever
-    ``BIRTH_BUDGET`` leaves after everything else, because the user's rows
-    never shrink. Nothing is written unless ``record_injection`` is set, which
-    the session-start hook does and ``gaia session preview`` does not.
+        return build_snapshot(session_id)
+    except Exception as exc:
+        logger.debug("session snapshot failed (non-fatal): %s", exc)
+        return None
+
+
+def _joined(*blocks: str) -> str:
+    return "\n\n".join(b for b in blocks if b)
+
+
+def build_session_context(
+    *, source: str = "startup", alarms: Sequence[str] = (), notices: Sequence[str] = (),
+    record_injection: bool = False, session_id: str = "",
+) -> str:
+    """Assemble the session birth block for any start ``source``; "" when every part is empty. Never raises.
+
+    ``alarms`` (a database upgrade the host just ran) lead with the
+    schema-mismatch notice and still ship alone if assembling the rest fails;
+    ``notices`` follow them only while the block has room, since the host
+    already shows them to the user. Past ``BIRTH_BUDGET`` the block shrinks
+    in a fixed order: the notices leave, the roster degrades to a pointer, the
+    snapshot lists become counts, then whole user rows leave stalest first.
+    Nothing is written unless ``record_injection`` is set, and then only for
+    the user rows the block carries.
     """
     try:
-        from ..context.user_sections import render_user_sections
+        from gaia.session_snapshot import render_resume_section
 
-        user_rows = orchestrator_user_rows()
-        prefix = [a for a in (*alarms, build_schema_direction_block()) if a]
+        from ..context.user_sections import fit_user_sections, render_user_sections
+
+        rows = orchestrator_user_rows()
+        heading = f"# Gaia session context (source: {source})"
+        prefix = [heading, *(a for a in (*alarms, build_schema_direction_block()) if a)]
         environment = build_environment_section(session_id)
-        user = render_user_sections(user_rows)
-        fixed = [b for b in (*prefix, environment, user) if b]
-        roster_budget = BIRTH_BUDGET - sum(len(b) + 2 for b in fixed)
-        projects = build_projects_section(max(0, roster_budget))
-        text = "\n\n".join(b for b in (*prefix, projects, environment, user) if b)
+        snapshot = _snapshot(session_id)
+        resume = render_resume_section(snapshot) if snapshot else ""
+        user, kept = render_user_sections(rows), rows
+        roster = projects_renderer()
+
+        if len(_joined(*prefix, *notices, user, resume, environment, roster(sys.maxsize))) > BIRTH_BUDGET:
+            notices = ()
+        floor = roster(0)
+        if snapshot and len(_joined(*prefix, user, resume, environment, floor)) > BIRTH_BUDGET:
+            resume = render_resume_section(snapshot, counts_only=True)
+        head = _joined(*prefix, *notices, user, resume, environment)
+        projects = roster(BIRTH_BUDGET - len(head) - 2)
+        if len(_joined(*prefix, user, resume, environment, floor)) > BIRTH_BUDGET:
+            room = BIRTH_BUDGET - len(_joined(*prefix, resume, environment, floor)) - 2
+            user, kept = fit_user_sections(rows, room)
+            head, projects = _joined(*prefix, user, resume, environment), floor
+        text = _joined(head, projects)
+        if text == heading:
+            return ""
         if record_injection:
-            record_user_rows_injected(user_rows)
+            record_user_rows_injected(kept)
         return text
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)
