@@ -569,10 +569,29 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # Materialize the schema based on ACTUAL presence (not file existence),
     # serialized so a concurrent first-write can never observe a missing table.
     _ensure_schema_materialized(con, db_path)
+    _stamp_signals_with_session(con)
     con.schema_ahead = _schema_ahead(con, db_path)
     if con.schema_ahead:
         con.set_authorizer(_refuse_main_writes)
     return con
+
+
+def _stamp_signals_with_session(con: sqlite3.Connection) -> None:
+    """Attribute the signals this connection's writes raise to the host session it runs in."""
+    # A main-schema trigger cannot read the environment, and one calling a function
+    # only this factory registers would break every other connection writing memory.
+    from gaia.agent_identity import host_session_from_env
+
+    session = host_session_from_env()
+    if not session:
+        return
+    con.create_function("gaia_writer_session", 0, lambda: session, deterministic=True)
+    with contextlib.suppress(sqlite3.OperationalError):
+        con.execute(
+            "CREATE TEMP TRIGGER IF NOT EXISTS trg_signals_session "
+            "AFTER INSERT ON signals WHEN NEW.session_id IS NULL BEGIN "
+            "UPDATE signals SET session_id = gaia_writer_session() WHERE id = NEW.id; END"
+        )
 
 
 def _is_locked_error(exc: BaseException) -> bool:

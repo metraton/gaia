@@ -92,6 +92,7 @@ bin/
     ├── release.py             # gaia release    — check (Layer 2 local gate) | publish (Layer 3 trigger sequence)
     ├── scan.py                # gaia scan       — project scanner over a declared workspace; writes scan results to gaia.db (DB-canonical)
     ├── session.py             # gaia session    — preview the SessionStart birth block in-process
+    ├── signals.py             # gaia signals    — curated changes other sessions made, each with the command that opens it; never moves the cursor
     ├── status.py              # gaia status     — quick installation snapshot
     ├── task.py                # gaia task       — manage tasks within plans (DB-canonical)
     ├── uninstall.py           # gaia uninstall  — full, one channel (--channel), or preuninstall removal

@@ -1207,6 +1207,80 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- signals (v68): one pointer row per curated change another session should
+-- hear about, read through a per-session cursor kept outside the database
+-- (gaia/signals.py). The triggers name the subject; the writing session is
+-- stamped by a TEMP trigger each writer connection installs
+-- (gaia/store/writer.py::_stamp_signals_with_session). The memory UPDATE
+-- trigger's column list must exclude the telemetry counters, as
+-- trg_memory_history's does, or every read would announce a change.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS signals (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    subject    TEXT NOT NULL,  -- 'user' | 'project:<initiative>'
+    source     TEXT NOT NULL,  -- table the change landed in
+    workspace  TEXT,
+    ref        TEXT,           -- the changed row's key within source
+    op         TEXT NOT NULL CHECK (op IN ('insert', 'update', 'delete')),
+    session_id TEXT            -- writing host session; NULL = unattributed writer
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_insert
+AFTER INSERT ON memory
+WHEN NEW.type = 'user' OR NEW.initiative IS NOT NULL
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE WHEN NEW.type = 'user' THEN 'user' ELSE 'project:' || NEW.initiative END,
+        'memory', NEW.workspace, NEW.name, 'insert'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_update
+AFTER UPDATE ON memory
+WHEN (NEW.type = 'user' OR NEW.initiative IS NOT NULL
+      OR OLD.type = 'user' OR OLD.initiative IS NOT NULL)
+ AND (OLD.name IS NOT NEW.name
+   OR OLD.body IS NOT NEW.body
+   OR OLD.workspace IS NOT NEW.workspace
+   OR OLD.type IS NOT NEW.type
+   OR OLD.description IS NOT NEW.description
+   OR OLD.status IS NOT NEW.status
+   OR OLD.class IS NOT NEW.class
+   OR OLD.project_ref IS NOT NEW.project_ref
+   OR OLD.initiative IS NOT NEW.initiative
+   OR OLD.deleted_at IS NOT NEW.deleted_at
+   OR OLD.audience IS NOT NEW.audience
+   OR OLD.measured_at IS NOT NEW.measured_at
+   OR OLD.method IS NOT NEW.method)
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE
+            WHEN NEW.type = 'user' THEN 'user'
+            WHEN NEW.initiative IS NOT NULL THEN 'project:' || NEW.initiative
+            WHEN OLD.type = 'user' THEN 'user'
+            ELSE 'project:' || OLD.initiative
+        END,
+        'memory', NEW.workspace, NEW.name,
+        CASE WHEN OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
+             THEN 'delete' ELSE 'update' END
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_delete
+AFTER DELETE ON memory
+WHEN OLD.deleted_at IS NULL AND (OLD.type = 'user' OR OLD.initiative IS NOT NULL)
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE WHEN OLD.type = 'user' THEN 'user' ELSE 'project:' || OLD.initiative END,
+        'memory', OLD.workspace, OLD.name, 'delete'
+    );
+END;
+
+-- ---------------------------------------------------------------------------
 -- project_context_contracts: project-context.json reconstructed as (workspace, contract) rows
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS project_context_contracts (

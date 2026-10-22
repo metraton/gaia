@@ -130,6 +130,61 @@ def list_unread_notifications(
         con.close()
 
 
+def latest_signal_id(db_path: Path | None = None) -> int:
+    """Return the id of the newest signal, 0 when there is none or the table cannot be read."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return 0
+    try:
+        return int(con.execute("SELECT COALESCE(MAX(id), 0) FROM signals").fetchone()[0])
+    except Exception:
+        return 0
+    finally:
+        con.close()
+
+
+# An OpenCode child writes under its own session id, kept as harness_agent_id on
+# the row its parent dispatched; a Claude Code subagent writes under the parent's.
+_NOT_FROM_SESSION = (
+    "(session_id IS NULL OR session_id NOT IN ("
+    "SELECT ? UNION SELECT harness_agent_id FROM agent_contract_handoffs"
+    " WHERE session_id = ? AND harness_agent_id IS NOT NULL))"
+)
+
+
+def signals_from_others(
+    session_id: str,
+    after_id: int = 0,
+    upto_id: int | None = None,
+    limit: int | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return signals in ``(after_id, upto_id]`` not written by ``session_id`` or its children, newest first; [] on error."""
+    where = ["id > ?"]
+    params: list[Any] = [after_id]
+    if upto_id is not None:
+        where.append("id <= ?")
+        params.append(upto_id)
+    if session_id:
+        where.append(_NOT_FROM_SESSION)
+        params += [session_id, session_id]
+    sql = f"SELECT * FROM signals WHERE {' AND '.join(where)} ORDER BY id DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 def list_upcoming_notifications(
     workspace: str | None = None,
     limit: int = 50,

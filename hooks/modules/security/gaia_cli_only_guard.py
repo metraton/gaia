@@ -489,6 +489,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # on its own -- see Design decision 4.
     ("doctor",),
     ("now",),
+    ("signals",),
     ("status",),
     ("defects",),
     ("query",),
@@ -1275,6 +1276,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("session", "preview"): _flags(""),
     ("session", "resume-point", "set"): _flags("--session-id --text"),
     ("session", "snapshot"): _flags("--session-id --json"),
+    ("signals",): _flags("--since --limit --json"),
     ("status",): _flags("--json"),
     ("task", "gate", "list"): _flags("--workspace --json"),
     ("task", "gate", "reverify"): _flags("--reason --workspace --json"),

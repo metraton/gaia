@@ -256,6 +256,9 @@ READ -- changes nothing. The orchestrator runs these itself.
                  the installed gaia version, as the only argument.
   now
                  local time, UTC offset and zone; read it before computing an absolute --at.
+  signals
+                 the curated changes behind a `~ changed:` line, each with the
+                 command that opens it.
   contract       view | list | validate
                  `contract list --state DISPATCHED` names the turns that were
                  dispatched and never came back with a contract -- the way to

@@ -148,6 +148,13 @@ def run_start_maintenance(start: SessionStart) -> None:
     except Exception as exc:
         logger.debug("sweep_repo_worktrees failed (non-fatal): %s", exc)
 
+    try:
+        from gaia.signals import baseline
+        if start.session_id != "default":
+            baseline(start.session_id)
+    except Exception as exc:
+        logger.debug("signals baseline failed (non-fatal): %s", exc)
+
 
 def _leftovers_notice(workspace_dir: Path) -> str:
     """Counts of leftover worktrees, branches and scratch across the declared workspace's repos."""
@@ -211,7 +218,8 @@ def start_context(source: str, alarms: list, session_id: str = "", notices: list
 def prompt_context(session_id: str, workspace: Optional[str]) -> str:
     """Refresh the session heartbeat, then return the context a user prompt carries."""
     refresh_heartbeat(session_id)
-    return notifications_counter(workspace)
+    lines = (notifications_counter(workspace), signals_line(session_id))
+    return "\n".join(line for line in lines if line)
 
 
 def refresh_heartbeat(session_id: str) -> None:
@@ -240,6 +248,18 @@ def notifications_counter(workspace: Optional[str]) -> str:
         return ""
 
 
+def signals_line(session_id: str) -> str:
+    """Return the line naming what other sessions changed since this one last looked; "" when none or on failure."""
+    if session_id == "default":
+        return ""
+    try:
+        from gaia.signals import take_line
+        return take_line(session_id)
+    except Exception as exc:
+        logger.warning("signals line failed (advisory, skipping): %s", exc)
+        return ""
+
+
 def end_session(session_id: Optional[str]) -> None:
     """Remove the session from the registry so liveness filters stop counting it."""
     from modules.session.session_registry import SessionRegistryError, unregister_session
@@ -250,3 +270,9 @@ def end_session(session_id: Optional[str]) -> None:
             logger.info("SessionEnd: unregistered session %s", session_id)
     except SessionRegistryError as exc:
         logger.debug("session_registry unregister failed (non-fatal): %s", exc)
+
+    try:
+        from gaia.signals import forget
+        forget(session_id)
+    except Exception as exc:
+        logger.debug("signals cursor not removed (non-fatal): %s", exc)
