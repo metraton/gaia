@@ -4562,6 +4562,7 @@ def _verb_word_effect(word: str) -> str:
 
 
 _BARE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_EXPRESSION_BUILTINS: FrozenSet[str] = frozenset({"test", "[", "[["})
 
 
 def _unlisted_dynamic_verb(args: "List[str]") -> "Optional[str]":
@@ -5159,7 +5160,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     program = command.lstrip()
     program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
     first_word = _first_literal_word(tokens[1:])
-    unlisted = family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS and base_cmd not in COMMAND_ALIASES
+    unlisted = family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS | _EXPRESSION_BUILTINS and base_cmd not in COMMAND_ALIASES
     unlisted_subcommand = unlisted and _is_known_verb(first_word)
     if program_is_dynamic:
         dynamic_word = tokens[0]
