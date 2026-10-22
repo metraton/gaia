@@ -126,6 +126,8 @@ def literal_words(component: str) -> List[Tuple[str, bool]]:
 
 
 def _is_gaia_entry(words: Sequence[str], index: int) -> bool:
+    if is_shell_resolved(words[index]):
+        return False
     group = entry_group(words[index])
     if group == "":
         return True
@@ -135,9 +137,7 @@ def _is_gaia_entry(words: Sequence[str], index: int) -> bool:
 
 
 def computes_gaia_words(component: str) -> bool:
-    """True when a Gaia CLI call in *component* takes words the shell or an argv feeder computes."""
-    from .mutative_verbs import _peel_leading_command_wrappers
-
+    """True when a literally named Gaia CLI entry point in *component* takes computed or xargs-fed words."""
     pairs = literal_words(component)
     words = [word for word, _ in pairs]
     if not any(computed or os.path.basename(word) in _ARGV_FEEDERS for word, computed in pairs):
@@ -148,8 +148,7 @@ def computes_gaia_words(component: str) -> bool:
         if not computed and _is_gaia_entry(words, index) and (
                 fed or any(later for _, later in pairs[index + 1:])):
             return True
-    program = literal_words(_peel_leading_command_wrappers(component)[0])
-    return bool(program) and program[0][1] and any(later for _, later in program[1:])
+    return False
 
 
 def clears_dispatch_identity(component: str) -> bool:

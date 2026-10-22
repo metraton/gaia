@@ -376,6 +376,20 @@ def test_proposals_store_literal_gaia_words_and_plain_reads_stay_free(command):
     assert _subagent_verdict(command, "developer").allowed is True
 
 
+@pytest.mark.parametrize("command", [
+    "$(which python3) deploy.py",
+    "timeout 5 $(which tool) list",
+    "G=gaia; $G contract proposals $(echo dismiss) 1",
+    "[ $X = foo ]",
+])
+def test_proposals_store_a_computed_program_word_keeps_the_validator_verdict(command):
+    from modules.security.subagent_memory_write_guard import COMPUTED_WORDS_REJECTION
+
+    result = _subagent_verdict(command, "developer")
+    assert COMPUTED_WORDS_REJECTION not in (result.reason or "")
+    assert result.allowed is ("$X" in command)
+
+
 def _accept_namespace(proposal_id: int):
     return argparse.Namespace(proposal_id=proposal_id, project=PROJECT_ID, workspace=None,
                               json=True)
