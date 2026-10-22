@@ -118,6 +118,19 @@ def test_a_pr_with_no_checkout_to_compare_signs():
     assert _mutative(PR_OWN_REPO)
 
 
+@pytest.mark.parametrize("command", [
+    "gh -R O/R pr create --title t",
+    "ghx pr create --repo=EXAMPLE.INVALID/O/R --title t",
+    "gh pr edit 4 -R https://Example.Invalid/O/R.git --title t",
+])
+def test_a_repo_named_in_another_letter_case_is_the_checkouts_own_origin(repo, command):
+    assert not _mutative(command, cwd=repo), command
+
+
+def test_a_repo_differing_by_more_than_case_still_signs(repo):
+    assert _mutative("gh -R O/R2 pr create --title t", cwd=repo)
+
+
 @pytest.mark.parametrize("command", PR_ASKS)
 def test_merging_or_retargeting_a_pr_still_asks(command):
     assert _mutative(command), command

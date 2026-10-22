@@ -54,8 +54,7 @@ _MAX_BODY_BYTES = 1024 * 1024
 
 _CHANGE_REQUEST_PUBLISHING = {"create", "edit", "update", "comment", "note", "review"}
 _CHANGE_REQUEST_BODY_FILE_FLAGS = {"--body-file", "-F", "--description-file", "--file"}
-# `hub pull-request` opens a pull request with no action word after the noun.
-_HUB_PULL_REQUEST = "pull-request"
+_HUB_ACTIONLESS_NOUN = "pull-request"
 _LEADING_VALUE_OPTIONS = {"-C", "-R", "--repo"}
 
 # gh subcommands whose text lands on GitHub. ``api`` is included because
@@ -151,17 +150,13 @@ def _flag_values(args: List[str], flags: set) -> Iterator[str]:
 
 
 def _command_path(args: List[str]) -> List[str]:
-    """The non-flag words of *args* once leading directory and repository options are dropped."""
     while len(args) >= 2 and args[0] in _LEADING_VALUE_OPTIONS:
         args = args[2:]
     return [a for a in args if not a.startswith("-")]
 
 
 def publishing_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
-    """Return the files a publishing segment sends as its text, or None if it does not publish.
-
-    Every command a wrapper (``timeout``, ``env -i``, ``nice``, ``command``...) may run is read.
-    """
+    """The files a publishing segment sends as its text, under any wrapper that runs it, or None if it does not publish."""
     while tokens and _ENV_ASSIGNMENT.match(tokens[0]):
         tokens = tokens[1:]
     if not tokens:
@@ -206,7 +201,7 @@ def _reading_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
             return None
     elif (
         change_request_action(_command_path(args)) in _CHANGE_REQUEST_PUBLISHING
-        or _command_path(args)[:1] == [_HUB_PULL_REQUEST]
+        or _command_path(args)[:1] == [_HUB_ACTIONLESS_NOUN]
     ):
         files = list(_flag_values(args, _CHANGE_REQUEST_BODY_FILE_FLAGS))
     elif base == "git":

@@ -214,13 +214,24 @@ def _file_name_label(name: str) -> str:
 
 
 def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
-    """Name why *path* is sensitive to read or list, or "" when it is not.
+    """Name why *path*, or the file its symlinks lead to, is sensitive to read or list, or "" when it is not.
 
     *cwd* anchors a relative path so an account entry under $HOME is still
     recognized; without it a relative path is judged by its names alone.
     """
     if not path:
         return ""
+    label = _spelling_label(path, cwd)
+    anchored = os.path.join(cwd or "", _expand_home(path.strip()))
+    if label or not os.path.isabs(anchored):
+        return label
+    try:
+        return _spelling_label(os.path.realpath(anchored))
+    except (OSError, ValueError):
+        return ""
+
+
+def _spelling_label(path: str, cwd: Optional[str] = None) -> str:
     candidate = _canonical(path)
     if cwd and not is_absolute(candidate):
         candidate = canonical_path(cwd) + "/" + candidate

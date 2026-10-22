@@ -8,9 +8,8 @@ signature route (``mutative_verbs`` for Bash, ``tool_policy`` for Write/Edit).
 
 A read is recognized by the command that performs it: a Bash component whose
 base command is a known reader or lister and that names a sensitive path, a
-publishing command (a change request, issue, release or commit, under any
-binary) whose body file is one, or a Read/Glob/Grep/list call whose path or
-pattern reaches one. What the guard
+publishing command whose body file is one, or a Read/Glob/Grep/list call whose
+path or pattern reaches one. What the guard
 cannot see is stated rather than claimed: a program that opens the file itself
 (``python3 script.py``, ``source .env``, ``git show HEAD:.env``), a copy made
 first and read later, and a recursive search started above a sensitive
