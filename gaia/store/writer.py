@@ -9528,6 +9528,9 @@ def finalize_agent_contract_handoff(
                 returned = cur.fetchone()
                 if returned is not None:
                     handoff_id = returned["id"]
+                    from gaia.store.proposals import record_close
+
+                    record_close(con, handoff_id, raw_handoff_json)
                     con.commit()
                     # Automatic retention (mirrors episodes): occasionally prune
                     # handoffs older than the 90-day window. Runs on its own
@@ -12997,7 +13000,8 @@ def prune_handoffs(
     Runs a single ``DELETE FROM agent_contract_handoffs WHERE created_at < ?``.
     With foreign_keys ON (set by _connect), the ON DELETE CASCADE on
     agent_contract_handoff_approvals.handoff_id removes the matching join rows
-    automatically -- no separate cleanup needed.
+    automatically -- no separate cleanup needed. A row holding a pending
+    proposal is kept until the proposal is decided, so no proposal is lost.
 
     Returns ``{"status": "applied", "deleted": <n>, "cutoff": <iso>}`` on
     success, or ``{"status": "error", "reason": str}`` on failure.
@@ -13008,7 +13012,8 @@ def prune_handoffs(
         con.execute("BEGIN")
         try:
             cur = con.execute(
-                "DELETE FROM agent_contract_handoffs WHERE created_at < ?",
+                "DELETE FROM agent_contract_handoffs WHERE created_at < ? AND id NOT IN "
+                "(SELECT handoff_id FROM proposals WHERE status = 'pending')",
                 (cutoff,),
             )
             deleted = cur.rowcount

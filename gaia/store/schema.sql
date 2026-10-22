@@ -1785,6 +1785,31 @@ CREATE INDEX IF NOT EXISTS idx_project_context_history_section
     ON project_context_history(project_identity, contract_name);
 
 -- ---------------------------------------------------------------------------
+-- proposals: what a closed turn proposed for the orchestrator to decide (v70).
+-- One row per memory_delta proposal or update_contracts entry, recorded by
+-- every close lane (gaia/store/proposals.py::record_proposals); the decision
+-- stays here, joined to the proposing row through handoff_id.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS proposals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    handoff_id    INTEGER NOT NULL,
+    item_index    INTEGER NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('memory', 'context', 'thread')),
+    project       TEXT,
+    payload       TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'accepted', 'dismissed')),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at    TEXT,
+    decided_by    TEXT,
+    decision_note TEXT,
+    UNIQUE (handoff_id, kind, item_index),
+    FOREIGN KEY (handoff_id) REFERENCES agent_contract_handoffs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, id);
+
+-- ---------------------------------------------------------------------------
 -- approvals: durable approval lifecycle records (v12 / approval-model-redesign)
 -- One row per approval request. Survives session close; queryable cross-session.
 -- id carries a P-{uuid4} prefix so it is readable in denial messages and logs.

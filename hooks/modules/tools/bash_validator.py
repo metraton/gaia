@@ -840,7 +840,7 @@ class BashValidator:
         # "Who writes" section for the contract this enforces.
         # ================================================================
         mem_write_allowed, mem_write_reason = check_subagent_memory_write(
-            command, is_subagent=is_subagent, agent_type=agent_type,
+            write_guard_scope, is_subagent=is_subagent, agent_type=agent_type,
         )
         if not mem_write_allowed:
             logger.warning(

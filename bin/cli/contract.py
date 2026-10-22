@@ -633,6 +633,12 @@ def _write_if_valid(
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
+    from gaia.store.proposals import refusal_message
+
+    refusal = refusal_message(envelope)
+    if refusal:
+        _print_error(refusal, as_json)
+        return 1
     # What gets persisted is what got VALIDATED. Every enum in the envelope is
     # compared normalized (agent_state upper-cased, work_phase stripped and
     # lower-cased, verification.result lower-cased), and persisting the raw
@@ -1524,6 +1530,11 @@ def cmd_view(args) -> int:
             payload["handoff_id"] = row.get("id")
             payload["agent_state"] = row.get("agent_state")
             payload["cut_reason"] = row.get("cut_reason")
+    from gaia.store.proposals import list_proposals
+
+    decisions = list_proposals(status=None, contract_id=draft_id)
+    if decisions:
+        payload["proposals"] = decisions
     print(json.dumps(payload, indent=2))
     return 0
 
@@ -2847,6 +2858,13 @@ def _build_subcommands(sub) -> None:
                              help="Fail (exit 1) when a rate is below this fraction, e.g. 0.95")
     p_fill_rate.add_argument("--json", action="store_true", help="JSON output")
     p_fill_rate.set_defaults(func=cmd_fill_rate)
+
+    try:
+        from cli.contract_proposals import register_proposals
+    except ModuleNotFoundError:
+        from contract_proposals import register_proposals
+
+    register_proposals(sub)
 
 
 def _contract_default(args) -> int:

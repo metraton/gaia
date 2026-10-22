@@ -259,10 +259,12 @@ READ -- changes nothing. The orchestrator runs these itself.
   signals
                  the curated changes behind a `~ changed:` line, each with the
                  command that opens it.
-  contract       view | list | validate
+  contract       view | list | validate | proposals list
                  `contract list --state DISPATCHED` names the turns that were
                  dispatched and never came back with a contract -- the way to
                  see cut subagents instead of blind-resuming them.
+                 `contract proposals list` shows what closed turns proposed
+                 (memory, context, thread) and nobody has decided yet.
   query
                  THE event reader: one read-only query across curated memory,
                  agent episodes, and harness_events -- the hook event log,
@@ -337,6 +339,9 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
                  `context accept CONTRACT_ID` writes the update_contracts
                  proposal a specialist's close announced, each key in the
                  workspace that owns its project.
+  contract       proposals accept | proposals dismiss
+                 decide ONE pending proposal by id: accept writes it (pass
+                 --project when the proposing turn had none), dismiss drops it.
   paths
                  report the resolved storage paths (data, db, snapshot, logs,
                  events) and materialize the ~/.gaia layout if it is missing.
