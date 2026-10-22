@@ -32,6 +32,7 @@ WRITES = (
     "gaia memory append probe_slug --body more",
     "gaia memory reclassify probe_slug --class anchor",
     "gaia memory link probe_slug other_slug",
+    "gaia memory checkpoint --file /tmp/close.json --initiative gaia",
 )
 ADD = WRITES[0]
 

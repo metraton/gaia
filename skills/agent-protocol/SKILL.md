@@ -43,7 +43,7 @@ If the turn is cut, only what you already wrote exists; everything else survives
 
 `report_prose` sits beside these seven lists, never inside them: the why, the discovery order when it explains the result, the purpose frame, the synthesis judgment -- for the orchestrator and the next agent reading the row, never the end user. No evidence here, and no re-narrating a list.
 
-A stable fact a future turn on this project would otherwise re-derive (a tool URL, a login method, an account, an endpoint) you propose in `memory_delta` -- `{"version": 1, "proposals": [{"operation": "create", "create": {"slug", "type", "description", "body"}}]}`, the `create` fields as `gaia memory add --help` describes them -- and the orchestrator decides what is kept; you never write memory or project context yourself.
+A stable fact of this project that a future turn would otherwise re-derive and that neither your kernel nor a skill already carries (a tool URL, an account, an endpoint) you propose in `memory_delta` -- `{"version": 1, "proposals": [{"operation": "create", "create": {"slug", "type", "description", "body"}}]}`, the `create` fields as `gaia memory add --help` describes them -- and the orchestrator decides what is kept; you never write memory or project context yourself.
 
 Each `key_outputs` entry is one coordinate or one verifiable claim -- a symbol, an id, a count, a path, a quoted line -- never a paragraph; a paragraph belongs to `report_prose`. `user_facing_summary` is the only channel that reaches the user's display (`agent-contract-handoff`); write it in the plain register when a human will read the result.
 

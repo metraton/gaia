@@ -21,7 +21,7 @@ SKILL_LOADED_EVENT = "memory.skill_loaded"
 SKILL_DROPPED_EVENT = "memory.skill_dropped"
 SKILL_TOOL_NAMES = frozenset({"Skill", "skill"})
 MEMORY_SKILL_NAMES = frozenset({"memory", "gaia:memory"})
-GUARDED_VERBS = frozenset({"add", "append", "reclassify", "link"})
+GUARDED_VERBS = frozenset({"add", "append", "reclassify", "link", "checkpoint"})
 
 REJECTION_MESSAGE = (
     "[MEMORY_SKILL_REQUIRED] A memory write needs Skill('memory') loaded in this "

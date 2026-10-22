@@ -127,7 +127,9 @@ rule: that is the curator's reading, taught in `SKILL.md`.
 ### Pruning stale entries
 
 1. Identify rows referencing retired projects, deprecated tooling,
-   or resolved decisions whose outcome no longer needs justification.
+   or resolved decisions whose outcome no longer needs justification, and
+   rows the harness now carries: a skill, guard or Environment fact took
+   them over, so they are no longer a difference.
 2. **Prefer `reclassify` over deletion.** `reclassify --class=log` or
    `reclassify --status=closed|graduated` retires a note while keeping
    it — memory is meant to be aggregated and reclassified, not deleted.

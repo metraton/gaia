@@ -46,15 +46,15 @@ first written in.
 ## A rule that is a bug
 
 The user asks that every goal remind specialists to load `code-standards`.
-Would that make sense if Gaia worked perfectly? No: a specialist should apply
-the standard without being told. So it becomes two rows:
+Would that hold for any user? Yes: every user's specialists should apply the
+standard without being told, so it is no difference of his. It becomes a
+`feedback` thread under `gaia_system` naming the defect -- specialists do not
+apply `code-standards` in their first version -- with its evidence, and no user
+row.
 
-1. a `feedback` thread under `gaia_system` naming the defect -- specialists do
-   not apply `code-standards` in their first version -- with its evidence;
-2. a user row, `Preferencia temporal: ...`, whose body names that bug and says
-   it retires when the bug closes.
-
-When the bug thread closes, the preference is closed with it.
+If he wants the reminder until the fix lands, that bridge is a default he has
+agreed to bend: a user row, `Preference: ...`, whose body names the bug and
+says it retires when the bug closes. It is closed with the bug thread.
 
 ## Atomic milestone
 

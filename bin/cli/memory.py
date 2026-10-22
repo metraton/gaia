@@ -661,10 +661,12 @@ _WRITE_POINTER = (
     "another."
 )
 
-_PERFECT_GAIA_QUESTION = (
-    "would this preference make sense if Gaia worked perfectly? If not, it is "
-    "a bug: record it with --type=feedback --initiative=gaia_system, and have "
-    "the preference name the bug it covers so it retires with it."
+_DIFFERENCE_QUESTION = (
+    "is this preference his difference from what Gaia does for anyone? A rule "
+    "any user would want is a missing standard or a defect, not his row: record "
+    "it with --type=feedback --initiative=gaia_system. A bend of a default is "
+    "kept once he has agreed to it; one that would move consent, security or "
+    "the contract is not kept at all."
 )
 
 
@@ -744,7 +746,7 @@ def _add_warnings(
             "existing name is for correcting an error.",
         ))
     if mem_type == "user" and memory_claim_kind(description) == PREFERENCE_KIND:
-        warnings.append(_warning("preference_or_bug", _PERFECT_GAIA_QUESTION))
+        warnings.append(_warning("preference_or_bug", _DIFFERENCE_QUESTION))
     return warnings
 
 
@@ -3629,8 +3631,9 @@ def register(subparsers):
         help=(
             "Which agent role this row is FOR. A --type=user row reaches a "
             "dispatched specialist only as 'executor': mark it so only when "
-            "it is a standard every artifact must obey in any project and no "
-            "skill, guard or environment fact can carry it. 'orchestrator' "
+            "it is his difference every specialist must apply in any project "
+            "(a signature on his PRs); a rule any user's artifacts must obey "
+            "is a standard for a skill or guard, not a row. 'orchestrator' "
             "and 'any' keep a user row with the orchestrator. Omitted, a new "
             "user row gets 'orchestrator', any other new row gets 'any', and "
             "--replace keeps the stored value (never silently reset)."
