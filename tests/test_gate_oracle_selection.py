@@ -1,3 +1,5 @@
+"""A code gate whose selection was narrowed after its red run (skip, xfail, -k, a dropped file) fails the oracle."""
+
 import sys
 from pathlib import Path
 

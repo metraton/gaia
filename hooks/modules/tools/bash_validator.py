@@ -102,9 +102,15 @@ from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
 from ..security.memory_skill_guard import check as check_memory_skill_loaded
 from ..security.subagent_memory_write_guard import (
+    COMPUTED_WORDS_REJECTION,
     IDENTITY_REJECTION,
     check as check_subagent_memory_write,
 )
+
+_MEMORY_GUARD_RULES = {
+    IDENTITY_REJECTION: "floor.dispatch-identity",
+    COMPUTED_WORDS_REJECTION: "floor.computed-gaia-words",
+}
 from ..security.contract_ownership_guard import check as check_contract_ownership
 from ..security.protected_path_guard import (
     check as check_protected_path_write,
@@ -1091,9 +1097,8 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=mem_write_reason,
-                rule=("floor.dispatch-identity" if mem_write_reason == IDENTITY_REJECTION
-                      else "floor.subagent-memory-write"),
-                suggestions=[] if mem_write_reason == IDENTITY_REJECTION else [
+                rule=_MEMORY_GUARD_RULES.get(mem_write_reason, "floor.subagent-memory-write"),
+                suggestions=[] if mem_write_reason in _MEMORY_GUARD_RULES else [
                     "Write a `memorialize_suggestions` block into your "
                     "contract row with `gaia contract fill --json` instead.",
                 ],

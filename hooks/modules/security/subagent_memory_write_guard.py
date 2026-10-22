@@ -55,7 +55,9 @@ from __future__ import annotations
 import shlex
 from typing import Optional, Tuple
 
-from .gaia_cli_invocation import clears_dispatch_identity, computes_gaia_words, gaia_cli_argvs
+from .gaia_cli_invocation import (
+    clears_dispatch_identity, computes_gaia_words, gaia_cli_argvs, resolve_cat_heredocs,
+)
 
 # Curated-memory MUTATING subcommands under `gaia memory`. Read verbs
 # (search/show/list/stats/get-relevant/conflicts/episode-show) are absent by
@@ -218,15 +220,17 @@ def check(
         return True, None
     from ..tools.shell_parser import parse_command
 
-    components = parse_command(command)
-    if any(clears_dispatch_identity(component) for component in components):
+    resolved = resolve_cat_heredocs(command)
+    readings = {command, resolved}
+    if any(clears_dispatch_identity(component)
+           for reading in readings for component in parse_command(reading)):
         return False, IDENTITY_REJECTION
-    if any(computes_gaia_words(component) for component in components):
+    if any(computes_gaia_words(component) for component in parse_command(resolved)):
         return False, COMPUTED_WORDS_REJECTION
-    if is_proposal_decision_attempt(command):
+    if any(is_proposal_decision_attempt(reading) for reading in readings):
         return False, PROPOSAL_DECISION_REJECTION
     if agent_type in ALLOWED_AGENTS:
         return True, None
-    if is_memory_write_attempt(command):
+    if any(is_memory_write_attempt(reading) for reading in readings):
         return False, rejection_message(agent_type)
     return True, None

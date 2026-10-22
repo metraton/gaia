@@ -39,6 +39,7 @@ REMEDIATION: Dict[str, str] = {
     "floor.gaia-db-write": "Change Gaia's database through the gaia CLI, never by writing the file.",
     "floor.subagent-memory-write": "Propose the memory in your contract's memory_delta; the orchestrator decides what is kept.",
     "floor.dispatch-identity": "Run the command with GAIA_DISPATCH_AGENT and the environment as the dispatch set them; a Gaia CLI call carries your identity.",
+    "floor.computed-gaia-words": "Write every word of the Gaia CLI call literally, single-quoted if it holds $ or a backtick, or pass long text through a --<name>-file - heredoc.",
     "floor.memory-skill-not-loaded": "Load Skill('memory') first, then run the memory write again.",
     "floor.subagent-resume-point": "Leave the resume point to the orchestrator and report the state in your contract.",
     "floor.contract-ownership": "Address your own contract with --draft-id <contract_id>.",

@@ -1050,7 +1050,7 @@
 ,{"id": "rm-home-dotdir-signs", "owner": "T1", "expected": "SIGNED", "command": "rm -rf ~/.cache/foo", "rule": "sign.destroys", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
 ,{"id": "rm-home-of-user-subdir-signs", "owner": "T1", "expected": "SIGNED", "command": "rm -rf ~bob/x", "rule": "sign.destroys", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
 ,{"id": "rm-home-var-subdir-signs", "owner": "T1", "expected": "SIGNED", "command": "rm -rf $HOME/build", "rule": "sign.destroys", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
-,{"id": "rm-home-absolute-subdir-signs", "owner": "T1", "expected": "SIGNED", "command": "rm -rf /home/jorge/build", "rule": "sign.destroys", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "rm-home-absolute-subdir-signs", "owner": "T1", "expected": "SIGNED", "command": "rm -rf /home/user/build", "rule": "sign.destroys", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
 ,{"id": "rm-data-split-flags-signs", "owner": "T1", "expected": "SIGNED", "command": "rm -r -f /data", "rule": "sign.destroys", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
 ,{"id": "rm-root-dashdash-operand-signs", "owner": "T1", "expected": "SIGNED", "command": "rm -r -- -f /tmp/x", "rule": "sign.destroys", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"], "note": "After -- a dash word is an operand, not the force flag."}
 ,{"id": "find-exec-plus-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "find . -exec rm -rf / {} +", "rule": "floor.rm_critical", "category": "executor", "src": "gaia-authored", "ac": ["AC-6"]}

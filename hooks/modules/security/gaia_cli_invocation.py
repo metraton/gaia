@@ -15,8 +15,11 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
+
+from .shell_substitution import _heredoc_body_span, _read_heredoc_opener
 
 _SHELL_RESOLVED = ("$", "`", "(", ")", "*", "?", "[")
 _PYTHON_MODULE_FLAG = re.compile(r"^-[bBdEIiOPqRsSuvx]*m(?P<module>.*)$")
@@ -84,6 +87,8 @@ _ARGV_FEEDERS = frozenset({"xargs", "parallel"})
 _IDENTITY = "GAIA_DISPATCH_AGENT"
 _ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
 _DECLARERS = frozenset({"export", "declare", "typeset", "local", "readonly", "unset"})
+_CAT_HEREDOC_WORD = re.compile(r'(?:^|(?<=[ \t]))"\$\([ \t]*cat[ \t]+(?=<<)')
+_CLOSING_WORD = re.compile(r'[ \t]*\)(")(?=[ \t\n;&|]|$)')
 _CLI_MODULES = frozenset(
     path.stem for path in (Path(__file__).resolve().parents[3] / "bin" / "cli").glob("*.py"))
 
@@ -123,6 +128,39 @@ def literal_words(component: str) -> List[Tuple[str, bool]]:
         pairs.append(("".join(text), computed or quote is not None
                       or bool(_BRACE_EXPANSION.search("".join(unquoted)))))
     return pairs
+
+
+def resolve_cat_heredocs(command: str) -> str:
+    """*command* with each whole word ``"$(cat <<'D' ... D)"`` written as the single-quoted value it prints."""
+    pieces, copied = [], 0
+    for match in _CAT_HEREDOC_WORD.finditer(command):
+        if match.start() < copied:
+            continue
+        value_end = _cat_heredoc_value(command, match.end())
+        if value_end is None:
+            continue
+        value, end = value_end
+        pieces += [command[copied:match.start()], shlex.quote(value)]
+        copied = end
+    return "".join(pieces) + command[copied:]
+
+
+def _cat_heredoc_value(command: str, opener_at: int) -> Optional[Tuple[str, int]]:
+    opener = _read_heredoc_opener(command, opener_at)
+    if opener is None:
+        return None
+    delimiter, expands, strip_tabs, after = opener
+    line_end = command.find("\n", after)
+    if expands or line_end == -1 or command[after:line_end].strip():
+        return None
+    body_start, resume, terminated = _heredoc_body_span(command, line_end + 1, delimiter, strip_tabs)
+    closing = _CLOSING_WORD.match(command, resume)
+    if not terminated or closing is None:
+        return None
+    terminator_end = resume - 1 if command[resume - 1:resume] == "\n" else resume
+    lines = command[body_start:command.rfind("\n", 0, terminator_end) + 1].split("\n")
+    value = "\n".join(line.lstrip("\t") if strip_tabs else line for line in lines)
+    return value.rstrip("\n").replace("\n", " "), closing.end(1)
 
 
 def _is_gaia_entry(words: Sequence[str], index: int) -> bool:
