@@ -62,7 +62,7 @@ def create_snapshot(
     prefix: str = "gaia",
 ) -> dict:
     """Write a gzip copy of ``db_path`` as ``<prefix>-<timestamp>.db.gz`` in
-    ``snapshot_dir``, then keep only the newest ``retain`` snapshots of each prefix.
+    ``snapshot_dir``, then keep only the newest ``retain`` snapshots of that prefix.
 
     ``db_path`` is only opened for reading. Returns::
 
@@ -104,24 +104,25 @@ def create_snapshot(
 
     result["created"] = True
     result["details"] = f"snapshot {snapshot_path.stat().st_size} bytes"
-    result["pruned"] = enforce_retention(snapshot_dir, retain=retain)
+    result["pruned"] = enforce_retention(snapshot_dir, prefix=prefix, retain=retain)
     return result
 
 
-def enforce_retention(snapshot_dir: Path, retain: int = DEFAULT_RETAIN) -> List[str]:
-    """Keep the newest ``retain`` snapshots of each prefix in ``snapshot_dir``,
-    delete the rest, and return the deleted paths."""
+def enforce_retention(snapshot_dir: Path, *, prefix: str, retain: int = DEFAULT_RETAIN) -> List[str]:
+    """Keep the newest ``retain`` ``prefix`` snapshots in ``snapshot_dir``, delete
+    the rest, and return the deleted paths. Other prefixes are never touched:
+    each has its own retention policy."""
     if retain < 0 or not snapshot_dir.exists():
         return []
 
+    snapshots = _snapshots_by_prefix(snapshot_dir).get(prefix, [])
     pruned: List[str] = []
-    for snapshots in _snapshots_by_prefix(snapshot_dir).values():
-        for snapshot in snapshots[: max(0, len(snapshots) - retain)]:
-            try:
-                snapshot.unlink()
-            except OSError:
-                continue
-            pruned.append(str(snapshot))
+    for snapshot in snapshots[: max(0, len(snapshots) - retain)]:
+        try:
+            snapshot.unlink()
+        except OSError:
+            continue
+        pruned.append(str(snapshot))
     return pruned
 
 

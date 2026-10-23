@@ -6,7 +6,8 @@ helper used by BOTH `gaia uninstall` (AC-6) and the SessionStart auto-backup
 Invariants under test:
   * COPY-based: the source DB is never moved/deleted -- only read.
   * Snapshot content matches the source byte-for-byte (through gzip).
-  * Retention keeps exactly the newest N snapshots of each prefix.
+  * Retention keeps exactly the newest N snapshots of the prefix it is given
+    and never touches another prefix.
   * latest_snapshot_age_seconds reports the age of a prefix's freshest snapshot.
 """
 
@@ -14,9 +15,11 @@ import gzip
 import os
 import time
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from gaia.paths.backup import prune_gfs
 from gaia.paths.snapshot import (
     DEFAULT_RETAIN,
     create_snapshot,
@@ -86,7 +89,7 @@ class TestEnforceRetention(unittest.TestCase):
             for n in names:
                 (snap_dir / n).write_bytes(b"x")
 
-            pruned = enforce_retention(snap_dir, retain=5)
+            pruned = enforce_retention(snap_dir, prefix="test", retain=5)
 
             survivors = sorted(p.name for p in snap_dir.glob("*.db.gz"))
             self.assertEqual(len(survivors), 5)
@@ -101,16 +104,16 @@ class TestEnforceRetention(unittest.TestCase):
             snap_dir.mkdir()
             for i in range(3):
                 (snap_dir / f"test-2026010{i}T000000000000.db.gz").write_bytes(b"x")
-            pruned = enforce_retention(snap_dir, retain=5)
+            pruned = enforce_retention(snap_dir, prefix="test", retain=5)
             self.assertEqual(pruned, [])
             self.assertEqual(len(list(snap_dir.glob("*.db.gz"))), 3)
 
     def test_missing_dir_is_noop(self):
         with TemporaryDirectory() as tmp:
             snap_dir = Path(tmp) / "does-not-exist"
-            self.assertEqual(enforce_retention(snap_dir, retain=5), [])
+            self.assertEqual(enforce_retention(snap_dir, prefix="test", retain=5), [])
 
-    def test_keeps_newest_n_of_each_prefix(self):
+    def test_prunes_only_the_prefix_it_is_given(self):
         with TemporaryDirectory() as tmp:
             snap_dir = Path(tmp)
 
@@ -121,10 +124,28 @@ class TestEnforceRetention(unittest.TestCase):
             for name in session + uninstall + task9:
                 (snap_dir / name).write_bytes(b"x")
 
-            enforce_retention(snap_dir, retain=5)
+            enforce_retention(snap_dir, prefix="uninstall", retain=5)
 
             survivors = sorted(p.name for p in snap_dir.glob("*.db.gz"))
-            self.assertEqual(survivors, sorted(session[-5:] + uninstall[-5:] + task9))
+            self.assertEqual(survivors, sorted(session + uninstall[-5:] + task9))
+
+    def test_an_uninstall_snapshot_leaves_the_session_backups_gfs_set(self):
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "gaia.db"
+            db.write_bytes(b"data")
+            snap_dir = Path(tmp) / "snapshots"
+            snap_dir.mkdir()
+            day = datetime(2026, 1, 1, 12)
+            while day <= datetime(2026, 6, 30, 12):
+                (snap_dir / f"sessionstart-{day.strftime('%Y%m%dT%H%M%S%f')}.db.gz").write_bytes(b"x")
+                day += timedelta(days=1)
+            prune_gfs(snap_dir)
+            before = sorted(snap_dir.glob("sessionstart-*.db.gz"))
+            self.assertEqual(len(before), 11)
+
+            create_snapshot(db, snap_dir, retain=5, prefix="uninstall")
+
+            self.assertEqual(sorted(snap_dir.glob("sessionstart-*.db.gz")), before)
 
 
 class TestLatestSnapshotAge(unittest.TestCase):

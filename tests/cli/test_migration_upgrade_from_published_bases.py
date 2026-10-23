@@ -29,10 +29,13 @@ _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _MIGRATIONS = _REPO_ROOT / "scripts" / "migrations"
 _FIXTURES = _REPO_ROOT / "tests" / "fixtures" / "published_bases"
 
+sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 sys.path.insert(0, str(_FIXTURES))
 import migration_guard  # noqa: E402
 from loader import load_base  # noqa: E402
+
+from gaia.paths.backup import restore_gzip  # noqa: E402
 
 BASES = (21, 26, 33, 37, 51, 57)
 
@@ -160,9 +163,9 @@ def test_published_base_upgrades_through_gaia_migrate(base, tmp_path, fresh_obje
 
     assert consents_asked == (1 if _chain_reaches_data_from_backup(tmp_path, base, expected) else 0)
 
-    backups = list((tmp_path / "backups").glob("*.db"))
+    backups = list((tmp_path / "backups").glob("*.db.gz"))
     assert len(backups) == 1, "exactly one pre-migrate backup"
-    assert _scalar(backups[0], "SELECT MAX(version) FROM schema_version") == base
+    assert _scalar(_restored(backups[0], tmp_path), "SELECT MAX(version) FROM schema_version") == base
 
     assert _scalar(db, "SELECT MAX(version) FROM schema_version") == expected
     assert _user_rows(db) == user_rows, f"user rows lost upgrading v{base}"
@@ -180,5 +183,11 @@ def test_published_base_upgrades_through_gaia_migrate(base, tmp_path, fresh_obje
 
 def _chain_reaches_data_from_backup(tmp: Path, base: int, expected: int) -> bool:
     """Classify the chain against the pre-migrate state, which the backup holds."""
-    backup = next((tmp / "backups").glob("*.db"))
-    return _chain_reaches_data(backup, base, expected)
+    backup = next((tmp / "backups").glob("*.db.gz"))
+    return _chain_reaches_data(_restored(backup, tmp), base, expected)
+
+
+def _restored(backup: Path, directory: Path) -> Path:
+    restored = directory / "restored-backup.db"
+    restore_gzip(backup, restored)
+    return restored

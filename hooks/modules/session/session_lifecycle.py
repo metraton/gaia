@@ -123,9 +123,9 @@ def run_start_maintenance(start: SessionStart) -> None:
 
     try:
         from modules.session.db_backup import maybe_backup_db
-        snapshot = maybe_backup_db()
-        if snapshot:
-            logger.info("db_backup: created SessionStart snapshot %s", snapshot)
+        pid = maybe_backup_db()
+        if pid:
+            logger.info("db_backup: SessionStart backup started detached (pid %s)", pid)
     except Exception as exc:
         logger.debug("maybe_backup_db failed (non-fatal): %s", exc)
 
