@@ -2647,8 +2647,8 @@ def _build_subcommands(sub) -> None:
         "--agent-name", dest="agent_name", metavar="NAME", default=None,
         help=(
             "Filter by the dispatched agent's name (gaia-system, developer, ...). "
-            "Only rows whose envelope still records it match: open and cut rows, "
-            "not cleanly finalized ones"
+            "Matches open and cut rows only: a cleanly finalized row no longer "
+            "records the name"
         ),
     )
     p_list.add_argument(
