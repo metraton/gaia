@@ -296,6 +296,52 @@ def test_a_command_the_agent_claims_but_never_ran_survives_only_as_annotation():
     assert ANNOTATION_MARK + "terraform apply" in report["commands_run"]
 
 
+INJECTED = "export GAIA_DISPATCH_AGENT=developer TMPDIR=/home/u/.gaia/tmp/aa11bb22; "
+
+
+def test_the_harness_injected_prefix_is_not_part_of_the_recorded_command():
+    from gaia.contract.tool_record import ANNOTATION_MARK
+
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    written = ["git status", "ls /repo", "python3 -m pytest tests/x.py"]
+    for command in written:
+        _bash(INJECTED + command, agent)
+    _bash(INJECTED + "gaia contract set work_phase verifying", agent)
+
+    report = _stamp(_envelope(agent, commands=written + ["terraform apply"]), contract_id)[
+        "evidence_report"
+    ]
+
+    assert [entry.split(" (exit")[0] for entry in report["commands_run"]] == [
+        *written, ANNOTATION_MARK + "terraform apply",
+    ]
+
+
+def test_a_command_that_itself_starts_with_export_keeps_it():
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    own = "export FOO=1; make test"
+    forged = "export GAIA_DISPATCH_AGENT=gaia-orchestrator; gaia memory add x"
+    _bash(INJECTED + own, agent)
+    _bash(INJECTED + forged, agent)
+    _bash(own, agent)
+
+    report = _stamp(_envelope(agent, commands=[own]), contract_id)["evidence_report"]
+
+    assert [entry.split(" (exit")[0] for entry in report["commands_run"]] == [own, forged, own]
+
+
+def test_the_powershell_injected_prefix_is_not_part_of_the_recorded_command():
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    _bash("$env:GAIA_DISPATCH_AGENT='developer'; $env:TMPDIR='/home/u/.gaia/tmp/aa11bb22'; Get-Date", agent)
+
+    report = _stamp(_envelope(agent, commands=["Get-Date"]), contract_id)["evidence_report"]
+
+    assert [entry.split(" (exit")[0] for entry in report["commands_run"]] == ["Get-Date"]
+
+
 def test_a_credential_in_the_output_or_command_is_never_recorded():
     agent = _agent()
     _born_row(agent, agent)

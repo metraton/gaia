@@ -153,6 +153,22 @@ def build_powershell_identity_command(command: str, agent_type: str, tmpdir: str
     return f"{exports}; {command}"
 
 
+def strip_dispatch_identity_prefix(command: str, agent_type: str) -> str:
+    """The command as the agent wrote it: drop the one prefix the builders above put at the front for ``agent_type``."""
+    agent = (agent_type or "").strip()
+    if not agent:
+        return command
+    bash_word = r"(?:[\w@%+=:,./-]+|'[^']*'(?:\"'\"'[^']*')*)"
+    bash_prefix = (
+        re.escape(f"export {GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}") + f"(?: TMPDIR={bash_word})?; "
+    )
+    powershell_prefix = (
+        re.escape(f"$env:{GAIA_DISPATCH_AGENT_ENV}={_powershell_literal(agent)}; ") + r"(?:\$env:TMPDIR='(?:[^']|'')*'; )?"
+    )
+    prefix = re.match(f"{bash_prefix}|{powershell_prefix}", command)
+    return command[prefix.end():] if prefix else command
+
+
 def _powershell_literal(value: str) -> str:
     # PowerShell ends a single-quoted string on any of these four marks, and a doubled mark is literal.
     return "'" + re.sub("['‘’‚‛]", lambda mark: mark.group() * 2, value) + "'"
@@ -279,6 +295,11 @@ def _record_command_run(tool_input: object, tool_result: ToolResult, hook_data: 
         from modules.events.capability_usage import record_command_run
 
         ran = tool_result.ran and hook_data.get("is_interrupt") is not True
+        if isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str):
+            tool_input = {
+                **tool_input,
+                "command": strip_dispatch_identity_prefix(tool_input["command"], str(hook_data.get("agent_type") or "")),
+            }
         record_command_run(
             tool_input, tool_result.output, tool_result.exit_code if ran else None, hook_data,
         )
