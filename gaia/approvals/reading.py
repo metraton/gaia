@@ -286,14 +286,19 @@ def session_scope(
     """Split pending rows (carrying ``state``) into those *session_id* is shown and a tally of all.
 
     Consent is bound to the requesting session; a caller with no session sees every session's.
+    A row is live when it is pending and not flagged ``stale`` (the flag the listing prints).
     """
     everywhere = all_sessions or not session_id
+
+    def is_live(row: Mapping[str, Any]) -> bool:
+        return row.get("state") == PENDING and not row.get("stale")
+
     shown = [
         row for row in rows
         if (everywhere or row.get("session_id") == session_id)
-        and (include_stale or row.get("state") == PENDING)
+        and (include_stale or is_live(row))
     ]
-    live = [row for row in rows if row.get("state") == PENDING]
+    live = [row for row in rows if is_live(row)]
     here = sum(1 for row in live if session_id and row.get("session_id") == session_id)
     return shown, {
         "session_id": session_id or None,
