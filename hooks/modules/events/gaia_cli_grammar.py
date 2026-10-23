@@ -21,7 +21,7 @@ SUBCOMMANDS = {
     'brief milestone': 'add remove',
     'context': (
         'accept dump get get-contract move-contracts move-memory move-project project '
-        'prune-workspaces query scan show wipe'
+        'prune-workspaces query relocate scan show wipe'
     ),
     'contract': (
         'add chain fill fill-rate finalize init list proposals reap reconcile set validate '
@@ -140,6 +140,7 @@ OPTIONS = {
     'context project': '--help --json --workspace -h',
     'context prune-workspaces': '--dry-run --help --json --yes -h',
     'context query': '--help -h',
+    'context relocate': '--dry-run --help --json --manifest -h',
     'context scan': '--dry-run --help --json -h',
     'context show': '--help --json --section -h',
     'context wipe': '--help --purge-memory --workspace --yes -h',

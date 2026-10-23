@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -15,12 +14,11 @@ if str(_REPO / "hooks") not in sys.path:
 from modules.security.gaia_cli_invocation import computes_gaia_words  # noqa: E402
 from modules.security.subagent_memory_write_guard import check  # noqa: E402
 
-_LITERAL = "/home/jorge/ws/me/gaia/gaia"
+_PACKAGE = _REPO / "gaia"
 
 
-@pytest.mark.skipif(not os.path.isdir(_LITERAL), reason="the reported checkout is not on this machine")
 def test_the_reported_grep_over_the_package_directory_is_not_refused():
-    command = f"grep -rn 'entry_group' {_LITERAL} --include=*.py -l"
+    command = f"grep -rn 'entry_group' {_PACKAGE} --include=*.py -l"
 
     assert check(command, is_subagent=True, agent_type="developer") == (True, None)
 
