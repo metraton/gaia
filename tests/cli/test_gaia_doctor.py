@@ -2721,3 +2721,43 @@ class TestCheckOpencodeHostLiveness:
 
         assert r["severity"] == "info"
         assert "not importable" in r["detail"]
+
+
+class TestCheckDbBackups:
+    """The newest gaia.db backup: age, size, verification; warn past 48h or on failure."""
+
+    def _backup(self, data: Path, hours_old: float, **status) -> None:
+        import os
+        import time
+        from datetime import datetime, timedelta
+
+        from gaia.paths import backup
+
+        when = datetime.now() - timedelta(hours=hours_old)
+        snap_dir = data / "snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snap = snap_dir / f"sessionstart-{when.strftime('%Y%m%dT%H%M%S%f')}.db.gz"
+        snap.write_bytes(b"z" * 2048)
+        os.utime(snap, (when.timestamp(), when.timestamp()))
+        record = {"result": "created", "verification": "ok", "at": time.time()}
+        record.update(status)
+        backup.write_status(data / "state" / backup.STATUS_FILE, record)
+
+    def test_fresh_verified_backup_shows_age_size_and_verification(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        self._backup(tmp_path, hours_old=2)
+        r = doctor_mod.check_db_backups()
+        assert r["severity"] == "pass", r
+        assert "2.0h old" in r["detail"] and "KB" in r["detail"] and "verified ok" in r["detail"]
+
+    def test_backup_older_than_48h_warns(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        self._backup(tmp_path, hours_old=50)
+        assert doctor_mod.check_db_backups()["severity"] == "warn"
+
+    def test_failed_last_backup_warns_with_the_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        self._backup(tmp_path, hours_old=1, result="failed",
+                     verification="failed: integrity_check", error="database disk image is malformed")
+        r = doctor_mod.check_db_backups()
+        assert r["severity"] == "warn" and "malformed" in r["detail"]

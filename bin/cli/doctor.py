@@ -1132,6 +1132,21 @@ def check_schema_version() -> dict:
     return _result("Schema version", "pass", f"v{live} matches code expectation")
 
 
+@register_check("DB backups", order=44)
+def check_db_backups() -> dict:
+    """Report the newest gaia.db backup's age, size and verification; warn past 48h or after a failed run."""
+    try:
+        from gaia.paths import snapshot_dir, state_dir  # noqa: PLC0415
+        from gaia.paths.backup import STATUS_FILE, backup_health  # noqa: PLC0415
+    except ImportError as exc:
+        return _result("DB backups", "info", f"backup health unavailable: {exc}")
+    health = backup_health(snapshot_dir(), state_dir() / STATUS_FILE)
+    fix = None
+    if health["severity"] != "pass":
+        fix = f"start a session to take one; the last run is recorded in {state_dir() / STATUS_FILE}"
+    return _result("DB backups", health["severity"], health["detail"], fix)
+
+
 @register_check("Episodes growth", order=48)
 def check_episodes_growth() -> dict:
     """Report gaia.db growth: FILE size vs the episodes TABLE size (distinct).
