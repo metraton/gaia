@@ -226,7 +226,7 @@ def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
     if not path:
         return ""
     label = _spelling_label(path, cwd)
-    anchored = os.path.join(cwd or "", _expand_home(path.strip()))
+    anchored = os.path.join(cwd or "", expand_home(path.strip()))
     if label or not os.path.isabs(anchored):
         return label
     try:
