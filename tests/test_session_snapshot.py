@@ -404,6 +404,192 @@ def test_both_hosts_publish_the_session_id_the_snapshot_reads_at_start_and_after
         assert build_snapshot(SESSION_A)["resume_point"] == f"resume from {len(context)}"
 
 
+def _proposals(path, pending, dismissed=0):
+    con = sqlite3.connect(path)
+    for n in range(pending + dismissed):
+        con.execute(
+            "INSERT INTO proposals (handoff_id, item_index, kind, payload, status) VALUES (1, ?, 'memory', '{}', ?)",
+            (n, "pending" if n < pending else "dismissed"),
+        )
+    con.commit()
+    con.close()
+
+
+def _memory(path, session_id, names):
+    con = sqlite3.connect(path)
+    for name in names:
+        con.execute(
+            "INSERT INTO memory (workspace, name, type, body, origin_session_id, updated_at) "
+            "VALUES ('me', ?, 'atom', 'body', ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+            (name, session_id),
+        )
+    con.commit()
+    con.close()
+
+
+def _aged_note(session_id, text, hours):
+    from gaia.session_snapshot import write_resume_point
+
+    path = Path(write_resume_point(session_id, text))
+    aged = time.time() - hours * 3600
+    os.utime(path, (aged, aged))
+
+
+def _note_heading(section):
+    return next(line for line in section.splitlines() if line.startswith("Hand note"))
+
+
+def test_without_a_hand_note_the_resume_point_is_derived_from_the_database(db):
+    from gaia.session_snapshot import build_snapshot, render_resume_section
+
+    _memory(db, SESSION_A, ["atom_touched_here"])
+    _memory(db, SESSION_B, ["atom_of_another_session"])
+
+    section = render_resume_section(build_snapshot(SESSION_A))
+
+    assert section.startswith("## Resume point\n")
+    assert "No resume point recorded" not in section and "Hand note" not in section
+    assert "brief brief-a (me), plan 1, task 1 (order 20)" in section
+    assert "aaaaaaaaaaaaaaaaa.tokena" in section and "P-a" in section
+    assert "Memory touched this session: atom_touched_here" in section
+    assert "atom_of_another_session" not in section
+
+
+def test_a_hand_note_older_than_the_newest_contract_is_shown_as_stale_with_its_age(db):
+    from gaia.session_snapshot import build_snapshot, render_resume_section, write_resume_point
+
+    _aged_note(SESSION_A, "dispatch task 20 next", hours=3)
+    write_resume_point(SESSION_B, "verify the b contract")
+
+    stale = _note_heading(render_resume_section(build_snapshot(SESSION_A)))
+    current = _note_heading(render_resume_section(build_snapshot(SESSION_B)))
+
+    assert "written 3h ago" in stale and "STALE" in stale
+    assert "STALE" not in current and "ago" in current
+    assert "dispatch task 20 next" in render_resume_section(build_snapshot(SESSION_A))
+
+
+def test_a_fresh_startup_shows_the_pending_proposal_count_only_when_there_is_one(db, tmp_path):
+    from gaia.session_snapshot import build_snapshot, render_resume_section
+
+    assert render_resume_section(build_snapshot("ses-fresh")) == ""
+    _proposals(db, pending=2, dismissed=1)
+
+    section = render_resume_section(build_snapshot("ses-fresh"))
+    payload = json.dumps({"hook_event_name": "SessionStart", "session_id": "ses-fresh", "source": "startup"})
+    proc = subprocess.run(
+        [sys.executable, str(_ROOT / "hooks" / "session_start.py")],
+        input=payload, capture_output=True, text=True, timeout=60, cwd=str(tmp_path), env=os.environ.copy(),
+    )
+
+    assert section == "## Resume point\nPending proposals: 2 (`gaia contract proposals list`)"
+    assert proc.returncode == 0, proc.stderr
+    assert section in json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_an_active_plan_with_no_contract_of_the_session_is_named_with_its_next_task(db):
+    from gaia.session_snapshot import build_snapshot, render_resume_section
+
+    con = sqlite3.connect(db)
+    con.execute("UPDATE plans SET status = 'active' WHERE id = 1")
+    con.commit()
+    con.close()
+
+    unbound = render_resume_section(build_snapshot("ses-plan"))
+    bound = render_resume_section(build_snapshot(SESSION_A))
+
+    assert "plan 1" in unbound and "brief-a" in unbound
+    assert "next pending task 1 (order 20) -- build the snapshot" in unbound
+    assert [line for line in bound.splitlines() if line.startswith("Active")] == [
+        "Active: brief brief-a (me), plan 1, task 1 (order 20) -- build the snapshot"
+    ]
+
+
+def _gaia(*argv):
+    return subprocess.run(
+        [sys.executable, str(_ROOT / "bin" / "gaia"), *argv],
+        capture_output=True, text=True, timeout=60, env=os.environ.copy(),
+    )
+
+
+def test_every_plan_count_is_exactly_what_its_pointer_lists(db):
+    from gaia.session_snapshot import build_snapshot, render_resume_section
+
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO workspaces (name) VALUES ('ws')")
+    con.execute("UPDATE plans SET status = 'active' WHERE id = 1")
+    for workspace, name, paused in (("me", "brief-b", "2026-01-01T00:00:00Z"), ("ws", "brief-c", None), ("ws", "brief-d", None)):
+        brief_id = con.execute("INSERT INTO briefs (workspace, name) VALUES (?, ?)", (workspace, name)).lastrowid
+        con.execute("INSERT INTO plans (brief_id, status, paused_at) VALUES (?, 'active', ?)", (brief_id, paused))
+    con.commit()
+    con.close()
+
+    section = render_resume_section(build_snapshot("ses-plan"))
+    pointed = re.findall(r"(\d+) [^()]*\(`gaia (plan list [^`]+)`\)", section)
+
+    assert len(pointed) == 2, section
+    for count, command in pointed:
+        proc = _gaia(*command.split(), "--json")
+        assert proc.returncode == 0, proc.stderr
+        assert int(count) == len(json.loads(proc.stdout)), (command, section)
+
+
+def test_session_preview_renders_the_named_sessions_resume_section(db):
+    named = _gaia("session", "preview", "--session-id", SESSION_A)
+    bare = _gaia("session", "preview")
+
+    assert named.returncode == 0, named.stderr
+    assert "## Resume point" in named.stdout and "aaaaaaaaaaaaaaaaa.tokena" in named.stdout
+    assert "## Resume point" not in bare.stdout
+
+
+def test_a_contract_query_that_fails_is_reported_unavailable_not_none(db, monkeypatch):
+    import gaia.session_snapshot as snapshot_module
+
+    def broken(con, session_id):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(snapshot_module, "_open_contracts", broken)
+    snapshot = snapshot_module.build_snapshot("ses-quiet")
+
+    for rendered in (snapshot_module.render_snapshot(snapshot), snapshot_module.render_resume_section(snapshot)):
+        assert "Open contracts: unavailable" in rendered
+        assert "Open contracts: none" not in rendered
+
+
+def test_a_compaction_birth_carries_the_derived_resume_point_once(db, tmp_path):
+    _proposals(db, pending=1)
+    _memory(db, SESSION_A, ["atom_from_before_compaction"])
+    _aged_note(SESSION_A, "close task 20 after the verifier", hours=2)
+
+    context = _claude_start_context("compact", tmp_path)
+
+    assert context.count("## Resume point") == 1
+    assert "Pending proposals: 1 (`gaia contract proposals list`)" in context
+    assert "atom_from_before_compaction" in context and "aaaaaaaaaaaaaaaaa.tokena" in context
+    assert "STALE" in _note_heading(context[context.index("## Resume point"):])
+
+
+def test_under_budget_pressure_the_counts_survive_and_the_block_fits(db, monkeypatch):
+    from modules.session import session_manifest
+
+    _add_contracts(db, 40, "ses-press")
+    _memory(db, "ses-press", [f"atom_touched_under_pressure_{n:02d}" for n in range(30)])
+    _proposals(db, pending=5)
+    _aged_note("ses-press", "n" * 2000, hours=1)
+
+    full = session_manifest.build_session_context(source="compact", session_id="ses-press")
+    monkeypatch.setattr(session_manifest, "BIRTH_BUDGET", len(full) - 300)
+    pressed = session_manifest.build_session_context(source="compact", session_id="ses-press")
+
+    assert len(full) <= session_manifest.CONTEXT_BUDGET
+    assert len(pressed) <= len(full) - 300
+    for context in (full, pressed):
+        assert "Pending proposals: 5 (`gaia contract proposals list`)" in context
+        assert "n" * 2000 in context
+    assert "Memory touched this session: 30" in pressed and "Open contracts: 40" in pressed
+
+
 def test_both_hosts_deliver_the_refresh_with_the_whole_resume_point_once_after_compaction(
     two_sessions, tmp_path, monkeypatch,
 ):
