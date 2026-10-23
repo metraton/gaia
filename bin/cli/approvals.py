@@ -2459,15 +2459,13 @@ def register(subparsers) -> None:
         help="List pending approvals from the new approvals table",
         description=(
             "Show pending T3 approvals from the DB-backed approvals table.\n\n"
-            "Default (no flags): returns ALL pending approvals on this machine\n"
-            "across every session.  The DB is per-machine so all-sessions is the\n"
-            "correct default scope.  This avoids a silent-drop that occurred when\n"
-            "the command ran inside a subagent (whose $CLAUDE_SESSION_ID differs\n"
-            "from the orchestrator session_id stored on the approval row).\n\n"
-            "Use --session SESSION_ID to filter to one specific session when you\n"
-            "hold a known-good orchestrator session id.\n\n"
-            "--all-sessions is accepted for backwards compatibility but is\n"
-            "equivalent to the default behaviour."
+            "Default (no flags): this session's live pending approvals, including\n"
+            "those its dispatched agents requested, plus a trailer counting what\n"
+            "the scope hides.  A shell outside any host session sees every\n"
+            "session's.\n\n"
+            "--all-sessions adds other sessions' requests; --include-stale adds\n"
+            "orphaned and expired ones; --session SESSION_ID scopes to that\n"
+            "session instead."
         ),
     )
     p_pending.add_argument("--json", action="store_true", help="JSON output")
