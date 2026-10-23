@@ -283,11 +283,9 @@ def read_on(
 def session_scope(
     rows: list[dict], session_id: Optional[str], *, all_sessions: bool = False, include_stale: bool = False,
 ) -> tuple[list[dict], dict]:
-    """Split pending rows that carry their ``state`` into those *session_id* is shown and a tally of all.
+    """Split pending rows (carrying ``state``) into those *session_id* is shown and a tally of all.
 
-    An approval is consent bound to the session that requested it, so a session
-    sees its own live requests unless it widens the scope; a caller with no
-    session (a shell outside any host) sees every session's.
+    Consent is bound to the requesting session; a caller with no session sees every session's.
     """
     everywhere = all_sessions or not session_id
     shown = [

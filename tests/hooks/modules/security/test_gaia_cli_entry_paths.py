@@ -1,9 +1,4 @@
-"""A path argument named ``gaia`` is not a Gaia CLI entry point when it cannot run as one.
-
-A subagent's ``grep ... /home/jorge/ws/me/gaia/gaia --include=*.py -l`` was
-refused as a computed Gaia CLI call: the checkout's package directory has the
-basename ``gaia``, and the glob in ``--include`` read as a computed argument.
-"""
+"""A path argument named ``gaia`` is not a Gaia CLI entry point when it cannot run as one (the checkout's ``gaia/`` package dir)."""
 
 from __future__ import annotations
 

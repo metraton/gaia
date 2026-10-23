@@ -1,8 +1,4 @@
-"""`gaia contract list --grep/--agent-name/--task` and `gaia contract view --row`.
-
-Another session's goal must be findable by its words and readable from one row,
-without exporting JSON and filtering it by hand.
-"""
+"""`gaia contract list --grep/--agent-name/--task` and `gaia contract view --row`."""
 
 from __future__ import annotations
 

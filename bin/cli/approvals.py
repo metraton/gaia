@@ -420,10 +420,6 @@ def _grant_to_display(g: dict, decision_status: str | None = None) -> dict:
 def cmd_list(args) -> int:
     """List approval grants and pending approvals from the DB.
 
-    Grants and pending approvals are scoped like ``cmd_pending``: this
-    session's (or ``--session``'s), live pending only, unless ``--all-sessions``
-    or ``--include-stale`` widens it.
-
     ``--orphans-only`` keeps the pending approvals whose reading is
     ``orphaned`` -- the one rule every reader applies -- so a request past its
     TTL reads expired here too, never orphaned. An orphan belongs to a session
@@ -1254,23 +1250,14 @@ def _not_pending(approval: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _scope_session(args) -> str:
-    """The session whose approvals a listing shows: ``--session``, else the host session this shell runs in.
-
-    It is resolved like the requester (``_requester_identity``), so a request a
-    dispatched agent made is listed in the session that dispatched it.
-    """
+    """``--session``, else the host session, resolved like ``_requester_identity`` so a dispatched agent's request lists with its dispatcher."""
     from gaia.agent_identity import host_session_from_env
 
     return getattr(args, "session", None) or host_session_from_env()
 
 
 def cmd_pending(args) -> int:
-    """Show this session's live pending approvals, with a trailer counting what the scope hides.
-
-    ``--all-sessions`` adds other sessions' requests, ``--include-stale`` adds
-    orphaned and expired ones; ``--session`` names the session to scope to.
-    Exits 0 on success, 1 on error.
-    """
+    """Show this session's live pending approvals, with a trailer counting what the scope hides."""
     from gaia.approvals.reading import scope_trailer, session_scope
 
     try:

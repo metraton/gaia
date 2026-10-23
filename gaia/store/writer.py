@@ -12606,12 +12606,10 @@ def list_agent_contract_handoffs(
             nearest-ancestor binding ``_inherited_plan_task_id`` resolves.
         since / until: Inclusive ``created_at`` bounds, as ISO-8601 UTC
             strings. Applied in SQL, so ``limit`` counts only matching rows.
-        text:        Substring of the goal (``dispatch_prompt``), the
-            ``dispatch_description`` or the envelope's ``conclusion``; ASCII
-            case-insensitive (SQLite LIKE), ``%`` and ``_`` taken literally.
-        agent_name:  The dispatched agent's name, read from the birth marker
-            (:data:`BIRTH_AGENT_NAME_KEY`) -- so a cleanly finalized row,
-            whose envelope replaced the marker, does not match.
+        text:        Substring of the goal, description or conclusion; ASCII
+            case-insensitive, ``%`` and ``_`` literal.
+        agent_name:  Read from the birth marker (:data:`BIRTH_AGENT_NAME_KEY`),
+            so a finalized row, whose envelope replaced it, does not match.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
