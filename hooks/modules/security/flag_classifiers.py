@@ -630,9 +630,8 @@ def _classify_find(tokens: List[str]) -> Optional[FlagClassifierResult]:
         return None
     args = tokens[1:]
 
-    # Actions that execute external commands or delete files
-    mutative_actions = ("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint",
-                        "-fprint0", "-fprintf")
+    # -exec/-execdir/-ok/-okdir are judged by their payload in detect_mutative_command's executor lane.
+    mutative_actions = ("-delete", "-fprint", "-fprint0", "-fprintf")
     flag = _has_flag(args, *mutative_actions)
     if flag:
         return FlagClassifierResult(

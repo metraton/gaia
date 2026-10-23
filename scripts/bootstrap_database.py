@@ -24,8 +24,9 @@ How a run treats the database:
 Every write of the chain -- schema, each migration, and each ledger seal --
 runs inside ONE transaction, so an interruption at any point, including
 between a migration and its seal, leaves the objects and the version exactly
-as they were. Before that transaction opens on an existing database, a copy is
-written with SQLite's backup API to ``<database dir>/backups/``. A chain that
+as they were. Before that transaction opens on an existing database, a verified
+gzip copy is written to ``<database dir>/backups/`` (the gaia.paths.backup format), keeping
+the newest BACKUPS_KEPT; plain ``.db`` backups from earlier versions are left. A chain that
 only adds structure then applies on its own; a chain in which any migration
 reaches rows that already exist is refused until ``--consent-chain vA..vB``
 names that exact chain (D68: one consent for the whole chain), or until
@@ -43,12 +44,14 @@ The bootstrap never registers a workspace: only `gaia workspace declare` does.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import os
 import re
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,6 +81,9 @@ FRESH, SEALED, UNSEALED = "fresh", "sealed", "unsealed"
 # gaia install applies data-reaching chains itself once the backup verifies
 # (D140); `gaia migrate apply` keeps asking for --consent-chain.
 AFTER_BACKUP_FLAG = "--apply-after-backup"
+
+BACKUPS_KEPT = 3
+_BACKUP_STAMP_RE = re.compile(r"-pre-migrate-(\d{8}T\d{12}Z)\.db\.gz$")
 
 
 def _log(msg: str) -> None:
@@ -251,41 +257,91 @@ def _stamp(
 def _backup(
     con: sqlite3.Connection, ledger: int, now: datetime, census: dict[str, int]
 ) -> Path:
-    """Copy the whole database beside it and prove the copy restores it.
+    """Write a compressed copy of the whole database beside it, proven to restore it.
 
     Raises sqlite3.DatabaseError unless the copy passes integrity_check and
     holds exactly the rows *census* counted, so no chain runs without one.
+    Only the newest BACKUPS_KEPT compressed pre-migration backups are kept.
+    Stdlib only: the engine runs without the gaia package beside it.
     """
     backup_dir = GAIA_DB.parent / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
     target = backup_dir / (
-        f"{GAIA_DB.stem}-v{ledger}-pre-migrate-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db"
+        f"{GAIA_DB.stem}-v{ledger}-pre-migrate-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db.gz"
     )
-    dest = sqlite3.connect(str(target))
+    copy = target.with_name(f".{target.name}.copy")
+    part = target.with_name(f".{target.name}.part")
     try:
-        con.backup(dest)
-        verdict = dest.execute("PRAGMA integrity_check").fetchone()[0]
-        copied = migration_guard.take_census(dest)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        dest = sqlite3.connect(str(copy))
+        try:
+            con.backup(dest)
+            verdict = dest.execute("PRAGMA integrity_check").fetchone()[0]
+            copied = migration_guard.take_census(dest)
+        finally:
+            dest.close()
+        if verdict != "ok" or copied != census:
+            raise sqlite3.DatabaseError(
+                f"backup {target} did not verify (integrity_check={verdict!r}, "
+                f"rows match={copied == census})"
+            )
+        with open(copy, "rb") as src, open(part, "wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6) as packed:
+                shutil.copyfileobj(src, packed, 1 << 20)
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(part, target)
+    except OSError as exc:
+        raise sqlite3.DatabaseError(f"backup {target} could not be written ({exc})") from exc
     finally:
-        dest.close()
-    if verdict != "ok" or copied != census:
-        raise sqlite3.DatabaseError(
-            f"backup {target} did not verify (integrity_check={verdict!r}, "
-            f"rows match={copied == census})"
-        )
+        for leftover in (copy, Path(f"{copy}-journal"), part):
+            leftover.unlink(missing_ok=True)
+    _prune_backups(backup_dir)
     return target
 
 
-def _restore(backup: Path) -> None:
-    """Put the verified *backup* back in place of GAIA_DB through a staged copy, so the backup itself survives."""
-    # Imported here: tests stage this engine alone, without the gaia package beside it.
-    from gaia.atomic_replace import replace_retrying
+def _prune_backups(backup_dir: Path) -> None:
+    """Delete all but the newest BACKUPS_KEPT compressed pre-migration backups, by the stamp in their name."""
+    stamped = sorted(
+        (match.group(1), path)
+        for path in backup_dir.glob("*-pre-migrate-*.db.gz")
+        if (match := _BACKUP_STAMP_RE.search(path.name))
+    )
+    for _stamp_text, path in stamped[:-BACKUPS_KEPT]:
+        try:
+            path.unlink()
+        except OSError:
+            continue
 
-    staged = GAIA_DB.with_name(GAIA_DB.name + ".restore")
-    shutil.copyfile(backup, staged)
+
+def _restore(backup: Path) -> None:
+    """Put the verified *backup* back in place of GAIA_DB through a staged copy, so the backup itself survives.
+
+    Stdlib only: the engine runs without the gaia package beside it.
+    """
+    staged = _staged_restore_path()
+    try:
+        with gzip.open(backup, "rb") as src, open(staged, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+            dst.flush()
+            os.fsync(dst.fileno())
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
     for sidecar in ("-wal", "-shm"):
         GAIA_DB.with_name(GAIA_DB.name + sidecar).unlink(missing_ok=True)
-    replace_retrying(staged, GAIA_DB)
+    for attempt in range(1, 11):
+        try:
+            os.replace(staged, GAIA_DB)
+            return
+        except PermissionError:
+            if attempt == 10:
+                raise
+            time.sleep(0.05 * attempt)
+
+
+def _staged_restore_path() -> Path:
+    """Where _restore stages the decompressed backup; kept when the final replace fails."""
+    return GAIA_DB.with_name(GAIA_DB.name + ".restore")
 
 
 def _apply_chain(
@@ -504,7 +560,15 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                 _err(f"ERROR: migration chain {label} failed and was rolled back. ({exc})")
                 if state == UNSEALED:
                     con.close()
-                    _restore(backup)
+                    try:
+                        _restore(backup)
+                    except OSError as restore_exc:
+                        _err(
+                            f"ERROR: could not restore {backup} over {GAIA_DB} ({restore_exc}). "
+                            f"The restored copy is kept at {_staged_restore_path()}; "
+                            "move it over the database once nothing holds it."
+                        )
+                        return 1
                     _err(f"the journal mode changed before the chain; {GAIA_DB} restored from {backup}.")
                 _err(f"schema_version ledger remains at v{ledger}; no object changed.")
                 if not isinstance(exc, sqlite3.Error):

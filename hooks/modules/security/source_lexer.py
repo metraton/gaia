@@ -69,6 +69,8 @@ Design notes / accepted limitations:
 
 from __future__ import annotations
 
+import functools
+import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -225,6 +227,36 @@ _BLOCK_COMMENT = 2
 _STRING = 3
 _LINE_BLOCK_COMMENT = 4  # column-0 block comment (=begin/=end) and perl POD
 
+_NOT_NEWLINE = re.compile(r"[^\n]")
+
+
+def _blank(text: str) -> str:
+    """*text* with every character but newlines replaced by a space."""
+    return _NOT_NEWLINE.sub(" ", text)
+
+
+@functools.lru_cache(maxsize=None)
+def _code_run_regex(spec: LanguageSpec) -> Optional["re.Pattern"]:
+    """Matches the next character in code that can start a comment or string.
+
+    Everything before it is plain code, copied to both views in one step.  A
+    spec with column-0 comments needs a per-line check the run skip would
+    bypass, so it gets ``None`` and the character loop.
+    """
+    if spec.line_block_comments or spec.pod_style:
+        return None
+    starters = {m[0] for m in (spec.line_comment, *spec.extra_line_comments) if m}
+    if spec.block_comment:
+        starters.add(spec.block_comment[0][0])
+    starters.update(spec.string_quotes)
+    return re.compile("[" + "".join(re.escape(ch) for ch in sorted(starters)) + "]")
+
+
+@functools.lru_cache(maxsize=None)
+def _string_run_regex(quote: str) -> "re.Pattern":
+    """Matches the next escape or closing quote of a string opened by *quote*."""
+    return re.compile("[\\\\" + re.escape(quote) + "]")
+
 
 def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
     """Lex ``content`` per ``spec`` into ``verb_view`` and ``exec_view``.
@@ -268,7 +300,30 @@ def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
         verb.append(vch)
         execv.append(ech)
 
+    code_run = _code_run_regex(spec)
+
     while i < n:
+        if state == _CODE and code_run is not None:
+            found = code_run.search(content, i)
+            stop = found.start() if found else n
+            if stop > i:
+                plain = content[i:stop]
+                verb.append(plain)
+                execv.append(plain)
+                i = stop
+            if i >= n:
+                break
+        elif state == _STRING:
+            found = _string_run_regex(quote).search(content, i)
+            stop = found.start() if found else n
+            if stop > i:
+                text = content[i:stop]
+                verb.append(_blank(text))
+                execv.append(text)
+                i = stop
+            if i >= n:
+                break
+
         c = content[i]
 
         if state == _CODE:
@@ -328,23 +383,31 @@ def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
             continue
 
         if state == _LINE_COMMENT:
-            if c == "\n":
+            stop = content.find("\n", i)
+            if stop == -1:
+                stop = n
+            if stop > i:
+                blanks = " " * (stop - i)
+                emit(blanks, blanks)
+                i = stop
+            if i < n:
                 emit("\n", "\n")
                 state = _CODE
-            else:
-                emit(" ", " ")
-            i += 1
+                i += 1
             continue
 
         if state == _BLOCK_COMMENT:
-            if block_close and content.startswith(block_close, i):
-                for _ in range(len(block_close)):
-                    emit(" ", " ")
+            stop = content.find(block_close, i) if block_close else -1
+            if stop == -1:
+                stop = n
+            if stop > i:
+                blanked = _blank(content[i:stop])
+                emit(blanked, blanked)
+                i = stop
+            if i < n:
+                emit(" " * len(block_close), " " * len(block_close))
                 i += len(block_close)
                 state = _CODE
-                continue
-            emit("\n" if c == "\n" else " ", "\n" if c == "\n" else " ")
-            i += 1
             continue
 
         if state == _LINE_BLOCK_COMMENT:

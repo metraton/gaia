@@ -37,7 +37,7 @@ _CLI_DIR = _SCRIPT_DIR / "cli"
 #   - install:   bootstraps the DB itself (Step 1); double-bootstrap is wasteful.
 #   - uninstall: tearing Gaia down -- recreating the DB would be perverse.
 #   - now:       reads the clock only, and must work where no Gaia DB exists.
-_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall", "migrate", "now"})
+_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall", "migrate", "now", "lint"})
 
 
 def _resolve_db_path():
@@ -256,10 +256,20 @@ READ -- changes nothing. The orchestrator runs these itself.
                  the installed gaia version, as the only argument.
   now
                  local time, UTC offset and zone; read it before computing an absolute --at.
-  contract       view | list | validate
+  map
+                 what is live now (due reminders, pending proposals, turns never
+                 closed, unread signals, active plans) with the verb that moves
+                 each, the five habits, and which capability serves an intent;
+                 `map <intent>` expands one row.
+  signals
+                 the curated changes behind a `~ changed:` line, each with the
+                 command that opens it.
+  contract       view | list | validate | proposals list
                  `contract list --state DISPATCHED` names the turns that were
                  dispatched and never came back with a contract -- the way to
                  see cut subagents instead of blind-resuming them.
+                 `contract proposals list` shows what closed turns proposed
+                 (memory, context, thread) and nobody has decided yet.
   query
                  THE event reader: one read-only query across curated memory,
                  agent episodes, and harness_events -- the hook event log,
@@ -304,6 +314,9 @@ READ -- changes nothing. The orchestrator runs these itself.
                  governed writes, below).
   session        preview | snapshot
                  render the SessionStart manifest in-process.
+  lint           comments
+                 net comment lines a branch adds against max(2, 2% of its added
+                 code); run it on a diff before presenting its push.
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
   brief          new | edit | set-status (not closed) | close | set-project |
@@ -326,8 +339,14 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
                  re-index this workspace's repos into (workspace, project)
                  rows -- how the coordinator keeps its own context current.
                  `scan --dry-run` previews the same result without writing.
-  context        scan
+  context        scan | accept
                  re-run the project scanner behind `context show`/`get`.
+                 `context accept CONTRACT_ID` writes the update_contracts
+                 proposal a specialist's close announced, each key in the
+                 workspace that owns its project.
+  contract       proposals accept | proposals dismiss
+                 decide ONE pending proposal by id: accept writes it (pass
+                 --project when the proposing turn had none), dismiss drops it.
   paths
                  report the resolved storage paths (data, db, snapshot, logs,
                  events) and materialize the ~/.gaia layout if it is missing.

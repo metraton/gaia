@@ -55,6 +55,7 @@ def _valid_envelope() -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
 
 
@@ -323,6 +324,11 @@ def test_a_continuation_can_still_be_minted_end_to_end(tmp_path):
         capture_output=True, text=True, env=env, cwd=str(_REPO_ROOT),
     )
     assert closed.returncode == 0, closed.stderr
+    summarized = subprocess.run(
+        [sys.executable, cli, "set", "user_facing_summary", "Blocked.", "--draft-id", draft_id],
+        capture_output=True, text=True, env=env, cwd=str(_REPO_ROOT),
+    )
+    assert summarized.returncode == 0, summarized.stderr
 
     finalized = subprocess.run(
         [sys.executable, cli, "finalize", "--draft-id", draft_id, "--json"],

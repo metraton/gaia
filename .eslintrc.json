@@ -27,8 +27,8 @@
   "overrides": [
     {
       "files": [
-        "skills/diagram-builder/assets/engine/**/*.js",
-        "skills/diagram-builder/assets/data/**/*.js"
+        "skills/deck-builder/assets/engine/**/*.js",
+        "skills/deck-builder/assets/data/**/*.js"
       ],
       "env": {
         "browser": true

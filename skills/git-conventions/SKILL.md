@@ -39,8 +39,8 @@ T3 (`Verb: 'rm' (MUTATIVE)` on text that only *mentions* `rm -rf`).
 
 Target the repo with `git -C /absolute/path <verb>` -- this is the canonical
 form in a subagent. The T3 consent gate parses `-C` as a flag and classifies
-the command identically to the bare verb (`git -C /repo push` is T3 `push`,
-same as `git push`); there is NO bypass of Gaia's gate. The full discipline --
+the command identically to the bare verb (`git -C /repo push origin main` is
+T3 `push`, same as `git push origin main`); there is NO bypass of Gaia's gate. The full discipline --
 why one byte-identical form prevents the approval loop, and why a separate `cd`
 call cannot work (the cwd resets between Bash calls) -- lives in
 `command-execution` Rule 7; follow it there.
@@ -65,6 +65,28 @@ Push to the feature branch. Only push directly to `main` when explicitly
 instructed or when the work is already on main. Force-push (`--force`)
 requires explicit user instruction.
 
+Which of these ask for a signature (`security-tiers` owns the rule;
+`_check_git_publish_relief` in `mutative_verbs.py` decides it):
+
+- **Free:** `commit`, `add` and the other local subcommands;
+  `git -C /abs push [-u|--set-upstream] <remote> <branch>` when the branch is
+  named, is not main, master or the remote's HEAD branch, and the repository's
+  push configuration sends it to itself, with nothing before `git`; `gh pr create`; `gh pr
+  edit` without `--base`; `git -C <path> merge --ff-only <rev>` when `<path>`
+  is a Gaia-managed worktree.
+- **Free, local sync in any repository:** `merge --ff-only <remote>/<branch>`
+  when `<branch>` is the checked-out branch (`_git_local_sync` decides it from
+  the repository's state); `git fetch`, `pull --ff-only` and `switch`/`checkout
+  <branch>` are free by elimination.
+- **T3:** bare `git push`, a push to the default branch or `HEAD`, any push
+  with another flag (`--force`, `--force-with-lease`, `--delete`, `--mirror`,
+  `--all`, `--tags`) or a `+`/`:` refspec; `gh pr merge`; `gh pr edit
+  --base`; every other `merge`, including a `--ff-only` that moves the current
+  branch to another branch's ref; `rebase`; `reset --hard`.
+
+Do not request the free forms in advance: run them, and request only what is
+still T3.
+
 ## Hook Enforcement
 
 The `commit_validator.py` hook validates against standards inlined as
@@ -76,24 +98,9 @@ Body line length triggers warnings only.
 
 ## Pull Request Body
 
-A PR is written retrospectively, after the commits already exist -- it
-explains the change to a reviewer who was not present while it was made, in
-English, self-contained, with no reference to the process that produced it
-(no task IDs, no plan/sprint labels, no "as requested"). The title reuses the
-same `type(scope): outcome` rule as the commit subject above -- no plan
-jargon there either.
-
-| Section | Content |
-|---------|---------|
-| Context / Situation | The state that existed before this change and why it needed one |
-| What changed | The concrete change made, stated plainly |
-| Impact / what it solves | The outcome the change produces for the system or the user |
-| Plan impact | For IaC changes: the plan summary -- resources to add, change, destroy |
-| Verification | How the change was verified -- tests run, dry-run/plan output, manual check |
-| Risk / rollback (optional) | What could go wrong and how to revert, when the change carries real risk |
-| Links (optional) | Related PRs, issues, or docs -- only when they add context a reviewer needs |
-
-This structure is advisory, not enforced: `commit_validator.py` validates
-only the commit message format above -- it does not parse or gate the PR
-body. Writing a body without this structure will not block anything; the
-structure exists so a reviewer gets the same shape every time.
+The PR title reuses the commit subject's `type(scope): outcome` rule above.
+The body is a document a reviewer reads without having been there, so it is
+written with `technical-writing` (door: PR body), which owns its sections and
+the rule that no task id, plan label, approval, signature or tier appears in
+it. `commit_validator.py` validates only the commit message format; nothing
+parses or gates the body.

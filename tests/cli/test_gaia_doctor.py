@@ -5,6 +5,7 @@ Uses tmp_path fixtures to create controlled .claude/ directory structures
 so each health check can be tested in isolation.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -1094,52 +1095,8 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 28 = 11 base + 2 memory v2 + 4 Pass 4 (package-integrity,
-        # last-install-error, workspace-initialized, schema-version) +
-        # 1 schema-DDL-consistency added by the migration framework rewrite +
-        # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1) +
-        # 1 agent-routing (surface_routing DB table primary agents resolve to files) +
-        # 1 symlinks-freshness (.claude/hooks resolves to the installed pkg
-        #   version -- install-local staleness fix) +
-        # 2 deterministic structural checks migrated from gaia-audit
-        #   (component-naming order 52, skill-cross-refs order 53) +
-        # 1 install-provenance (order 57 -- local vs npm install + local
-        #   freshness vs source; replaces `gaia release sync-local`) +
-        # 1 hooks-active-fresh (order 150 -- running session's hooks == the
-        #   currently wired build; live-freshness vs on-disk freshness) +
-        # 1 episodes-growth (order 48 -- gaia.db size + episodes row count;
-        #   visibility for the 90-day auto-retention added to writer.py) +
-        # 1 hooks-importable (order 145 -- every hooks/*.py entry point
-        #   imports cleanly; catches a broken hook before it reaches
-        #   PreToolUse/PostToolUse at runtime) +
-        # 1 global-cli-alignment (order 58 -- PATH gaia vs workspace-expected
-        #   install; catches a stale global CLI shadowing the workspace's own
-        #   gaia without warning) +
-        # 1 source-parity (order 56 -- installed package == the source checkout
-        #   it was built from; the first link of the freshness chain, which
-        #   went undiagnosed while a package built mid-edit ran for a day) +
-        # 1 symbol-anchors (order 54 -- skill/agent symbol references carry a
-        #   resolvable file::symbol anchor; a prose-paren reference names no
-        #   file, so a deleted symbol left four stale citations and only the
-        #   one anchored citation was caught) +
-        # 1 executed-copy-alignment (order 59 -- names the realpath actually
-        #   resolved from node_modules and reports aligned vs divergent when a
-        #   package-manager install re-materializes a stale pinned tarball
-        #   over a dev symlink, silently and without a version bump) +
-        # 1 opencode-host-liveness (order 61 -- reads the identity.attest
-        #   ledger for the CURRENT host run; pass only with a recorded
-        #   attestation, explicit absence -- never a false ok -- without one) +
-        # 1 opencode-background-subagents (order 62 -- info naming the shell line) +
-        # 1 workspace-roots (order 49 -- active workspaces without the recorded
-        #   root that `gaia worktree create` requires) +
-        # 1 project-copies (order 51 -- second clones the scan recorded as copies) +
-        # 1 workspace-registry (order 63 -- what `gaia workspace curate` fixes) +
-        # 3 channel checks (install-channel 36, hook-registrations 72,
-        #   hook-commands 74 -- hooks counted across plugin and every settings file) +
-        # 1 hook-shell (order 25 -- Windows without a resolvable sh) +
-        # 1 git-long-paths (order 26 -- Windows git with core.longpaths off) +
-        # 3 self-location checks (hook-python 27, path-gaia 28, launcher-python 29).
-        assert len(data["checks"]) == 44
+        # The total of registered doctor checks; raise it with each check added.
+        assert len(data["checks"]) == 45
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -2721,3 +2678,71 @@ class TestCheckOpencodeHostLiveness:
 
         assert r["severity"] == "info"
         assert "not importable" in r["detail"]
+
+
+class TestCheckDbBackups:
+    """The newest gaia.db backup: age, size, verification; warn past 48h or on failure."""
+
+    def _backup(self, data: Path, hours_old: float, **status) -> None:
+        import os
+        import time
+        from datetime import datetime, timedelta
+
+        from gaia.paths import backup
+
+        when = datetime.now() - timedelta(hours=hours_old)
+        snap_dir = data / "snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snap = snap_dir / f"sessionstart-{when.strftime('%Y%m%dT%H%M%S%f')}.db.gz"
+        snap.write_bytes(b"z" * 2048)
+        os.utime(snap, (when.timestamp(), when.timestamp()))
+        record = {"result": "created", "verification": "ok", "at": time.time()}
+        record.update(status)
+        backup.write_status(data / "state" / backup.STATUS_FILE, record)
+
+    def test_fresh_verified_backup_shows_age_size_and_verification(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        self._backup(tmp_path, hours_old=2)
+        r = doctor_mod.check_db_backups()
+        assert r["severity"] == "pass", r
+        assert "2.0h old" in r["detail"] and "KB" in r["detail"] and "verified ok" in r["detail"]
+
+    def test_backup_older_than_48h_warns(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        self._backup(tmp_path, hours_old=50)
+        assert doctor_mod.check_db_backups()["severity"] == "warning"
+
+    def test_failed_last_backup_warns_with_the_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        self._backup(tmp_path, hours_old=1, result="failed",
+                     verification="failed: integrity_check", error="database disk image is malformed")
+        r = doctor_mod.check_db_backups()
+        assert r["severity"] == "warning" and "malformed" in r["detail"]
+
+    @pytest.mark.parametrize("state", ("none", "failed", "ok"))
+    def test_doctor_json_reports_every_backup_state_and_degrades_only_on_failure(
+        self, tmp_path, monkeypatch, capsys, state
+    ):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        if state != "none":
+            self._backup(tmp_path, hours_old=1, **({"result": "failed", "error": "disk full"} if state == "failed" else {}))
+        monkeypatch.setattr(doctor_mod, "_CHECKS", [(44, "DB backups", doctor_mod.check_db_backups)])
+        monkeypatch.setattr(doctor_mod, "_derive_workspace", lambda override=None: tmp_path)
+
+        doctor_mod.cmd_doctor(argparse.Namespace(json=True, fix=False, workspace=None))
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["checks"][0]["name"] == "DB backups"
+        assert data["status"] == ("degraded" if state == "failed" else "healthy")
+
+
+def test_disabled_git_long_paths_is_counted_as_a_warning(tmp_path, monkeypatch, capsys):
+    import gaia.subprocess_text as subprocess_text
+
+    monkeypatch.setattr(subprocess_text, "long_paths_disabled", lambda: "core.longpaths is off")
+    assert doctor_mod.check_git_long_paths()["severity"] == "warning"
+
+    monkeypatch.setattr(doctor_mod, "_CHECKS", [(26, "Git long paths", doctor_mod.check_git_long_paths)])
+    monkeypatch.setattr(doctor_mod, "_derive_workspace", lambda override=None: tmp_path)
+    doctor_mod.cmd_doctor(argparse.Namespace(json=True, fix=False, workspace=None))
+    assert json.loads(capsys.readouterr().out)["status"] == "degraded"

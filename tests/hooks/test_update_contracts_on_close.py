@@ -1,17 +1,20 @@
-"""A turn's update_contracts is applied, or visibly refused, whatever state it closes in.
+"""A turn's update_contracts is announced as a proposal, or visibly refused, whatever state it closes in.
 
 Measured defect (handoff row 25793): a gaia-operator turn closed
 NEEDS_VERIFICATION with a project_identity proposal for project ``gaia`` of
 workspace ``me``. The proposal was merged, but into the workspace the hook
 process's cwd resolved to (``ws``), so ``gaia context project gaia`` in ``me``
 never showed it. Here the dispatch is born in ``me`` and the close runs where
-the cwd-derived workspace is ``ws``, which is exactly that split.
+the cwd-derived workspace is ``ws``, which is exactly that split. The close no
+longer writes at all: the orchestrator applies the proposal with
+``gaia context accept``, which routes each key to its owner.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -27,6 +30,7 @@ for _p in (_HOOKS_DIR, str(_REPO_ROOT)):
 
 from adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
 from gaia.store.writer import stamp_harness_agent_id  # noqa: E402
+from modules.agents.task_result_observer import build_contract_summary_line  # noqa: E402
 from modules.context import context_writer  # noqa: E402
 from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
@@ -51,7 +55,6 @@ def _isolated_substrate(tmp_path, monkeypatch):
     monkeypatch.delenv("GAIA_DISPATCH_WORKSPACE", raising=False)
     monkeypatch.delenv("GAIA_CONTRACT_FULL_VERDICT_GATE", raising=False)
     monkeypatch.setenv("GAIA_WORKSPACE", DISPATCH_WORKSPACE)
-    monkeypatch.setattr(context_writer, "_permissions_cache", {})
     yield
 
 
@@ -102,6 +105,8 @@ def _seed_project(db_path: Path, writer_agent: str) -> None:
 def _close_turn(
     db_path: Path, monkeypatch, agent: str, state: str,
     prompt: str = "declare the project's workflow",
+    payload: dict | None = None,
+    entries: list | None = None,
 ):
     """Birth, fill and finalize a turn carrying the 25793 proposal, then run
     SubagentStop from a cwd that resolves to another workspace."""
@@ -118,12 +123,14 @@ def _close_turn(
             "pending_steps": [],
             "next_action": "done",
         },
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": dict(
             {k: [] for k in _EVIDENCE_KEYS},
             verification={"method": "test", "result": "pass", "details": "ok"},
         ),
-        "update_contracts": [
-            {"contract": "project_identity", "payload": {PROJECT: {"workflow": WORKFLOW}}},
+        "update_contracts": entries or [
+            {"contract": "project_identity",
+             "payload": payload or {PROJECT: {"workflow": WORKFLOW}}},
         ],
     }
     contract_cli = str(_REPO_ROOT / "bin" / "cli" / "contract.py")
@@ -156,8 +163,28 @@ def _project_view(db_path: Path) -> dict:
     return json.loads(shown.stdout)
 
 
+def _dispatch_result_line() -> str:
+    """The line PostToolUse hands the orchestrator for the dispatch that just closed."""
+    line = build_contract_summary_line({"agentId": HARNESS_AGENT_ID}, session_id=SESSION_ID)
+    assert line, "the closed dispatch must resolve to a result line"
+    return line
+
+
+def _notice_contract_id(line: str | None = None) -> str:
+    line = line or _dispatch_result_line()
+    match = re.search(r"gaia context accept ([^\s`]+)", line)
+    assert match, f"the dispatch result must name the contract to apply: {line!r}"
+    return match.group(1)
+
+
+def _apply(contract_id: str, *extra: str):
+    return _cli([str(_REPO_ROOT / "bin" / "gaia"), "context", "accept", contract_id, *extra])
+
+
 @pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
-def test_update_contracts_lands_in_the_dispatch_workspace(db_path, monkeypatch, state):
+def test_a_specialist_close_writes_nothing_and_the_dispatch_result_announces_the_proposal(
+    db_path, monkeypatch, state,
+):
     agent = "gaia-operator"
     ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, agent, "sess-boot")
     _seed_project(db_path, agent)
@@ -165,10 +192,50 @@ def test_update_contracts_lands_in_the_dispatch_workspace(db_path, monkeypatch, 
     response = _close_turn(db_path, monkeypatch, agent, state)
 
     assert response.exit_code == 0, response.output
-    assert WORKFLOW in json.dumps(_project_view(db_path)), (
-        f"a {state} close must leave the proposed workflow visible in "
-        f"`gaia context project {PROJECT}` of workspace {DISPATCH_WORKSPACE}"
+    assert WORKFLOW not in json.dumps(_project_view(db_path)), (
+        f"a {state} close only proposes; the project's entry must be untouched"
     )
+    assert re.search(
+        r"1 project-context update proposed( for \S+)? — contract \S+; apply with `gaia context accept \S+`",
+        _dispatch_result_line(),
+    )
+    emitted = json.dumps(response.output)
+    assert "project-context update" not in emitted and "gaia context accept" not in emitted, (
+        "SubagentStop's systemMessage reaches the user, not the orchestrator; it carries no proposal notice"
+    )
+
+
+@pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
+def test_applying_the_announced_proposal_lands_it_in_the_dispatch_workspace(
+    db_path, monkeypatch, state,
+):
+    agent = "gaia-operator"
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, agent, "sess-boot")
+    _seed_project(db_path, agent)
+    _close_turn(db_path, monkeypatch, agent, state)
+    contract_id = _notice_contract_id()
+
+    applied = _apply(contract_id)
+
+    assert applied.returncode == 0, applied.stderr
+    assert WORKFLOW in json.dumps(_project_view(db_path)), (
+        f"`gaia context project {PROJECT}` of workspace {DISPATCH_WORKSPACE} must read the workflow back"
+    )
+
+
+@pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
+def test_any_specialist_may_propose_a_section_without_write_permission(db_path, monkeypatch, state):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
+    _seed_project(db_path, "gaia-operator")
+
+    response = _close_turn(db_path, monkeypatch, "gaia-planner", state)
+
+    assert not response.output.get("update_contracts_refused"), response.output
+    line = _dispatch_result_line()
+    assert "1 project-context update proposed" in line
+    applied = _apply(_notice_contract_id(line))
+    assert applied.returncode == 0, applied.stderr
+    assert WORKFLOW in json.dumps(_project_view(db_path))
 
 
 @pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
@@ -176,11 +243,66 @@ def test_a_refused_update_contracts_is_named_on_the_close(db_path, monkeypatch, 
     ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
     _seed_project(db_path, "gaia-operator")
 
-    response = _close_turn(db_path, monkeypatch, "gaia-planner", state)
-
-    assert WORKFLOW not in json.dumps(_project_view(db_path))
-    refused = response.output.get("update_contracts_refused") or []
-    assert any("project_identity" in message for message in refused), response.output
-    assert "project_identity" in (response.output.get("systemMessage") or ""), (
-        "an unapplied proposal must reach the orchestrator, not only the hook log"
+    response = _close_turn(
+        db_path, monkeypatch, "gaia-operator", state, payload={"no_such_project": {"name": "x"}},
     )
+
+    refused = response.output.get("update_contracts_refused") or []
+    assert any("no workspace owns no_such_project" in message for message in refused), response.output
+    assert "no_such_project" in _dispatch_result_line(), (
+        "an unrouted proposal must reach the orchestrator, not only the hook log"
+    )
+    assert "no_such_project" not in (response.output.get("systemMessage") or ""), (
+        "SubagentStop's systemMessage reaches the user, not the orchestrator"
+    )
+
+
+def test_a_refused_update_contracts_is_recorded_on_the_contract_row(db_path, monkeypatch):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
+    _seed_project(db_path, "gaia-operator")
+
+    _close_turn(
+        db_path, monkeypatch, "gaia-operator", "NEEDS_VERIFICATION",
+        payload={"no_such_project": {"name": "x"}},
+    )
+
+    shown = _cli([str(_REPO_ROOT / "bin" / "gaia"), "contract", "view",
+                  "--harness-id", HARNESS_AGENT_ID])
+    assert shown.returncode == 0, shown.stderr
+    refused = json.loads(shown.stdout)["envelope"].get("update_contracts_refused") or []
+    assert any("project_identity" in message for message in refused), (
+        "the row is what a later reader opens; a refusal only in the hook output is lost"
+    )
+
+
+@pytest.mark.parametrize("prompt", [
+    "record the cluster", "project=not-a-known-project record the cluster",
+])
+def test_a_section_whose_project_is_unresolved_stays_on_the_row_as_refused(db_path, monkeypatch, prompt):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
+    _seed_project(db_path, "gaia-operator")
+
+    _close_turn(
+        db_path, monkeypatch, "gaia-operator", "NEEDS_VERIFICATION", prompt=prompt,
+        entries=[{"contract": "cluster_details", "payload": {"gke": {"version": "1.30"}}}],
+    )
+
+    shown = _cli([str(_REPO_ROOT / "bin" / "gaia"), "contract", "view",
+                  "--harness-id", HARNESS_AGENT_ID])
+    assert shown.returncode == 0, shown.stderr
+    envelope = json.loads(shown.stdout)["envelope"]
+    refused = envelope.get("update_contracts_refused") or []
+    assert any("'cluster_details': the entry names no project" in m and "Repair:" in m
+               for m in refused), refused
+    assert envelope["update_contracts"][0]["contract"] == "cluster_details", "the proposal itself is kept"
+
+
+def test_a_malformed_update_contracts_entry_is_refused_not_dropped(db_path):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
+
+    result = context_writer.process_update_contracts(
+        {"update_contracts": [{"contract": "project_identity"}]},
+        {"agent": "gaia-operator", "db_path": db_path, "workspace": DISPATCH_WORKSPACE},
+    )
+
+    assert result["errors"], "an entry that cannot be applied must leave a reason"

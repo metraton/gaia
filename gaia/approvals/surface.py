@@ -147,7 +147,9 @@ def _one_line(text: str) -> str:
 
 
 def _target(item: Mapping[str, Any]) -> str:
-    return _one_line(item.get("command") or item.get("path") or "")
+    from gaia.redaction import mask_clear_secrets
+
+    return _one_line(mask_clear_secrets(item.get("command") or item.get("path") or ""))
 
 
 def _agent(payload: Mapping[str, Any]) -> str:

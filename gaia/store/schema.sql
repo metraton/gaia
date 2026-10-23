@@ -1207,6 +1207,79 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- signals (v68): one pointer row per curated change another session should
+-- hear about, read through a per-session cursor kept outside the database
+-- (gaia/signals.py). The triggers name the subject; the writing session is
+-- stamped by a TEMP trigger each writer connection installs
+-- (gaia/store/writer.py::_stamp_signals_with_session). The memory UPDATE
+-- trigger's column list must exclude the telemetry counters, as
+-- trg_memory_history's does, or every read would announce a change.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS signals (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    subject    TEXT NOT NULL,  -- 'user' | 'project:<initiative>'
+    source     TEXT NOT NULL,  -- table the change landed in
+    workspace  TEXT,
+    ref        TEXT,           -- the changed row's key within source
+    op         TEXT NOT NULL CHECK (op IN ('insert', 'update', 'delete')),
+    session_id TEXT            -- writing host session; NULL = unattributed writer
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_insert
+AFTER INSERT ON memory
+WHEN NEW.type = 'user' OR NEW.initiative IS NOT NULL
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE WHEN NEW.type = 'user' THEN 'user' ELSE 'project:' || NEW.initiative END,
+        'memory', NEW.workspace, NEW.name, 'insert'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_update
+AFTER UPDATE ON memory
+WHEN (NEW.type = 'user' OR NEW.initiative IS NOT NULL
+      OR OLD.type = 'user' OR OLD.initiative IS NOT NULL)
+ AND (OLD.name IS NOT NEW.name
+   OR OLD.body IS NOT NEW.body
+   OR OLD.type IS NOT NEW.type
+   OR OLD.description IS NOT NEW.description
+   OR OLD.status IS NOT NEW.status
+   OR OLD.class IS NOT NEW.class
+   OR OLD.project_ref IS NOT NEW.project_ref
+   OR OLD.initiative IS NOT NEW.initiative
+   OR OLD.deleted_at IS NOT NEW.deleted_at
+   OR OLD.audience IS NOT NEW.audience
+   OR OLD.measured_at IS NOT NEW.measured_at
+   OR OLD.method IS NOT NEW.method)
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE
+            WHEN NEW.type = 'user' THEN 'user'
+            WHEN NEW.initiative IS NOT NULL THEN 'project:' || NEW.initiative
+            WHEN OLD.type = 'user' THEN 'user'
+            ELSE 'project:' || OLD.initiative
+        END,
+        'memory', NEW.workspace, NEW.name,
+        CASE WHEN OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
+             THEN 'delete' ELSE 'update' END
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_delete
+AFTER DELETE ON memory
+WHEN OLD.deleted_at IS NULL AND (OLD.type = 'user' OR OLD.initiative IS NOT NULL)
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE WHEN OLD.type = 'user' THEN 'user' ELSE 'project:' || OLD.initiative END,
+        'memory', OLD.workspace, OLD.name, 'delete'
+    );
+END;
+
+-- ---------------------------------------------------------------------------
 -- project_context_contracts: project-context.json reconstructed as (workspace, contract) rows
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS project_context_contracts (
@@ -1681,6 +1754,60 @@ BEGIN
         strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
     );
 END;
+
+-- ---------------------------------------------------------------------------
+-- project_context: context sections keyed by the project they describe (v69).
+-- Replaces project_context_contracts, which readers keep as a per-section
+-- fallback until its rows are moved; history is written by the writer
+-- (gaia/store/project_context.py::write_section), inserts included.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS project_context (
+    project_identity TEXT NOT NULL,
+    contract_name    TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    metadata         TEXT,
+    updated_at       TEXT,
+    PRIMARY KEY (project_identity, contract_name)
+);
+
+CREATE TABLE IF NOT EXISTS project_context_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_identity    TEXT NOT NULL,
+    contract_name       TEXT NOT NULL,
+    before_payload_json TEXT,
+    after_payload_json  TEXT NOT NULL,
+    changed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    changed_by_agent    TEXT,
+    proposed_by         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_context_history_section
+    ON project_context_history(project_identity, contract_name);
+
+-- ---------------------------------------------------------------------------
+-- proposals: what a closed turn proposed for the orchestrator to decide (v70).
+-- One row per memory_delta proposal or update_contracts entry, recorded by
+-- every close lane (gaia/store/proposals.py::record_proposals); the decision
+-- stays here, joined to the proposing row through handoff_id.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS proposals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    handoff_id    INTEGER NOT NULL,
+    item_index    INTEGER NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('memory', 'context', 'thread')),
+    project       TEXT,
+    payload       TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'accepted', 'dismissed')),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at    TEXT,
+    decided_by    TEXT,
+    decision_note TEXT,
+    UNIQUE (handoff_id, kind, item_index),
+    FOREIGN KEY (handoff_id) REFERENCES agent_contract_handoffs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, id);
 
 -- ---------------------------------------------------------------------------
 -- approvals: durable approval lifecycle records (v12 / approval-model-redesign)

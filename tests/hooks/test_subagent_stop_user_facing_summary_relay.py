@@ -1,13 +1,4 @@
-"""``user_facing_summary`` is relayed from the row the gate treated as
-authoritative -- never from the fence, and never for a turn that did not close.
-
-``parse_user_facing_summary`` existed twice, was exported, and was covered by
-tests, but had NO production caller: the field a subagent wrote for the user
-was parsed by nothing and reached nobody. This wires it into
-``adapt_subagent_stop``, off the same ``_authoritative_envelope`` the contract
-gate and nonce preservation already read, and delivers it on ``systemMessage``
--- the one SubagentStop stdout channel that reaches the orchestrator without
-resuming the subagent whose turn is being closed.
+"""SubagentStop relays no ``user_facing_summary`` to the user's screen, from a row, a fence, or a rejected turn.
 
 These tests drive the REAL production entry point,
 ``ClaudeCodeAdapter.adapt_subagent_stop``, exactly as Claude Code drives it (a
@@ -146,28 +137,16 @@ def _fenced(envelope: dict) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# THE CENTRAL CASE: the summary lives on a cleanly finalized row and the final
-# message carries no fence at all -- the shape every turn takes once the fence
-# is retired as a delivery channel. Fails on the pre-wiring code, which parsed
-# the field nowhere and returned no such key.
-# ---------------------------------------------------------------------------
-
-def test_summary_on_finalized_row_is_relayed_with_no_fence(default_db):
+def test_summary_on_finalized_row_is_not_relayed(default_db):
     contract_id = _birth_row(default_db, contract_suffix="central")
     _finalize_row(default_db, contract_id, _envelope(summary=SUMMARY))
 
     output = _run(agent_output="")
 
-    assert output.get("user_facing_summary") == SUMMARY
-    assert SUMMARY in output.get("systemMessage", "")
+    assert output.get("contract_rejected") is not True, output
+    assert "systemMessage" not in output
+    assert SUMMARY not in json.dumps(output)
 
-
-# ---------------------------------------------------------------------------
-# Advisory in both directions: a turn that writes no summary closes exactly as
-# it did before -- no key, no message. If this fails, the relay has started
-# manufacturing user-facing text for turns that wrote none.
-# ---------------------------------------------------------------------------
 
 def test_row_without_summary_relays_nothing(default_db):
     contract_id = _birth_row(default_db, contract_suffix="absent")
@@ -188,22 +167,11 @@ def test_blank_summary_relays_nothing(default_db):
     assert "user_facing_summary" not in output
 
 
-# ---------------------------------------------------------------------------
-# The row is the source, not the text. A summary that exists ONLY in a fence,
-# with no reachable row, is not relayed -- the same inversion the gate and
-# nonce preservation already made.
-# ---------------------------------------------------------------------------
-
 def test_fence_only_summary_is_not_relayed(default_db):
     output = _run(agent_output=_fenced(_envelope(summary=SUMMARY)))
 
     assert "user_facing_summary" not in output
 
-
-# ---------------------------------------------------------------------------
-# A turn the gate REJECTS is being sent back for repair, not closed. Relaying
-# its summary would hand the user a report of work that did not close.
-# ---------------------------------------------------------------------------
 
 def test_rejected_turn_does_not_relay_its_summary(default_db):
     contract_id = _birth_row(default_db, contract_suffix="rejected")

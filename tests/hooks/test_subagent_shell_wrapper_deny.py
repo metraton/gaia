@@ -132,7 +132,7 @@ SHELL_STRING_SPELLINGS = [
     "bash -o pipefail -c 'echo hello'",
     "FOO=1 bash -c 'echo hello'",
     "timeout 10 bash -c 'echo hello'",
-    "env -i FOO=1 bash -c 'echo hello'",
+    "env -0 FOO=1 bash -c 'echo hello'",
     "sudo -u root bash -c 'echo hello'",
     "nice -n 5 sh -c 'echo hello'",
     "/usr/local/bin/bash -lc 'echo hello'",

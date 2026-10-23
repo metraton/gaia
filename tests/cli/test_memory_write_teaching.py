@@ -124,8 +124,8 @@ def test_adding_over_an_existing_name_with_another_body_warns_of_an_in_place_rew
     assert "--kind=supersedes" in message
 
 
-def test_a_user_preference_is_asked_whether_it_would_hold_if_gaia_worked_perfectly(gaia):
-    """The perfect-Gaia question follows a user preference and not a user fact."""
+def test_a_user_preference_is_asked_whether_it_is_his_difference(gaia):
+    """The difference question follows a user preference and not a user fact."""
     preference = _add(
         gaia, "--name", "user_pref_x", "--type", "user",
         "--description", "Preference: short answers.", "--body", "Prefers short answers.",
@@ -142,6 +142,26 @@ def test_a_user_preference_is_asked_whether_it_would_hold_if_gaia_worked_perfect
     assert "preference_or_bug" in preference
     assert "preference_or_bug" not in fact
     assert "preference_or_bug" in spanish_era
+
+
+def test_the_difference_question_routes_a_universal_rule_to_the_harness_and_keeps_walls_out(gaia):
+    """What any user would want goes to gaia_system, a bend needs his agreement, and a wall is never stored."""
+    result = gaia(
+        "memory", "add", "--name", "user_pref_msg", "--type", "user",
+        "--description", "Preference: short answers.", "--body", "Prefers short answers.",
+        "--json",
+    )
+    message = next(
+        w["message"] for w in json.loads(result.stdout)["warnings"]
+        if w["code"] == "preference_or_bug"
+    )
+
+    assert "his difference from what Gaia does for anyone" in message
+    assert "any user would want" in message
+    assert "--type=feedback --initiative=gaia_system" in message
+    assert "agreed" in message
+    assert "consent, security or the contract" in message
+    assert "worked perfectly" not in message
 
 
 def test_a_preference_that_mentions_a_hook_gets_no_extra_warning(gaia):

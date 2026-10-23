@@ -266,7 +266,7 @@ def test_doctor_fix_denial_explains_why_and_keeps_the_verb(run_guard) -> None:
         "doctor --json=--fix",
         # Not an abbreviation of anything forbidden.
         "doctor --workspace /tmp/ws",
-        "doctor --fixture",
+        "doctor --json",
     ],
 )
 def test_flag_scan_does_not_false_positive_on_lookalikes(run_guard, argline) -> None:
@@ -274,24 +274,21 @@ def test_flag_scan_does_not_false_positive_on_lookalikes(run_guard, argline) -> 
     assert allowed is True, reason
 
 
-def test_single_dash_fix_is_left_to_argparse(run_guard) -> None:
-    """`-fix` is not an argparse abbreviation of `--fix`, so it is not matched.
-
-    argparse resolves a single-dash token against options starting with that
-    token, and no long option starts with a single dash -- `gaia doctor -fix`
-    exits 2 as an unrecognized argument and never runs. Documented rather
-    than silently relied upon: if a short `-f` is ever added to doctor, this
-    test is where the assumption breaks.
-    """
+def test_single_dash_fix_is_refused_as_an_unknown_flag(run_guard) -> None:
+    """`-fix` is no abbreviation of `--fix` and argparse rejects it, but the
+    lane no longer leans on that: a flag outside the verb's known-safe set is
+    refused whatever argparse would do with it."""
     allowed, _reason = run_guard("doctor -fix")
-    assert allowed is True
+    assert allowed is False
 
 
 def test_forbidden_flag_table_is_scoped_to_the_verb_that_needs_it(run_guard) -> None:
     assert set(_READ_PHRASE_FORBIDDEN_FLAGS) == {("doctor",)}
-    # The same flag name on another admitted verb is not collateral damage.
-    allowed, _reason = run_guard("status --fix")
-    assert allowed is True
+    # `status` has no --fix: it is refused as unknown to `status`, not through
+    # the doctor-only forbidden table.
+    allowed, reason = run_guard("status --fix")
+    assert allowed is False
+    assert "known-safe" in reason
 
 
 # ---------------------------------------------------------------------------

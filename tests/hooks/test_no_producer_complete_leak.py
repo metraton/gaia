@@ -91,6 +91,7 @@ def _complete_envelope(agent_id: str = AGENT_ID) -> dict:
         "evidence_report": _evidence(),
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
     env["evidence_report"]["verification"] = {
         "method": "test", "result": "pass", "details": "suite green",
@@ -273,6 +274,7 @@ def _build_complete_draft_at(env: dict, draft_id: str) -> None:
     })
     assert _run_cli(["fill", "--draft-id", draft_id, "--json", patch], env).returncode == 0
     assert _run_cli(["set", "--draft-id", draft_id, "agent_status.next_action", "done"], env).returncode == 0
+    assert _run_cli(["set", "--draft-id", draft_id, "user_facing_summary", "Work recorded."], env).returncode == 0
     assert _run_cli(["set", "--draft-id", draft_id, "agent_status.agent_state", "COMPLETE"], env).returncode == 0
 
 

@@ -387,10 +387,8 @@ class OpenCodeAdapter(HookAdapter):
         The plugin forwards ``chat.message`` once per session it or the host
         records as parentless, so every call here is a start or a resume, and
         again with ``source: compact`` on the first message after that
-        session's compaction, which gets back Claude Code's SessionStart(compact)
-        refresh: the Environment block and that session's snapshot, whole. The
-        bridge runs from the session's workspace directory, which is the
-        directory Claude Code's start sweeps too.
+        session's compaction. The bridge runs from the session's workspace
+        directory, which is the directory Claude Code's start sweeps too.
         """
         from modules.session import session_lifecycle
         from modules.session.session_lifecycle import SessionStart, start_context
@@ -1115,6 +1113,7 @@ class OpenCodeAdapter(HookAdapter):
                 "session_id": event.session_id,
                 "tool_use_id": event.call_id or "",
                 "agent_id": event.host_agent_id or "",
+                "harness_agent_id": event.session_id if event.host_agent_id else "",
                 "agent_type": self._policy_agent_type(event),
                 "role_context": self._forward_role_context(event),
             }
@@ -1497,12 +1496,9 @@ class OpenCodeAdapter(HookAdapter):
 
         The skills block stands in for the preload OpenCode does not perform.
         """
-        from modules.context.kernel_builder import build_kernel_context, build_skills_block
+        from modules.context.kernel_builder import build_kernel_context
 
-        kernel = build_kernel_context(row, agent_name=agent_name)
-        if not kernel:
-            return None
-        return "\n\n".join(block for block in (kernel, build_skills_block(agent_name)) if block)
+        return build_kernel_context(row, agent_name=agent_name, with_skills=True)
 
     @classmethod
     def _bound_child_kernel(cls, session_id: str, agent_name: str) -> str | None:

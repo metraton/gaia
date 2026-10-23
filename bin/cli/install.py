@@ -1458,9 +1458,19 @@ INSTALL_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 def install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str = "gaia install") -> int:
-    """Run `_install_channels` holding the install lock beside the database, so concurrent runs never interleave."""
+    """Run `_install_channels` holding the install lock beside the database, so concurrent runs never interleave.
+
+    A workspace folder that does not exist is refused before anything is
+    written, unless the run skips the workspace or is the fail-soft postinstall.
+    """
     from modules.core.filelock import LockTimeout, exclusive_file_lock  # type: ignore
 
+    workspace = _install_workspace(args)
+    exempt = getattr(args, "skip_workspace", False) or getattr(args, "postinstall", False)
+    if not exempt and not workspace.is_dir():
+        print(f"{command}: refused, workspace folder {workspace} does not exist; nothing changed",
+              file=sys.stderr)
+        return 1
     lock_path = Path(_install_db_path(getattr(args, "db_path", None))).parent / INSTALL_LOCK_NAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -1547,7 +1557,7 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
     if not workspace.exists():
         if not quiet:
             print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
-        return 0
+        return 1 if strict_wiring else 0
 
     opt_path = opt_path or _legacy_launcher(workspace)
     outside = _launcher_manifest_paths() if opt_path else []

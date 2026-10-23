@@ -32,6 +32,8 @@ PLUGIN_NAMESPACE = "gaia"
 
 DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
 
+HOST_SESSION_ENVS = ("GAIA_HOST_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID")
+
 
 def canonical_agent_name(name: object) -> str:
     """Return *name* without Gaia's plugin namespace; any other string is returned as is.
@@ -51,6 +53,11 @@ def canonical_agent_name(name: object) -> str:
 def dispatch_agent_from_env() -> str:
     """Return the canonical dispatched-agent name, or "" for a human CLI caller."""
     return canonical_agent_name(os.environ.get(DISPATCH_AGENT_ENV))
+
+
+def host_session_from_env() -> str:
+    """Return the host session id this process runs under, or "" outside a host."""
+    return next((os.environ[name] for name in HOST_SESSION_ENVS if os.environ.get(name)), "")
 
 
 def _frontmatter_name(agent_file: Path) -> str | None:

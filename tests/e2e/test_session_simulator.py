@@ -538,6 +538,7 @@ def _close_dispatched_row(
     # (a terminal agent_state set before its dependency fields are filled
     # triggers a cross-field defect on that same write).
     patch = json.dumps({
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": {
             "verification": {"method": "e2e-simulator", "result": "pass", "details": "ok"},
         },
@@ -584,6 +585,7 @@ def _open_and_close_own_contract(
     draft_id = json.loads(init_out)["draft_id"]
 
     patch = json.dumps({
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": {
             "verification": {"method": "e2e-simulator", "result": "pass", "details": "ok"},
         },

@@ -76,16 +76,13 @@ def _scan(db: Path, tmp_path: Path, name: str, *, remote: str) -> None:
 def _slug_of(db: Path, name: str) -> str:
     from gaia.store.writer import _connect
 
+    from gaia.store.project_context import workspace_sections
+
     con = _connect(db)
     try:
-        row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = 'project_identity'",
-            (WORKSPACE,),
-        ).fetchone()
+        entries = workspace_sections(con, WORKSPACE)["project_identity"]["payload"]
     finally:
         con.close()
-    entries = json.loads(row[0])
     return next(slug for slug, entry in entries.items() if entry.get("name") == name)
 
 
@@ -128,15 +125,21 @@ def test_only_the_project_that_declared_its_workflow_carries_it_and_a_rescan_kee
     assert not any(value in line for line in beta for value in DECLARED.values())
 
 
-def test_a_workflow_declared_before_the_first_scan_reaches_the_kernel(db, tmp_path):
+def test_a_workflow_declared_before_the_first_scan_is_refused_then_reaches_the_kernel(db, tmp_path):
+    """A project the substrate does not know has no coordinate to store under yet."""
+    early = apply_update(
+        {"contract": "project_identity", "payload": {"alpha": {"workflow": DECLARED}}},
+        "gaia-operator", workspace=WORKSPACE, db_path=db,
+    )
+    assert not early["success"] and "no workspace owns alpha" in early["error"], early
+
+    _scan(db, tmp_path, "alpha", remote="git@github.com:acme/alpha.git")
+    _scan(db, tmp_path, "beta", remote="git@github.com:acme/beta.git")
     declared = apply_update(
         {"contract": "project_identity", "payload": {"alpha": {"workflow": DECLARED}}},
         "gaia-operator", workspace=WORKSPACE, db_path=db,
     )
     assert declared["success"], declared
-
-    _scan(db, tmp_path, "alpha", remote="git@github.com:acme/alpha.git")
-    _scan(db, tmp_path, "beta", remote="git@github.com:acme/beta.git")
 
     alpha = _contract_lines(db, "alpha")
     project_at = next(i for i, line in enumerate(alpha) if line.startswith("project: alpha"))

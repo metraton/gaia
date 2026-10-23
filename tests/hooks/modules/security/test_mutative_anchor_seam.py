@@ -229,6 +229,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             "gh",
             "git",
             "terraform",
+            "tofu",
             "terragrunt",
         }
 
@@ -237,6 +238,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         assert paths == {
             ("dev",),
             ("context", "prune-workspaces"),
+            ("context", "relocate"),
             ("scan",),
             ("release", "check"),
             ("workspace", "retire"),
@@ -262,6 +264,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         assert paths == {
             ("sql", "users", "set-password"),
             ("secrets", "versions", "add"),
+            ("auth", "login"),
         }
 
     def test_configuration_write_paths_are_the_reviewed_ones(self):
@@ -323,10 +326,18 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("git", "remote", "add"),
             ("terraform", "init"),
             ("terragrunt", "init"),
+            ("terraform", "fmt"),
+            ("terragrunt", "fmt"),
+            ("terragrunt", "hclfmt"),
+            ("terragrunt", "hcl", "fmt"),
         }
 
     def test_only_the_reviewed_shipped_anchors_carry_a_flag_condition(self):
-        """The flag half of the seam has five shipped users.
+        """The flag half of the seam has six shipped users.
+
+        ``gcloud auth login --update-adc`` rewrites the application default
+        credentials, and ``--flags-file`` can turn that or activation back on,
+        so both are gated even when ``--no-activate`` frees the login.
 
         ``kubectl run`` -- a bare invocation names no form that actually
         starts a workload, so the condition is carried by the flag that does:
@@ -353,6 +364,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("terragrunt", "init"): state_flags,
             ("gaia", "memory", "add"): frozenset({"--replace"}),
             ("gaia", "memory", "link"): frozenset({"--delete"}),
+            ("gcloud", "auth", "login"): frozenset({"--update-adc", "--flags-file"}),
         }
 
 

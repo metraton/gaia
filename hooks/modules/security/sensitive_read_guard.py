@@ -7,8 +7,9 @@ a transcript. Writes are not decided here -- an account-path write keeps its
 signature route (``mutative_verbs`` for Bash, ``tool_policy`` for Write/Edit).
 
 A read is recognized by the command that performs it: a Bash component whose
-base command is a known reader or lister and that names a sensitive path, or a
-Read/Glob/Grep/list call whose path or pattern reaches one. What the guard
+base command is a known reader or lister and that names a sensitive path, a
+publishing command whose body file is one, or a Read/Glob/Grep/list call whose
+path or pattern reaches one. What the guard
 cannot see is stated rather than claimed: a program that opens the file itself
 (``python3 script.py``, ``source .env``, ``git show HEAD:.env``), a copy made
 first and read later, and a recursive search started above a sensitive
@@ -17,12 +18,14 @@ directory (``grep -r x ~``, Grep over the home directory).
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import Any, List, Mapping, Optional, Tuple
 
 from .composition_rules import _strip_transparent_prefixes
 from .sensitive_paths import (
+    holds_credentials,
     first_sensitive_token,
     glob_selects_sensitive_name,
     pattern_reaches_sensitive_path,
@@ -30,6 +33,7 @@ from .sensitive_paths import (
     sensitive_read_denial,
 )
 from .canonical_path import command_name
+from .publish_attribution_guard import publishing_body_files
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
 
@@ -49,6 +53,38 @@ _LISTER_COMMANDS = frozenset({
     "get-childitem", "gci",
 })
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# A program named by an expansion is unknown until the shell runs it.
+_UNDETERMINED_PROGRAM_MARKS = ("$", "`")
+# HTTP clients send a file they name (upload, form, body). These flags' values are
+# never sent: a credential handed to TLS or auth, or a file the client writes.
+_UPLOADERS = frozenset({"curl", "wget", "http", "https", "xh"})
+_UPLOADER_WRITE_FLAGS = frozenset({
+    "-o", "--output", "-O", "--output-document", "-c", "--cookie-jar", "-D", "--dump-header",
+    "--trace", "--trace-ascii", "--stderr", "--etag-save", "--libcurl",
+    "--output-file", "-a", "--append-output", "--save-cookies",
+})
+_UPLOADER_UNSENT_FLAGS = _UPLOADER_WRITE_FLAGS | {
+    "--cacert", "--capath", "--cert", "-E", "--key", "--crlfile", "--pinnedpubkey",
+    "--proxy-cacert", "--proxy-cert", "--proxy-key", "--netrc-file",
+    "--ca-certificate", "--certificate", "--private-key", "--verify", "--cert-key",
+    "--output-dir", "-P", "--directory-prefix",
+}
+_SHORT_FLAG_WITH_VALUE = re.compile(r"^-[A-Za-z].")
+# Copy and transfer tools read every operand but the destination; each lists the
+# flags whose next word is a value (an identity file is used, not copied).
+_SSH_COPY_VALUE_FLAGS = frozenset({"-c", "-F", "-i", "-J", "-l", "-o", "-P", "-S", "-D", "-X", "-b", "-B", "-R"})
+_COPIERS = {
+    "cp": frozenset({"-S", "--suffix"}),
+    "mv": frozenset({"-S", "--suffix"}),
+    "install": frozenset({"-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"}),
+    "scp": _SSH_COPY_VALUE_FLAGS,
+    "sftp": _SSH_COPY_VALUE_FLAGS,
+    "rsync": frozenset({"-e", "--rsh", "-f", "--filter", "--exclude", "--include", "-T", "--temp-dir",
+                        "-B", "--block-size", "--password-file", "--log-file", "--port", "-M"}),
+}
+_COPY_TARGET_FLAGS = frozenset({"-t", "--target-directory"})
+_TAR_VALUE_LETTERS = frozenset("fCbHKNVgX")
+_TAR_CREATE_LETTERS = frozenset("cru")
 # Windows shells and the flag after which the rest of the command line is the
 # command they run.
 _WINDOWS_SHELL_INLINE_FLAGS = {
@@ -65,6 +101,9 @@ _FIND_PATTERN_FLAGS = frozenset({
     "-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex",
 })
 
+_INPUT_REDIRECTS = frozenset({"<", "<>"})
+_OTHER_REDIRECTS = frozenset({">", ">>", ">|", ">&", "&>", "&>>", "<<", "<<<", "<<-"})
+
 _OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
 
@@ -75,11 +114,159 @@ def _tokenize(component: str) -> List[str]:
         return component.split()
 
 
+def _split_redirects(component: str) -> Tuple[List[str], List[str]]:
+    """The words of *component* without its redirections, and the files it reads through ``<``."""
+    lexer = shlex.shlex(component, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return _tokenize(component), []
+    words: List[str] = []
+    inputs: List[str] = []
+    remaining = iter(tokens)
+    for token in remaining:
+        if token in _INPUT_REDIRECTS:
+            inputs.append(next(remaining, ""))
+        elif token in _OTHER_REDIRECTS:
+            next(remaining, None)
+        else:
+            words.append(token)
+    return words, inputs
+
+
+def _sent_arguments(arguments: List[str]) -> List[str]:
+    """The arguments of an HTTP client that may name a file it sends, attached short values split off."""
+    sent: List[str] = []
+    remaining = iter(arguments)
+    for arg in remaining:
+        flag = arg.split("=", 1)[0]
+        if flag in _UPLOADER_UNSENT_FLAGS:
+            if "=" not in arg:
+                next(remaining, None)
+        elif _SHORT_FLAG_WITH_VALUE.match(arg):
+            if arg[:2] not in _UPLOADER_UNSENT_FLAGS:
+                sent.append(arg[2:])
+        else:
+            sent.append(arg)
+    return sent
+
+
+def remote_copy_destination(command: str) -> str:
+    """The scp or rsync component of *command* whose destination is another host, or ""."""
+    for component in _OPERATOR_SPLIT.split(command):
+        tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
+        if not tokens or command_name(tokens[0]) not in ("scp", "rsync"):
+            continue
+        operands, _ = _copy_operands(command_name(tokens[0]), tokens[1:])
+        if len(operands) >= 2 and not _is_local_operand(operands[-1]):
+            return component.strip()
+    return ""
+
+
+def _is_local_operand(operand: str) -> bool:
+    """True for a plain local path; every other spelling (host:, [v6]:, scheme://) names another host."""
+    head = operand.split(":", 1)[0]
+    return ":" not in operand or "/" in head
+
+
+def copy_written_paths(command: str) -> List[str]:
+    """The local destinations the copy and transfer tools in *command* write."""
+    written: List[str] = []
+    for component in _OPERATOR_SPLIT.split(command):
+        tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
+        base = command_name(tokens[0]) if tokens else ""
+        if base not in _COPIERS or base == "sftp":
+            continue
+        operands, target_given = _copy_operands(base, tokens[1:])
+        if len(operands) >= 2 and not target_given and _is_local_operand(operands[-1]):
+            written.append(operands[-1])
+    return written
+
+
+def _first_copied_secret(sources: List[str], cwd: Optional[str]) -> str:
+    """The first source that is a secret, or a directory whose whole copy would carry one."""
+    return first_sensitive_token(sources, cwd) or next((s for s in sources if holds_credentials(s)), "")
+
+
+def _tar_sources(arguments: List[str]) -> List[str]:
+    """The files a tar that creates or appends to an archive reads; none for other modes."""
+    creating = False
+    sources: List[str] = []
+    remaining = iter(arguments)
+    for index, arg in enumerate(remaining):
+        if arg in ("--create", "--append", "--update"):
+            creating = True
+        elif arg.startswith("--"):
+            if "=" not in arg and arg in ("--file", "--directory", "--files-from", "--exclude-from"):
+                next(remaining, None)
+        elif arg.startswith("-") or index == 0:
+            letters = arg.lstrip("-")
+            creating = creating or bool(_TAR_CREATE_LETTERS.intersection(letters))
+            for _ in range(sum(letter in _TAR_VALUE_LETTERS for letter in letters)):
+                next(remaining, None)
+        else:
+            sources.append(arg)
+    return sources if creating else []
+
+
+def _copied_sources(base: str, arguments: List[str]) -> List[str]:
+    """The operands a copy or transfer tool reads: every one but the destination."""
+    operands, target_given = _copy_operands(base, arguments)
+    if base == "sftp" or target_given or len(operands) < 2:
+        return operands
+    return operands[:-1]
+
+
+def _copy_operands(base: str, arguments: List[str]) -> Tuple[List[str], bool]:
+    """The operands of a copy or transfer tool, and whether a target-directory flag named its destination."""
+    value_flags = _COPIERS[base]
+    operands: List[str] = []
+    target_given = False
+    remaining = iter(arguments)
+    for arg in remaining:
+        if arg.split("=", 1)[0] in _COPY_TARGET_FLAGS:
+            target_given = True
+            if "=" not in arg:
+                next(remaining, None)
+        elif arg.startswith("-"):
+            if arg in value_flags:
+                next(remaining, None)
+        else:
+            operands.append(arg)
+    return operands, target_given
+
+
+def http_client_written_paths(command: str) -> List[str]:
+    """The files the HTTP clients in *command* write through their output flags."""
+    written: List[str] = []
+    for component in _OPERATOR_SPLIT.split(command):
+        tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
+        if not tokens or command_name(tokens[0]) not in _UPLOADERS:
+            continue
+        for index, arg in enumerate(tokens[1:], start=2):
+            flag, _, value = arg.partition("=")
+            if flag in _UPLOADER_WRITE_FLAGS:
+                written.append(value or (tokens[index] if index < len(tokens) else ""))
+            elif _SHORT_FLAG_WITH_VALUE.match(arg) and arg[:2] in _UPLOADER_WRITE_FLAGS:
+                written.append(arg[2:])
+    return [path for path in written if path]
+
+
 def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     """The sensitive path a single command component reads or lists, or ""."""
-    tokens = _strip_transparent_prefixes(_tokenize(strip_grouping_wrappers(component)))
+    words, inputs = _split_redirects(strip_grouping_wrappers(component))
+    fed = first_sensitive_token(inputs, cwd)
+    if fed:
+        return fed
+    if component.lstrip().startswith(_UNDETERMINED_PROGRAM_MARKS):
+        return first_sensitive_token(words, cwd)
+    tokens = _strip_transparent_prefixes(words)
     if not tokens:
         return ""
+    published = first_sensitive_token(publishing_body_files(words, cwd or os.getcwd()) or [], cwd)
+    if published:
+        return published
     base = command_name(tokens[0])
     arguments = tokens[1:]
     if base in _SHELLS and "-c" in arguments:
@@ -91,6 +278,14 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     )
     if flag_index is not None:
         return reads_sensitive_path(" ".join(arguments[flag_index + 1:]), cwd)
+    if tokens[0].startswith(_UNDETERMINED_PROGRAM_MARKS):
+        return first_sensitive_token(arguments, cwd)
+    if base in _UPLOADERS:
+        return first_sensitive_token(_sent_arguments(arguments), cwd)
+    if base == "tar":
+        return _first_copied_secret(_tar_sources(arguments), cwd)
+    if base in _COPIERS:
+        return _first_copied_secret(_copied_sources(base, arguments), cwd)
     if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
         return ""
     if base == "sed" and any(_SED_IN_PLACE.match(arg) for arg in arguments):
@@ -129,7 +324,7 @@ def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]
     hit = reads_sensitive_path(command, cwd)
     if not hit:
         return True, None
-    return False, sensitive_read_denial(hit, sensitive_path_label(hit, cwd))
+    return False, sensitive_read_denial(hit, sensitive_path_label(hit, cwd) or "directory holding credentials")
 
 
 def check_file_tool(

@@ -65,16 +65,17 @@ def _get_effective_threshold() -> int:
 def _query_max_updated_at(db_path: Path, workspace: str) -> Optional[str]:
     """Return MAX(updated_at) ISO string for the workspace, or None if no rows."""
     try:
+        from gaia.store.project_context import workspace_sections
+
         con = sqlite3.connect(str(db_path))
-        row = con.execute(
-            "SELECT MAX(updated_at) FROM project_context_contracts WHERE workspace = ?",
-            (workspace,),
-        ).fetchone()
-        con.close()
+        try:
+            stamps = [s["updated_at"] for s in workspace_sections(con, workspace).values()]
+        finally:
+            con.close()
     except sqlite3.Error as exc:
         logger.warning("DB error querying freshness for '%s': %s", workspace, exc)
         return None
-    return row[0] if row and row[0] else None
+    return max(filter(None, stamps), default=None)
 
 
 def check_freshness(project_root: Path = None) -> FreshnessResult:

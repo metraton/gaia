@@ -241,7 +241,14 @@ def test_show_names_what_a_new_request_sealed_and_an_old_one_did_not(rows_db):
 def test_list_and_pending_name_orphaned_and_expired_requests(rows_db):
     from bin.cli.approvals import cmd_list, cmd_pending
 
-    listed = json.loads(_run(cmd_list, json=True, session=None, orphans_only=False))
+    default = json.loads(_run(cmd_list, json=True, session=LIVE_SESSION, orphans_only=False))
+    assert {item["approval_id"]: item["state"] for item in default["pending"]} == {NEW_PENDING: "pending"}
+    assert {item["approval_id"] for item in default["grants"]} == {NEW_NO_RESULT, NEW_EXECUTED}
+
+    listed = json.loads(_run(
+        cmd_list, json=True, session=LIVE_SESSION, orphans_only=False,
+        all_sessions=True, include_stale=True,
+    ))
     states = {item["approval_id"]: item["state"] for item in listed["pending"]}
     assert states == {
         OLD_ORPHAN: "orphaned", OLD_PAST_TTL: "expired",
@@ -250,11 +257,23 @@ def test_list_and_pending_name_orphaned_and_expired_requests(rows_db):
     outcomes = {item["approval_id"]: item["outcome"] for item in listed["grants"]}
     assert outcomes[NEW_NO_RESULT] == "no_result"
     assert outcomes[OLD_STOP_FAILED] == "legacy_failed"
-    assert "orphaned" in _run(cmd_list, json=False, session=None, orphans_only=False)
+    assert "orphaned" in _run(
+        cmd_list, json=False, session=LIVE_SESSION, orphans_only=False,
+        all_sessions=True, include_stale=True,
+    )
 
-    pending = json.loads(_run(cmd_pending, json=True, all_sessions=True, session=None))
+    live_only = json.loads(_run(cmd_pending, json=True, session=LIVE_SESSION))
+    assert {row["id"]: row["state"] for row in live_only} == {NEW_PENDING: "pending"}
+    assert "1 live here; 0 in other sessions, 3 stale/orphaned" in _run(
+        cmd_pending, json=False, session=LIVE_SESSION)
+
+    pending = json.loads(_run(
+        cmd_pending, json=True, session=LIVE_SESSION, all_sessions=True, include_stale=True,
+    ))
     assert {row["id"]: row["state"] for row in pending}[OLD_ORPHAN] == "orphaned"
-    assert "orphaned" in _run(cmd_pending, json=False, all_sessions=True, session=None)
+    assert "orphaned" in _run(
+        cmd_pending, json=False, session=LIVE_SESSION, all_sessions=True, include_stale=True,
+    )
 
 
 def test_list_orphans_only_keeps_exactly_the_rows_read_orphaned(rows_db):

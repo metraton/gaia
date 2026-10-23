@@ -97,6 +97,7 @@ def _partial_envelope(*, files=(), key_outputs=()) -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
         "failure_report": None,
     }
 
@@ -519,6 +520,7 @@ def test_contract_incremental_fill_then_finalize_converges_one_row(cli_env):
         ["fill", "--draft-id", cid, "--json",
          json.dumps({
              "agent_status": {"pending_steps": [], "next_action": "done"},
+             "user_facing_summary": "Work recorded for the test.",
              "evidence_report": {
                  "verification": {
                      "method": "test", "result": "pass", "details": "mirror",

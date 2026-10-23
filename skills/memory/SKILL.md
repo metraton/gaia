@@ -9,6 +9,28 @@ Memory is the curation technique that turns selected experience into continuity:
 durable knowledge kept small, live work kept visible, and raw operational
 history left on the automatic event floors where it belongs.
 
+## What memory is for
+
+Gaia's harness -- its identity, skills, hooks, CLI and the Environment every
+session is born with -- is what Gaia does for anyone. Memory holds only the
+difference this user, or one of his projects, makes to it. That one idea
+decides both whether something is kept and how it is written:
+
+- **What Gaia already knows is no difference.** Kept again, it is a second
+  source that goes stale.
+- **What would hold for any user is no difference either.** It is a missing
+  standard or a defect, fixed in the harness and never patched into his rows.
+- **A difference lives only where the harness leaves a choice.** A default
+  bends to him once he has agreed to the bend. A wall never does -- consent,
+  security, the contract every agent closes -- because a wall memory could move
+  would not be a wall. Signing every PR as JLA is a difference; accepting every
+  destroy is nothing memory can hold.
+- **Whose difference it is decides its home,** so he never has to name one.
+- **A row carries the difference alone,** never the context Gaia already has,
+  which is what keeps it short.
+- **A decision goes to its home when it is made;** the conversation is only a
+  cache of it (orchestrator identity, principle 7).
+
 ## The three floors
 
 | Floor | Purpose | Lifecycle |
@@ -21,7 +43,7 @@ Events and episodes are evidence, not durable truth.
 
 ## Every row answers three questions
 
-- **Whose it is.** The user (true of him in any project, so it has no
+- **Whose it is.** The user (his difference in any project, so it has no
   workspace), a project (true of that codebase or initiative), or Gaia itself (a
   symptom of, or a decision about, the host). A row is written where its owner's
   readers look. A workspace is a container, not an owner: a row that names only
@@ -44,9 +66,11 @@ refused); a decision to build or change Gaia is project-scoped
 
 ## Other home first
 
-Before saving, ask: **does this already have a canonical home?** Work in flight
-belongs in a brief, plan, or task; domain state in project context or the owning
-system; raw execution detail in events, episodes, or the transcript.
+Before saving, ask: **does this already have a canonical home?** The harness is
+the first one: what an agent's identity, a skill, a hook, the CLI's help or the
+Environment block already carries is no difference, so it gets no row. Work in
+flight belongs in a brief, plan, or task; domain state in project context or the
+owning system; raw execution detail in events, episodes, or the transcript.
 
 Do not copy a fact into memory merely because it matters. A second source of
 truth becomes stale; a durable reference to the canonical object is enough.
@@ -54,11 +78,11 @@ That reference is soft: the row names the brief, plan or task in its text, and
 nothing links the two. No reader walks such a link, so it would cost a write
 and add nothing; the name in the text is what a later search finds.
 
-What remains for memory is placed by three questions, asked in order, because
-the answer decides who will ever read it:
+What remains for memory is placed by whose difference it is, which also decides
+who will ever read it. Three questions, asked in order:
 
-- **Would it still hold in a project the user has never touched?** Then it is
-  the user's, with no project, and it reaches every session and every agent.
+- **Is it his difference in any project, one another user would not share?**
+  Then it is his, with no project, and it reaches every session he opens.
 - **Is it a short, fixed value an agent working one project must obey without
   reading anything else** -- how that project integrates, where it releases?
   Then it is a declared fact of that project, not memory: the `workflow` key of
@@ -73,26 +97,82 @@ A rule the user sets for one project splits along those lines: the habit
 integrates straight to main") belongs to the project. Filed as a user row, the
 value follows him into every other project and contradicts the next one.
 
-Then ask of any rule for how Gaia should behave: **would it still make sense if
-Gaia worked perfectly?** If not, it is not knowledge about anyone -- it is a
-defect, filed under `gaia_system` where anyone can list and fix it. Saved as a
-user preference instead, the user carries the patch forever and nobody sees the
-bug. What the user wants meanwhile is a preference that names the bug it covers
-and retires the day that bug closes. Behaviour belongs to the harness; memory
-holds what is true.
+Ask of any rule for how Gaia should behave: **would it hold for any user?** Then
+it is not his difference: it is a missing standard or a defect, filed under
+`gaia_system` where anyone can list and fix it. Saved as his preference instead,
+he carries the patch forever and nobody sees the bug. Only if he wants the bend
+before the fix lands is a preference kept meanwhile, naming the bug it covers
+and retiring the day that bug closes. The harness holds behaviour; memory holds
+his difference from it.
+
+## Where it goes when the user just says "save this"
+
+The user names the thing, never its home; the home is mine, and the first
+question is whether it is a difference at all. What Gaia already carries gets
+no row. What any user would want is Gaia work, a defect or a missing standard
+that step 1 routes. Only his difference or a project's goes further down the
+list. The first yes wins:
+
+1. **Work someone must do?**
+   - Part of a version or feature with a brief or plan: add it there, as an AC,
+     a task through `gaia-planner`, or a `brief decision`. "So the agent on X
+     does it" means X's brief, because that is what that agent reads. The
+     version comes from the project's `workflow` (its accumulating branch or PR)
+     and `gaia brief list`; with no brief yet, append to the version's scope
+     thread.
+   - New work that needs its own scope: propose a brief (`brief-spec`).
+   - A defect in Gaia: `feedback`, `class=thread`, `status=open`,
+     `initiative=gaia_system`.
+   - A defect in a product whose repo we don't own (Claude Code, OpenCode, a
+     vendor CLI): propose an issue on that product's upstream repo, drafted with
+     `ticket-writing`; creating it needs a signature. Add a `gaia_system` thread
+     only if Gaia must work around the defect.
+   - A repo whose declared workflow says issues: an issue in that repo.
+   - Otherwise, one concern with no work object: a thread in that project's
+     initiative.
+2. **A short fixed rule an agent on one project must obey** (how it integrates,
+   reviews, releases): that project's `workflow` value, not memory.
+3. **His difference, true in any project:** `type=user`. One that bends a
+   harness default is written once he has agreed to the bend.
+4. **A decision, fact, lesson or dead end about one project:** an anchor in that
+   project. Building Gaia goes under `gaia`; Gaia failing in use under
+   `gaia_system`.
+5. **Raw history:** nothing to save.
+
+**Something I built for him** (a tool, script, wrapper): the Environment block
+already shows that it exists, so the row carries only what that block cannot --
+what it is for and when to reach for it: a `type=user` row with `--audience
+executor` if every specialist should reach for it, a project note if it belongs
+to one project.
+
+Split a mixed item: the decision goes to its anchor, the work to its brief. Ask
+only when two live projects could own it, when a new brief or issue would be
+created, or when it contradicts a user decision row; never ask which table. Tell
+the user one line: "Saved as <kind> in <home>, because <who will read it
+there>."
 
 ## Process
 
 1. **Know what a session is born with, then sweep what you are about to
    touch.** Every session opens with four sections: the projects, each with its
    live-pending count; the environment it stands in; the user; and the user's
-   preferences. The last two are the user's standing rows, whole; every
-   dispatched subagent receives them too, minus the rows whose audience is the
-   orchestrator alone, so a row about how the orchestrator should report spends
-   no specialist's attention. Project memory — anchors, threads, their bodies —
-   never loads at birth and never reaches a specialist's kernel: a count is a
-   signal to ask, not the corpus, and what a dispatched turn needs of it travels
-   as a reference in its goal. It arrives when that project is worked on: before
+   preferences. The last two are the user's standing rows, whole; the
+   orchestrator holds them and curates them. A dispatched subagent receives only
+   the rows whose audience is `executor`, so mark a row `executor` (`--audience
+   executor`) only when it is his difference that every specialist must apply
+   in any project, such as the signature on his PRs. A rule any user's
+   artifacts must obey is a standard: it belongs in a skill or guard, not in
+   a row. `any` and
+   `orchestrator` stay with the orchestrator, and a new `--type user` row
+   defaults to `orchestrator`; existing rows are not migrated by code, you
+   re-mark them as you curate. A specialist also gets one environment line
+   (OS/WSL, gaia CLI path, tools on PATH), so a machine fact needs no row.
+   Project memory — anchors, threads, their bodies —
+   never loads at birth: a count is a signal to ask, not the corpus. A
+   specialist's kernel carries one slice of it, a capped index (slug and one
+   line) of the dispatch project's standing notes, whose bodies the turn opens
+   with `gaia memory show <slug>`; anything else a dispatched turn needs of it
+   travels as a reference in its goal. It arrives when that project is worked on: before
    writing into an initiative, or whenever the question is what it still owes,
    read its whole live-pending set with
    `gaia memory get-relevant --initiative=<key>`, uncapped and with bodies, and
@@ -117,21 +197,22 @@ holds what is true.
    (`bin/cli/memory.py::_reader_workspaces`), so an empty search or a missing
    row without a project is a scoping hypothesis — confirm with the right
    `--workspace` before trusting it.
-3. **Choose the home.** Run *Other home first*, and continue only for genuinely
-   curated value.
+3. **Choose the home.** Run *Other home first* and *Where it goes*, and
+   continue only for genuinely curated value.
 4. **Write one thing per row, in the shape a reader decides on.** The
    orchestrator answers the three questions above, then writes a description
    that is one sentence naming its kind of claim and a body that carries the
-   content, why it holds, where it came from and when -- a measured fact says
-   when and how it was measured, or it is an opinion. Knowledge changes by a new
+   difference, why it holds, where it came from and when -- a measured fact
+   says when and how it was measured, or it is an opinion. Context Gaia already
+   has is not repeated in it. Knowledge changes by a new
    row that supersedes the old one, the arrow pointing from the new row to the
    old, which then leaves every injection; rewriting the old row in place
    erases the change itself, so memory is append-only: there is no `edit`, an
    `add` over an existing name is refused, and `add --replace` (signed) is only
    for correcting an error. Only a log or a live thread grows by `append`. Graduation keeps its
    lineage the same way. A row about the user stands from the moment it is
-   written -- every session and every dispatched agent carries it -- so the
-   first question of *Other home first* is what earns it that reach. The CLI
+   written -- every session carries it, and every specialist too once it is
+   marked `executor` -- so only his difference earns that reach. The CLI
    checks length, owner and the arrow and prints
    the vocabulary as the row is written; it cannot judge whether the row
    deserved to exist.
@@ -143,7 +224,8 @@ holds what is true.
    | Operation | Handling |
    |---|---|
    | `add`/`append`/`reclassify`/`link` (creating an edge) on rows not about the user or a user decision | autonomous, brief report |
-   | `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the user scope, and a name already there is reported, never overwritten — a changed preference is a new row that supersedes it, which a link reaches from any workspace |
+   | a `type=user` row that bends a harness default | ask first: the bend is his to agree to |
+   | other `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the user scope, and a name already there is reported, never overwritten — a changed preference is a new row that supersedes it, which a link reaches from any workspace |
    | contradicting or superseding a user `decision_*` row | ask first |
    | `add --replace`/`delete`/`link --delete` | T3 approval flow; delegate to a specialist and never autoexecute. `memory_links` keeps no history, so removing an edge is as unrecoverable as a delete |
    | `checkpoint` | autonomous after the milestone test; it is one atomic operation and remains all-or-nothing |
@@ -196,13 +278,14 @@ Curation looks for two kinds of inconsistency, and the CLI resolves neither.
   wording as candidates; only reading both says whether they disagree. What
   holds is written as the newest row and supersedes the other -- the same arrow
   as any change, from the new row to the old.
-- **A preference that collides with a system rule.** A preference governs a
-  default: anything Gaia would otherwise choose on the user's behalf. It never
-  governs an invariant -- consent, security, the contract every agent closes --
-  because those are what make everything else trustworthy, and a preference
-  able to lift one would turn every preference into a bypass. Such a preference
-  is not saved as written: the collision is named to the user, and what is kept
-  is the part that governs a default.
+- **A preference that collides with a wall.** This is the wall *What memory is
+  for* names, met after the fact. A preference governs a default: anything Gaia
+  would otherwise choose on the user's behalf. It never governs consent,
+  security or the contract every agent closes, because those are what make
+  everything else trustworthy, and a preference able to lift one would turn
+  every preference into a bypass. Such a preference is not saved as written:
+  the collision is named to the user, and what is kept is the part that
+  governs a default.
 
 ## Who writes
 
@@ -238,8 +321,8 @@ Curation looks for two kinds of inconsistency, and the CLI resolves neither.
 - **Digest or search as corpus:** either can miss an initiative or old wording;
   only the deliberate whole-initiative sweep supports closure.
 - **Wrong-scope convenience:** cwd does not decide where knowledge belongs.
-- **A bug saved as a preference:** the user carries the patch forever and nobody
-  lists the defect.
+- **A standard or a bug saved as his preference:** what any user would want,
+  kept in his rows -- he carries the patch forever and nobody lists the defect.
 - **The supersedes arrow pointed backwards:** the new row leaves every injection
   and the stale one stays, so the corpus reads as if the change never happened.
 - **A resolved thread nobody closes:** it taxes every later session.

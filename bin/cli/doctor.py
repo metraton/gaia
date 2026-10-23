@@ -317,7 +317,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 67
+EXPECTED_SCHEMA_VERSION = 70
 
 # Locations the doctor reads outside the workspace, module-level so tests can
 # redirect them to a tmp path.
@@ -895,7 +895,7 @@ def check_git_long_paths() -> dict:
 
     problem = long_paths_disabled()
     if problem:
-        return _result("Git long paths", "warn", problem, f"If you want it, run: {ENABLE_LONG_PATHS_COMMAND}")
+        return _result("Git long paths", "warning", problem, f"If you want it, run: {ENABLE_LONG_PATHS_COMMAND}")
     return _result("Git long paths", "pass", "core.longpaths enabled or not required")
 
 
@@ -1130,6 +1130,21 @@ def check_schema_version() -> dict:
             schema_compatible_notice(live, EXPECTED_SCHEMA_VERSION, minimum, db_path), fix,
         )
     return _result("Schema version", "pass", f"v{live} matches code expectation")
+
+
+@register_check("DB backups", order=44)
+def check_db_backups() -> dict:
+    """Report the newest gaia.db backup's age, size and verification; warn past 48h or after a failed run."""
+    try:
+        from gaia.paths import snapshot_dir, state_dir  # noqa: PLC0415
+        from gaia.paths.backup import STATUS_FILE, backup_health  # noqa: PLC0415
+    except ImportError as exc:
+        return _result("DB backups", "info", f"backup health unavailable: {exc}")
+    health = backup_health(snapshot_dir(), state_dir() / STATUS_FILE)
+    fix = None
+    if health["severity"] != "pass":
+        fix = f"start a session to take one; the last run is recorded in {state_dir() / STATUS_FILE}"
+    return _result("DB backups", health["severity"], health["detail"], fix)
 
 
 @register_check("Episodes growth", order=48)

@@ -187,8 +187,11 @@ def test_e2e_subagent_write_blocked(validator, cmd):
     ],
 )
 def test_e2e_orchestrator_write_allowed(validator, cmd):
-    """Legitimate orchestrator path is unaffected (stays T0/allowed)."""
-    r = validator.validate(cmd, is_subagent=False, agent_type="")
+    """The orchestrator's write passes this guard once the memory skill is loaded."""
+    from modules.security.memory_skill_guard import record_skill_loaded
+
+    record_skill_loaded("ses-orchestrator")
+    r = validator.validate(cmd, is_subagent=False, agent_type="", session_id="ses-orchestrator")
     assert r.allowed is True
 
 

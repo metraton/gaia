@@ -7,7 +7,7 @@ description: Use when installing or configuring the Google Workspace CLI (gws) f
 
 The gws CLI looks straightforward but breaks in subtle ways -- Google's OAuth flow has undocumented constraints that differ between personal and organizational accounts, and the gws tool itself has open bugs around scopes and multi-account. This procedure captures the working path and the traps discovered through real setup sessions, so you avoid the silent failures that waste hours.
 
-**Prerequisites:** gcloud CLI installed, browser access for OAuth, interactive terminal for auth steps.
+**Prerequisites:** gcloud CLI installed, browser access for OAuth, interactive terminal for the `gws auth` steps.
 
 ## Procedure
 
@@ -19,7 +19,7 @@ The gws CLI looks straightforward but breaks in subtle ways -- Google's OAuth fl
 
 ### 2. Add Google account to gcloud
 
-- `gcloud auth login <email> --no-launch-browser` (interactive terminal required)
+- `gaia login start gcloud --account <email>` prints a link to open in the browser; no terminal needed (skill `cli-login`)
 - This adds alongside existing accounts -- does NOT replace them
 - After login, restore work account: `gcloud config set account <work-account>`
 

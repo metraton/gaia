@@ -60,6 +60,7 @@ def _valid_envelope() -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
 
 
@@ -195,6 +196,7 @@ def test_a_stuck_draft_can_still_be_finalized(cli_env):
     stored = json.loads(draft_file.read_text())
     stored["key_outputs"] = ["an orphan at the root"]
     stored["agent_status"]["agent_state"] = "BLOCKED"
+    stored["user_facing_summary"] = "Blocked; the draft was recovered."
     draft_file.write_text(json.dumps(stored))
 
     finalized = _cli(["finalize", "--draft-id", draft_id, "--json"], cli_env)

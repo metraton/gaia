@@ -3,13 +3,15 @@
 TDD integration tests for context enrichment pipeline.
 
 Validates the full flow:
-  Parsed contract with update_contracts -> process_update_contracts -> gaia.db updated
+  Parsed contract with update_contracts -> process_update_contracts records a
+  proposal and writes nothing -> apply_proposal (behind `gaia context accept`)
+  writes it to gaia.db
 
 Modules under test:
-  - hooks/modules/context/context_writer.py (process_update_contracts)
+  - hooks/modules/context/context_writer.py (process_update_contracts, apply_proposal)
 
 DB helpers (from tests.fixtures.db_helpers):
-  - bootstrap_gaia_schema, seed_workspace, seed_workspace_contracts, seed_agent_perms
+  - bootstrap_gaia_schema, seed_workspace, seed_workspace_contracts
 """
 
 import sys
@@ -35,9 +37,13 @@ sys.path.insert(0, str(TOOLS_DIR / "context"))
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
     seed_workspace,
-    seed_agent_perms,
+    seed_project,
     seed_workspace_contracts,
 )
+
+WORKSPACE = "test-ws"
+PROJECT = "platform"
+PROJECT_ID = "github.com/acme/platform"
 
 
 # ---------------------------------------------------------------------------
@@ -51,11 +57,16 @@ def _import_process_update_contracts():
     import (parse_update_contracts) resolves; the bare ``context_writer`` path
     breaks that relative import and silently yields zero entries.
     """
-    # Clear the permissions cache so each test gets a fresh DB read.
-    from hooks.modules.context import context_writer as _cw
-    _cw._permissions_cache.clear()
     from hooks.modules.context.context_writer import process_update_contracts
     return process_update_contracts
+
+
+def _accept(contract: dict, db_path: Path) -> dict:
+    """Apply a contract's update_contracts clause the way `gaia context accept` does."""
+    from hooks.modules.context.context_writer import apply_proposal
+    outcome = apply_proposal(contract["update_contracts"], WORKSPACE, db_path=db_path, project=PROJECT)
+    assert outcome["errors"] == []
+    return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -76,31 +87,26 @@ def make_contract(contract_name: str, payload: dict) -> dict:
     }
 
 
-def first_contract(result: dict):
-    """Return the single applied contract name from a process result, or None."""
-    contracts = result.get("contracts") or []
-    return contracts[0] if contracts else None
-
-
-def _build_task_info(agent_type: str, db_path: Path, workspace: str = "test-ws") -> dict:
-    """Build the task_info dict expected by process_agent_output (DB-backed)."""
+def _build_task_info(agent_type: str, db_path: Path, workspace: str = WORKSPACE) -> dict:
+    """Build the task_info dict expected by process_update_contracts (DB-backed)."""
     return {
         "agent_type": agent_type,
         "db_path": db_path,
         "workspace": workspace,
+        "project": PROJECT,
     }
 
 
 def read_contract(db_path: Path, workspace: str, contract_name: str):
-    """Read back a contract payload from the DB; returns parsed dict or None."""
+    """The section as a reader of ``workspace`` sees it, or None."""
     import sqlite3
+
+    from gaia.store.project_context import workspace_sections
+
     con = sqlite3.connect(str(db_path))
-    row = con.execute(
-        "SELECT payload FROM project_context_contracts WHERE workspace=? AND contract_name=?",
-        (workspace, contract_name),
-    ).fetchone()
+    section = workspace_sections(con, workspace).get(contract_name)
     con.close()
-    return json.loads(row[0]) if row else None
+    return section["payload"] if section else None
 
 
 # ---------------------------------------------------------------------------
@@ -109,20 +115,11 @@ def read_contract(db_path: Path, workspace: str, contract_name: str):
 
 @pytest.fixture
 def ctx_db(tmp_path):
-    """Isolated DB with schema + cloud-troubleshooter permissions seeded."""
+    """Isolated DB with the schema and the ``test-ws`` workspace."""
     db_path = tmp_path / "gaia_test.db"
     bootstrap_gaia_schema(db_path)
-    seed_workspace(db_path, "test-ws")
-    seed_agent_perms(
-        db_path,
-        "cloud-troubleshooter",
-        reads=["cluster_details", "infrastructure_topology",
-               "application_services", "monitoring_observability",
-               "architecture_overview"],
-        writes=["cluster_details", "infrastructure_topology",
-                "application_services", "monitoring_observability",
-                "architecture_overview"],
-    )
+    seed_workspace(db_path, WORKSPACE)
+    seed_project(db_path, WORKSPACE, PROJECT, PROJECT_ID)
     return db_path
 
 
@@ -131,7 +128,7 @@ def ctx_db(tmp_path):
 # ============================================================================
 
 class TestFreshInstallFirstEnrichment:
-    """Scenario 1: agent discovers namespaces and writes them for the first time."""
+    """Scenario 1: agent discovers namespaces; the stop proposes, accept writes."""
 
     def test_fresh_install_first_enrichment(self, ctx_db):
         process_update_contracts = _import_process_update_contracts()
@@ -150,30 +147,32 @@ class TestFreshInstallFirstEnrichment:
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        assert result["updated"] is True
-        assert first_contract(result) == "cluster_details"
+        assert result["updated"] is False
         assert result["rejected"] == []
+        assert result["proposed"] == [
+            {"contract": "cluster_details", "workspace": WORKSPACE, "project": PROJECT_ID,
+             "keys": ["namespaces"]}
+        ]
+        assert read_contract(ctx_db, WORKSPACE, "cluster_details") is None
 
-        stored = read_contract(ctx_db, "test-ws", "cluster_details")
-        assert stored is not None
-        namespaces = stored["namespaces"]
+        _accept(contract, ctx_db)
+
+        namespaces = read_contract(ctx_db, WORKSPACE, "cluster_details")["namespaces"]
         assert sorted(namespaces["application"]) == ["adm", "dev", "test"]
         assert sorted(namespaces["infrastructure"]) == ["cert-manager", "flux-system"]
         assert sorted(namespaces["system"]) == ["kube-public", "kube-system"]
 
 
 # ============================================================================
-# Scenario 2: Incremental enrichment - a second write merges into the section
+# Scenario 2: Incremental enrichment - an accepted write merges into the section
 # ============================================================================
 
 class TestIncrementalEnrichment:
-    """Scenario 2: writing to a contract that already has data merges into it."""
+    """Scenario 2: accepting a write to a contract that already has data merges into it."""
 
     def test_incremental_enrichment_new_data(self, ctx_db):
-        process_update_contracts = _import_process_update_contracts()
-
         # Seed initial contract value
-        seed_workspace_contracts(ctx_db, "test-ws", {
+        seed_workspace_contracts(ctx_db, WORKSPACE, {
             "cluster_details": {
                 "namespaces": {
                     "application": ["adm", "dev", "test"],
@@ -189,17 +188,14 @@ class TestIncrementalEnrichment:
                 "application": ["adm", "dev", "test", "nova-auth-dev"]
             }
         }
-        contract = make_contract("cluster_details", new_payload)
 
-        result = process_update_contracts(
-            contract,
-            _build_task_info("cloud-troubleshooter", ctx_db),
-        )
+        outcome = _accept(make_contract("cluster_details", new_payload), ctx_db)
 
-        assert result["updated"] is True
-        assert first_contract(result) == "cluster_details"
+        assert outcome["applied"] == [
+            {"contract": "cluster_details", "workspace": WORKSPACE, "project": PROJECT_ID},
+        ]
 
-        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        stored = read_contract(ctx_db, WORKSPACE, "cluster_details")
         assert stored is not None
         # The mentioned list is restated wholesale...
         app_ns = stored["namespaces"]["application"]
@@ -215,9 +211,7 @@ class TestIncrementalEnrichment:
         Regression for the measured incident where a partial write to
         `project_identity` deleted every entry it did not name.
         """
-        process_update_contracts = _import_process_update_contracts()
-
-        seed_workspace_contracts(ctx_db, "test-ws", {
+        seed_workspace_contracts(ctx_db, WORKSPACE, {
             "cluster_details": {
                 "cluster_name": "prod-cluster",
                 "region": "us-central1",
@@ -226,15 +220,9 @@ class TestIncrementalEnrichment:
             }
         })
 
-        contract = make_contract("cluster_details", {"kubernetes_version": "1.30.0"})
-        result = process_update_contracts(
-            contract,
-            _build_task_info("cloud-troubleshooter", ctx_db),
-        )
+        _accept(make_contract("cluster_details", {"kubernetes_version": "1.30.0"}), ctx_db)
 
-        assert result["updated"] is True
-
-        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        stored = read_contract(ctx_db, WORKSPACE, "cluster_details")
         assert stored == {
             "cluster_name": "prod-cluster",
             "region": "us-central1",
@@ -249,12 +237,10 @@ class TestIncrementalEnrichment:
 # ============================================================================
 
 class TestDriftDetection:
-    """Scenario 3: agent writes a new payload for a section with existing data."""
+    """Scenario 3: accepting a new payload for a section with existing data."""
 
     def test_drift_detection_version_update(self, ctx_db):
-        process_update_contracts = _import_process_update_contracts()
-
-        seed_workspace_contracts(ctx_db, "test-ws", {
+        seed_workspace_contracts(ctx_db, WORKSPACE, {
             "cluster_details": {
                 "helm_releases": [
                     {"name": "orders-service", "chart_version": "0.53.0"},
@@ -268,49 +254,16 @@ class TestDriftDetection:
                 {"name": "orders-service", "chart_version": "0.54.0"}
             ]
         }
-        contract = make_contract("cluster_details", update_payload)
 
-        result = process_update_contracts(
-            contract,
-            _build_task_info("cloud-troubleshooter", ctx_db),
-        )
+        outcome = _accept(make_contract("cluster_details", update_payload), ctx_db)
 
-        assert result["updated"] is True
-        assert first_contract(result) == "cluster_details"
+        assert outcome["applied"] == [
+            {"contract": "cluster_details", "workspace": WORKSPACE, "project": PROJECT_ID},
+        ]
 
-        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        stored = read_contract(ctx_db, WORKSPACE, "cluster_details")
         assert stored is not None
         assert stored["helm_releases"][0]["chart_version"] == "0.54.0"
-
-
-# ============================================================================
-# Scenario 4: Permission rejection
-# ============================================================================
-
-class TestPermissionRejection:
-    """Scenario 4: agent tries to write a section it has no write access to."""
-
-    def test_permission_rejection(self, ctx_db):
-        process_update_contracts = _import_process_update_contracts()
-
-        # cloud-troubleshooter cannot write gitops_configuration
-        update_payload = {
-            "repo_url": "https://evil.example.com/gitops",
-            "tool": "evil-tool"
-        }
-        contract = make_contract("gitops_configuration", update_payload)
-
-        result = process_update_contracts(
-            contract,
-            _build_task_info("cloud-troubleshooter", ctx_db),
-        )
-
-        assert result["updated"] is False
-        assert "gitops_configuration" in result["rejected"]
-
-        # Contract must NOT be written to DB
-        stored = read_contract(ctx_db, "test-ws", "gitops_configuration")
-        assert stored is None
 
 
 # ============================================================================
@@ -334,6 +287,7 @@ class TestBackwardCompatibility:
         )
 
         assert result["updated"] is False
+        assert result["proposed"] == []
 
 
 # ============================================================================
@@ -361,6 +315,8 @@ class TestMalformedJson:
         )
 
         assert result["updated"] is False
+        assert result["proposed"] == []
+        assert result["errors"], "the skipped entry must be named, not dropped silently"
 
 
 # ============================================================================
@@ -368,7 +324,7 @@ class TestMalformedJson:
 # ============================================================================
 
 class TestMultiSectionUpdate:
-    """Scenario 7: the envelope path applies N atomic entries in a single call."""
+    """Scenario 7: N entries in one clause are proposed together and accepted together."""
 
     def test_two_contract_updates(self, ctx_db):
         process_update_contracts = _import_process_update_contracts()
@@ -391,33 +347,32 @@ class TestMultiSectionUpdate:
             contract, _build_task_info("cloud-troubleshooter", ctx_db)
         )
 
-        assert result["updated"] is True
-        assert "cluster_details" in result["contracts"]
-        assert "infrastructure_topology" in result["contracts"]
+        assert result["updated"] is False
+        assert [p["contract"] for p in result["proposed"]] == [
+            "cluster_details", "infrastructure_topology",
+        ]
+        assert read_contract(ctx_db, WORKSPACE, "cluster_details") is None
+        assert read_contract(ctx_db, WORKSPACE, "infrastructure_topology") is None
 
-        stored_cluster = read_contract(ctx_db, "test-ws", "cluster_details")
-        stored_topology = read_contract(ctx_db, "test-ws", "infrastructure_topology")
+        outcome = _accept(contract, ctx_db)
+
+        assert len(outcome["applied"]) == 2
+        stored_cluster = read_contract(ctx_db, WORKSPACE, "cluster_details")
+        stored_topology = read_contract(ctx_db, WORKSPACE, "infrastructure_topology")
 
         assert "staging" in stored_cluster["namespaces"]["application"]
         assert "10.0.0.0/24" in stored_topology["subnets"]
 
 
 # ============================================================================
-# Scenario 8: Skill file existence and content
-# ============================================================================
-
-# ============================================================================
 # Scenario 9: Multi-entry envelope variants
 # ============================================================================
 
 class TestLLMRealisticOutput:
-    """Scenario 9: nested payloads and scalar payloads travel through the
-    envelope path intact."""
+    """Scenario 9: nested payloads and scalar payloads survive an accepted write intact."""
 
     def test_nested_payload_enrichment(self, ctx_db):
         """A deeply-nested payload is persisted verbatim under the contract."""
-        process_update_contracts = _import_process_update_contracts()
-
         contract = make_contract(
             "cluster_details",
             {
@@ -426,30 +381,15 @@ class TestLLMRealisticOutput:
             },
         )
 
-        result = process_update_contracts(
-            contract,
-            _build_task_info("cloud-troubleshooter", ctx_db),
-        )
+        _accept(contract, ctx_db)
 
-        assert result["updated"] is True
-        assert first_contract(result) == "cluster_details"
-
-        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        stored = read_contract(ctx_db, WORKSPACE, "cluster_details")
         assert stored["cluster_name"] == "oci-pos-dev-cluster-01"
         assert stored["namespaces_inspected"]["test"]["pod_count"] == 1
 
     def test_scalar_payload_enrichment(self, ctx_db):
-        """A flat scalar payload is persisted through the envelope path."""
-        process_update_contracts = _import_process_update_contracts()
+        """A flat scalar payload is persisted through an accepted write."""
+        _accept(make_contract("cluster_details", {"status": "RUNNING"}), ctx_db)
 
-        contract = make_contract("cluster_details", {"status": "RUNNING"})
-
-        result = process_update_contracts(
-            contract,
-            _build_task_info("cloud-troubleshooter", ctx_db),
-        )
-
-        assert result["updated"] is True
-
-        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        stored = read_contract(ctx_db, WORKSPACE, "cluster_details")
         assert stored["status"] == "RUNNING"

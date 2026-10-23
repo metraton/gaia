@@ -1,64 +1,44 @@
-"""Compact context builder for post-compaction re-injection."""
+"""The brief a host's summarizer gets before a compaction, the one text both hosts send."""
 from __future__ import annotations
 
-import logging
-import sys
+import json
+import re
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
-
-def build_compact_context(*, session_id: str = "") -> str:
-    """Build the orchestrator identity reminder, the session's Environment block, and its own snapshot.
-
-    The Environment block is the birth block's own, so the trusted `gaia CLI:`
-    path the compaction discarded is published again. The snapshot is keyed by
-    ``session_id``; the host event that triggers the refresh carries the same
-    id across compaction, so another session's contracts and signatures never
-    reach this one. On both hosts this refresh is the only post-compaction
-    delivery, outside any summary: the summarizer is only steered.
-    """
-    from modules.session.session_manifest import build_environment_section
-
-    blocks = [_build_identity_block(), build_environment_section(session_id), _build_snapshot_block(session_id)]
-    return "\n\n".join(b for b in blocks if b)
+MOD_PATH = Path(__file__).resolve().parents[2] / "mods" / "compaction" / "register.ts"
+_STEERING_DECLARATION = re.compile(r'^export const STEERING = ".*"$', re.MULTILINE)
 
 
 def build_summary_instructions() -> str:
-    """The brief a host that summarizes its own session is given before it writes the summary.
-
-    Aimed at the summarizer, so only a pre-summary hook delivers it; the
-    post-compaction refresh above speaks to the session that resumes.
-    """
+    """The brief a host that summarizes its own session is given before it writes the summary."""
     return (
         "# Compaction Instructions\n\n"
         "Write the summary so the next turn can resume without re-deriving anything:\n"
-        "- Do not restate the session snapshot (resume point, open contracts, pending "
-        "signatures, active brief/plan/task); it is delivered verbatim to the next turn.\n"
+        "- Do not restate what the next turn's birth block already delivers: its resume "
+        "point carries the active plan and task, open contracts, pending approvals and "
+        "the resume note, or the command that lists them.\n"
         "- State the active objective and the exact next action.\n"
-        "- Refer to durable work by identifier (memory slugs, brief/plan/task ids, "
-        "contract ids); never copy their bodies.\n"
+        "- Carry durable work as coordinates, never its body: task and plan ids, "
+        "contract ids, approval ids, memory slugs, commit SHAs, brief names.\n"
         "- Keep facts that exist only in this conversation, labeled as not durable.\n"
-        "- Compress tool output and intermediate reasoning to what the next decision needs."
+        "- Compress tool output and intermediate reasoning to what the next decision needs.\n"
+        "- End with this line verbatim: Live state, habits and which capability serves an "
+        "intent: `gaia map`"
     )
 
 
-def _build_identity_block() -> str:
-    return (
-        "# Post-Compaction Context Refresh\n\n"
-        "You are the orchestrator. Dispatch work via Agent, resume agents via "
-        "SendMessage(to: agentId), get user approval via AskUserQuestion."
-    )
+def write_mod_steering(path: Path = MOD_PATH) -> bool:
+    """Rewrites the Claude Code mod's STEERING declaration as build_summary_instructions; True when the file changed."""
+    source = path.read_text()
+    declaration = f"export const STEERING = {json.dumps(build_summary_instructions())}"
+    updated, count = _STEERING_DECLARATION.subn(lambda _: declaration, source)
+    if count != 1:
+        raise ValueError(f"{path} must declare STEERING as exactly one one-line string literal; found {count}")
+    if updated == source:
+        return False
+    path.write_text(updated)
+    return True
 
 
-def _build_snapshot_block(session_id: str) -> str | None:
-    repo_root = str(Path(__file__).resolve().parent.parent.parent.parent)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    try:
-        from gaia.session_snapshot import build_snapshot, render_snapshot
-
-        return render_snapshot(build_snapshot(session_id))
-    except Exception as exc:
-        logger.debug("Failed to build session snapshot (non-fatal): %s", exc)
-        return None
+if __name__ == "__main__":
+    print(f"{MOD_PATH}: {'updated' if write_mod_steering() else 'unchanged'}")

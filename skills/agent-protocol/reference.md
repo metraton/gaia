@@ -38,8 +38,8 @@ Close    declare a state, finalize, degrade honestly
 ```
 
 Two doors open onto that arc. **A fresh dispatch** arrives with a kernel --
-`# Your Contract`, `# Your CLI`, `# How the user works`. Your contract is
-named there, already open. Start at Ground.
+`# Your Contract`, `# How the user works`, `# Standing notes`, `# Environment`,
+`# Your CLI`. Your contract is named there, already open. Start at Ground.
 
 **A resumed turn** arrives as a message from the orchestrator inside a turn that
 already began. There is no second kernel: `# Your Contract` is rendered once, at
@@ -303,13 +303,19 @@ and as an on-disk draft -- before you run anything.
 | `can_read` / `can_write` | The menu of project-knowledge sections this turn may pull on demand and cite, and the ones it may propose updates to. Nothing from the menu arrives preloaded. |
 | `plan_task_id` + `acceptance` | Present only on a plan-task-bound turn: the binding and the verifiable floor the increment must clear -- the assertions principle 7 loops against. Such a turn cannot self-`COMPLETE`; it closes `NEEDS_VERIFICATION`. |
 
-Two blocks follow `# Your Contract`. `# Your CLI` is the index of what the turn
-can look up on its own. `# How the user works` carries the user's standing rows
-with their bodies, minus those whose audience is the orchestrator alone
-(`hooks/modules/context/kernel_builder.py::build_memory_block`); nothing of any
-project's memory arrives, so a decision or thread the turn needs travels as a
-reference in the goal, or is read with `gaia memory get-relevant --initiative
-<k> --sections anchor`.
+Four blocks follow `# Your Contract`, in this order. `# How the user works`
+carries the user's standing rows with their bodies, only those whose audience is
+`executor` (`hooks/modules/context/kernel_builder.py::build_memory_block`); when
+the kernel would pass the host's cap, whole rows are left out, stalest first, and
+one line names them for `gaia memory show`.
+`# Standing notes` is one line per live anchor of the dispatch project, absent
+when it has none. `# Environment` is one capped line: the OS, the gaia CLI path
+and the tools on PATH, the user's own executables among them
+(`session_manifest.build_environment_line`). `# Your CLI` is the index of what
+the turn can look up on its own, last because `gaia --help` rebuilds it. Beyond
+the standing notes nothing of the project's memory arrives, so a decision or
+thread the turn needs travels as a reference in the goal, or is read with `gaia
+memory get-relevant --initiative <k> --sections anchor`.
 
 ### The agent_id floor is measured
 

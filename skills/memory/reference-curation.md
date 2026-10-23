@@ -46,13 +46,15 @@ gaia memory link atom_node_20 anchor_routing --kind=relates_to
 # Retire an obsolete decision without losing the history: NEW first, OLD second
 gaia memory link decision_new decision_old --kind=supersedes
 
-# Drop a link that turned out wrong -- signed (T3), like delete
+# Drop a link that turned out wrong -- a specialist runs it through the signed
+# (T3) flow; the orchestrator lane refuses `--delete`
 gaia memory link a b --kind=relates_to --delete
 ```
 
-Removing an edge needs the same consent as `delete`: `memory_links` keeps no
-history, and dropping a `supersedes` edge puts the old row back into every
-injection. Both endpoints must exist as live curated rows. The command is
+Removing an edge is withheld from the orchestrator like `--replace` and
+`delete`, and delegated to a specialist through the signed flow:
+`memory_links` keeps no history, and dropping a `supersedes` edge puts the old
+row back into every injection. Both endpoints must exist as live curated rows. The command is
 idempotent: re-running the same link is a no-op. The four kinds map
 to the four reasons one note refers to another -- a generic
 relationship (`relates_to`), an obsolescence (`supersedes`), a
@@ -125,7 +127,9 @@ rule: that is the curator's reading, taught in `SKILL.md`.
 ### Pruning stale entries
 
 1. Identify rows referencing retired projects, deprecated tooling,
-   or resolved decisions whose outcome no longer needs justification.
+   or resolved decisions whose outcome no longer needs justification, and
+   rows the harness now carries: a skill, guard or Environment fact took
+   them over, so they are no longer a difference.
 2. **Prefer `reclassify` over deletion.** `reclassify --class=log` or
    `reclassify --status=closed|graduated` retires a note while keeping
    it — memory is meant to be aggregated and reclassified, not deleted.

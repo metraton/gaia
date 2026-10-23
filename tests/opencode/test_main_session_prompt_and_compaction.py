@@ -111,7 +111,7 @@ def test_primary_compaction_gives_the_summarizer_only_the_summary_instructions(i
 def test_first_message_after_compaction_carries_claude_codes_refresh_for_that_session(isolated):
     import bridge
     from gaia.session_snapshot import write_resume_point
-    from modules.context.compact_context_builder import build_compact_context
+    from modules.session.session_manifest import build_session_context
 
     write_resume_point(MAIN_SESSION, "finish task 892, then run its gate")
     write_resume_point(CHILD_SESSION, "another session's resume point")
@@ -119,8 +119,8 @@ def test_first_message_after_compaction_carries_claude_codes_refresh_for_that_se
     response = bridge.handle({"event": "chat.message", "sessionID": MAIN_SESSION, "source": "compact"})
 
     context = response["additional_context"]
-    assert context == build_compact_context(session_id=MAIN_SESSION)
-    assert "## Environment" in context and "## Session Snapshot" in context
+    assert context == build_session_context(source="compact", session_id=MAIN_SESSION)
+    assert "## Environment" in context and "## Resume point" in context
     assert "finish task 892, then run its gate" in context
     assert "another session's resume point" not in context
 

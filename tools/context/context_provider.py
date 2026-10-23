@@ -90,34 +90,30 @@ def detect_cloud_provider(sections: Dict[str, Any]) -> str:
 
 
 def load_project_context(workspace: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load project context for a workspace from project_context_contracts in gaia.db.
+    """Load project context as ``workspace`` reads it (``gaia.store.project_context.workspace_sections``).
 
     Returns a dict shaped as ``{metadata: {}, sections: {contract_name: payload, ...}}``
     to remain compatible with the rest of the pipeline. Returns an empty context when the
     workspace has no rows rather than exiting.
     """
+    from gaia.store.project_context import workspace_sections
+
     try:
         con = _db_connect(db_path)
-        rows = con.execute(
-            "SELECT contract_name, payload, metadata, updated_at "
-            "FROM project_context_contracts WHERE workspace = ?",
-            (workspace,),
-        ).fetchall()
-        con.close()
+        try:
+            stored = workspace_sections(con, workspace)
+        finally:
+            con.close()
     except sqlite3.Error as exc:
         print(f"Warning: DB error reading project context for '{workspace}': {exc}", file=sys.stderr)
-        rows = []
+        stored = {}
 
     sections: Dict[str, Any] = {}
     last_updated = ""
-    for row in rows:
-        try:
-            payload = json.loads(row["payload"]) if row["payload"] else {}
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        sections[row["contract_name"]] = payload
-        if row["updated_at"] and row["updated_at"] > last_updated:
-            last_updated = row["updated_at"]
+    for name, section in stored.items():
+        sections[name] = section["payload"] if section["payload"] is not None else {}
+        if section["updated_at"] and section["updated_at"] > last_updated:
+            last_updated = section["updated_at"]
 
     if not sections:
         print(f"Warning: No project context found for workspace '{workspace}' in gaia.db", file=sys.stderr)
@@ -188,6 +184,24 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
 # DISPATCH KERNEL DATA (no routing, no preloaded context)
 # ============================================================================
 
+def _declared_surface(agent_name: str) -> str:
+    """The ``routing.surface`` or top-level ``surface`` in ``agents/<name>.md`` frontmatter, or ""."""
+    if not agent_name or Path(agent_name).name != agent_name:
+        return ""
+    path = Path(_PACKAGE_ROOT) / "agents" / f"{agent_name}.md"
+    try:
+        from tools.scan.seed_contract_permissions import _parse_frontmatter
+
+        frontmatter = _parse_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(frontmatter, dict):
+        return ""
+    routing = frontmatter.get("routing")
+    declared = routing.get("surface") if isinstance(routing, dict) else None
+    return str(declared or frontmatter.get("surface") or "").strip()
+
+
 def build_kernel_sections(
     agent_name: str,
     workspace: Optional[str] = None,
@@ -206,8 +220,9 @@ def build_kernel_sections(
         provider-scoped exactly as the retired telemetry path was, so the set
         is identical to what ``get_context_update_contract`` produced).
       * ``surface`` is the agent's own declared surface -- the ``surface_routing``
-        row whose ``primary_agent`` is this agent -- a fact of the assignment,
-        not a classification of it. Empty for an agent that owns no surface.
+        row whose ``primary_agent`` is this agent, else the surface its
+        frontmatter declares (:func:`_declared_surface`) -- a fact of the
+        assignment, not a classification of it.
       * ``role`` is dispatch data: ``verifier`` when the binding says so,
         ``primary`` otherwise (the orchestrator dispatched this agent as the
         owner of the task).
@@ -240,6 +255,7 @@ def build_kernel_sections(
                 break
     except Exception:
         surface = ""
+    surface = surface or _declared_surface(agent_name)
 
     sections = {
         "role": "verifier" if turn_role == "verifier" else "primary",
@@ -262,6 +278,15 @@ def _project_identity_entries(
     return identity if isinstance(identity, dict) else {}
 
 
+def name_variants(name: str) -> list:
+    """``name`` followed by its underscore and hyphen spellings, without repeats.
+
+    ``projects.name`` is hyphenated while ``project_identity`` keys are
+    underscore slugs, so a reference may arrive in either spelling.
+    """
+    return list(dict.fromkeys((name, name.replace("_", "-"), name.replace("-", "_"))))
+
+
 def _dispatched_project_row(
     workspace: str,
     ref: str,
@@ -271,19 +296,21 @@ def _dispatched_project_row(
     """The active ``projects`` row a dispatch names, in whichever workspace holds it, or None.
 
     Matched by path when the dispatch carries one, else by project_identity,
-    else by name; a name several projects hold resolves to the one in
-    ``workspace`` or to none.
+    else by name, trying each spelling of ``ref`` (:func:`name_variants`); a
+    name several projects hold resolves to the one in ``workspace`` or to none.
     """
     if local_path:
         lookups = [("path = ?", local_path)]
     else:
-        lookups = [("project_identity = ?", ref), ("name = ? COLLATE NOCASE", ref)]
+        lookups = [("project_identity = ?", ref)] + [
+            ("name = ? COLLATE NOCASE", variant) for variant in name_variants(ref)
+        ]
     try:
         con = _db_connect(db_path)
         try:
             for where, value in lookups:
                 rows = [dict(r) for r in con.execute(
-                    "SELECT workspace, name, path, remote_url FROM projects "
+                    "SELECT workspace, name, path, remote_url, project_identity FROM projects "
                     f"WHERE {where} AND status = 'active'", (value,),
                 )]
                 if len(rows) > 1:
@@ -427,6 +454,29 @@ def dispatch_project_workspace(
         return None
     row = _dispatch_project_row(workspace, dispatch_project, db_path)
     return row["workspace"] if row else None
+
+
+def dispatch_project_key(
+    workspace: str,
+    dispatch_project: Optional[str],
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """The canonical memory project key of the project a born row's ``dispatch_project`` names, or None.
+
+    Derived the way a project-anchored memory write derives its ``initiative``
+    (``gaia.store.writer.initiative_from_project_ref`` of the row's
+    ``project_identity``), so it matches the notes ``gaia memory add --project``
+    stored; a project the substrate does not know keys by its normalized name.
+    """
+    if not dispatch_project:
+        return None
+    from gaia.store.writer import initiative_from_project_ref, normalize_initiative
+
+    row = _dispatch_project_row(workspace, dispatch_project, db_path) if workspace else None
+    return (
+        initiative_from_project_ref((row or {}).get("project_identity"))
+        or normalize_initiative(dispatch_project.partition(" (")[0])
+    )
 
 
 def dispatch_project_entry(

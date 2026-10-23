@@ -70,6 +70,14 @@ The test: for each rule, ask -- if the agent saw enough examples of this going w
 
 For detailed guidance on tone by type, see `reference.md`.
 
+## Step 3.5: Start from the raw source, end at an outside judge
+
+A skill whose process produces an artifact -- code, a document, a plan, a diagnosis, a review -- names where the process reads and who decides the result is right:
+
+- **The rawest source reachable**: code over its docs, live state over memory, the recorded contract or log over recollection. A process that starts from a summary inherits the summary's errors; reading code produces hypotheses, running it produces facts (`gaia-research`).
+- **A judge that is not the producer**: a check the reader runs (a test, a linter, a deterministic script shipped in `scripts/`), a fresh-context verifier (`verification-oracle` for a command, `verification-rubric` for a rubric), a counterexample search, or a reader who did not write the artifact. Where the check can ship as a script, ship it: `deck-builder`'s deterministic checks prove the deck well formed, and the person's eye judges whether it says what was meant.
+- **Activities, never a role.** "Act as a security reviewer" changes the voice and leaves the checks unstated; "list every trust crossing and try one malformed input at each" is the check.
+
 ## Step 4: Write the description field
 
 Triggering conditions only -- describing the process causes the agent to follow the description and skip reading the content. See `agent-creation/SKILL.md` Step 4 for the bad/good example pattern.
@@ -111,13 +119,15 @@ For a Domain skill describing a real system, add the coverage test: extract what
 
 **Put elsewhere:** Project-specific config -> CLAUDE.md or agent inline. Single-agent-only behavior -> keep inline. Knowledge the LLM covers well from training -> not needed.
 
-**When creating a new skill:** Also update `skills/README.md` to add the new skill to the index. Load Skill('readme-writing') to do this correctly.
+**When creating a new skill:** Also update `skills/README.md` to add the new skill to the index. Load Skill('technical-writing') to do this correctly.
 
 ## Anti-Patterns
 
 - **Description summarizes process** -- agent follows the description and skips reading the skill body.
 - **Discipline without traps OR with too many traps** -- agents rationalize around bare rules; agents also dilute their attention across overlapping traps. A trap row earns its place by capturing a failure mode the existing rows do not. If you can describe a new trap by adjusting the wording of an existing trap, the existing row is what needed strengthening, not a new neighbor.
-- **Generic without consequence** -- "be careful with commands" teaches nothing because it has no consequence attached. The fix is naming what goes wrong when you violate the rule, not enumerating instances of the rule. A principle with one consequence outweighs five examples without one.
+- **Generic without consequence** -- "be careful with commands" teaches nothing because it has no consequence attached. The fix is naming what goes wrong when you violate the rule, not enumerating instances of the rule. A principle with one consequence outweighs five examples without one. A depth mandate ("be thorough", "go deep") is the same failure: name the hard goal and the observation that shows it met.
+- **Self-grading close** -- a last step that asks the model to reread and approve its own output. The producer reads what it meant, not what it wrote, and one demonstrated counterexample outweighs several unsupported assurances (`code-review`); end at an instrument or a reader who did not write it (Step 3.5).
+- **Persona phrasing** -- "you are an expert X" or "act as X" in a skill body. A skill teaches process and a voice carries none; describe the activity.
 - **Duplicates agent content** -- two sources of truth both become stale; pick one place.
 - **Single responsibility violated** -- if a skill covers two distinct behaviors, split it.
 - **Opening by negation** -- defining the skill by what it is not ("this is NOT agent-protocol"). The reader must already hold the other concept to parse yours. State what it IS first; disambiguate after.

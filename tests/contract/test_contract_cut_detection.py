@@ -132,6 +132,7 @@ def _terminal_envelope() -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
         "failure_report": None,
     }
 
@@ -487,6 +488,7 @@ def test_contract_cut_detection_cli_finalized_turn_is_clean(cli_env):
                 cli_env).returncode == 0
     assert _run(["fill", "--draft-id", cid, "--json", json.dumps({
         "agent_status": {"pending_steps": [], "next_action": "done"},
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": {"verification": {
             "method": "test", "result": "pass", "details": "clean",
         }},

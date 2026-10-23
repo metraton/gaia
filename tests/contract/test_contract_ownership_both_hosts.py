@@ -90,6 +90,7 @@ def _close(contract_id: str) -> None:
             "verification": {"method": "t", "result": "pass", "details": "t"},
         },
         "consolidation_report": None, "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
     finalize_agent_contract_handoff(
         contract_id=contract_id, agent_id=agent_id, workspace="me",
@@ -173,6 +174,7 @@ def test_resumed_turn_on_a_finalized_contract_can_still_close(host):
     }
     for args in (
         ["set", "agent_status", json.dumps(status), "--draft-id", link_id],
+        ["set", "user_facing_summary", "Resumed work recorded.", "--draft-id", link_id],
         ["finalize", "--draft-id", link_id],
     ):
         done = subprocess.run(

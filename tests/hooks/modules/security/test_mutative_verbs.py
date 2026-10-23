@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for Mutative Verb Detector (mutative_verbs.py)."""
 
+import os
 import sys
 import pytest
 from pathlib import Path
@@ -12,6 +13,7 @@ from modules.security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
     cwd_after_component,
+    UNKNOWN_CWD,
     MutativeResult,
     COMMAND_ALIASES,
     SIMULATION_FLAGS,
@@ -1057,7 +1059,7 @@ class TestDetectMutativeCommand:
         ("git push origin main", "push"),
         ("git push --force origin main", "push"),
         ("git push --delete origin feature-branch", "push"),
-        ("git push -u origin feature", "push"),
+        ("git push -u origin main", "push"),
     ], ids=[
         "push-plain",
         "push-force",
@@ -1065,7 +1067,7 @@ class TestDetectMutativeCommand:
         "push-upstream",
     ])
     def test_git_push_always_mutative(self, cmd, expected_verb):
-        """git push (all variants) must remain mutative."""
+        """A push to the default branch, a forced push and a deleting push stay mutative."""
         result = detect_mutative_command(cmd)
         assert result.is_mutative is True
         assert result.verb == expected_verb
@@ -2910,6 +2912,26 @@ class TestRelativeScriptCwdResolution:
         assert cwd_after_component("node build.mjs", None) is None
 
 
+class TestCwdFoldNavigationForms:
+    def test_home_spellings_expand_in_a_cd_target(self):
+        home = os.path.expanduser("~")
+        for target in ("$HOME/x", "${HOME}/x", "~/x"):
+            assert cwd_after_component(f"cd {target}", "/repo") == f"{home}/x"
+
+    def test_pushd_moves_the_directory_like_cd(self):
+        assert cwd_after_component("pushd /a/b", "/repo") == "/a/b"
+        assert cwd_after_component("pushd sub", "/repo") == "/repo/sub"
+
+    @pytest.mark.parametrize("command", ["cd -", "popd", "pushd", "pushd -n /a", "cd a b"])
+    def test_a_navigation_the_fold_cannot_follow_makes_the_directory_unknown(self, command):
+        assert cwd_after_component(command, "/repo") == UNKNOWN_CWD
+
+    def test_unknown_stays_unknown_for_relative_moves_and_ends_at_an_absolute_one(self):
+        assert cwd_after_component("cd sub", UNKNOWN_CWD) == UNKNOWN_CWD
+        assert cwd_after_component("cd /a", UNKNOWN_CWD) == "/a"
+        assert cwd_after_component("ls", UNKNOWN_CWD) == UNKNOWN_CWD
+
+
 class TestRelativeScriptNoCdHookPayloadCwd:
     """The single-command dispatch of ``BashValidator.validate()`` must seed
     the directory fold from ``hook_payload["cwd"]`` -- the real invocation
@@ -4377,10 +4399,16 @@ class TestGaiaContextPruneWorkspacesIsMutative:
             for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
             if anchor.path[0] == "context"
         }
-        assert context_paths == {("context", "prune-workspaces")}, (
-            "the `gaia context` upgrade must be scoped to the destructive "
-            "subcommand only, never the whole group"
+        assert context_paths == {("context", "prune-workspaces"), ("context", "relocate")}, (
+            "the `gaia context` upgrade must be scoped to the writing "
+            "subcommands only, never the whole group"
         )
+
+    def test_relocate_writes_and_its_dry_run_does_not(self):
+        applied = detect_mutative_command("gaia context relocate --manifest /tmp/m.json")
+        assert applied.is_mutative is True and applied.category == "MUTATIVE"
+        preview = detect_mutative_command("gaia context relocate --manifest /tmp/m.json --dry-run")
+        assert preview.is_mutative is False
 
     def test_other_gaia_context_subcommands_not_upgraded(self):
         # A read/inspect context subcommand must NOT be dragged into T3 by the
@@ -4631,6 +4659,87 @@ class TestGaiaMemoryTierGroup:
         its own gate."""
         result = detect_mutative_command("gaia approvals approve P-abc123")
         assert result.is_mutative is True
+
+
+def _registered_migrate_actions():
+    """The `gaia migrate` actions as bin/cli/migrate.py registers them."""
+    import argparse
+    import importlib
+
+    bin_dir = HOOKS_DIR.parent / "bin"
+    if str(bin_dir) not in sys.path:
+        sys.path.insert(0, str(bin_dir))
+    migrate_cli = importlib.import_module("cli.migrate")
+    parser = argparse.ArgumentParser()
+    migrate_parser = migrate_cli.register(parser.add_subparsers())
+    actions = next(
+        a for a in migrate_parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    return set(actions.choices)
+
+
+class TestNounFirstGroupVerbExceptions:
+    """Issue #45: a group word that is itself a mutative verb (`migrate`,
+    `label`) must not gate the read-only action under it, while every action
+    that writes keeps its gate."""
+
+    MIGRATE_ACTION_WRITES = {"plan": False, "apply": True}
+
+    def test_every_migrate_action_is_classified_by_whether_it_writes(self):
+        from modules.security.tiers import classify_command_tier
+
+        assert set(self.MIGRATE_ACTION_WRITES) == _registered_migrate_actions()
+        for action, writes in self.MIGRATE_ACTION_WRITES.items():
+            command = f"gaia migrate {action}"
+            result = detect_mutative_command(command)
+            tier = classify_command_tier(command)
+            assert result.is_mutative is writes, f"{command}: {result.reason}"
+            assert (tier == SecurityTier.T3_BLOCKED) is writes, f"{command}: {tier}"
+
+    def test_dispatcher_path_form_from_the_issue(self):
+        gaia_bin = HOOKS_DIR.parent / "bin" / "gaia"
+        assert detect_mutative_command(f"{gaia_bin} migrate plan").is_mutative is False
+        assert detect_mutative_command(f"{gaia_bin} migrate apply").is_mutative is True
+
+    def test_tiers(self):
+        from modules.security.tiers import classify_command_tier
+
+        assert classify_command_tier("gaia migrate plan") == SecurityTier.T2_DRY_RUN
+        assert classify_command_tier("gh label list") == SecurityTier.T0_READ_ONLY
+        assert classify_command_tier("gh label create bug") == SecurityTier.T3_BLOCKED
+
+    @pytest.mark.parametrize("command,mutative", [
+        ("gaia migrate plan --db /tmp/scratch.db", False),
+        ("gaia migrate apply --db /tmp/scratch.db", True),
+        ("gaia migrate apply --consent-chain v40..v41", True),
+        ("gaia migrate plan --force", True),
+        ("gh label list --repo metraton/gaia", False),
+        ("gh label create bug --repo metraton/gaia", True),
+        ("gh label edit bug --color ff0000", True),
+        ("gh label delete bug --yes", True),
+        ("gh label clone metraton/other", True),
+    ])
+    def test_action_word_decides_under_the_group(self, command, mutative):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is mutative, f"{command}: {result.reason}"
+
+    @pytest.mark.parametrize("key,command", [
+        (("gaia", "migrate"), "gaia migrate plan"),
+        (("gaia", "migrate"), f"{HOOKS_DIR.parent / 'bin' / 'gaia'} migrate plan"),
+        (("gh", "label"), "gh label list"),
+    ])
+    def test_the_table_entry_is_what_produces_the_verdict(self, key, command, monkeypatch):
+        from modules.security import mutative_verbs
+
+        monkeypatch.delitem(mutative_verbs.SUBCOMMAND_VERB_TIER_EXCEPTIONS, key)
+        detect_mutative_command.cache_clear()
+        try:
+            assert detect_mutative_command(command).is_mutative is True
+        finally:
+            monkeypatch.undo()
+            detect_mutative_command.cache_clear()
+        assert detect_mutative_command(command).is_mutative is False
 
 
 class TestScriptRecursionCycleGuard:

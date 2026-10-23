@@ -110,9 +110,11 @@ both.
   old ones need no rewrite. The vocabulary is open: another first word is
   allowed and simply has no kind.
 - **Birth class** -- `gaia/store/writer.py::upsert_memory`: a new `type=user`
-  row with no `--class` is born `anchor`, so it reaches the birth block and
-  every dispatch kernel through `gaia/store/reader.py::user_anchor_rows`;
-  every other type is born `log`. An explicit `--class` wins, and a later
+  row with no `--class` is born `anchor`, so it reaches the birth block, and a
+  dispatch kernel only when its audience is `executor`, through
+  `gaia/store/reader.py::user_anchor_rows`; a new `type=user` row with no
+  `--audience` is born `orchestrator` (`bin/cli/memory.py::_cmd_add`). Every
+  other type is born `log`. An explicit `--class` wins, and a later
   `add` over the same row never changes its class.
 - **Warnings** -- `bin/cli/memory.py::_add_warnings` and the supersedes check
   in `bin/cli/memory.py::_cmd_link`. Each prints `warning: ...` to stderr (with
@@ -125,7 +127,7 @@ both.
 | `body_long` | body over `bin/cli/memory.py::_BODY_WARN_CHARS` | a body is injected whole or dropped |
 | `no_owner` | a non-user row with neither a project nor an initiative | a workspace is a container, not an owner |
 | `rewrite_in_place` | `add --replace` with another body | a change is a new row plus `link <new> <old> --kind=supersedes` |
-| `preference_or_bug` | a `type=user` row whose description's kind is `Preference` (or the Spanish-era `Preferencia`) | asks whether it would hold if Gaia worked perfectly |
+| `preference_or_bug` | a `type=user` row whose description's kind is `Preference` (or the Spanish-era `Preferencia`) | asks whether it is his difference or a rule any user would want, which belongs to the harness |
 | `measurement_unstamped` | a description whose first word is `Measured` (or `Medido`; `gaia/store/memory_claims.py::claims_measurement`) written without both `--measured-at` and `--method` | a measured fact says when and how it was measured; the two columns are shown by `show` and `get-relevant --initiative` |
 | `supersedes_reversed` | `link --kind=supersedes` whose dst was born after its src | the arrow goes from the new row to the old |
 

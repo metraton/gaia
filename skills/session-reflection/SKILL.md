@@ -37,8 +37,10 @@ no home yet.
    working on — sweep it too. `reference.md` holds the reverse-sweep
    mechanics and the objective-state checks that verify a `SKIP`.
 3. **Classify disjointly.** Separate settled decisions and learnings,
-   genuinely open work, and Gaia improvements. When closure is uncertain,
-   classify as open; a lost pending costs more than an extra review. For
+   genuinely open work, and Gaia improvements. A user correction any user
+   would want is a Gaia improvement, not a settled preference of his: only his
+   difference becomes his row. When closure is uncertain, classify as open; a
+   lost pending costs more than an extra review. For
    anything about Gaia itself, `memory/SKILL.md`'s ownership test decides the
    initiative — `gaia_system` for an observed failure or friction,
    project-scoped `gaia` for a decision to build or change something.

@@ -4,9 +4,8 @@ A host adapter translates its stop event into ``hook_data`` plus an
 ``AgentCompletion``, hands them to :func:`run_subagent_stop` with a
 :class:`SubagentStopHost`, and formats the returned
 :class:`SubagentStopOutcome` for its own wire. The gate, the rejection circuit
-and its cut, the episode write, the workflow audit, the agent's approval
-cleanup and the user_facing_summary relay all run here, so every host closes a
-turn by the same rules.
+and its cut, the episode write, the workflow audit and the agent's approval
+cleanup all run here, so every host closes a turn by the same rules.
 """
 
 from __future__ import annotations
@@ -953,8 +952,8 @@ class SubagentStopOutcome:
     Attributes:
         result: the hook output, free of any host channel key.
         rejected: the turn goes back to the subagent for repair.
-        user_message: text for the host's user-facing channel -- the circuit
-            cut notice or the relayed user_facing_summary. It must never travel
+        user_message: text for the host's user-facing channel -- only the
+            circuit cut notice, which Gaia writes. It must never travel
             on a channel that feeds back into the subagent: that resumes the
             turn being closed.
     """
@@ -1279,6 +1278,7 @@ def run_subagent_stop(
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
                 "workspace": _update_contracts_workspace,
+                "project": (_bound_dispatch_row or {}).get("dispatch_project"),
             }
             _update_contracts_result = process_update_contracts(
                 parsed_contract, _update_contracts_task_info
@@ -1293,6 +1293,20 @@ def run_subagent_stop(
                 logger.warning(
                     "update_contracts not applied for %s: %s",
                     agent_type, _update_contracts_refused,
+                )
+            try:
+                from gaia.store.writer import record_update_contracts_outcome
+
+                record_update_contracts_outcome(
+                    parsed_contract.get("reconstructed_from_finalized_draft")
+                    or (_bound_dispatch_row or {}).get("contract_id"),
+                    refused=_update_contracts_refused,
+                    db_path=Path(task_info["db_path"]) if task_info.get("db_path") else None,
+                )
+            except Exception:
+                logger.warning(
+                    "update_contracts outcome for %s not recorded on its row",
+                    agent_type, exc_info=True,
                 )
 
         anchor_hits = None
@@ -1705,42 +1719,8 @@ def run_subagent_stop(
                 "como un cierre valido, aunque declare COMPLETE."
             )
 
-        # The summary comes off the envelope the gate judged, so what the user
-        # reads and the verdict share one artifact. A rejected or cut turn is
-        # excluded: its work is not a valid close. How many subagents ran is
-        # unknown here, so the relay-at-one rule stays the orchestrator's.
-        if (
-            not contract_rejected
-            and not _circuit_tripped
-            and isinstance(_authoritative_envelope, dict)
-        ):
-            try:
-                from modules.agents.contract_validator import (
-                    parse_user_facing_summary,
-                )
-
-                _user_summary = parse_user_facing_summary(_authoritative_envelope)
-            except Exception as _summary_exc:
-                _user_summary = None
-                logger.debug(
-                    "user_facing_summary relay skipped (non-fatal): %s",
-                    _summary_exc,
-                )
-            if _user_summary:
-                result["user_facing_summary"] = _user_summary
-                user_message = (
-                    f"Resumen de {agent_type} para el usuario: {_user_summary}"
-                )
-
         if _update_contracts_refused:
             result["update_contracts_refused"] = _update_contracts_refused
-            _refusal_notice = (
-                f"update_contracts from {agent_type} was NOT applied: "
-                + "; ".join(_update_contracts_refused)
-            )
-            user_message = (
-                f"{user_message}\n{_refusal_notice}" if user_message else _refusal_notice
-            )
 
         # The repair message replaces the rejected one in everything the
         # orchestrator receives, so the rejected turn's work is preserved and

@@ -45,8 +45,10 @@ See `agent-protocol` for when in the turn's cycle this first write happens.
 The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
 role/surface, `project` with its declared `workflow` line when the project
 declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
-acceptance gates), `# Your CLI`, and `# How the user works` (the user's
-standing rows, minus those addressed to the orchestrator alone).
+acceptance gates), `# How the user works` (only the user's rows marked
+`executor`), `# Standing notes` (the project's live anchors, one line each, when
+it has any), `# Environment` (one line: OS, the gaia CLI path, the tools on
+PATH including the user's own executables) and `# Your CLI`.
 Project context is NOT preloaded and no surface routing arrives: pull the
 sections you need on demand, within the `can_read` menu, before querying
 anything wider (`agent-protocol/read-map.md`). Only sections in `can_write`
@@ -117,6 +119,17 @@ already wrote.
   `NEEDS_VERIFICATION`; the verifier is bound through `parent_handoff_id`.
 - `consolidation_report` is required when input marks consolidation,
   cross-check, or multi-surface work.
+- Every clean close, in any closing state: `conclusion` is a non-blank
+  string -- the specialist's verdict for the orchestrator, in its own technical
+  register: what holds, on what evidence, what is open. The orchestrator reads
+  it on the dispatch result's summary line, validates it against the row and
+  the artifacts, and only then answers the user; it never reaches the user's
+  display directly. `finalize` refuses a close without it
+  (`conclusion_required`) and names the `gaia contract set --draft-id <id>
+  conclusion '...'` call that fills it. During the rename, a close that wrote
+  only `user_facing_summary` is stored as `conclusion` and stamped
+  `conclusion_alias`. Rows closed by the reaper, the SubagentStop backstop or
+  salvage are cut, not clean, and are exempt.
 
 `finalize` persists any valid state and converges the row born at dispatch. It
 does not turn a non-terminal state into `COMPLETE`. `validate` is read-only.
@@ -128,8 +141,9 @@ an OPEN vocabulary: `command`, `code`, `semantic`, `self_review` and `none` are
 the names it knows, and any other word is accepted as written. Declaring a type
 is a claim that a check ran, and the claim is priced in a companion field --
 `command`/`code` require a non-empty `command`, `semantic` a truthy
-`requires_human`, `self_review` a non-empty `reviewed`, any other word at least
-ONE of those three, and `none` (no oracle was required) nothing. An omission is
+`requires_human` (a rubric the verifier judges; a human only in the cases
+`gaia-planner` step 5 names), `self_review` a non-empty `reviewed`, any other
+word at least ONE of those three, and `none` (no oracle was required) nothing. An omission is
 a `VERIFICATION_SHAPE` rejection, escapable in one deep-merging write. Spelling
 folds on separators only, so `self-review` and `self_review` are one type and
 `observation` stays itself. `type` is optional: absent or blank, no evidence is
@@ -177,18 +191,29 @@ minted, `approval_id`, copied verbatim from the request's output.
 
 ## Other optional fields
 
-- `user_facing_summary`: human prose, for the end user.
 - `report_prose`: narrow narrative field -- why/discovery-order/purpose-frame/synthesis, never
   evidence, addressed to the orchestrator and the next agent, not the end user; full definition and
-  the line against `user_facing_summary` in `agent-protocol`.
+  the line against `conclusion` in `agent-protocol`.
 - `memory_delta`, `memorialize_suggestions`, `memory_suggestions`: proposals,
   never write authority.
-- `update_contracts`: `{contract, payload}` entries, deep-merged only into the
-  input write allowlist; lists replace whole and no delete sentinel exists.
-  SubagentStop applies them whatever `agent_state` the turn closes in, into
-  the workspace of the turn's dispatch row; an entry it cannot apply comes
-  back on the close as `update_contracts_refused` and in its user message
-  (`hooks/adapters/subagent_stop_core.py::run_subagent_stop`).
+- `update_contracts`: `{contract, payload}` entries, a proposal for any
+  section and never write authority: project context is written by the
+  orchestrator alone. SubagentStop writes nothing for them, whatever
+  `agent_state` the turn closes in; it checks the shape, and the dispatch
+  result announces "N project-context updates proposed for <project> — contract <id>"
+  to the orchestrator, which decides and accepts with `gaia context accept <id>`
+  (`--dry-run` shows the target workspaces). Accepting deep-merges the
+  payload; lists replace whole and no delete sentinel exists. A single
+  `{section: payload}` object is read as the array it abbreviates, any other
+  shape is refused with a repair hint. A `project_identity` payload is split
+  by project key: each key is written into the workspace that owns that
+  project, underscore and hyphen spellings alike, and a key no workspace owns
+  is refused, never written to the dispatch's workspace
+  (`hooks/modules/context/context_writer.py::apply_proposal`). Refusals are
+  stamped on the contract row as `update_contracts_refused`, one reason per
+  entry or key (`gaia/store/writer.py::record_update_contracts_outcome`), and
+  the dispatch result names them to the orchestrator beside the proposal
+  notice (`hooks/modules/agents/proposal_notices.py::proposal_notice`).
 - `rollback_executed`, `context_consumption`: advisory fields.
 
 ## The evidence clause of `update_contracts`

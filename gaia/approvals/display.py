@@ -18,6 +18,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from gaia.redaction import mask_clear_secrets
+
 
 def format_age(seconds: float) -> str:
     """Format seconds into a compact human-readable age string."""
@@ -48,8 +50,7 @@ def _command_summary(payload_json: Optional[str]) -> str:
         return "-"
     # Prefer exact_content for human readability; fall back to operation.
     content = payload.get("exact_content") or payload.get("operation") or "-"
-    # Truncate for table display.
-    content = str(content).replace("\n", " ")
+    content = mask_clear_secrets(str(content)).replace("\n", " ")
     if len(content) > 50:
         return content[:47] + "..."
     return content
@@ -206,7 +207,7 @@ def print_approval_detail(
             lines.append(f"    operation    : {operation}")
         exact_content = payload.get("exact_content")
         if exact_content:
-            lines.append(f"    exact_content: {exact_content}")
+            lines.append(f"    exact_content: {mask_clear_secrets(exact_content)}")
         scope = payload.get("scope")
         if scope:
             lines.append(f"    scope        : {scope}")
@@ -223,7 +224,7 @@ def print_approval_detail(
         if commands:
             lines.append(f"    commands ({len(commands)}):")
             for i, cmd in enumerate(commands):
-                lines.append(f"      [{i}] {cmd}")
+                lines.append(f"      [{i}] {mask_clear_secrets(cmd)}")
 
     if events:
         lines.append("")

@@ -106,7 +106,7 @@ def _ok(result: subprocess.CompletedProcess) -> dict:
 
 def _write_user_row(cwd: Path, name: str, sentence: str) -> None:
     _ok(_gaia(cwd, "memory", "add", "--name", name, "--type", "user", "--class", "anchor",
-              "--description", sentence, "--body", sentence, "--json"))
+              "--audience", "executor", "--description", sentence, "--body", sentence, "--json"))
 
 
 def _query(db: Path, sql: str, params: tuple = ()) -> list[tuple]:
@@ -563,7 +563,7 @@ def _born(one_home, *, plugin: bool) -> str:
 
 
 def _user_part(block: str) -> str:
-    return block[block.index(session_manifest.BIRTH_SECTION_HEADERS[2]):]
+    return block[block.index(session_manifest.USER_HEADER):block.index(session_manifest.ENVIRONMENT_HEADER)]
 
 
 def _standing_user_rows(one_home) -> None:

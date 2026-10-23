@@ -1,9 +1,9 @@
 """
-ContextWriter: validates and persists update_contracts clauses from agent output.
+ContextWriter: validates update_contracts clauses from agent output and applies them.
 
-Parses the ``update_contracts`` array from the agent_contract_handoff envelope,
-enforces write permissions via agent_contract_permissions in ~/.gaia/gaia.db,
-and merges into project_context_contracts.
+A specialist's clause is a proposal: :func:`process_update_contracts` checks its
+shape, routes it to the project it is about, and writes nothing;
+:func:`apply_proposal` is the orchestrator's write into project_context.
 
 update_contracts format (array inside agent_contract_handoff)::
 
@@ -27,31 +27,24 @@ refused at both seams -- skipped by
 :func:`apply_update` at the write itself.
 
 Public API:
-    - validate_permission(update, agent_name, cloud_scope, db_path) -> (allowed, message)
-    - apply_update(update, agent_name, workspace, db_path) -> dict
+    - apply_update(update, agent_name, workspace, db_path, project, proposed_by) -> dict
     - process_update_contracts(contract_dict, task_info) -> dict
+    - apply_proposal(clause, workspace, db_path, dry_run, project, proposed_by, proposer_agent) -> dict
+    - proposed_entries(clause) -> (entries, note)
 """
 
-import copy
 import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Module-level permissions cache (cleared between tests via .clear())
-# Keyed by (agent_name, cloud_scope, db_path_str)
-# ---------------------------------------------------------------------------
-_permissions_cache: dict = {}
-
-
 # ============================================================================
-# 1. validate_permission
+# 1. apply_update
 # ============================================================================
 
 def _get_db_path() -> Optional[Path]:
@@ -61,94 +54,6 @@ def _get_db_path() -> Optional[Path]:
     except Exception:
         return None
 
-
-def _load_writable_contracts(
-    agent_name: str,
-    cloud_scope: Optional[str],
-    db_path: Optional[Path],
-) -> set:
-    """Return the contracts agent_name may write under the given cloud scope.
-
-    Query::
-
-        SELECT contract_name FROM agent_contract_permissions
-        WHERE agent_name = ? AND can_write = 1
-          AND (cloud_scope IS NULL OR cloud_scope = ?);
-
-    A NULL ``cloud_scope`` on the permission row means "all providers". A
-    non-NULL value only matches when the caller's cloud_scope equals it.
-    """
-    cache_key = (agent_name, cloud_scope, str(db_path) if db_path else None)
-    if cache_key in _permissions_cache:
-        return _permissions_cache[cache_key]
-
-    resolved = db_path or _get_db_path()
-    if resolved is None or not resolved.exists():
-        logger.debug("gaia.db not found; no write grants for '%s'", agent_name)
-        _permissions_cache[cache_key] = set()
-        return set()
-
-    try:
-        con = sqlite3.connect(str(resolved))
-        rows = con.execute(
-            """
-            SELECT contract_name FROM agent_contract_permissions
-            WHERE agent_name = ? AND can_write = 1
-              AND (cloud_scope IS NULL OR cloud_scope = ?)
-            """,
-            (agent_name, cloud_scope),
-        ).fetchall()
-        con.close()
-        contracts = {row[0] for row in rows}
-        _permissions_cache[cache_key] = contracts
-        return contracts
-    except sqlite3.Error as exc:
-        logger.warning(
-            "Error loading agent_contract_permissions for '%s': %s",
-            agent_name, exc,
-        )
-        _permissions_cache[cache_key] = set()
-        return set()
-
-
-def _format_rejection_message(
-    agent_name: str,
-    contract_name: str,
-    writable: set,
-) -> str:
-    allowed_list = ", ".join(sorted(writable)) if writable else "(none)"
-    return (
-        f"update_contracts rejected: agent '{agent_name}' has no write permission "
-        f"for contract '{contract_name}'. "
-        f"Writable contracts for this agent: {allowed_list}."
-    )
-
-
-def validate_permission(
-    update: dict,
-    agent_name: str,
-    cloud_scope: Optional[str] = None,
-    db_path: Optional[Path] = None,
-) -> Tuple[bool, str]:
-    """Check whether agent_name may write the contract in update.
-
-    Returns:
-        (True, "")           -- allowed
-        (False, message)     -- blocked; message is deterministic and names
-                                agent_name, contract_name, and writable contracts
-    """
-    contract_name = update.get("contract", "")
-    writable = _load_writable_contracts(agent_name, cloud_scope, db_path)
-
-    if contract_name in writable:
-        return True, ""
-
-    return False, _format_rejection_message(agent_name, contract_name, writable)
-
-
-# ============================================================================
-# 2. apply_update
-# ============================================================================
 
 def _derive_workspace() -> str:
     try:
@@ -190,42 +95,9 @@ def _merge_section_payload(stored: Any, delta: dict) -> dict:
     verb did exist once and was removed on exactly these grounds -- see the note
     in ``tests/test_writer_surgical_reconciliation.py``.
     """
-    merged = copy.deepcopy(stored) if isinstance(stored, dict) else {}
-    for key, value in delta.items():
-        current = merged.get(key)
-        if isinstance(value, dict) and isinstance(current, dict):
-            merged[key] = _merge_section_payload(current, value)
-        else:
-            merged[key] = value
-    return merged
+    from gaia.store.project_context import merge_section_payload
 
-
-def _decode_stored_payload(raw: Optional[str], contract_name: str) -> Any:
-    """Decode a stored payload column, returning None when it cannot be merged into.
-
-    A payload that is absent, unparseable, or not a JSON object has no keys to
-    preserve, so the caller replaces it outright. The prior value is not lost:
-    ``trg_pcc_history`` records the before/after pair for every UPDATE.
-    """
-    if raw is None:
-        return None
-    try:
-        decoded = json.loads(raw)
-    except (TypeError, ValueError) as exc:
-        logger.warning(
-            "Stored payload for contract '%s' is not valid JSON (%s); "
-            "replacing it instead of merging",
-            contract_name, exc,
-        )
-        return None
-    if not isinstance(decoded, dict):
-        logger.warning(
-            "Stored payload for contract '%s' is a %s, not an object; "
-            "replacing it instead of merging",
-            contract_name, type(decoded).__name__,
-        )
-        return None
-    return decoded
+    return merge_section_payload(stored, delta)
 
 
 def apply_update(
@@ -233,8 +105,16 @@ def apply_update(
     agent_name: str,
     workspace: Optional[str] = None,
     db_path: Optional[Path] = None,
+    project: Optional[str] = None,
+    proposed_by: Optional[str] = None,
 ) -> dict:
-    """Merge a validated update_contracts entry into project_context_contracts.
+    """Merge a validated update_contracts entry into the ``project_context`` row of its project.
+
+    The project is the one the entry names, else ``project``, else -- for
+    ``project_identity`` -- the single project its keys name (:func:`_route`);
+    an entry that resolves to no project, or to several, is refused. The
+    section a reader of that project saw is the merge base, so a first write
+    never hides keys still read from ``project_context_contracts``.
 
     The payload is a DELTA: the stored section is read, deep-merged with the
     payload (:func:`_merge_section_payload`), and written back, so a partial
@@ -249,14 +129,16 @@ def apply_update(
     such an entry on the envelope path; this check is the one adjacent to the
     write, so a direct caller of this function cannot reach the destructive
     path either. Note the asymmetry with a non-object payload already IN the
-    row, handled by :func:`_decode_stored_payload`: that one is replaced, since
+    row: that one is replaced (``write_mode`` ``replace``), since
     a corrupt or non-object stored value has nothing worth preserving and
-    ``trg_pcc_history`` retains the prior value regardless.
+    ``project_context_history`` retains the prior value regardless.
 
-    ``workspace`` defaults to gaia.project.current() when not provided.
+    ``workspace`` defaults to gaia.project.current() and only disambiguates a
+    project name several workspaces hold. ``agent_name`` and ``proposed_by``
+    are recorded in ``project_context_history``.
 
     Returns an audit dict:
-    ``{timestamp, agent, contract, workspace, success, error, write_mode}``,
+    ``{timestamp, agent, contract, workspace, project, success, error, write_mode}``,
     where ``write_mode`` is ``insert`` (no prior row), ``merge`` (deep-merged
     into the prior payload), or ``replace`` (the prior payload was corrupt or
     not an object, so it had no keys to preserve).
@@ -271,6 +153,7 @@ def apply_update(
         "agent": agent_name,
         "contract": contract_name,
         "workspace": ws,
+        "project": None,
         "success": False,
         "error": None,
         "write_mode": None,
@@ -309,46 +192,41 @@ def apply_update(
         con.execute("PRAGMA foreign_keys = ON")
         con.execute("BEGIN IMMEDIATE")
 
-        row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = ?",
-            (ws, contract_name),
-        ).fetchone()
+        targets, refusals = _route(update, ws, project, con)
+        if refusals or len(targets) != 1:
+            con.execute("ROLLBACK")
+            audit["error"] = "; ".join(refusals) or (
+                f"update_contracts '{contract_name}' names {len(targets)} projects; "
+                "write each project's keys separately"
+            )
+            return audit
+        owner, entry = targets[0]
+        audit["workspace"], audit["project"] = owner["workspace"], owner["identity"]
 
-        if row is None:
-            stored = None
-            write_mode = "insert"
-        else:
-            stored = _decode_stored_payload(row[0], contract_name)
+        from gaia.store.project_context import project_sections, write_section
+
+        seen = project_sections(con, owner).get(contract_name)
+        stored = None
+        write_mode = "insert"
+        if seen is not None:
+            stored = seen["payload"] if isinstance(seen["payload"], dict) else None
+            if stored is not None and contract_name == "project_identity":
+                stored = {k: v for k, v in stored.items() if k in entry["payload"]}
             write_mode = "merge" if stored is not None else "replace"
 
-        merged_payload = _merge_section_payload(stored, payload)
+        merged_payload = _merge_section_payload(stored, entry["payload"])
         payload_json = json.dumps(merged_payload)
-
-        # Ensure workspace row exists so the FK on project_context_contracts holds.
-        con.execute(
-            "INSERT OR IGNORE INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
-            (ws, ws, now),
-        )
-
-        con.execute(
-            """
-            INSERT INTO project_context_contracts
-                (workspace, contract_name, payload, metadata, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(workspace, contract_name) DO UPDATE SET
-                payload    = excluded.payload,
-                updated_at = excluded.updated_at
-            """,
-            (ws, contract_name, payload_json, None, now),
+        write_section(
+            con, owner["identity"], contract_name, payload_json, now,
+            agent_name, proposed_by,
         )
         con.execute("COMMIT")
 
         audit["success"] = True
         audit["write_mode"] = write_mode
         logger.info(
-            "Context updated by %s: workspace=%s contract=%s mode=%s keys=%d",
-            agent_name, ws, contract_name, write_mode,
+            "Context updated by %s: project=%s contract=%s mode=%s keys=%d",
+            agent_name, owner["identity"], contract_name, write_mode,
             len(merged_payload) if isinstance(merged_payload, dict) else 0,
         )
         return audit
@@ -372,37 +250,262 @@ def apply_update(
 
 
 # ============================================================================
-# 3. process_update_contracts (envelope path)
+# 2. process_update_contracts (envelope path)
 # ============================================================================
+
+def _section_keys(contract_name: str, workspace: str, db_path: Optional[Path]) -> set:
+    """Top-level keys of the section as ``workspace`` reads it, or an empty set when it holds none."""
+    resolved = Path(db_path) if db_path else _get_db_path()
+    if resolved is None or not resolved.exists():
+        return set()
+    try:
+        from gaia.store.project_context import workspace_sections
+
+        con = sqlite3.connect(str(resolved))
+        try:
+            section = workspace_sections(con, workspace).get(contract_name)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return set()
+    stored = section["payload"] if section else None
+    return set(stored) if isinstance(stored, dict) else set()
+
+
+def _identity_key(con: sqlite3.Connection, owner: dict, key: str) -> str:
+    """The spelling of ``key`` the project's ``project_identity`` already holds, else ``key``.
+
+    Keeps a hyphenated proposal from forking a second entry beside the
+    underscore slug ``tools/scan/promote.py`` writes.
+    """
+    from gaia.store.project_context import name_variants, project_sections
+
+    held = (project_sections(con, owner).get("project_identity") or {}).get("payload")
+    held = held if isinstance(held, dict) else {}
+    return next((variant for variant in name_variants(key) if variant in held), key)
+
+
+def _route(
+    entry: dict,
+    workspace: str,
+    dispatch_project: Optional[str],
+    con: sqlite3.Connection,
+) -> tuple:
+    """``([(project, entry)], [refusal])``: each part of ``entry`` under the project it is about.
+
+    The project is the one the entry names (``project``), else, for
+    ``project_identity``, the one each key names (a key's value may also name
+    it by ``local_path``), else the dispatch project. Nothing is ever
+    defaulted to ``workspace``: a section about a project that lands in the
+    session's workspace is invisible to every reader of that project.
+    """
+    from gaia.store.project_context import resolve_project
+
+    contract_name = entry["contract"]
+    if entry.get("project"):
+        owner = resolve_project(con, entry["project"], workspace)
+        if owner is None:
+            return [], [_unowned_error(contract_name, [str(entry["project"])])]
+        return [(owner, entry)], []
+    if contract_name != "project_identity":
+        owner = resolve_project(con, dispatch_project, workspace)
+        if owner is None:
+            return [], [_no_project_error(contract_name, dispatch_project)]
+        return [(owner, entry)], []
+    by_owner: dict = {}
+    unowned: list = []
+    for key, value in entry["payload"].items():
+        path = value.get("local_path") if isinstance(value, dict) else None
+        owner = resolve_project(con, key, workspace) or resolve_project(con, path, workspace)
+        if owner is None:
+            unowned.append(key)
+            continue
+        slot = by_owner.setdefault(owner["identity"], (owner, {}))
+        slot[1][_identity_key(con, owner, key)] = value
+    routed = [
+        (owner, {"contract": contract_name, "payload": payload})
+        for owner, payload in by_owner.values()
+    ]
+    return routed, [_unowned_error(contract_name, unowned)] if unowned else []
+
+
+def _route_proposal(entry: dict, workspace: str, dispatch_project: Optional[str], db_path) -> tuple:
+    """:func:`_route` on a read-only connection; ``([], [refusal])`` when the DB is unreadable."""
+    resolved = Path(db_path) if db_path else _get_db_path()
+    try:
+        con = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+        try:
+            return _route(entry, workspace, dispatch_project, con)
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        return [], [f"update_contracts '{entry['contract']}' not routed: {exc}"]
+
+
+def _unowned_error(contract_name: str, unowned: list) -> str:
+    return (
+        f"update_contracts '{contract_name}': no workspace owns {', '.join(unowned)}, "
+        "so nothing was routed for it. Repair: key the entry by a project the "
+        "substrate knows (see `gaia context project <name>`; underscore and "
+        "hyphen spellings are both tried) and propose it again."
+    )
+
+
+def _no_project_error(contract_name: str, dispatch_project: Optional[str]) -> str:
+    named = f"the dispatch project {dispatch_project!r} is unknown" if dispatch_project else (
+        "the dispatch named no project"
+    )
+    return (
+        f"update_contracts '{contract_name}': the entry names no project and {named}, "
+        "so it was written nowhere. Repair: add \"project\": \"<name or identity>\" "
+        "to the entry (see `gaia context project <name>`) and propose it again."
+    )
+
+
+def _normalize_clause(raw: Any) -> tuple:
+    """``(array, note, error)`` for the raw ``update_contracts`` value.
+
+    The clause is an array of ``{contract, payload}``. Two single-object
+    spellings of the same thing are read as such rather than dropped: one
+    ``{contract, payload}`` entry, and ``{section: payload}`` where every key is
+    a section name and every value an object. Both are unambiguous (a payload
+    is always an object, a section name always a string, and ``contract`` and
+    ``payload`` are not section names), and normalizing loses nothing because a
+    proposal is only recorded, not written. Anything else is an ``error``.
+    """
+    if not raw:
+        return [], None, None
+    if isinstance(raw, list):
+        return raw, None, None
+    if isinstance(raw, dict):
+        if "contract" in raw and "payload" in raw:
+            return [raw], "a single {contract, payload} object was read as a one-entry array", None
+        if all(isinstance(k, str) and k and isinstance(v, dict) for k, v in raw.items()):
+            return (
+                [{"contract": k, "payload": v} for k, v in raw.items()],
+                "a {section: payload} object was read as an array of {contract, payload}",
+                None,
+            )
+    return [], None, (
+        f"update_contracts not recorded: expected an array of {{contract, payload}}, got "
+        f"{type(raw).__name__}. Repair: send [{{\"contract\": \"<section>\", "
+        "\"payload\": {...}}]."
+    )
+
+
+def _parse_clause(raw: Any) -> tuple:
+    """``(entries, note, errors)``: the well-formed entries of a raw clause and why others failed."""
+    clause, note, error = _normalize_clause(raw)
+    if error:
+        return [], None, [error]
+    try:
+        from ..agents.contract_validator import parse_update_contracts
+
+        entries = parse_update_contracts({"update_contracts": clause})
+    except Exception as exc:
+        logger.warning("parse_update_contracts failed: %s", exc)
+        return [], note, [f"update_contracts not recorded: the clause could not be parsed ({exc})"]
+    errors = []
+    if len(entries) < len(clause):
+        errors.append(
+            f"update_contracts: {len(clause) - len(entries)} of {len(clause)} entries not "
+            "recorded: each must be an object with 'contract' and an object 'payload'"
+        )
+    return entries, note, errors
+
+
+def apply_proposal(
+    clause: Any,
+    workspace: str,
+    db_path: Optional[Path] = None,
+    dry_run: bool = False,
+    project: Optional[str] = None,
+    proposed_by: Optional[str] = None,
+    proposer_agent: Optional[str] = None,
+) -> dict:
+    """Write a recorded ``update_contracts`` proposal under the projects it is about.
+
+    This is the orchestrator's write path: SubagentStop only records and
+    announces a specialist's proposal (:func:`process_update_contracts`).
+    ``project`` is the proposing turn's dispatch project; :func:`_route` says
+    which project each part lands in, and a part with none is refused, never
+    written to ``workspace``. ``proposed_by`` (the proposing contract id) and
+    ``proposer_agent`` are recorded in history. ``evidence`` entries are
+    skipped: they are inserted at SubagentStop. With ``dry_run`` nothing is
+    written and ``applied`` lists the targets that would be.
+
+    Returns ``{applied: [{contract, workspace, project}], errors: [str], note}``.
+    """
+    entries, note, errors = _parse_clause(clause)
+    applied: list = []
+    for entry in entries:
+        if entry["contract"] == "evidence":
+            continue
+        routed, refusals = _route_proposal(entry, workspace, project, db_path)
+        errors.extend(refusals)
+        for owner, routed_entry in routed:
+            target = {"contract": entry["contract"], "workspace": owner["workspace"],
+                      "project": owner["identity"]}
+            if dry_run:
+                applied.append(target)
+                continue
+            audit = apply_update(
+                dict(routed_entry, project=owner["identity"]),
+                proposer_agent or "orchestrator", workspace=owner["workspace"],
+                db_path=db_path, proposed_by=proposed_by,
+            )
+            if audit["success"]:
+                applied.append(target)
+            else:
+                errors.append(
+                    f"update_contracts entry '{audit['contract']}' for project "
+                    f"'{owner['identity']}' not applied: {audit.get('error') or 'unknown error'}"
+                )
+    return {"applied": applied, "errors": errors, "note": note}
+
+
+def proposed_entries(clause: Any) -> tuple:
+    """``(entries, note)``: the well-formed project-context entries of a raw clause.
+
+    Shape only, with no owner lookup and no write, so a reader of a stored
+    envelope can count what awaits the orchestrator. ``evidence`` entries are
+    excluded because SubagentStop inserts them rather than proposing them.
+    """
+    entries, note, _errors = _parse_clause(clause)
+    return [entry for entry in entries if entry["contract"] != "evidence"], note
+
 
 def process_update_contracts(
     contract_dict: dict,
     task_info: dict,
 ) -> dict:
-    """Process the ``update_contracts`` array from a parsed contract dict.
+    """Record the ``update_contracts`` clause of a parsed contract dict as proposals.
 
-    This is the agent_contract_handoff envelope path. It supports N atomic
-    updates per turn, each entry being a ``{contract, payload}`` object.
-
-    Each entry in ``update_contracts`` must be ``{contract, payload}``.
-    Permission is checked per entry via ``validate_permission``.  Entries
-    that fail permission are collected in ``rejected``; successful entries
-    are applied immediately.
+    A specialist only notifies: project-context entries are validated, routed
+    to the workspace that owns their project, and listed under ``proposed``
+    with nothing written; the orchestrator applies them (:func:`apply_proposal`).
+    ``evidence`` entries are the exception and are still inserted here.
+    Any specialist may propose any section; whether to accept is the
+    orchestrator's decision, so ``can_write`` does not gate a proposal.
 
     Args:
         contract_dict: Parsed JSON contract dict (from parse_contract()).
-        task_info: Task metadata (agent, db_path, cloud_scope, workspace).
+        task_info: Task metadata (agent, db_path, cloud_scope, workspace, and
+            project -- the born row's ``dispatch_project``).
 
     Returns:
         dict with keys:
-            updated (bool)         -- True when at least one entry was applied
-            contracts (list[str])  -- Names of successfully applied contracts
+            updated (bool)         -- True when an evidence entry was inserted
+            contracts (list[str])  -- Names of inserted evidence rows
+            proposed (list[dict])  -- ``{contract, workspace, project, keys}`` awaiting the orchestrator
             rejected (list[str])   -- Names of rejected contracts
-            errors (list[str])     -- Error messages for failed entries
+            errors (list[str])     -- Why an entry or key was not recorded
+            normalized (str)       -- Present when a single-object clause was reshaped
     """
     result = {
         "updated": False,
         "contracts": [],
+        "proposed": [],
         "rejected": [],
         "errors": [],
     }
@@ -410,20 +513,17 @@ def process_update_contracts(
     if not isinstance(contract_dict, dict):
         return result
 
-    try:
-        from ..agents.contract_validator import parse_update_contracts
-        entries = parse_update_contracts(contract_dict)
-    except Exception as exc:
-        logger.debug("parse_update_contracts failed (non-fatal): %s", exc)
-        return result
+    entries, note, errors = _parse_clause(contract_dict.get("update_contracts"))
+    result["errors"].extend(errors)
+    if note:
+        result["normalized"] = note
 
     if not entries:
         return result
 
     agent_name = task_info.get("agent", task_info.get("agent_type", "unknown"))
     db_path = task_info.get("db_path")
-    cloud_scope = task_info.get("cloud_scope")
-    workspace = task_info.get("workspace")
+    workspace = task_info.get("workspace") or _derive_workspace()
 
     evidence_entries = []
     context_entries = []
@@ -433,36 +533,16 @@ def process_update_contracts(
         else:
             context_entries.append(entry)
 
-    # Process project_context entries (existing path -- permission-gated)
     for entry in context_entries:
-        allowed, rejection_msg = validate_permission(
-            entry, agent_name, cloud_scope, db_path
-        )
-        if not allowed:
-            contract_name = entry.get("contract", "")
-            result["rejected"].append(contract_name)
-            result["errors"].append(rejection_msg)
-            logger.warning(rejection_msg)
-            continue
-
-        audit = apply_update(entry, agent_name, workspace=workspace, db_path=db_path)
-        if audit["success"]:
-            result["contracts"].append(audit["contract"])
-            result["updated"] = True
-            logger.info(
-                "update_contracts applied by %s: workspace=%s contract=%s",
-                agent_name,
-                audit.get("workspace"),
-                audit["contract"],
-            )
-        else:
-            result["errors"].append(audit.get("error", "unknown error"))
-            logger.error(
-                "update_contracts failed for %s entry '%s': %s",
-                agent_name,
-                entry.get("contract", ""),
-                audit.get("error"),
-            )
+        routed, refusals = _route_proposal(entry, workspace, task_info.get("project"), db_path)
+        result["errors"].extend(refusals)
+        for owner, routed_entry in routed:
+            result["proposed"].append({
+                "contract": entry["contract"],
+                "workspace": owner["workspace"],
+                "project": owner["identity"],
+                "keys": sorted(routed_entry["payload"]),
+            })
 
     # Process evidence entries (fail-together per D8 -- hook-trusted path)
     if evidence_entries:

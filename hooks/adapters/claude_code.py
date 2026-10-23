@@ -1722,7 +1722,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             kernel_context = self._maybe_claim_dispatch_kernel(raw)
             if kernel_context:
                 context_text = "\n\n".join(filter(None, [
-                    context_text, kernel_context,
+                    kernel_context, context_text,
                 ]))
             return ContextResult(
                 context_injected=True,

@@ -85,6 +85,7 @@ def _valid_envelope() -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
 
 
@@ -236,6 +237,8 @@ def test_cli_finalize_without_report_prose_exits_zero(cli_env):
 
     absent = _run(["view", "--draft-id", draft_id, "--field", "report_prose"], cli_env)
     assert absent.returncode == 1
+    summary = _run(["set", "--draft-id", draft_id, "user_facing_summary", "Done."], cli_env)
+    assert summary.returncode == 0, summary.stderr
 
     fin = _run(["finalize", "--draft-id", draft_id, "--json"], cli_env)
     assert fin.returncode == 0, f"finalize failed: {fin.stderr!r}"

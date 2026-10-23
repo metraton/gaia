@@ -151,6 +151,46 @@ def test_add_replace_preserves_existing_audience(seeded, capsys):
     )
 
 
+def _user_audience(db_path: Path, name: str):
+    con = sqlite3.connect(str(db_path))
+    try:
+        r = con.execute("SELECT audience FROM memory WHERE name=?", (name,)).fetchone()
+        return r[0] if r else None
+    finally:
+        con.close()
+
+
+def _add_user(parser, name, body, *extra):
+    args = parser.parse_args([
+        "memory", "add", f"--name={name}", "--type=user", f"--body={body}", *extra,
+    ])
+    return args.func(args)
+
+
+def test_add_user_row_without_audience_defaults_to_orchestrator(seeded, capsys):
+    parser, _ = _build_parser()
+    rc = _add_user(parser, "user_pref_default", "a preference")
+    assert rc == 0, capsys.readouterr().err
+    assert _user_audience(seeded, "user_pref_default") == "orchestrator"
+
+
+def test_add_user_row_with_explicit_audience_keeps_it(seeded, capsys):
+    parser, _ = _build_parser()
+    rc = _add_user(parser, "user_pref_marked", "a standard", "--audience=executor")
+    assert rc == 0, capsys.readouterr().err
+    assert _user_audience(seeded, "user_pref_marked") == "executor"
+
+
+def test_add_non_user_row_without_audience_stays_any(seeded, capsys):
+    parser, _ = _build_parser()
+    args = parser.parse_args([
+        "memory", "add", "--name=feedback_default", "--type=feedback",
+        "--body=text", "--workspace=me",
+    ])
+    assert args.func(args) == 0, capsys.readouterr().err
+    assert _audience(seeded, "feedback_default") == "any"
+
+
 def test_add_rejects_invalid_audience_choice(seeded):
     parser, _ = _build_parser()
     with pytest.raises(SystemExit):

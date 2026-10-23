@@ -8,9 +8,11 @@ it, as comma-separated ``wrapper=cli`` pairs (``GAIA_CLI_ALIASES="mywrap=gh"``).
 Nothing declared means no alias. Malformed pairs are ignored rather than
 guessed at.
 
-Callers treat a declared alias as escalate-only: the wrapper is classified
-both as written and as the wrapped CLI, and the stricter verdict stands, so
-the variable can cost a consent prompt or a block but can never open one.
+The wrapped CLI's verdict counts in both directions only for a wrapper the
+classifier knows nothing about: it then inherits that CLI's exceptions as well
+as its gates. A wrapper named after a CLI the classifier models keeps its own
+gates, the stricter verdict standing, and the permanent-deny floor always takes
+the stricter of both readings.
 
 The tier classifier caches its verdicts per command string, so the
 declaration is assumed fixed for the life of the hook process, which is how
@@ -78,13 +80,20 @@ def with_wrappers_resolved(command: str) -> Optional[str]:
     return resolved if resolved != command else None
 
 
-def as_wrapped_cli(command: str) -> Optional[str]:
-    """Return *command* with a declared wrapper replaced by the CLI it wraps, or None."""
+def declared_wrapper(command: str) -> Optional[Tuple[str, str]]:
+    """Return ``(wrapper, command as the wrapped CLI)`` when *command* runs a declared wrapper."""
     match = _LEADING_COMMAND.match(command or "")
     if not match:
         return None
     prefix, head, rest = match.groups()
-    target = aliased_cli(os.path.basename(head))
+    wrapper = os.path.basename(head)
+    target = aliased_cli(wrapper)
     if target is None:
         return None
-    return f"{prefix}{target}{rest}"
+    return wrapper, f"{prefix}{target}{rest}"
+
+
+def as_wrapped_cli(command: str) -> Optional[str]:
+    """Return *command* with a declared wrapper replaced by the CLI it wraps, or None."""
+    declared = declared_wrapper(command)
+    return None if declared is None else declared[1]

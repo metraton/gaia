@@ -25,19 +25,26 @@ Construction patterns for building Gaia components. Every component type follows
    (for a dispatched SUBAGENT only: the HOST -- Claude Code, not this
    hook or any other Gaia hook -- separately reads the target agent's
    `.md` frontmatter and preloads its `skills:` list before the first
-   turn. `hooks/hooks.json` carries no `Skill` matcher, so a
-   `Skill(...)` call never reaches PreToolUse either -- see
-   `artifact_skill_reminder.py`. The primary agent has no equivalent:
+   turn. `hooks/hooks.json` has no PreToolUse `Skill` matcher; its
+   PostToolUse `Skill` matcher only records loads: every load becomes a
+   `skill.loaded` harness event naming the skill, agent, role and
+   session (`hooks/modules/events/capability_usage.py`), and a
+   main-session `Skill('memory')` load also becomes `memory.skill_loaded`
+   for the orchestrator's memory-write guard
+   (`hooks/modules/security/memory_skill_guard.py`) -- see
+   `artifact_skill_reminder.py`. A preloaded skill never passes through
+   the `Skill` tool, so it records nothing. The primary agent has no equivalent:
    Claude Code's own docs list only "system prompt, tool restrictions,
    and model" as inherited on the main thread, which is why
    `gaia-orchestrator.md`'s frontmatter carries no `skills:` field.)
    |
 4. SubagentStart hook claims the born row and injects the KERNEL:
    "# Your Contract" (incl. project, its declared workflow when
-   there is one, can_read/can_write menu), "# Your CLI",
-   "# How the user works". Project context is NOT
-   preloaded -- the agent pulls sections on demand, with the verbs in
-   agent-protocol/read-map.md, within its can_read menu.
+   there is one, can_read/can_write menu), "# How the user works",
+   "# Standing notes", "# Project context", "# Environment", "# Your CLI".
+   "# Project context" carries the dispatch project's can_read sections: whole
+   when they fit, else pointer lines, else one line; the verbs for the rest
+   are in agent-protocol/read-map.md.
    |
 5. Agent checkpoints/finalizes its agent_contract_handoffs row via
    `gaia contract`; the final message carries no envelope
@@ -89,7 +96,7 @@ cli:
 
 `skills:` and `cli:` are read by two different parties, not one -- this is why the example shows both. `skills:` is preloaded by the HOST (Claude Code), not by any Gaia hook, and only for a dispatched SUBAGENT: the primary agent (`gaia-orchestrator.md`) carries no `skills:` field, because Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread. `cli:` is the one frontmatter field Gaia itself reads, at subagent birth (`context/kernel_builder.py::_agent_cli_extras`): its lines are appended verbatim to the "# Your CLI" kernel block. It is optional and no shipped agent declares it yet -- shown here so the two fields' different owners (host vs. Gaia) are visible side by side, not to imply it is required.
 
-A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by the host from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # How the user works, rendered from the born row) + orchestrator request. The primary agent skips the skills step entirely. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand -- the verb that reaches them, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
+A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by the host from frontmatter) + dispatch kernel (# Your Contract / # How the user works / # Standing notes / # Project context / # Environment / # Your CLI, rendered from the born row) + orchestrator request. The primary agent skips the skills step entirely. Project context arrives as the kernel's `# Project context` block, built from the `can_read` sections (from `agent_contract_permissions`) of `project_context_contracts`; a section the block only points at is pulled on demand -- the verb that reaches it, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
 
 ## Routing Patterns
 
@@ -112,7 +119,7 @@ When you modify any Gaia component (hook, skill, agent definition, routing confi
 - Changed `hooks/modules/security/protected_paths.py::is_protected_hook_path` paths → check `security-tiers/SKILL.md` for path documentation
 - Added a new agent definition → check `gaia-patterns/reference.md` for agents table
 - Modified hook enforcement logic → check `security-tiers` and `agent-protocol` references
-- When adding or modifying files in agents/, skills/, hooks/, config/, bin/, tests/, build/ or the repo root, load Skill('readme-writing') to update the relevant README.md
+- When adding or modifying files in agents/, skills/, hooks/, config/, bin/, tests/, build/ or the repo root, load Skill('technical-writing') (door: README) to update the relevant README.md
 
 **Format:** In `cross_layer_impacts`, list the doc file and the behavior change, e.g.:
 ```

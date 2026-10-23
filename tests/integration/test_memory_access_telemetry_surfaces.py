@@ -104,7 +104,7 @@ SEEDS: tuple[Seed, ...] = (
          initiative="beta"),
     # type=user: the anchor section carries the user's instructions, so a
     # type=project anchor sharing the workspace no longer reaches it.
-    Seed("a_anchor", "user", class_="anchor"),
+    Seed("a_anchor", "user", class_="anchor", audience="executor"),
     # A user row is born anchor; this one is explicitly a log row, the one no
     # kernel or birth block renders.
     Seed("u_exec", "user", class_="log", audience="executor"),
@@ -165,10 +165,18 @@ SURFACES: tuple[Surface, ...] = (
           ["memory", "search", "seeded", "--workspace", WORKSPACE,
            "--scope", "memory", "--json", "--limit", "50"],
           None, action="search", contains=("t_alpha",)),
+    _read("search-filtered-all",
+          ["memory", "search", "seeded census", "--workspace", WORKSPACE,
+           "--type", "project", "--class", "thread", "--all",
+           "--include-superseded"],
+          None, action="search", contains=("t_alpha",)),
     _read("list-table", ["memory", "list", "--workspace", WORKSPACE],
           None, action="list", contains=("t_alpha", "u_exec")),
     _read("list-json",
           ["memory", "list", "--workspace", WORKSPACE, "--json"],
+          None, action="list", contains=("t_alpha",)),
+    _read("list-include-superseded",
+          ["memory", "list", "--workspace", WORKSPACE, "--include-superseded"],
           None, action="list", contains=("t_alpha",)),
     _read("list-count-sorted-asc",
           ["memory", "list", "--workspace", WORKSPACE, "--sort", "deliberate",
@@ -180,6 +188,10 @@ SURFACES: tuple[Surface, ...] = (
           None, action="stats", contains=("{",)),
     _read("conflicts", ["memory", "conflicts", "--json", "--threshold", "0.9"],
           None, action="conflicts", contains=("candidates",)),
+    _read("conflicts-owner-limited",
+          ["memory", "conflicts", "--json", "--owner", "user", "--limit", "5",
+           "--exclude-class", "log"],
+          None, action="conflicts", contains=("duplicates",)),
     _read("episode-show", ["memory", "episode-show", EPISODE_ID, "--json"],
           None, action="episode-show", contains=(EPISODE_ID,)),
 

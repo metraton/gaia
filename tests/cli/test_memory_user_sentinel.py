@@ -409,7 +409,7 @@ def test_append_reclassify_link_story_resolve_sentinel_rows_without_workspace(
         workspace=None, json=True,
     )) == 0
     assert memory_mod._cmd_link(argparse.Namespace(
-        src_name="user_second_note", dst_name="user_prefers_plain_reports",
+        src_name="user_second_note", dst_names=["user_prefers_plain_reports"],
         kind="derived_from", delete=False, workspace=None, json=True,
     )) == 0
     capsys.readouterr()

@@ -391,6 +391,26 @@ def _extract_memorialize_suggestions(contract: dict) -> MemorializeSuggestionsBl
     )
 
 
+def _free_shape_create(entry: dict) -> Optional[Dict[str, Any]]:
+    """A ``create`` proposal from a version-less entry ``{type, name, description, body}``, or None.
+
+    Specialists in the field write ``{"proposals": [...]}`` without ``version``
+    or ``operation``, naming the row ``name``; the contract accepts it, so the
+    parser reads it as the create it plainly is.
+    """
+    description, body = entry.get("description"), entry.get("body")
+    if not (isinstance(description, str) and description.strip()
+            and isinstance(body, str) and body.strip()):
+        return None
+    create: Dict[str, Any] = {"description": description, "body": body}
+    slug = entry.get("slug") or entry.get("name")
+    if slug:
+        create["slug"] = str(slug)
+    if entry.get("type"):
+        create["type"] = str(entry["type"])
+    return {"operation": "create", "create": create}
+
+
 def _extract_memory_delta(contract: dict) -> MemoryDeltaBlock:
     """Parse memory_delta, normalizing legacy memorialize entries as creates."""
     raw = contract.get("memory_delta")
@@ -409,11 +429,13 @@ def _extract_memory_delta(contract: dict) -> MemoryDeltaBlock:
     if not isinstance(raw, dict):
         return MemoryDeltaBlock(True, 0, [], ["memory_delta: expected object"])
     version = raw.get("version")
-    if version != MEMORY_DELTA_VERSION:
+    free_shape = version is None
+    if version != MEMORY_DELTA_VERSION and not free_shape:
         return MemoryDeltaBlock(
             True, int(version) if isinstance(version, int) else 0, [],
             [f"memory_delta.version: expected {MEMORY_DELTA_VERSION}"],
         )
+    version = MEMORY_DELTA_VERSION
     entries = raw.get("proposals")
     if not isinstance(entries, list):
         return MemoryDeltaBlock(True, version, [], ["memory_delta.proposals: expected array"])
@@ -423,6 +445,11 @@ def _extract_memory_delta(contract: dict) -> MemoryDeltaBlock:
         if not isinstance(entry, dict):
             warnings.append(f"memory_delta.proposals[{index}]: not an object")
             continue
+        if free_shape and "operation" not in entry:
+            entry = _free_shape_create(entry)
+            if entry is None:
+                warnings.append(f"memory_delta.proposals[{index}]: no description and body")
+                continue
         operation = entry.get("operation")
         if operation not in MEMORY_DELTA_OPERATIONS:
             warnings.append(f"memory_delta.proposals[{index}].operation: invalid")

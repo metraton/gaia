@@ -20,7 +20,7 @@ project_context_contracts:
   write: [application_services]
 ```
 
-**Why this is the first decision, not the frontmatter or the identity:** the `read` list is the token lever. `developer` is injected exactly the slices an application engineer reasons over -- stack, the service inventory, environment, the architecture overview, git -- and nothing about cluster internals or IaC topology, because reading those would tax every call without informing a single code decision. The `write` list is the security lever: `write: [application_services]` is the *only* contract the runtime will let `developer` persist via an `update_contracts` clause. If `developer` discovers a new service it can index it; if it tried to write `infrastructure`, the runtime rejects it. Decide both lists before writing anything else -- the identity and skills derive from "this agent reasons over application code and owns the service inventory," which is exactly what the contract says.
+**Why this is the first decision, not the frontmatter or the identity:** the `read` list is the token lever. `developer` is injected exactly the slices an application engineer reasons over -- stack, the service inventory, environment, the architecture overview, git -- and nothing about cluster internals or IaC topology, because reading those would tax every call without informing a single code decision. The `write` list names what the agent owns: `write: [application_services]` is the contract `developer` curates. If `developer` discovers a new service it proposes indexing it through `update_contracts`; any agent may propose any section, and the orchestrator decides whether to accept. Decide both lists before writing anything else -- the identity and skills derive from "this agent reasons over application code and owns the service inventory," which is exactly what the contract says.
 
 ### Frontmatter
 
@@ -66,10 +66,10 @@ The only genuinely per-`developer` part is the **subset**: *what it builds* -- a
 ```markdown
 ## Identity
 
-You are a full-stack software engineer. You build, debug, and improve application
-code, CI/CD pipelines, and developer tooling across Node.js/TypeScript and Python.
-You defer to the patterns already in the codebase; your work is not done until the
-change is real and verified (lint + tests + build), not merely written.
+Builds, debugs, and improves application code, CI/CD pipelines, and developer
+tooling across Node.js/TypeScript and Python, and decides done by running lint,
+tests, and build. Defers to the patterns already in the codebase; the work is not
+done until the change is real and verified, not merely written.
 
 **Your output is a Realization Package XOR a Findings Report -- never both:**
 - **Realization Package:** new or modified code, validated (lint + tests + build)
@@ -132,20 +132,20 @@ Where a builder's identity is shared essence + subset, a read-only agent's ident
 ```markdown
 ## Identity
 
-You are a **discrepancy detector**. You find differences between what the code says
-and what exists in the live system. You operate in **strict read-only mode** -- you
-never mutate, you never apply a fix.
+Finds differences between what the code declares and what exists in the live
+system, by reading both -- the declared files and the live query -- in **strict
+read-only mode**: it never mutates and never applies a fix.
 
 **Your output is always a Diagnostic Report:**
 - Intended vs actual state, categorized by severity
 - Root-cause candidates
-- Recommendations (you suggest, you never act):
+- Recommendations (it suggests, it never acts):
   - **Option A:** Sync code to live → invoke `platform-architect` or `gitops-operator`
   - **Option B:** Sync live to code → invoke `platform-architect` or `gitops-operator`
   - **Option C:** Further investigation needed
 ```
 
-**Why "discrepancy detector" and not "cloud infrastructure specialist":** the generic framing lets the agent drift toward fixing things. "Discrepancy detector" constrains the action space to finding differences. **Weight test:** remove "you never act" and the agent would attempt fixes when it spots an obvious misconfiguration. The constraint passes.
+**Why an activity and not a role like "cloud infrastructure specialist":** the role framing lets the agent drift toward fixing things. "Finds differences ... by reading both" constrains the action space to finding differences and names the two sources it compares. **Weight test:** remove "never applies a fix" and the agent would attempt fixes when it spots an obvious misconfiguration. The constraint passes.
 
 ### Domain-specific section -- inline because single-agent
 
@@ -173,5 +173,5 @@ If unclear, ask before proceeding.
 | Identity | shared builder essence + small subset | the read-only constraint | Builders share essence; differentiation is contract + subset |
 | D1 | yes | no | Determines permissionMode and the failure model |
 | Output type | Realization Package XOR Findings | Diagnostic Report | Named explicitly in identity |
-| Boundary precision | named decision point ("even if you need it as prerequisite") | named action prohibition ("you never act") | Generic categories are weaker than named moments |
+| Boundary precision | named decision point ("even if you need it as prerequisite") | named action prohibition ("never applies a fix") | Generic categories are weaker than named moments |
 | Domain logic inline | no (lives in shared skills + subset) | yes (cloud provider detection) | Inline only when single-agent-specific |

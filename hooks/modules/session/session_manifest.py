@@ -1,25 +1,8 @@
-"""The session birth block: what every session knows the moment it opens.
+"""The session birth block: what every session knows when it opens, and again after each compaction.
 
-``build_session_context`` assembles it with no knowledge of the host; a host
-adapter only delivers the string (Claude Code through its SessionStart hook,
-OpenCode attached to the main session's first message) and ``gaia session
-preview`` prints it. Four sections, in this order:
-
-- Projects -- each project's name, one line about it and its live-pending
-  count, counted by canonical project key across every workspace. A large
-  group is one line with its size. Project memory itself (anchors, threads)
-  never loads here; it arrives when that project is worked on.
-- Environment -- where the session stands: machine, installation (version,
-  channel, root), folder, the `gaia` CLI path, the real data home and its
-  database, the tools on PATH (one line), and one line of pending recurring
-  work when there is any.
-- The user / User preferences -- the user's standing rows, whole (see
-  ``modules.context.user_sections``, shared with the dispatch kernel).
-
-Alarms that condition every write (a database upgrade, a schema mismatch)
-come first, outside the four sections. The whole block is sized under
-``BIRTH_BUDGET`` because the host replaces a longer string with a short
-preview; the user's rows never shrink to fit, the project roster does.
+``build_session_context`` assembles it with no knowledge of the host, for
+every start source; its sections, their order and the order in which the
+block shrinks under ``BIRTH_BUDGET`` are described in hooks/README.md.
 
 Every builder is fail-safe: it returns "" on any error and never raises, so a
 session always starts. Building the block writes nothing unless the caller
@@ -36,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from ..context.user_sections import PREFERENCES_HEADER, USER_HEADER
+from ..context.user_sections import CONTEXT_BUDGET, PREFERENCES_HEADER, USER_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -110,23 +93,19 @@ def _read_workspace_identity() -> Optional[str]:
 
     try:
         from gaia.paths import db_path
+        from gaia.store.project_context import workspace_sections
 
         con = sqlite3.connect(str(db_path()))
         try:
-            row = con.execute(
-                """
-                SELECT json_extract(payload, '$.name')
-                FROM project_context_contracts
-                WHERE workspace = ? AND contract_name = 'project_identity'
-                """,
-                (workspace,),
-            ).fetchone()
+            section = workspace_sections(con, workspace).get("project_identity")
         finally:
             con.close()
     except sqlite3.Error as exc:
         logger.debug("workspace identity read failed (non-fatal): %s", exc)
         return workspace
-    return row[0] if row and row[0] else workspace
+    payload = section["payload"] if section else None
+    name = payload.get("name") if isinstance(payload, dict) else None
+    return name if isinstance(name, str) and name else workspace
 
 
 def _on_plugin_channel() -> bool:
@@ -256,8 +235,58 @@ _CANDIDATE_TOOLS: tuple = (
 )
 
 
+USER_EXECUTABLES_MAX = 40
+
+_PACKAGE_TREES = frozenset({
+    "node_modules", ".venv", "venv", ".cargo", ".rustup", "go", ".nvm", ".pyenv",
+    ".rbenv", ".asdf", ".npm", ".npm-global", ".bun", ".volta", ".gem", "gem", ".sdkman",
+})
+
+
+_CONSOLE_SCRIPT_HEAD_BYTES = 1024
+_CONSOLE_SCRIPT_MARKER = rb"-script\.pyw"
+
+
+def _is_package_console_script(path: str) -> bool:
+    """Whether *path* is the python entry-point wrapper pip and uv generate for a package."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_CONSOLE_SCRIPT_HEAD_BYTES)
+    except OSError:
+        return False
+    first_line = head.split(b"\n", 1)[0]
+    return first_line.startswith(b"#!") and b"python" in first_line and _CONSOLE_SCRIPT_MARKER in head
+
+
+def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> tuple:
+    """The user's executables on PATH as (authored, package console scripts), together within *limit*."""
+    home = Path.home()
+    seen = set(exclude)
+    names: list = []
+    packages: list = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = Path(entry)
+        if not directory.is_absolute() or not directory.is_relative_to(home):
+            continue
+        if _PACKAGE_TREES.intersection(directory.relative_to(home).parts):
+            continue
+        try:
+            files = sorted((e.name, e.path) for e in os.scandir(directory)
+                           if not e.name.startswith(".") and e.is_file() and os.access(e.path, os.X_OK))
+        except OSError:
+            continue
+        for name, path in files:
+            if name not in seen:
+                seen.add(name)
+                (packages if _is_package_console_script(path) else names).append(name)
+    names = names[:limit]
+    return names, packages[:limit - len(names)]
+
+
 def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
-    """Which *candidates* resolve on PATH right now, in declared order.
+    """The user's own tools, then which *candidates* resolve on PATH right now, then package console scripts.
 
     ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
     -- so this reflects the current install rather than a snapshot. Never
@@ -272,7 +301,8 @@ def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
                 found.append(name)
         except Exception:
             continue
-    return found
+    authored, packages = _scan_user_executables(exclude=candidates)
+    return authored + found + packages
 
 
 def _machine_label() -> str:
@@ -294,18 +324,51 @@ def _machine_label() -> str:
         return "unknown"
 
 
+ENVIRONMENT_LINE_MAX = 400
+
+
+def _os_label() -> str:
+    system = platform.system() or "unknown"
+    release = platform.release().lower()
+    if "wsl2" in release:
+        return f"{system}/WSL2"
+    if "microsoft" in release:
+        return f"{system}/WSL"
+    return system
+
+
+def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
+    """The OS, gaia CLI path and tools on PATH as one line within ``limit`` characters."""
+    try:
+        parts = [_os_label()]
+        cli_path = _resolve_gaia_cli_path()
+        if cli_path:
+            parts.append(f"gaia CLI {cli_path}")
+        line = "; ".join(parts)
+        if len(line) > limit:
+            return line[:limit - 1] + "…"
+        label = "; tools on PATH: "
+        kept = ""
+        for name in _scan_available_tools():
+            candidate = f"{kept}, {name}" if kept else name
+            if len(line + label + candidate) > limit:
+                break
+            kept = candidate
+        return line + label + kept if kept else line
+    except Exception as exc:
+        logger.debug("build_environment_line failed (non-fatal): %s", exc)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
 
 PROJECTS_HEADER = "## Projects"
 ENVIRONMENT_HEADER = "## Environment"
-BIRTH_SECTION_HEADERS = (PROJECTS_HEADER, ENVIRONMENT_HEADER, USER_HEADER, PREFERENCES_HEADER)
-
-# Claude Code replaces a hook's additionalContext string over 10,000 chars
-# with a 2,000-char preview and a file path, without telling the model; the
-# margin keeps the whole block clear of that cap.
-BIRTH_BUDGET = 9_500
+RESUME_HEADER = "## Resume point"
+BIRTH_SECTION_HEADERS = (USER_HEADER, PREFERENCES_HEADER, ENVIRONMENT_HEADER, PROJECTS_HEADER)
+BIRTH_BUDGET = CONTEXT_BUDGET
 
 
 def _installation_label() -> Optional[str]:
@@ -359,6 +422,9 @@ def _recurring_work_line(workspace: Optional[str]) -> str:
     return f"- Recurring work pending: {', '.join(items)} — {', '.join(verbs)}"
 
 
+MAP_POINTER = "- Live state, habits and which capability serves an intent: `gaia map`"
+
+
 def _local_zone_line() -> str:
     """The zone only: a time in the birth block goes stale within one long turn."""
     from gaia import notifications_time
@@ -390,6 +456,7 @@ def build_environment_section(session_id: str = "") -> str:
         if session_id:
             lines.append(f"- Session id: {session_id}")
         lines.append(_local_zone_line())
+        lines.append(MAP_POINTER)
         # The orchestrator invokes `gaia` by this absolute path: the trust
         # guard rejects the bare token.
         cli_path = _resolve_gaia_cli_path()
@@ -542,8 +609,8 @@ def _collect_projects() -> Optional[dict]:
     there is nothing to index or the database cannot be read.
 
     This is NOT an index of every git repo on disk. The source is the set of
-    projects that have **active project context** -- a ``project_identity`` row
-    in ``project_context_contracts``. That filter is the point: it includes
+    projects that have **active project context** -- a ``project_identity``
+    section in a workspace's view (``workspace_sections``). That filter is the point: it includes
     AOS (which lives only in the ``me`` workspace's hand-authored contract,
     with absolute ``local_path``) and, since the scan-promotion stage
     (``tools/scan/promote.py::promote_workspace``), also includes any scanned
@@ -599,6 +666,7 @@ def _collect_projects() -> Optional[dict]:
         pass
 
     try:
+        from gaia.store.project_context import workspace_sections, workspaces_with_section
         from gaia.store.writer import _connect
     except Exception as exc:
         logger.debug("project collection import failed: %s", exc)
@@ -607,10 +675,11 @@ def _collect_projects() -> Optional[dict]:
     try:
         con = _connect()
         try:
-            identity_rows = con.execute(
-                "SELECT workspace, payload FROM project_context_contracts "
-                "WHERE contract_name = 'project_identity' ORDER BY workspace"
-            ).fetchall()
+            identity_rows = [
+                {"workspace": ws,
+                 "payload": json.dumps(workspace_sections(con, ws)["project_identity"]["payload"])}
+                for ws in workspaces_with_section(con, "project_identity")
+            ]
             # Path resolution sources: include missing rows -- the on-disk path
             # may still be valid even if the scanner marked the repo missing.
             proj_rows = con.execute(
@@ -761,13 +830,18 @@ def build_projects_section(max_chars: int) -> str:
     workspace (``gaia.store.reader.count_pending_by_initiative``), so it
     equals what ``gaia memory get-relevant --initiative <name>`` returns.
     When the roster does not fit it degrades in steps -- names without their
-    lines, then every group as one line, then a single count -- and the
-    pointer to a project's ficha always lands.
+    lines, then every group as one line, then a pointer that only counts --
+    and the pointer always lands, whatever ``max_chars`` is.
     """
+    return projects_renderer()(max_chars)
+
+
+def projects_renderer():
+    """``build_projects_section`` as a function of ``max_chars`` over one read of the projects."""
     try:
         collected = _collect_projects()
         if not collected:
-            return ""
+            return lambda max_chars: ""
         from gaia.store.reader import count_pending_by_initiative
         from gaia.store.writer import normalize_initiative
 
@@ -817,19 +891,20 @@ def build_projects_section(max_chars: int) -> str:
             parts.append(pointer)
             return "\n\n".join(parts)
 
-        for detail in ("lines", "names", "groups"):
-            text = render(detail)
-            if len(text) <= max_chars:
-                return text
-        return "\n\n".join([
+        rendered = [render(detail) for detail in ("lines", "names", "groups")]
+        floor = "\n\n".join([
             PROJECTS_HEADER,
             f"{len(live)} projects in {len(group_order)} workspaces; list them with "
             f"`{cli} context get`",
             pointer,
         ])
+
+        def fit(max_chars: int) -> str:
+            return next((text for text in rendered if len(text) <= max_chars), floor)
+        return fit
     except Exception as exc:
         logger.debug("build_projects_section failed (non-fatal): %s", exc)
-        return ""
+        return lambda max_chars: ""
 
 
 def build_schema_direction_block() -> str:
@@ -874,7 +949,14 @@ def build_schema_direction_block() -> str:
 # Assembler
 # ---------------------------------------------------------------------------
 
-def _record_user_rows_injected(rows: list[dict]) -> None:
+def orchestrator_user_rows() -> list[dict]:
+    """The user rows the orchestrator's context renders: every standing user row with a body."""
+    from gaia.store.reader import user_anchor_rows
+
+    return [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
+
+
+def record_user_rows_injected(rows: list[dict]) -> None:
     """Count one injection on each user row the block carried; best-effort."""
     try:
         from gaia.store.writer import record_memory_access
@@ -887,34 +969,62 @@ def _record_user_rows_injected(rows: list[dict]) -> None:
             logger.debug("user row injection telemetry failed (non-fatal)", exc_info=True)
 
 
-def build_session_context(
-    *, alarms: Sequence[str] = (), record_injection: bool = False, session_id: str = "",
-) -> str:
-    """Assemble the session birth block; "" when every part is empty. Never raises.
+def _snapshot(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    try:
+        from gaia.session_snapshot import build_snapshot
 
-    ``alarms`` are notices the host adapter produced before the block (a
-    database upgrade it just ran); they lead, with the schema-mismatch notice,
-    ahead of the four sections, and still ship alone if assembling the rest
-    fails. The project roster gets whatever
-    ``BIRTH_BUDGET`` leaves after everything else, because the user's rows
-    never shrink. Nothing is written unless ``record_injection`` is set, which
-    the session-start hook does and ``gaia session preview`` does not.
+        return build_snapshot(session_id)
+    except Exception as exc:
+        logger.debug("session snapshot failed (non-fatal): %s", exc)
+        return None
+
+
+def _joined(*blocks: str) -> str:
+    return "\n\n".join(b for b in blocks if b)
+
+
+def build_session_context(
+    *, source: str = "startup", alarms: Sequence[str] = (), notices: Sequence[str] = (),
+    record_injection: bool = False, session_id: str = "",
+) -> str:
+    """Assemble the session birth block for any start ``source``; "" when every part is empty. Never raises.
+
+    ``alarms`` still ship alone if assembling the rest fails; ``notices`` ship
+    only while the block has room. ``record_injection`` counts one injection
+    on each user row the block carries.
     """
     try:
-        from gaia.store.reader import user_anchor_rows
+        from gaia.session_snapshot import render_resume_section
 
-        from ..context.user_sections import render_user_sections
+        from ..context.user_sections import fit_user_sections, render_user_sections
 
-        user_rows = [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
-        prefix = [a for a in (*alarms, build_schema_direction_block()) if a]
+        rows = orchestrator_user_rows()
+        heading = f"# Gaia session context (source: {source})"
+        prefix = [heading, *(a for a in (*alarms, build_schema_direction_block()) if a)]
         environment = build_environment_section(session_id)
-        user = render_user_sections(user_rows)
-        fixed = [b for b in (*prefix, environment, user) if b]
-        roster_budget = BIRTH_BUDGET - sum(len(b) + 2 for b in fixed)
-        projects = build_projects_section(max(0, roster_budget))
-        text = "\n\n".join(b for b in (*prefix, projects, environment, user) if b)
+        snapshot = _snapshot(session_id)
+        resume = render_resume_section(snapshot) if snapshot else ""
+        user, kept = render_user_sections(rows), rows
+        roster = projects_renderer()
+
+        if len(_joined(*prefix, *notices, user, resume, environment, roster(sys.maxsize))) > BIRTH_BUDGET:
+            notices = ()
+        floor = roster(0)
+        if snapshot and len(_joined(*prefix, user, resume, environment, floor)) > BIRTH_BUDGET:
+            resume = render_resume_section(snapshot, counts_only=True)
+        head = _joined(*prefix, *notices, user, resume, environment)
+        projects = roster(BIRTH_BUDGET - len(head) - 2)
+        if len(_joined(*prefix, user, resume, environment, floor)) > BIRTH_BUDGET:
+            room = BIRTH_BUDGET - len(_joined(*prefix, resume, environment, floor)) - 2
+            user, kept = fit_user_sections(rows, room)
+            head, projects = _joined(*prefix, user, resume, environment), floor
+        text = _joined(head, projects)
+        if text == heading:
+            return ""
         if record_injection:
-            _record_user_rows_injected(user_rows)
+            record_user_rows_injected(kept)
         return text
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)
