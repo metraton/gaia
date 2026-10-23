@@ -10,10 +10,13 @@ its ``additionalContext`` resumes the closing subagent, so neither carries it.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from ..context.context_writer import proposed_entries
 from .response_contract import parse_memory_delta
+
+LIST_VERB = "gaia contract proposals list"
 
 
 def _project_name(dispatch_project: Optional[str]) -> str:
@@ -61,10 +64,33 @@ def proposal_notice(
     if not isinstance(contract, dict):
         return ""
     contract_id = contract_id or "unknown"
-    project = _project_name(dispatch_project)
     lines = (
-        _memory_delta_line(contract, contract_id, project),
-        _update_contracts_line(contract, contract_id, project),
+        *_proposed_lines(contract, contract_id, _project_name(dispatch_project)),
         _refused_line(contract, contract_id),
     )
     return "\n".join(line for line in lines if line)
+
+
+def _proposed_lines(contract: dict, contract_id: str, project: str) -> list[str]:
+    lines = (
+        _memory_delta_line(contract, contract_id, project),
+        _update_contracts_line(contract, contract_id, project),
+    )
+    return [line for line in lines if line]
+
+
+def background_notice(row: dict) -> str:
+    """The close's proposal notice under its conclusion line, claimed on the key the result line uses; "" if shown."""
+    from gaia.conclusions import claim
+
+    try:
+        envelope = json.loads(row.get("raw_handoff_json") or "null")
+        contract_id = str(row.get("contract_id") or "")
+        project = row.get("dispatch_project")
+        notice = proposal_notice(envelope, contract_id=contract_id, dispatch_project=project)
+        if not notice or not claim(str(row.get("session_id") or ""), contract_id, notice):
+            return ""
+        recorded = _proposed_lines(envelope, contract_id, _project_name(project))
+    except (TypeError, ValueError):
+        return ""
+    return f"{notice}\nsee them: `{LIST_VERB}`" if recorded else notice

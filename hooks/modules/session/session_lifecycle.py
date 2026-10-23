@@ -267,7 +267,8 @@ def conclusions_lines(session_id: str) -> str:
         return ""
     try:
         from gaia.conclusions import take_lines
-        return take_lines(session_id)
+        from modules.agents.proposal_notices import background_notice
+        return take_lines(session_id, background_notice)
     except Exception as exc:
         logger.warning("conclusions lines failed (advisory, skipping): %s", exc)
         return ""
