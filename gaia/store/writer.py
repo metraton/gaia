@@ -2983,6 +2983,52 @@ def set_memory_audience(
 VALID_MEMORY_LINK_KINDS = ("relates_to", "supersedes", "derived_from", "graduated_to")
 
 
+def _supersedes_refusal(
+    con: sqlite3.Connection, workspace: str, src_name: str, dst_home: str, dst_name: str,
+) -> str | None:
+    """Why ``src`` may not supersede ``dst`` (itself, or ``dst`` already supersedes ``src`` directly or through a chain), or ``None``."""
+    pair = f"{src_name!r} -> {dst_name!r}"
+    src, dst = (workspace, src_name), (dst_home, dst_name)
+    if src == dst:
+        return f"cannot link {pair}: a row cannot supersede itself"
+    seen, frontier = {dst}, [dst]
+    while frontier:
+        ws, name = frontier.pop()
+        for row in con.execute(
+            "SELECT COALESCE(dst_workspace, workspace) AS dst_home, dst_name "
+            "FROM memory_links WHERE kind = 'supersedes' AND workspace = ? AND src_name = ?",
+            (ws, name),
+        ):
+            nxt = (row["dst_home"], row["dst_name"])
+            if nxt == src:
+                return (
+                    f"cannot link {pair}: {dst_name!r} already supersedes "
+                    f"{src_name!r}, directly or through a chain, and this would close a loop"
+                )
+            if nxt not in seen:
+                seen.add(nxt)
+                frontier.append(nxt)
+    return None
+
+
+def check_supersedes_link(
+    workspace: str,
+    src_name: str,
+    dst_name: str,
+    *,
+    dst_workspace: str | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Raise ``ValueError`` naming the pair when ``src`` superseding ``dst`` would loop; writes nothing."""
+    con = _connect(db_path)
+    try:
+        reason = _supersedes_refusal(con, workspace, src_name, dst_workspace or workspace, dst_name)
+    finally:
+        con.close()
+    if reason:
+        raise ValueError(reason)
+
+
 def insert_memory_link(
     workspace: str,
     src_name: str,
@@ -3081,6 +3127,10 @@ def insert_memory_link(
             "src_born": born["src"],
             "dst_born": born["dst"],
         }
+        if kind == "supersedes":
+            reason = _supersedes_refusal(con, workspace, src_name, dst_home, dst_name)
+            if reason:
+                raise ValueError(reason)
         existing = con.execute(
             "SELECT created_at, COALESCE(dst_workspace, workspace) AS dst_home "
             "FROM memory_links "
@@ -3717,10 +3767,10 @@ _MEMORY_QUERY_STOPWORDS = frozenset(
 )
 
 
-def _memory_fts_terms(query: str) -> list[str] | None:
-    """Each plain word of ``query`` as a quoted FTS5 term (stopwords dropped), or ``None`` for an empty or FTS5-syntax query."""
+def _memory_fts_terms(query: str, *, literal: bool = False) -> list[str] | None:
+    """Each plain word of ``query`` as a quoted FTS5 term (stopwords dropped), or ``None`` for an empty query or, unless ``literal``, an FTS5-syntax one."""
     q = (query or "").strip()
-    if not q or _MEMORY_FTS_SYNTAX.search(q):
+    if not q or (not literal and _MEMORY_FTS_SYNTAX.search(q)):
         return None
     words = q.split()
     if len(words) > 1:
@@ -3728,9 +3778,11 @@ def _memory_fts_terms(query: str) -> list[str] | None:
     return ['"' + word.replace('"', '""') + '"' for word in words]
 
 
-def _prepare_memory_fts_query(query: str, *, match_all: bool = False) -> str:
-    """The FTS5 expression for ``query``: its words quoted one by one, joined by OR (or by implicit AND when ``match_all``), or the query as written when it already uses FTS5 syntax."""
-    terms = _memory_fts_terms(query)
+def _prepare_memory_fts_query(
+    query: str, *, match_all: bool = False, literal: bool = False,
+) -> str:
+    """The FTS5 expression for ``query``: its words quoted one by one, joined by OR (or by implicit AND when ``match_all``), or the query as written when it already uses FTS5 syntax and not ``literal``."""
+    terms = _memory_fts_terms(query, literal=literal)
     if terms is None:
         return (query or "").strip()
     return (" " if match_all else " OR ").join(terms)
@@ -3748,9 +3800,38 @@ def search_memory_curated(
     include_superseded: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """Curated rows matching ``query`` (any plain word, most words first; every word with ``match_all``), superseded ones only when asked."""
-    fts_q = _prepare_memory_fts_query(query, match_all=match_all)
-    ranked_terms = [] if match_all else (_memory_fts_terms(query) or [])
+    """Curated rows matching ``query`` (any plain word, most words first; every word with ``match_all``), superseded ones only when asked; FTS5 syntax SQLite rejects is searched as plain words, and an empty query matches nothing."""
+    if not (query or "").strip():
+        return []
+    args = (workspace, query)
+    kwargs = dict(
+        limit=limit, with_user_scope=with_user_scope, type=type, class_=class_,
+        match_all=match_all, include_superseded=include_superseded, db_path=db_path,
+    )
+    try:
+        return _search_memory_curated(*args, **kwargs)
+    except sqlite3.OperationalError:
+        if _memory_fts_terms(query) is not None:
+            raise
+        return _search_memory_curated(*args, literal=True, **kwargs)
+
+
+def _search_memory_curated(
+    workspace: str,
+    query: str,
+    *,
+    limit: int,
+    with_user_scope: bool,
+    type: str | None,
+    class_: str | None,
+    match_all: bool,
+    include_superseded: bool,
+    db_path: Path | None,
+    literal: bool = False,
+) -> list[dict]:
+    """One FTS5 attempt of :func:`search_memory_curated`; ``literal`` quotes every word even when the query reads as FTS5 syntax."""
+    fts_q = _prepare_memory_fts_query(query, match_all=match_all, literal=literal)
+    ranked_terms = [] if match_all else (_memory_fts_terms(query, literal=literal) or [])
     hits_sql = " + ".join(
         "(m.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?))"
         for _ in ranked_terms

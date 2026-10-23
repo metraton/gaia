@@ -2953,6 +2953,17 @@ def _cmd_link(args) -> int:
             as_json,
         )
 
+    if kind == "supersedes" and not getattr(args, "delete", False):
+        from gaia.store.writer import check_supersedes_link
+        try:
+            for dst_name in args.dst_names:
+                check_supersedes_link(
+                    workspace, src_name, dst_name,
+                    dst_workspace=_flag_workspace_holding(args, dst_name),
+                )
+        except ValueError as exc:
+            return _err(f"{exc} (nothing of this call applied)", as_json)
+
     results = []
     for done, dst_name in enumerate(args.dst_names):
         try:
