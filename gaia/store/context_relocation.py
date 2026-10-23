@@ -1,11 +1,4 @@
-"""Copy workspace-keyed context rows under their owning projects, as a reviewed manifest says.
-
-The manifest names, for every row of ``project_context_contracts``, either the
-project that owns it (``moves``) or why no project does (``unowned``); a row
-whose top-level keys describe different projects is split by ``keys``. The
-apply only inserts into ``project_context``: the old table is never touched,
-and a target that already holds a different payload is refused, not merged.
-"""
+"""Copy workspace-keyed context rows, or key slices of them, under the projects a reviewed manifest names."""
 
 from __future__ import annotations
 

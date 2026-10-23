@@ -1005,8 +1005,6 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # destructive prune un-gated. Anchor ONLY the destructive leaf; the
         # other `gaia context` read/inspect subcommands stay READ_ONLY.
         MutativeAnchor(path=("context", "prune-workspaces")),
-        # `gaia context relocate` inserts project_context rows into gaia.db;
-        # its `--dry-run` stays free as a SIMULATION_FLAG.
         MutativeAnchor(path=("context", "relocate")),
         # `gaia scan --workspace <name>` (write mode) UPSERTs (workspace,
         # project) rows into gaia.db and promotes the resolved workspace -- a
