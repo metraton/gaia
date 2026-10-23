@@ -107,8 +107,16 @@ def _found(capsys, query: str, *flags: str) -> list[str]:
     return _names(payload["results"])
 
 
-def test_search_matches_every_word_wherever_it_sits(lineage, capsys):
-    assert _found(capsys, "blank-lines teams short") == [NEW]
+def test_search_finds_rows_holding_any_word_most_matching_first(lineage, capsys):
+    found = _found(capsys, "blank-lines teams short formatting")
+
+    assert set(found) == {NEW, OLD, LOG}
+    assert found[0] == NEW
+
+
+def test_search_all_requires_every_word_wherever_it_sits(lineage, capsys):
+    assert _found(capsys, "blank-lines teams short", "--all") == [NEW]
+    assert _found(capsys, "teams formatting", "--all") == []
 
 
 def test_search_passes_explicit_operators_through(lineage, capsys):

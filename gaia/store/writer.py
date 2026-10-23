@@ -3711,12 +3711,20 @@ import re as _re_for_fts
 _MEMORY_FTS_SYNTAX = _re_for_fts.compile(r'["()*^]|\b(?:AND|OR|NOT|NEAR)\b')
 
 
-def _prepare_memory_fts_query(query: str) -> str:
-    """The FTS5 expression for ``query``: its words quoted one by one (implicit AND), or the query as written when it already uses FTS5 syntax."""
+def _memory_fts_terms(query: str) -> list[str] | None:
+    """Each plain word of ``query`` as a quoted FTS5 term, or ``None`` when the query is empty or already uses FTS5 syntax."""
     q = (query or "").strip()
     if not q or _MEMORY_FTS_SYNTAX.search(q):
-        return q
-    return " ".join('"' + word.replace('"', '""') + '"' for word in q.split())
+        return None
+    return ['"' + word.replace('"', '""') + '"' for word in q.split()]
+
+
+def _prepare_memory_fts_query(query: str, *, match_all: bool = False) -> str:
+    """The FTS5 expression for ``query``: its words quoted one by one, joined by OR (or by implicit AND when ``match_all``), or the query as written when it already uses FTS5 syntax."""
+    terms = _memory_fts_terms(query)
+    if terms is None:
+        return (query or "").strip()
+    return (" " if match_all else " OR ").join(terms)
 
 
 def search_memory_curated(
@@ -3727,17 +3735,26 @@ def search_memory_curated(
     with_user_scope: bool = False,
     type: str | None = None,
     class_: str | None = None,
+    match_all: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
     """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
-    ``with_user_scope`` adds the workspace-less :data:`USER_WORKSPACE` rows;
-    ``type``/``class_`` keep only rows of that type or class."""
-    fts_q = _prepare_memory_fts_query(query)
+    Plain words match ANY by default, rows holding more of the words first and
+    bm25 within a tie -- bm25 alone lets one rare word outrank a row holding
+    all of them; ``match_all`` requires every word. ``with_user_scope`` adds
+    the workspace-less :data:`USER_WORKSPACE` rows; ``type``/``class_`` keep
+    only rows of that type or class."""
+    fts_q = _prepare_memory_fts_query(query, match_all=match_all)
+    ranked_terms = [] if match_all else (_memory_fts_terms(query) or [])
+    hits_sql = " + ".join(
+        "(m.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?))"
+        for _ in ranked_terms
+    ) or "0"
     workspaces = [workspace]
     if with_user_scope and workspace != USER_WORKSPACE:
         workspaces.append(USER_WORKSPACE)
     filters = ""
-    params: list = [fts_q, *workspaces]
+    params: list = [*ranked_terms, fts_q, *workspaces]
     for column, value in (("type", type), ("class", class_)):
         if value is not None:
             filters += f" AND m.{column} = ?"
@@ -3748,13 +3765,14 @@ def search_memory_curated(
             f"""
             SELECT m.name, m.type, m.class, m.description,
                    snippet(memory_fts, -1, '[', ']', '...', 16) AS snippet,
-                   bm25(memory_fts) AS rank
+                   bm25(memory_fts) AS rank,
+                   {hits_sql} AS hits
             FROM memory_fts
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
               AND m.workspace IN ({', '.join('?' for _ in workspaces)})
               AND m.deleted_at IS NULL{filters}
-            ORDER BY rank
+            ORDER BY hits DESC, rank
             LIMIT ?
             """,
             (*params, limit),

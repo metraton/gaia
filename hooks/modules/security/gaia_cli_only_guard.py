@@ -1251,7 +1251,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
         "--type --audience --class --status --sort --order --include-superseded --workspace "
         "--limit --format --json"),
     ("memory", "reclassify"): _flags("--class --status --workspace --json"),
-    ("memory", "search"): _flags("--limit --scope --type --class --workspace --json"),
+    ("memory", "search"): _flags("--limit --scope --type --class --all --workspace --json"),
     ("memory", "show"): _flags("--workspace --links --history --json"),
     ("memory", "stats"): _flags("--json"),
     ("memory", "story"): _flags("--max-depth --workspace --json"),

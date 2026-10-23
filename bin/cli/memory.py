@@ -547,9 +547,16 @@ def _cmd_conflicts(args) -> int:
     if detect_conflicts is None:
         return _err("conflict_detector module not available", as_json)
 
-    scan = {"owner": args.owner, "exclude_classes": tuple(args.exclude_class or ())}
-    if args.threshold is not None:
-        scan["threshold"] = args.threshold
+    limit = getattr(args, "limit", None)
+    scan = {
+        key: value
+        for key, value in (
+            ("owner", getattr(args, "owner", None)),
+            ("exclude_classes", tuple(getattr(args, "exclude_class", None) or ())),
+            ("threshold", getattr(args, "threshold", None)),
+        )
+        if value not in (None, ())
+    }
     try:
         pairs = detect_conflicts(**scan)
     except Exception as exc:  # noqa: BLE001
@@ -557,8 +564,8 @@ def _cmd_conflicts(args) -> int:
 
     duplicates = [p for p in pairs if p["a"]["name"] == p["b"]["name"]]
     candidates = [p for p in pairs if p["a"]["name"] != p["b"]["name"]]
-    if args.limit is not None:
-        duplicates, candidates = duplicates[:args.limit], candidates[:args.limit]
+    if limit is not None:
+        duplicates, candidates = duplicates[:limit], candidates[:limit]
 
     if as_json:
         print(json.dumps({"candidates": candidates, "duplicates": duplicates}, indent=2))
@@ -3078,6 +3085,7 @@ def _cmd_search_scoped(args) -> int:
     curated = search_memory_curated(
         workspace, query, limit=limit, with_user_scope=True,
         type=getattr(args, "type", None), class_=getattr(args, "cls", None),
+        match_all=getattr(args, "all", False),
     )
 
     if scope == "memory":
@@ -3176,15 +3184,18 @@ def register(subparsers):
         "search",
         help="FTS5 search across curated memory and/or episodes",
         description=(
-            "Full-text search; returns ranked results. Plain words must all "
-            "appear in a row, each matched on its own (a hyphenated word as a "
-            "phrase); a query with FTS5 syntax (quotes, parentheses, *, ^, "
-            "AND, OR, NOT, NEAR) is passed as written."
+            "Full-text search; returns ranked results. Plain words match a row "
+            "holding ANY of them, rows holding more of them ranked first "
+            "(bm25); --all requires every word. Each word is matched on its "
+            "own (a hyphenated word as a phrase); a query with FTS5 syntax "
+            "(quotes, parentheses, *, ^, AND, OR, NOT, NEAR) is passed as "
+            "written."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory search 'release' --scope=memory\n"
                "  gaia memory search 'teams pull-request format' --type=user\n"
+               "  gaia memory search 'teams pull-request format' --all\n"
                "  gaia memory search 'teams OR slack' --class=anchor\n"
                "  gaia memory search 'tailscale' --limit=5 --json\n",
     )
@@ -3198,6 +3209,10 @@ def register(subparsers):
         "--class", dest="cls", default=None,
         choices=("anchor", "thread", "log"),
         help="Curated rows of this class only; episodes are not filtered.",
+    )
+    search_p.add_argument(
+        "--all", action="store_true", default=False,
+        help="Curated rows must hold every plain word. bool. Default: any word.",
     )
     search_p.add_argument(
         "--limit", type=int, default=10, metavar="N",
@@ -3222,7 +3237,7 @@ def register(subparsers):
     stats_p = actions.add_parser(
         "stats",
         help="Memory diagnostics",
-        description="Episode count, FTS5 index size, conflict count.",
+        description="Episode count, FTS5 index size, curated rows per type (live and superseded).",
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia memory stats --json\n",
     )

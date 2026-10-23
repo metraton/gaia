@@ -200,7 +200,7 @@ OPTIONS = {
     ),
     'memory append': '--body --body-file --help --json --workspace -h',
     'memory checkpoint': '--file --help --initiative --json --project --project-ref --workspace -h',
-    'memory conflicts': '--help --json --threshold -h',
+    'memory conflicts': '--exclude-class --help --json --limit --owner --threshold -h',
     'memory delete': '--hard --help --json --workspace --yes -h',
     'memory edit': "",
     'memory episode-show': '--help --json -h',
@@ -210,11 +210,11 @@ OPTIONS = {
     ),
     'memory link': '--delete --help --json --kind --workspace -h',
     'memory list': (
-        '--audience --class --format --help --json --limit --order --sort --status --type '
-        '--workspace -h'
+        '--audience --class --format --help --include-superseded --json --limit --order '
+        '--sort --status --type --workspace -h'
     ),
     'memory reclassify': '--class --help --json --status --workspace -h',
-    'memory search': '--help --json --limit --scope --workspace -h',
+    'memory search': '--all --class --help --json --limit --scope --type --workspace -h',
     'memory show': '--help --history --json --links --workspace -h',
     'memory stats': '--help --json -h',
     'memory story': '--help --json --max-depth --workspace -h',
