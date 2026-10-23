@@ -895,7 +895,7 @@ def check_git_long_paths() -> dict:
 
     problem = long_paths_disabled()
     if problem:
-        return _result("Git long paths", "warn", problem, f"If you want it, run: {ENABLE_LONG_PATHS_COMMAND}")
+        return _result("Git long paths", "warning", problem, f"If you want it, run: {ENABLE_LONG_PATHS_COMMAND}")
     return _result("Git long paths", "pass", "core.longpaths enabled or not required")
 
 

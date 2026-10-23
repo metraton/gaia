@@ -313,16 +313,21 @@ def _prune_backups(backup_dir: Path) -> None:
 
 
 def _restore(backup: Path) -> None:
-    """Put the verified *backup* back in place of GAIA_DB through a staged copy, so the backup itself survives."""
-    # Imported here: tests stage this engine alone, without the gaia package beside it.
-    from gaia.atomic_replace import replace_retrying
+    """Put the verified *backup* back in place of GAIA_DB through a staged copy, so the backup itself survives.
 
+    Stdlib only: the engine runs without the gaia package beside it.
+    """
     staged = GAIA_DB.with_name(GAIA_DB.name + ".restore")
-    with gzip.open(backup, "rb") as src, open(staged, "wb") as dst:
-        shutil.copyfileobj(src, dst, 1 << 20)
-    for sidecar in ("-wal", "-shm"):
-        GAIA_DB.with_name(GAIA_DB.name + sidecar).unlink(missing_ok=True)
-    replace_retrying(staged, GAIA_DB)
+    try:
+        with gzip.open(backup, "rb") as src, open(staged, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+            dst.flush()
+            os.fsync(dst.fileno())
+        for sidecar in ("-wal", "-shm"):
+            GAIA_DB.with_name(GAIA_DB.name + sidecar).unlink(missing_ok=True)
+        os.replace(staged, GAIA_DB)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def _apply_chain(

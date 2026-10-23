@@ -15,6 +15,7 @@ beside a copy of the real migrations so the faults never touch the source tree.
 
 from __future__ import annotations
 
+import gzip
 import os
 import re
 import shutil
@@ -141,6 +142,40 @@ def test_interruption_leaves_objects_and_version_untouched(fault, k, tmp_path):
     after = _snapshot(db)
     assert after[1] == before[1], f"ledger moved: v{before[1]} -> v{after[1]}"
     assert after[0] == before[0], "sqlite_master changed after an interrupted chain"
+
+
+_RESTORE_WITHOUT_GAIA = """
+import sys
+from pathlib import Path
+sys.modules["gaia"] = None
+sys.path.insert(0, {scripts!r})
+import bootstrap_database as engine
+engine._restore(Path({backup!r}))
+"""
+
+
+def test_restore_runs_in_a_standalone_engine_without_the_gaia_package(tmp_path):
+    runner = _stage(tmp_path)
+    db = _live(tmp_path)
+    before = _snapshot(db)
+    backup = tmp_path / "pre-migrate.db.gz"
+    with open(db, "rb") as src, gzip.open(backup, "wb") as packed:
+        shutil.copyfileobj(src, packed)
+    sqlite3.connect(db).executescript("CREATE TABLE __half_migrated (x); DELETE FROM schema_version;")
+
+    script = _RESTORE_WITHOUT_GAIA.format(scripts=str(runner.parent), backup=str(backup))
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=_env(db, tmp_path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _snapshot(db) == before
+    assert backup.is_file(), "the backup must survive its own restore"
+    assert not list(tmp_path.glob("gaia.db.restore*")), "a staged copy was left beside the database"
 
 
 def test_the_uninterrupted_chain_reaches_the_expected_version(tmp_path):

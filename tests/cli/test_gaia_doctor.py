@@ -2779,3 +2779,15 @@ class TestCheckDbBackups:
         data = json.loads(capsys.readouterr().out)
         assert data["checks"][0]["name"] == "DB backups"
         assert data["status"] == ("degraded" if state == "failed" else "healthy")
+
+
+def test_disabled_git_long_paths_is_counted_as_a_warning(tmp_path, monkeypatch, capsys):
+    import gaia.subprocess_text as subprocess_text
+
+    monkeypatch.setattr(subprocess_text, "long_paths_disabled", lambda: "core.longpaths is off")
+    assert doctor_mod.check_git_long_paths()["severity"] == "warning"
+
+    monkeypatch.setattr(doctor_mod, "_CHECKS", [(26, "Git long paths", doctor_mod.check_git_long_paths)])
+    monkeypatch.setattr(doctor_mod, "_derive_workspace", lambda override=None: tmp_path)
+    doctor_mod.cmd_doctor(argparse.Namespace(json=True, fix=False, workspace=None))
+    assert json.loads(capsys.readouterr().out)["status"] == "degraded"
