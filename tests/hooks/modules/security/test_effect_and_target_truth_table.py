@@ -50,6 +50,8 @@ def _build_context(spec: dict, root: Path, name: str, managed_root: Path) -> Pat
         git("update-ref", "refs/remotes/origin/main", "HEAD")
         git("update-ref", "refs/remotes/origin/feature-x", "feature-x")
         git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        for remote, url in spec.get("remotes", {}).items():
+            git("remote", "add", remote, url)
     for branch, files in spec.get("branches", {}).items():
         git("checkout", "-q", "-b", branch)
         for rel, text in files.items():
@@ -116,7 +118,7 @@ def _case(row: dict):
         marks.append(pytest.mark.skip(reason=f"out-of-brief: the legs say {row['expected']}; listed, not asserted"))
     elif row["owner"] != "T1":
         marks.append(pytest.mark.xfail(strict=True, raises=AssertionError, reason=f"owned by {row['owner']}: expected {row['expected']}"))
-    return pytest.param(row, id=row["id"], marks=marks)
+    return pytest.param(row, id=f"{row['category'].replace('-', '_')}-{row['id']}", marks=marks)
 
 
 def _observe_isolated(row, world, monkeypatch):
@@ -192,15 +194,13 @@ def test_seed_rows_say_where_their_verdict_differs_from_the_source():
 def test_every_blocked_pattern_of_the_floor_has_a_row():
     floor = [r["command"] for r in ROWS if r["expected"] == "BLOCKED" and r["rule"].startswith("floor.")]
     for key, patterns in BLOCKED_PATTERNS.items():
-        if key == "git_destructive":
-            continue
         for pattern in patterns:
             assert any(pattern.search(command) for command in floor), (key, pattern.pattern)
 
 
-def test_force_push_is_the_only_blocked_case_expected_to_be_signed(world, monkeypatch):
+def test_no_case_expected_to_be_signed_meets_the_floor(world, monkeypatch):
     refused = [r for r in ROWS if r["expected"] == "SIGNED" and _observe_isolated(r, world, monkeypatch)[0] == "BLOCKED"]
-    assert refused and all(re.search(r"\bpush\b.*(--force\b|\s-f\b)", r["command"]) for r in refused), [r["id"] for r in refused]
+    assert not refused, [r["id"] for r in refused]
 
 
 def test_each_change_request_shape_spans_every_binary():

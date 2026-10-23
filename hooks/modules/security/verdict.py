@@ -83,6 +83,7 @@ _DYNAMIC = re.compile(r"^[\"']?(\$|`)")
 _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _CAMEL = re.compile(r"[a-z][A-Z]")
 _CAMEL_PART = re.compile(r"[A-Z]?[a-z0-9]+")
+_SHORT_FORCE = re.compile(r"-[a-z]*f[a-z]*")
 
 
 def remediation(rule: str) -> str:
@@ -140,7 +141,9 @@ def effect_rule(verb: str, command: str) -> str:
         installer = lowered[lowered.index("install") - 1] if lowered.index("install") else ""
         if installer.rsplit("/", 1)[-1] in _PACKAGE_INSTALLERS:
             return "sign.foreign-code"
-    push_rewrites = verb == "push" and any(t[:1] in "+:" and len(t) > 1 for t in tokens)
+    push_rewrites = verb == "push" and any(
+        (t[:1] in "+:" and len(t) > 1) or _SHORT_FORCE.fullmatch(t.strip("'\"")) for t in tokens
+    )
     hyphen_parts = {part for w in words for part in w.split("-")}
     if push_rewrites or (words | hyphen_parts) & _DESTROY_WORDS or verb.lower() in _DESTROY_WORDS:
         return "sign.destroys"
