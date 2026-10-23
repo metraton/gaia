@@ -238,6 +238,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         assert paths == {
             ("dev",),
             ("context", "prune-workspaces"),
+            ("context", "relocate"),
             ("scan",),
             ("release", "check"),
             ("workspace", "retire"),
