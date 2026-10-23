@@ -4399,10 +4399,16 @@ class TestGaiaContextPruneWorkspacesIsMutative:
             for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
             if anchor.path[0] == "context"
         }
-        assert context_paths == {("context", "prune-workspaces")}, (
-            "the `gaia context` upgrade must be scoped to the destructive "
-            "subcommand only, never the whole group"
+        assert context_paths == {("context", "prune-workspaces"), ("context", "relocate")}, (
+            "the `gaia context` upgrade must be scoped to the writing "
+            "subcommands only, never the whole group"
         )
+
+    def test_relocate_writes_and_its_dry_run_does_not(self):
+        applied = detect_mutative_command("gaia context relocate --manifest /tmp/m.json")
+        assert applied.is_mutative is True and applied.category == "MUTATIVE"
+        preview = detect_mutative_command("gaia context relocate --manifest /tmp/m.json --dry-run")
+        assert preview.is_mutative is False
 
     def test_other_gaia_context_subcommands_not_upgraded(self):
         # A read/inspect context subcommand must NOT be dragged into T3 by the

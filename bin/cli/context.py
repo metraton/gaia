@@ -38,6 +38,8 @@ Subcommands:
   gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
   gaia context prune-workspaces [--dry-run] [--yes] Delete PHANTOM workspaces (0 projects, 0 curated
                     [--json]                        collateral); backs up the DB before any delete
+  gaia context relocate --manifest FILE             Copy workspace contract rows under their owning
+                    [--dry-run] [--json]              projects as FILE says; backs up the DB, only inserts
 """
 
 from __future__ import annotations
@@ -1164,6 +1166,44 @@ def _cmd_prune_workspaces(args) -> int:
     return 0
 
 
+def _cmd_relocate(args) -> int:
+    """Handle ``gaia context relocate --manifest FILE [--dry-run] [--json]``."""
+    from gaia.paths import db_path as _db_path
+    from gaia.store.context_relocation import (
+        RelocationError, apply_relocation, load_manifest, plan_relocation,
+    )
+    from gaia.store.writer import _connect
+
+    manifest = load_manifest(args.manifest)
+    try:
+        if args.dry_run:
+            con = _connect(_db_path())
+            try:
+                report = plan_relocation(con, manifest)
+            finally:
+                con.close()
+        else:
+            report = apply_relocation(manifest, proposed_by=str(args.manifest))
+    except RelocationError as exc:
+        print(f"gaia context relocate: refused, nothing written: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        verb = "would insert" if args.dry_run else "inserted"
+        for item in report["inserts"]:
+            print(f"{verb} {item['project']} / {item['section']}  <- {item['from']}")
+        for item in report["already_present"]:
+            print(f"already present {item['project']} / {item['section']}")
+        for item in report["unowned"]:
+            print(f"unowned {item['workspace']}/{item['section']} {item.get('keys') or ''}")
+        for error in report["errors"]:
+            print(f"error: {error}")
+        if report.get("backup"):
+            print(f"DB backup written to: {report['backup']}")
+    return 1 if report["errors"] else 0
+
+
 def _cmd_move_project(args) -> int:
     """Handle ``gaia context move-project --decision D --from-workspace W1
     --from-name N1 --to-workspace W2 --to-name N2 [--dry-run] [--yes] [--json]``.
@@ -1792,6 +1832,18 @@ def register(subparsers) -> None:
         help="Emit the plan/result as JSON",
     )
 
+    relocate_parser = ctx_subparsers.add_parser(
+        "relocate",
+        help="Copy workspace-keyed context rows under their projects from a reviewed "
+             "manifest; backs up the DB, inserts only",
+    )
+    relocate_parser.add_argument("--manifest", required=True, metavar="FILE")
+    relocate_parser.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Validate the manifest and print the inserts without writing",
+    )
+    relocate_parser.add_argument("--json", action="store_true", default=False)
+
     # gaia context accept CONTRACT_ID
     # ('accept' is not in MUTATIVE_VERBS, so it classifies T0 and the orchestrator
     # lane admits it in gaia_cli_only_guard.ALLOWED_WRITE_PHRASES.)
@@ -1914,6 +1966,8 @@ def cmd_context(args) -> int:
         return _cmd_move_memory(args)
     if context_cmd == "move-project":
         return _cmd_move_project(args)
+    if context_cmd == "relocate":
+        return _cmd_relocate(args)
 
     # No sub-action: print help for the context subcommand
     import argparse
