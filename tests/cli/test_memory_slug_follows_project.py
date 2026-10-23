@@ -141,7 +141,7 @@ def test_story_append_and_link_reach_the_projects_row_from_another_workspace(
         workspace=None, json=True,
     )) == 0
     assert memory_mod._cmd_link(argparse.Namespace(
-        src_name="thread_bildwiz_follow_up", dst_name=SLUG,
+        src_name="thread_bildwiz_follow_up", dst_names=[SLUG],
         kind="derived_from", delete=False, workspace=None, json=True,
     )) == 0
     capsys.readouterr()

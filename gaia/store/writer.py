@@ -2983,6 +2983,52 @@ def set_memory_audience(
 VALID_MEMORY_LINK_KINDS = ("relates_to", "supersedes", "derived_from", "graduated_to")
 
 
+def _supersedes_refusal(
+    con: sqlite3.Connection, workspace: str, src_name: str, dst_home: str, dst_name: str,
+) -> str | None:
+    """Why ``src`` may not supersede ``dst`` (itself, or ``dst`` already supersedes ``src`` directly or through a chain), or ``None``."""
+    pair = f"{src_name!r} -> {dst_name!r}"
+    src, dst = (workspace, src_name), (dst_home, dst_name)
+    if src == dst:
+        return f"cannot link {pair}: a row cannot supersede itself"
+    seen, frontier = {dst}, [dst]
+    while frontier:
+        ws, name = frontier.pop()
+        for row in con.execute(
+            "SELECT COALESCE(dst_workspace, workspace) AS dst_home, dst_name "
+            "FROM memory_links WHERE kind = 'supersedes' AND workspace = ? AND src_name = ?",
+            (ws, name),
+        ):
+            nxt = (row["dst_home"], row["dst_name"])
+            if nxt == src:
+                return (
+                    f"cannot link {pair}: {dst_name!r} already supersedes "
+                    f"{src_name!r}, directly or through a chain, and this would close a loop"
+                )
+            if nxt not in seen:
+                seen.add(nxt)
+                frontier.append(nxt)
+    return None
+
+
+def check_supersedes_link(
+    workspace: str,
+    src_name: str,
+    dst_name: str,
+    *,
+    dst_workspace: str | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Raise ``ValueError`` naming the pair when ``src`` superseding ``dst`` would loop; writes nothing."""
+    con = _connect(db_path)
+    try:
+        reason = _supersedes_refusal(con, workspace, src_name, dst_workspace or workspace, dst_name)
+    finally:
+        con.close()
+    if reason:
+        raise ValueError(reason)
+
+
 def insert_memory_link(
     workspace: str,
     src_name: str,
@@ -3081,6 +3127,10 @@ def insert_memory_link(
             "src_born": born["src"],
             "dst_born": born["dst"],
         }
+        if kind == "supersedes":
+            reason = _supersedes_refusal(con, workspace, src_name, dst_home, dst_name)
+            if reason:
+                raise ValueError(reason)
         existing = con.execute(
             "SELECT created_at, COALESCE(dst_workspace, workspace) AS dst_home "
             "FROM memory_links "
@@ -3708,16 +3758,34 @@ def close_session_memory(
 
 import re as _re_for_fts
 
-_MEMORY_FTS_SAFE = _re_for_fts.compile(r"^[A-Za-z0-9_*\s\"]+$")
+_MEMORY_FTS_SYNTAX = _re_for_fts.compile(r'["()*^]|\b(?:AND|OR|NOT|NEAR)\b')
 
 
-def _prepare_memory_fts_query(query: str) -> str:
+_MEMORY_QUERY_STOPWORDS = frozenset(
+    "a an and are as at be by for from in is it of on or that the this to with "
+    "al con de del el en es la las lo los para por que se su un una y".split()
+)
+
+
+def _memory_fts_terms(query: str, *, literal: bool = False) -> list[str] | None:
+    """Each plain word of ``query`` as a quoted FTS5 term (stopwords dropped), or ``None`` for an empty query or, unless ``literal``, an FTS5-syntax one."""
     q = (query or "").strip()
-    if not q:
-        return q
-    if _MEMORY_FTS_SAFE.match(q):
-        return q
-    return '"' + q.replace('"', '""') + '"'
+    if not q or (not literal and _MEMORY_FTS_SYNTAX.search(q)):
+        return None
+    words = q.split()
+    if len(words) > 1:
+        words = [w for w in words if w.lower() not in _MEMORY_QUERY_STOPWORDS] or words
+    return ['"' + word.replace('"', '""') + '"' for word in words]
+
+
+def _prepare_memory_fts_query(
+    query: str, *, match_all: bool = False, literal: bool = False,
+) -> str:
+    """The FTS5 expression for ``query``: its words quoted one by one, joined by OR (or by implicit AND when ``match_all``), or the query as written when it already uses FTS5 syntax and not ``literal``."""
+    terms = _memory_fts_terms(query, literal=literal)
+    if terms is None:
+        return (query or "").strip()
+    return (" " if match_all else " OR ").join(terms)
 
 
 def search_memory_curated(
@@ -3726,35 +3794,82 @@ def search_memory_curated(
     *,
     limit: int = 10,
     with_user_scope: bool = False,
+    type: str | None = None,
+    class_: str | None = None,
+    match_all: bool = False,
+    include_superseded: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
-    ``with_user_scope`` adds the workspace-less :data:`USER_WORKSPACE` rows."""
-    fts_q = _prepare_memory_fts_query(query)
+    """Curated rows matching ``query`` (any plain word, most words first; every word with ``match_all``), superseded ones only when asked; FTS5 syntax SQLite rejects is searched as plain words, and an empty query matches nothing."""
+    if not (query or "").strip():
+        return []
+    args = (workspace, query)
+    kwargs = dict(
+        limit=limit, with_user_scope=with_user_scope, type=type, class_=class_,
+        match_all=match_all, include_superseded=include_superseded, db_path=db_path,
+    )
+    try:
+        return _search_memory_curated(*args, **kwargs)
+    except sqlite3.OperationalError:
+        if _memory_fts_terms(query) is not None:
+            raise
+        return _search_memory_curated(*args, literal=True, **kwargs)
+
+
+def _search_memory_curated(
+    workspace: str,
+    query: str,
+    *,
+    limit: int,
+    with_user_scope: bool,
+    type: str | None,
+    class_: str | None,
+    match_all: bool,
+    include_superseded: bool,
+    db_path: Path | None,
+    literal: bool = False,
+) -> list[dict]:
+    """One FTS5 attempt of :func:`search_memory_curated`; ``literal`` quotes every word even when the query reads as FTS5 syntax."""
+    fts_q = _prepare_memory_fts_query(query, match_all=match_all, literal=literal)
+    ranked_terms = [] if match_all else (_memory_fts_terms(query, literal=literal) or [])
+    hits_sql = " + ".join(
+        "(m.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?))"
+        for _ in ranked_terms
+    ) or "0"
     workspaces = [workspace]
     if with_user_scope and workspace != USER_WORKSPACE:
         workspaces.append(USER_WORKSPACE)
+    from gaia.store.reader import not_superseded
+
+    filters = "" if include_superseded else f" AND {not_superseded('m')}"
+    params: list = [*ranked_terms, fts_q, *workspaces]
+    for column, value in (("type", type), ("class", class_)):
+        if value is not None:
+            filters += f" AND m.{column} = ?"
+            params.append(value)
     con = _connect(db_path)
     try:
         rows = con.execute(
             f"""
-            SELECT m.name, m.type, m.description,
+            SELECT m.name, m.type, m.class, m.description,
                    snippet(memory_fts, -1, '[', ']', '...', 16) AS snippet,
-                   bm25(memory_fts) AS rank
+                   bm25(memory_fts) AS rank,
+                   {hits_sql} AS hits
             FROM memory_fts
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
               AND m.workspace IN ({', '.join('?' for _ in workspaces)})
-              AND m.deleted_at IS NULL
-            ORDER BY rank
+              AND m.deleted_at IS NULL{filters}
+            ORDER BY hits DESC, rank
             LIMIT ?
             """,
-            (fts_q, *workspaces, limit),
+            (*params, limit),
         ).fetchall()
         return [
             {
                 "name": r["name"],
                 "type": r["type"],
+                "class": r["class"],
                 "description": r["description"],
                 "snippet": r["snippet"],
                 "rank": r["rank"],
@@ -3831,6 +3946,7 @@ def list_memory(
     class_: str | None = None,
     status: str | None = None,
     include_deleted: bool = False,
+    include_superseded: bool = True,
     order_by: str = "name",
     direction: str | None = None,
     with_user_scope: bool = False,
@@ -3839,6 +3955,8 @@ def list_memory(
     """List curated memory rows, optionally filtered by ``type``/``audience``/
     ``class_``/``status``. ``with_user_scope`` adds the workspace-less
     :data:`USER_WORKSPACE` rows to the listing of ``workspace``.
+
+    Every row carries ``superseded_by``; ``include_superseded=False`` drops those rows.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
@@ -3900,10 +4018,14 @@ def list_memory(
             params.append(status)
         if not include_deleted:
             where.append("deleted_at IS NULL")
+        from gaia.store.reader import not_superseded, superseded_by
+        if not include_superseded:
+            where.append(not_superseded())
         sql = (
             "SELECT name, type, description, updated_at, audience, class, "
             "       status, injection_count, deliberate_count, "
-            "       last_injected_at, last_deliberate_at "
+            "       last_injected_at, last_deliberate_at, "
+            f"      {superseded_by()} AS superseded_by "
             "FROM memory WHERE " + " AND ".join(where) +
             " ORDER BY " + order_clause
         )

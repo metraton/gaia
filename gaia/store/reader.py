@@ -303,10 +303,19 @@ def not_superseded(row: str = "memory") -> str:
     old end is matched by workspace and name, since a link across owners keeps
     it in ``dst_workspace`` rather than the link's own workspace.
     """
+    return f"NOT EXISTS (SELECT 1 {_supersedes_links_to(row)})"
+
+
+def superseded_by(row: str = "memory") -> str:
+    """SQL expression naming, comma-joined, the rows that supersede ``row``; NULL while it stands."""
+    return f"(SELECT group_concat(sl.src_name, ',') {_supersedes_links_to(row)})"
+
+
+def _supersedes_links_to(row: str) -> str:
     return (
-        "NOT EXISTS (SELECT 1 FROM memory_links sl "
+        "FROM memory_links sl "
         f"WHERE sl.kind = 'supersedes' AND sl.dst_name = {row}.name "
-        f"AND COALESCE(sl.dst_workspace, sl.workspace) = {row}.workspace)"
+        f"AND COALESCE(sl.dst_workspace, sl.workspace) = {row}.workspace"
     )
 
 
@@ -521,6 +530,21 @@ def live_owned_memory_rows(db_path: Path | None = None) -> list[dict]:
     con = _connect(db_path)
     try:
         return [dict(r) for r in con.execute(_LIVE_OWNED_ROWS)]
+    finally:
+        con.close()
+
+
+def memory_counts_by_type(db_path: Path | None = None) -> dict[str, dict[str, int]]:
+    """Undeleted curated rows of every workspace per type, split into ``live`` and ``superseded``."""
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT type, "
+            f"      SUM(CASE WHEN {not_superseded()} THEN 1 ELSE 0 END) AS live, "
+            f"      SUM(CASE WHEN {not_superseded()} THEN 0 ELSE 1 END) AS superseded "
+            "FROM memory WHERE deleted_at IS NULL GROUP BY type ORDER BY type"
+        ).fetchall()
+        return {r["type"]: {"live": r["live"], "superseded": r["superseded"]} for r in rows}
     finally:
         con.close()
 

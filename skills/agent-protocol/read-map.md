@@ -58,11 +58,12 @@ persisting. It belongs to the write cycle, not to a coordinate; that cycle is in
 | Verb | Addressing | What comes back |
 |---|---|---|
 | `gaia memory show <slug>` | `--links` (graph edges), `--history` (versions: when, which fields, body delta), `--workspace`, `--json` | One curated row, whole. The verb a slug in a goal is meant for. |
-| `gaia memory search '<term>'` | `--workspace` | FTS5 across curated rows and episodes, scored. The handle to use when you have a topic and not a name. |
-| `gaia memory list` | `--type project\|user\|feedback\|atom\|decision\|negative`, `--json` | Name, type and one-line description per row -- the index, not the bodies. |
+| `gaia memory search '<term>'` | `--workspace`, `--type`, `--class`, `--all`, `--include-superseded` | FTS5 across curated rows and episodes. Plain words match a row holding ANY of them, rows holding more of them first, stopwords dropped from a multi-word query; `--all` requires every word; FTS5 syntax passes as written; a superseded row is hidden unless `--include-superseded`. Searches description and body, not the slug. The handle to use when you have a topic and not a name. |
+| `gaia memory list` | `--type project\|user\|feedback\|atom\|decision\|negative`, `--include-superseded`, `--json` | Name, type and one-line description per live row -- the index, not the bodies. A superseded row shows only with `--include-superseded`, naming its successor. |
 | `gaia memory story <slug>` | `--workspace` | The row's lineage as one fused timeline: related/derivative/graduated nodes with depth, then events in order. |
 | `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` or `--project <name>` | The compact block SessionStart injects, on demand; with a project, its whole live-pending set from every workspace; `--initiative <k> --sections anchor` returns that project's live standing notes with their bodies, from every workspace, a superseded one excluded. |
-| `gaia memory stats` / `gaia memory conflicts` | -- | Counts and FTS coverage; contradiction scan across rows. |
+| `gaia memory stats` | `--json` | Counts per type (live and superseded) and FTS coverage, no conflicts scan. |
+| `gaia memory conflicts` | `--owner`, `--exclude-class`, `--limit`, `--threshold` | Candidate contradictions across rows, with one slug held in two workspaces listed apart as duplicates. |
 | `gaia memory episode-show <episode_id>` | -- | One episode with score, age, tags and retrieval count. Episode ids come from `gaia query --surface episodes`. |
 
 ## Project knowledge -- two namespaces that share section names and are not the same
