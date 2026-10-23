@@ -19,6 +19,11 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    brief) is an instruction to go read it. The verbs, their addressing, and the
    workspace rule that decides whether they resolve are in
    `agent-protocol/read-map.md`. Do not read Gaia's database directly.
+   A fact a coordinate already holds is reused, cited in `key_outputs` by the
+   handoff id it came from; measure again only what the coordinates leave
+   uncovered, or a fact whose source changed after the commit or date it was
+   measured at. A re-measured fact that disagrees with its coordinate is a
+   finding for `open_gaps`, naming both.
 3. Inspect the smallest relevant source files, tests, configuration, git diff,
    or runtime query. Prefer authoritative implementation over prose. Never
    search from the home directory (`~`) or from `/`: a search rooted there

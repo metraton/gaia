@@ -128,9 +128,12 @@ def _insert(con: sqlite3.Connection, handoff_id: int, found: list) -> int:
 
 
 def record_proposals(con: sqlite3.Connection, handoff_id: int, envelope: Any) -> int:
-    """Record ``envelope``'s proposals for ``handoff_id``; a re-close replaces only what is still pending."""
+    """Record ``envelope``'s proposals and recurring-gap threads for ``handoff_id``; a re-close replaces only what is still pending."""
+    from gaia.store.recurring_gaps import thread_candidates
+
     con.execute("DELETE FROM proposals WHERE handoff_id = ? AND status = 'pending'", (handoff_id,))
-    return _insert(con, handoff_id, extract_proposals(envelope))
+    threads = [("thread", payload) for payload in thread_candidates(con, handoff_id, envelope)]
+    return _insert(con, handoff_id, extract_proposals(envelope) + threads)
 
 
 def record_close(con: sqlite3.Connection, handoff_id: int, raw_handoff_json: str) -> None:

@@ -34,6 +34,8 @@ def _summary(item: dict) -> str:
         operation = payload.get("operation", "?")
         body = payload.get(operation) or {}
         return f"{operation} {body.get('slug') or body.get('name') or '(no slug)'}: {body.get('description', '')}"
+    if item["kind"] == "thread":
+        return f"open gap in {len(payload.get('handoff_ids') or [])} rows: {payload.get('gap')}"
     return f"{payload.get('contract')} keys {', '.join(sorted(payload.get('payload') or {}))}"
 
 
