@@ -3718,10 +3718,7 @@ _MEMORY_QUERY_STOPWORDS = frozenset(
 
 
 def _memory_fts_terms(query: str) -> list[str] | None:
-    """Each plain word of ``query`` as a quoted FTS5 term, or ``None`` when the query is empty or already uses FTS5 syntax.
-
-    A multi-word query drops :data:`_MEMORY_QUERY_STOPWORDS`, unless that would leave nothing.
-    """
+    """Each plain word of ``query`` as a quoted FTS5 term (stopwords dropped), or ``None`` for an empty or FTS5-syntax query."""
     q = (query or "").strip()
     if not q or _MEMORY_FTS_SYNTAX.search(q):
         return None
@@ -3751,13 +3748,7 @@ def search_memory_curated(
     include_superseded: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
-    A superseded row is hidden unless ``include_superseded``, as in ``memory list``.
-    Plain words match ANY by default, rows holding more of the words first and
-    bm25 within a tie -- bm25 alone lets one rare word outrank a row holding
-    all of them; ``match_all`` requires every word. ``with_user_scope`` adds
-    the workspace-less :data:`USER_WORKSPACE` rows; ``type``/``class_`` keep
-    only rows of that type or class."""
+    """Curated rows matching ``query`` (any plain word, most words first; every word with ``match_all``), superseded ones only when asked."""
     fts_q = _prepare_memory_fts_query(query, match_all=match_all)
     ranked_terms = [] if match_all else (_memory_fts_terms(query) or [])
     hits_sql = " + ".join(
@@ -3884,9 +3875,7 @@ def list_memory(
     ``class_``/``status``. ``with_user_scope`` adds the workspace-less
     :data:`USER_WORKSPACE` rows to the listing of ``workspace``.
 
-    Every row carries ``superseded_by``, the comma-joined names of the rows
-    that supersede it (``None`` while it stands); ``include_superseded=False``
-    drops those rows by the same rule as :func:`gaia.store.reader.not_superseded`.
+    Every row carries ``superseded_by``; ``include_superseded=False`` drops those rows.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``

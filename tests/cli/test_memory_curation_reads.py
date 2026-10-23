@@ -1,12 +1,4 @@
 """Curation reads over the curated memory: what is live, what a search finds, what to merge.
-
-What the user feels: `memory list` shows the rows that still stand and names
-the successor of one that does not, a search of several plain words finds the
-row holding all of them however they are spelled, one `link` retires several
-old rows at once, `conflicts` can be narrowed to one owner and keeps duplicated
-slugs apart from contradictions, `stats` counts live rows without rescanning,
-and `gaia map` points at the curate and reuse verbs. Runs in-process against
-the temporary GAIA_DATA_DIR the suite's conftest provides.
 """
 
 from __future__ import annotations

@@ -399,8 +399,7 @@ def _cmd_stats(args) -> int:
 
     Reads episode count from episodes table in gaia.db (primary).
     Reads FTS5 indexed count from episodes_fts table in gaia.db.
-    Legacy index.json is no longer consulted. Curated rows are counted per
-    type, live and superseded; the pairwise conflict scan is `conflicts`'s.
+    Legacy index.json is no longer consulted.
     """
     as_json = getattr(args, "json", False)
 
@@ -536,10 +535,7 @@ def _cmd_episode_show(args) -> int:
 
 
 def _cmd_conflicts(args) -> int:
-    """Handle `gaia memory conflicts`: candidate pairs, never verdicts.
-
-    A pair holding one slug in two workspaces is a duplicate to merge, not a
-    disagreement, so it is listed apart; ``--limit`` bounds each list.
+    """Handle `gaia memory conflicts`: candidate pairs, never verdicts; a slug in two workspaces is listed apart as a duplicate.
     """
     as_json = getattr(args, "json", False)
 
