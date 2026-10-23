@@ -32,6 +32,7 @@ sys.path.insert(0, str(_FIXTURES))
 import migration_guard  # noqa: E402
 from loader import load_base  # noqa: E402
 
+from gaia.paths.backup import restore_gzip  # noqa: E402
 from gaia.store.reader import list_unread_notifications  # noqa: E402
 from gaia.store.writer import ack_task_notification  # noqa: E402
 
@@ -153,8 +154,9 @@ def test_the_migration_is_backward_compatible_and_needs_no_consent(tmp_path):
     assert migration_guard.compat_mark(sql) == "backward"
 
     db, _, _ = _upgrade(tmp_path, FRIDAYS)
-    backup = next((tmp_path / "backups").glob("*.db"))
-    con = sqlite3.connect(backup)
+    restored = tmp_path / "restored.db"
+    restore_gzip(next((tmp_path / "backups").glob("*.db.gz")), restored)
+    con = sqlite3.connect(restored)
     try:
         census = migration_guard.take_census(con)
     finally:

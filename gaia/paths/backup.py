@@ -1,23 +1,10 @@
 """
 gaia.paths.backup -- verified, compressed, bounded copies of gaia.db.
 
-Every backup Gaia writes of its live database goes through write_verified_gzip:
-the SQLite Online Backup API copies one committed state into a hidden temp file
-beside the target, PRAGMA integrity_check proves the copy, gzip compresses it into
-a second temp file, and an atomic rename publishes it. A copy that fails any step
-is deleted and never replaces or prunes an existing backup.
-
-Retention is by the timestamp in the file name, never by the wall clock, so a
-skewed clock cannot make a run delete the backups it should keep:
-
-  * session-start snapshots: grandfather-father-son (prune_gfs); ``uninstall``
-    snapshots are exempt.
-  * pre-migration and workspace backups: newest N per kind (prune_newest),
-    compressed files only -- plain ``.db`` backups from earlier versions are left alone.
-
-The outcome of the last session-start run lives in a status file in the state
-dir (not in snapshots/, which may be the thing that failed); backup_health
-turns it and the newest snapshot into the verdict ``gaia doctor`` shows.
+Every backup of the live database goes through write_verified_gzip; a copy that
+fails verification is deleted and never replaces or prunes an existing backup.
+Retention reads the timestamp in the file name, never the clock. The last
+session-start outcome is kept in the state dir, not snapshots/, which may be what failed.
 """
 
 from __future__ import annotations

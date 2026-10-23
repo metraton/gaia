@@ -79,6 +79,7 @@ def staged_engine(tmp_path, monkeypatch):
     (scripts / "migrations").mkdir(parents=True)
     for name in ("bootstrap_database.py", "migration_guard.py"):
         (scripts / name).write_text((_REPO / "scripts" / name).read_text(encoding="utf-8"))
+    shutil.copytree(_REPO / "gaia", tmp_path / "pkg" / "gaia", ignore=shutil.ignore_patterns("__pycache__"))
     doctor = tmp_path / "pkg" / "bin" / "cli"
     doctor.mkdir(parents=True)
     (doctor / "doctor.py").write_text(f"EXPECTED_SCHEMA_VERSION = {EXPECTED}\n")
@@ -105,7 +106,7 @@ def test_structure_only_chain_is_applied_after_a_backup(staged_engine, data_dir,
     notice = _plugin_upgrade().reconcile(db, EXPECTED, marker, "1.0.0")
 
     assert _ledger(db) == EXPECTED
-    assert len(list((data_dir / "backups").glob("*.db"))) == 1
+    assert len(list((data_dir / "backups").glob("*.db.gz"))) == 1
     assert f"v{EXPECTED - 1}" in notice and f"v{EXPECTED}" in notice
 
 
@@ -251,7 +252,7 @@ def test_hook_applies_a_structure_only_chain_and_says_so(staged_package, data_di
     )
 
     assert _ledger(db) == EXPECTED
-    assert len(list((data_dir / "backups").glob("*.db"))) == 1
+    assert len(list((data_dir / "backups").glob("*.db.gz"))) == 1
     said = f"migrated from v{EXPECTED - 1} to v{EXPECTED}"
     assert said in _hook_notice(response), proc.stdout
     assert said in response.get("systemMessage", "")

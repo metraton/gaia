@@ -28,7 +28,10 @@ create_snapshot(db_path(), snapshot_dir(), retain=5, prefix="uninstall")
 | `resolver`  | Pure path-resolution functions (no I/O). Reads `GAIA_DATA_DIR`; `db_path()` also honors `GAIA_DB`, which outranks it for the database file alone. |
 | `layout`    | `ensure_layout()` -- materializes the directory tree on first use. |
 | `snapshot`  | Shared "copy DB to gzip snapshot + rotate to last N" helper. One implementation used by both `gaia uninstall` (backup-by-default) and the SessionStart auto-backup (throttled 24h). Copy-based -- never moves or deletes the live DB. |
+| `backup`    | Every backup of the live database goes through `write_verified_gzip`: SQLite's Online Backup API copies one committed state, `integrity_check` proves it, gzip compresses it, and an atomic rename publishes it. A copy that fails is deleted and never replaces or prunes an existing backup. |
 | `__init__`  | Re-exports the public API and the `workspace_id` alias.        |
+
+Retention reads the timestamp in the file name, never the clock. Session-start snapshots keep 7 daily, 4 weekly and 3 monthly (`prune_gfs`; `uninstall` snapshots are exempt). Pre-migration and workspace backups keep the newest 3 of each kind (`prune_newest`); plain `.db` backups from earlier versions are left alone. The outcome of the last session-start run is written to `state/db-backup-status.json`, which `backup_health` turns into the verdict `gaia doctor` shows.
 
 ## Attribution
 
