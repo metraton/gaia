@@ -3086,6 +3086,7 @@ def _cmd_search_scoped(args) -> int:
         workspace, query, limit=limit, with_user_scope=True,
         type=getattr(args, "type", None), class_=getattr(args, "cls", None),
         match_all=getattr(args, "all", False),
+        include_superseded=getattr(args, "include_superseded", False),
     )
 
     if scope == "memory":
@@ -3187,7 +3188,9 @@ def register(subparsers):
             "Full-text search; returns ranked results. Plain words match a row "
             "holding ANY of them, rows holding more of them ranked first "
             "(bm25); --all requires every word. Each word is matched on its "
-            "own (a hyphenated word as a phrase); a query with FTS5 syntax "
+            "own (a hyphenated word as a phrase), and common Spanish and "
+            "English stopwords are dropped from a multi-word query; a query "
+            "with FTS5 syntax "
             "(quotes, parentheses, *, ^, AND, OR, NOT, NEAR) is passed as "
             "written."
         ),
@@ -3213,6 +3216,10 @@ def register(subparsers):
     search_p.add_argument(
         "--all", action="store_true", default=False,
         help="Curated rows must hold every plain word. bool. Default: any word.",
+    )
+    search_p.add_argument(
+        "--include-superseded", action="store_true", default=False,
+        help="Also search curated rows a newer row supersedes. bool. Default: hidden.",
     )
     search_p.add_argument(
         "--limit", type=int, default=10, metavar="N",

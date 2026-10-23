@@ -214,7 +214,10 @@ OPTIONS = {
         '--sort --status --type --workspace -h'
     ),
     'memory reclassify': '--class --help --json --status --workspace -h',
-    'memory search': '--all --class --help --json --limit --scope --type --workspace -h',
+    'memory search': (
+        '--all --class --help --include-superseded --json --limit --scope --type --workspace '
+        '-h'
+    ),
     'memory show': '--help --history --json --links --workspace -h',
     'memory stats': '--help --json -h',
     'memory story': '--help --json --max-depth --workspace -h',

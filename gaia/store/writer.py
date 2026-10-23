@@ -3711,12 +3711,24 @@ import re as _re_for_fts
 _MEMORY_FTS_SYNTAX = _re_for_fts.compile(r'["()*^]|\b(?:AND|OR|NOT|NEAR)\b')
 
 
+_MEMORY_QUERY_STOPWORDS = frozenset(
+    "a an and are as at be by for from in is it of on or that the this to with "
+    "al con de del el en es la las lo los para por que se su un una y".split()
+)
+
+
 def _memory_fts_terms(query: str) -> list[str] | None:
-    """Each plain word of ``query`` as a quoted FTS5 term, or ``None`` when the query is empty or already uses FTS5 syntax."""
+    """Each plain word of ``query`` as a quoted FTS5 term, or ``None`` when the query is empty or already uses FTS5 syntax.
+
+    A multi-word query drops :data:`_MEMORY_QUERY_STOPWORDS`, unless that would leave nothing.
+    """
     q = (query or "").strip()
     if not q or _MEMORY_FTS_SYNTAX.search(q):
         return None
-    return ['"' + word.replace('"', '""') + '"' for word in q.split()]
+    words = q.split()
+    if len(words) > 1:
+        words = [w for w in words if w.lower() not in _MEMORY_QUERY_STOPWORDS] or words
+    return ['"' + word.replace('"', '""') + '"' for word in words]
 
 
 def _prepare_memory_fts_query(query: str, *, match_all: bool = False) -> str:
@@ -3736,9 +3748,11 @@ def search_memory_curated(
     type: str | None = None,
     class_: str | None = None,
     match_all: bool = False,
+    include_superseded: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
     """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
+    A superseded row is hidden unless ``include_superseded``, as in ``memory list``.
     Plain words match ANY by default, rows holding more of the words first and
     bm25 within a tie -- bm25 alone lets one rare word outrank a row holding
     all of them; ``match_all`` requires every word. ``with_user_scope`` adds
@@ -3753,7 +3767,9 @@ def search_memory_curated(
     workspaces = [workspace]
     if with_user_scope and workspace != USER_WORKSPACE:
         workspaces.append(USER_WORKSPACE)
-    filters = ""
+    from gaia.store.reader import not_superseded
+
+    filters = "" if include_superseded else f" AND {not_superseded('m')}"
     params: list = [*ranked_terms, fts_q, *workspaces]
     for column, value in (("type", type), ("class", class_)):
         if value is not None:

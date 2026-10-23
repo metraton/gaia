@@ -110,8 +110,28 @@ def _found(capsys, query: str, *flags: str) -> list[str]:
 def test_search_finds_rows_holding_any_word_most_matching_first(lineage, capsys):
     found = _found(capsys, "blank-lines teams short formatting")
 
-    assert set(found) == {NEW, OLD, LOG}
+    assert set(found) == {NEW, LOG}
     assert found[0] == NEW
+
+
+def test_search_hides_a_superseded_row_unless_asked(lineage, capsys):
+    assert OLD not in _found(capsys, "teams short")
+    assert OLD in _found(capsys, "teams short", "--include-superseded")
+
+
+def test_search_drops_stopwords_from_a_plain_multi_word_query(lineage, capsys):
+    assert _found(capsys, "para the in formatting") == [LOG]
+    assert _found(capsys, "para the in formatting", "--all") == [LOG]
+
+
+def test_search_keeps_stopwords_inside_quotes_and_fts_syntax(lineage, capsys):
+    assert NEW in _found(capsys, "in OR formatting")
+    assert NEW in _found(capsys, '"in" OR formatting')
+    assert _found(capsys, '"messages in teams"') == [NEW]
+
+
+def test_search_of_only_stopwords_still_searches(lineage, capsys):
+    assert NEW in _found(capsys, "the in")
 
 
 def test_search_all_requires_every_word_wherever_it_sits(lineage, capsys):
