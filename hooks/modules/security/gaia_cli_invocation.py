@@ -44,6 +44,19 @@ def _is_dispatcher_file(path: str) -> bool:
     return all(marker in head for marker in _DISPATCHER_SIGNATURE)
 
 
+def _cannot_start_cli(path: str) -> bool:
+    """True when an absolute *path* exists as a directory or as a non-executable file without the dispatcher signature.
+
+    A relative or missing path stays a possible entry point: the hook does not
+    run in the command's cwd, and a path can be created earlier in the chain.
+    """
+    if not os.path.isabs(path) or not os.path.exists(path):
+        return False
+    if os.path.isdir(path):
+        return True
+    return not os.access(path, os.X_OK) and not _is_dispatcher_file(path)
+
+
 def entry_group(word: str) -> Optional[str]:
     """``""`` when *word* runs the dispatcher, ``"<group>"`` for a ``<group>.py`` script, else None.
 
@@ -61,7 +74,7 @@ def entry_group(word: str) -> Optional[str]:
     for candidate in (word, os.path.realpath(word)) if os.path.islink(word) else (word,):
         name = os.path.basename(candidate)
         if name == "gaia" or aliased_cli(name) == "gaia":
-            return ""
+            return None if _cannot_start_cli(word) else ""
         if name.endswith(".py") and len(name) > 3:
             return name[:-3]
     return "" if _is_dispatcher_file(word) else None

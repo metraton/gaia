@@ -12572,6 +12572,8 @@ def list_agent_contract_handoffs(
     plan_task_ids: "Sequence[int] | None" = None,
     since: str | None = None,
     until: str | None = None,
+    text: str | None = None,
+    agent_name: str | None = None,
     limit: int = 100,
     db_path: "Path | None" = None,
 ) -> list[dict]:
@@ -12604,6 +12606,12 @@ def list_agent_contract_handoffs(
             nearest-ancestor binding ``_inherited_plan_task_id`` resolves.
         since / until: Inclusive ``created_at`` bounds, as ISO-8601 UTC
             strings. Applied in SQL, so ``limit`` counts only matching rows.
+        text:        Substring of the goal (``dispatch_prompt``), the
+            ``dispatch_description`` or the envelope's ``conclusion``; ASCII
+            case-insensitive (SQLite LIKE), ``%`` and ``_`` taken literally.
+        agent_name:  The dispatched agent's name, read from the birth marker
+            (:data:`BIRTH_AGENT_NAME_KEY`) -- so a cleanly finalized row,
+            whose envelope replaced the marker, does not match.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
@@ -12667,6 +12675,18 @@ def list_agent_contract_handoffs(
         if until is not None:
             clauses.append("created_at <= ?")
             params.append(until)
+        if text is not None:
+            literal = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append(
+                "(dispatch_prompt LIKE ? ESCAPE '\\' "
+                "OR dispatch_description LIKE ? ESCAPE '\\' "
+                "OR (CASE WHEN json_valid(raw_handoff_json) "
+                "THEN json_extract(raw_handoff_json, '$.conclusion') END) LIKE ? ESCAPE '\\')"
+            )
+            params.extend([f"%{literal}%"] * 3)
+        if agent_name is not None:
+            clauses.append(f"{_BIRTH_AGENT_NAME_SQL} = ?")
+            params.append(agent_name)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
