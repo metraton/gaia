@@ -1184,8 +1184,8 @@ def _flags(spec: str) -> FrozenSet[str]:
 # against the live parsers, so a drift in either direction fails there.
 _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("approvals", "history"): _flags("--limit --status --json"),
-    ("approvals", "list"): _flags("--json --session --orphans-only"),
-    ("approvals", "pending"): _flags("--json --session --all-sessions"),
+    ("approvals", "list"): _flags("--json --session --orphans-only --all-sessions --include-stale"),
+    ("approvals", "pending"): _flags("--json --session --all-sessions --include-stale"),
     ("approvals", "question"): _flags("--details"),
     ("approvals", "reject"): _flags("--reason --json"),
     ("approvals", "revoke"): _flags("--yes --reason"),
@@ -1223,12 +1223,13 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("context", "show"): _flags("--section --json"),
     ("contract", "list"): _flags(
         "--plan-task --brief --agent-id --agent --state --cut --session --contract-id "
-        "--harness-id --workspace --since --until --limit --json"),
+        "--harness-id --workspace --since --until --limit --grep --agent-name --task --json"),
     ("contract", "validate"): _flags("--draft-id --agent-id --json"),
     ("contract", "proposals", "list"): _flags("--all --kind --contract-id --json"),
     ("contract", "proposals", "accept"): _flags("--project --workspace --json"),
     ("contract", "proposals", "dismiss"): _flags("--reason --json"),
-    ("contract", "view"): _flags("--field --draft-id --agent-id --harness-id --json"),
+    ("contract", "view"): _flags(
+        "--field --draft-id --agent-id --harness-id --row --contract-id --json"),
     ("defects",): _flags(
         "--origin --type --severity --agent --since --until --limit --workspace --count --json"),
     ("doctor",): _flags("--json --workspace"),
@@ -1289,7 +1290,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("status",): _flags("--json"),
     ("task", "gate", "list"): _flags("--workspace --json"),
     ("task", "gate", "reverify"): _flags("--reason --workspace --json"),
-    ("task", "list"): _flags("--status --format --json --workspace"),
+    ("task", "list"): _flags("--status --format --json --workspace --plan"),
     ("task", "set-status"): _flags("--workspace --json"),
     ("task", "show"): _flags("--id --workspace --json"),
     ("usage", "show"): _flags("--plan --session --since --until --json"),

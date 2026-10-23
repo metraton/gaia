@@ -75,6 +75,18 @@ def test_snapshot_of_session_a_excludes_session_b(db):
     assert "ccccccccccccccccc" not in rendered and "P-done" not in rendered
 
 
+def test_a_pending_signature_past_its_ttl_is_not_counted_at_birth(db):
+    from gaia.session_snapshot import build_snapshot
+
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO approvals (id, agent_id, session_id, status, created_at) "
+                "VALUES ('P-old', 'aaaaaaaaaaaaaaaaa', ?, 'pending', '2026-01-01T00:00:00Z')", (SESSION_A,))
+    con.commit()
+    con.close()
+
+    assert [a["id"] for a in build_snapshot(SESSION_A)["pending_signatures"]] == ["P-a"]
+
+
 LONG_GOAL = (
     "Carry the session snapshot through every compaction so the orchestrator resumes "
     "exactly where it stopped, with its contracts, signatures and resume point intact "

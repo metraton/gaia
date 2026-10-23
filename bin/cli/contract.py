@@ -1341,6 +1341,24 @@ def _other_identifier_hint(value: str) -> str:
     return "".join(hints)
 
 
+def _dispatch_row(row: dict) -> dict:
+    """The dispatch columns of one row: what the turn was asked, by whom, where, and how it stands."""
+    return {
+        "handoff_id": row.get("id"),
+        "contract_id": row.get("contract_id"),
+        "agent_id": row.get("agent_id"),
+        "harness_agent_id": row.get("harness_agent_id"),
+        "agent_name": _birth_agent_name(row),
+        "project": row.get("dispatch_project"),
+        "session_id": row.get("session_id"),
+        "agent_state": row.get("agent_state"),
+        "cut_reason": row.get("cut_reason"),
+        "created_at": row.get("created_at"),
+        "description": row.get("dispatch_description"),
+        "goal": row.get("dispatch_prompt"),
+    }
+
+
 def _view_by_harness_id(args, harness_id: str) -> int:
     """Resolve and print a turn's contract by the HARNESS's per-run agent id.
 
@@ -1367,9 +1385,13 @@ def _view_by_harness_id(args, harness_id: str) -> int:
 
     as_json = bool(getattr(args, "json", False))
     links = sorted(
-        list_agent_contract_handoffs(harness_agent_id=harness_id),
+        list_agent_contract_handoffs(harness_agent_id=harness_id)
+        or list_agent_contract_handoffs(agent_id=harness_id),
         key=lambda link: (link.get("created_at") or "", link.get("id") or 0),
     )
+    if links and getattr(args, "row", False):
+        print(json.dumps(_dispatch_row(collapse_continuation_chains(links)[-1]), indent=2))
+        return 0
     if not links:
         _print_error(
             f"no contract row carries harness_agent_id={harness_id!r}. "
@@ -1465,6 +1487,17 @@ def cmd_view(args) -> int:
         return _view_by_harness_id(args, harness_id)
 
     as_json = bool(getattr(args, "json", False))
+    if getattr(args, "row", False):
+        contract_id = getattr(args, "draft_id", None)
+        if not contract_id:
+            _print_error("--row needs --harness-id or --contract-id.", as_json)
+            return 1
+        row = _lookup_handoff_row_by_contract_id(contract_id)
+        if row is None:
+            _print_error(f"no contract row carries contract_id={contract_id!r}.", as_json)
+            return 1
+        print(json.dumps(_dispatch_row(row), indent=2))
+        return 0
     draft_id = _resolve_target_draft_id(args, as_json)
     if draft_id is None:
         return 1
@@ -1694,6 +1727,8 @@ def cmd_list(args) -> int:
         plan_task_ids=plan_task_ids,
         since=since,
         until=until,
+        text=getattr(args, "grep", None),
+        agent_name=getattr(args, "agent_name", None),
         limit=args.limit,
     )
 
@@ -2525,6 +2560,18 @@ def _build_subcommands(sub) -> None:
         ),
     )
     _add_common_draft_arg(p_view)
+    p_view.add_argument(
+        "--contract-id", dest="draft_id", metavar="ID", default=None,
+        help="Same as --draft-id: the row's contract_id",
+    )
+    p_view.add_argument(
+        "--row", action="store_true", default=False,
+        help=(
+            "Print the row's dispatch columns instead of its envelope: goal "
+            "(dispatch_prompt), description, agent name, project, session and "
+            "state. Needs --harness-id or --contract-id"
+        ),
+    )
     _add_agent_scope_arg(p_view)
     p_view.add_argument(
         "--harness-id",
@@ -2569,10 +2616,15 @@ def _build_subcommands(sub) -> None:
             "  gaia contract list --plan-task 824\n"
             "  gaia contract list --brief my-brief --since 24h\n"
             "  gaia contract list --cut --until 2026-09-30\n"
+            "  gaia contract list --grep 'approval' --since 7d\n"
+            "  gaia contract list --agent-name gaia-system --state DISPATCHED\n"
+            "\n"
+            "A row's goal and dispatch columns: "
+            "gaia contract view --row --contract-id ID\n"
         ),
     )
     p_list.add_argument(
-        "--plan-task", dest="plan_task", type=int, metavar="TASK_ID", default=None,
+        "--plan-task", "--task", dest="plan_task", type=int, metavar="TASK_ID", default=None,
         help=(
             "Turns of one plan task (tasks.id, the task_id=<N> of a dispatch), "
             "including resumed turns whose continuation chain leads back to it"
@@ -2589,6 +2641,22 @@ def _build_subcommands(sub) -> None:
             "a<hex> handle). Dispatch agent type/name is not stored on legacy "
             "rows and cannot be inferred by this filter; the agent_name column "
             "shows the dispatched name where the birth envelope recorded it."
+        ),
+    )
+    p_list.add_argument(
+        "--agent-name", dest="agent_name", metavar="NAME", default=None,
+        help=(
+            "Filter by the dispatched agent's name (gaia-system, developer, ...). "
+            "Matches open and cut rows only: a cleanly finalized row no longer "
+            "records the name"
+        ),
+    )
+    p_list.add_argument(
+        "--grep", dest="grep", metavar="PATTERN", default=None,
+        help=(
+            "Case-insensitive substring of the goal (dispatch_prompt), the "
+            "dispatch description or the conclusion; combine with --since and "
+            "--limit to bound the scan"
         ),
     )
     p_list.add_argument(

@@ -168,11 +168,29 @@ def _plan_lines(workspace: Optional[str]) -> list[tuple[str, str]]:
     return lines
 
 
+def _approval_lines(session_id: str) -> list[tuple[str, str]]:
+    """This session's live signature requests; another session's consent is not this one's to give."""
+    if not session_id:
+        return []
+    from gaia.approvals import reading, store
+
+    rows = store.list_pending(session_id=session_id)
+    readings = reading.read_ids((row["id"] for row in rows), live=reading.live_sessions())
+    for row in rows:
+        row["state"] = readings.get(row["id"], {}).get("state")
+    live, _ = reading.session_scope(rows, session_id)
+    if not live:
+        return []
+    return [(f"{len(live)} signature(s) waiting in this session: {_ids(live, 'id')}",
+             "gaia approvals pending ; gaia approvals show <id>")]
+
+
 def collect_now(session_id: str, workspace: Optional[str], caller_agent: str = "") -> list[tuple[str, str]]:
     """Every live-state line as (what, verb that moves it); sources needing a session yield nothing without one."""
     return [
         *_due_lines(workspace),
         *_proposal_lines(),
+        *_approval_lines(session_id),
         *_dispatched_lines(session_id, caller_agent),
         *_signal_lines(session_id),
         *_plan_lines(workspace),
