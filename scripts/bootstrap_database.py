@@ -25,7 +25,7 @@ Every write of the chain -- schema, each migration, and each ledger seal --
 runs inside ONE transaction, so an interruption at any point, including
 between a migration and its seal, leaves the objects and the version exactly
 as they were. Before that transaction opens on an existing database, a verified
-gzip copy is written to ``<database dir>/backups/`` (gaia.paths.backup), keeping
+gzip copy is written to ``<database dir>/backups/`` (the gaia.paths.backup format), keeping
 the newest BACKUPS_KEPT; plain ``.db`` backups from earlier versions are left. A chain that
 only adds structure then applies on its own; a chain in which any migration
 reaches rows that already exist is refused until ``--consent-chain vA..vB``
@@ -44,9 +44,11 @@ The bootstrap never registers a workspace: only `gaia workspace declare` does.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -80,6 +82,7 @@ FRESH, SEALED, UNSEALED = "fresh", "sealed", "unsealed"
 AFTER_BACKUP_FLAG = "--apply-after-backup"
 
 BACKUPS_KEPT = 3
+_BACKUP_STAMP_RE = re.compile(r"-pre-migrate-(\d{8}T\d{12}Z)\.db\.gz$")
 
 
 def _log(msg: str) -> None:
@@ -258,35 +261,65 @@ def _backup(
     Raises sqlite3.DatabaseError unless the copy passes integrity_check and
     holds exactly the rows *census* counted, so no chain runs without one.
     Only the newest BACKUPS_KEPT compressed pre-migration backups are kept.
+    Stdlib only: the engine runs without the gaia package beside it.
     """
-    from gaia.paths.backup import BackupVerificationError, prune_newest, write_verified_gzip
-
     backup_dir = GAIA_DB.parent / "backups"
     target = backup_dir / (
         f"{GAIA_DB.stem}-v{ledger}-pre-migrate-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db.gz"
     )
-
-    def same_rows(copy: sqlite3.Connection) -> str | None:
-        return None if migration_guard.take_census(copy) == census else "rows do not match the census"
-
+    copy = target.with_name(f".{target.name}.copy")
+    part = target.with_name(f".{target.name}.part")
     try:
-        write_verified_gzip(con, target, accept=same_rows)
-    except BackupVerificationError as exc:
-        raise sqlite3.DatabaseError(f"backup {target} did not verify ({exc})") from exc
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        dest = sqlite3.connect(str(copy))
+        try:
+            con.backup(dest)
+            verdict = dest.execute("PRAGMA integrity_check").fetchone()[0]
+            copied = migration_guard.take_census(dest)
+        finally:
+            dest.close()
+        if verdict != "ok" or copied != census:
+            raise sqlite3.DatabaseError(
+                f"backup {target} did not verify (integrity_check={verdict!r}, "
+                f"rows match={copied == census})"
+            )
+        with open(copy, "rb") as src, open(part, "wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6) as packed:
+                shutil.copyfileobj(src, packed, 1 << 20)
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(part, target)
     except OSError as exc:
         raise sqlite3.DatabaseError(f"backup {target} could not be written ({exc})") from exc
-    prune_newest(backup_dir, "*-pre-migrate-*.db.gz", keep=BACKUPS_KEPT)
+    finally:
+        for leftover in (copy, Path(f"{copy}-journal"), part):
+            leftover.unlink(missing_ok=True)
+    _prune_backups(backup_dir)
     return target
+
+
+def _prune_backups(backup_dir: Path) -> None:
+    """Delete all but the newest BACKUPS_KEPT compressed pre-migration backups, by the stamp in their name."""
+    stamped = sorted(
+        (match.group(1), path)
+        for path in backup_dir.glob("*-pre-migrate-*.db.gz")
+        if (match := _BACKUP_STAMP_RE.search(path.name))
+    )
+    for _stamp_text, path in stamped[:-BACKUPS_KEPT]:
+        try:
+            path.unlink()
+        except OSError:
+            continue
 
 
 def _restore(backup: Path) -> None:
     """Put the verified *backup* back in place of GAIA_DB through a staged copy, so the backup itself survives."""
     # Imported here: tests stage this engine alone, without the gaia package beside it.
     from gaia.atomic_replace import replace_retrying
-    from gaia.paths.backup import restore_gzip
 
     staged = GAIA_DB.with_name(GAIA_DB.name + ".restore")
-    restore_gzip(backup, staged)
+    with gzip.open(backup, "rb") as src, open(staged, "wb") as dst:
+        shutil.copyfileobj(src, dst, 1 << 20)
     for sidecar in ("-wal", "-shm"):
         GAIA_DB.with_name(GAIA_DB.name + sidecar).unlink(missing_ok=True)
     replace_retrying(staged, GAIA_DB)

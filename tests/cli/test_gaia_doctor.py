@@ -5,6 +5,7 @@ Uses tmp_path fixtures to create controlled .claude/ directory structures
 so each health check can be tested in isolation.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -1138,8 +1139,9 @@ class TestCmdDoctorJson:
         #   hook-commands 74 -- hooks counted across plugin and every settings file) +
         # 1 hook-shell (order 25 -- Windows without a resolvable sh) +
         # 1 git-long-paths (order 26 -- Windows git with core.longpaths off) +
-        # 3 self-location checks (hook-python 27, path-gaia 28, launcher-python 29).
-        assert len(data["checks"]) == 44
+        # 3 self-location checks (hook-python 27, path-gaia 28, launcher-python 29) +
+        # 1 db-backups (order 44 -- age, size and verification of the newest backup).
+        assert len(data["checks"]) == 45
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -2753,11 +2755,27 @@ class TestCheckDbBackups:
     def test_backup_older_than_48h_warns(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
         self._backup(tmp_path, hours_old=50)
-        assert doctor_mod.check_db_backups()["severity"] == "warn"
+        assert doctor_mod.check_db_backups()["severity"] == "warning"
 
     def test_failed_last_backup_warns_with_the_error(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
         self._backup(tmp_path, hours_old=1, result="failed",
                      verification="failed: integrity_check", error="database disk image is malformed")
         r = doctor_mod.check_db_backups()
-        assert r["severity"] == "warn" and "malformed" in r["detail"]
+        assert r["severity"] == "warning" and "malformed" in r["detail"]
+
+    @pytest.mark.parametrize("state", ("none", "failed", "ok"))
+    def test_doctor_json_reports_every_backup_state_and_degrades_only_on_failure(
+        self, tmp_path, monkeypatch, capsys, state
+    ):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        if state != "none":
+            self._backup(tmp_path, hours_old=1, **({"result": "failed", "error": "disk full"} if state == "failed" else {}))
+        monkeypatch.setattr(doctor_mod, "_CHECKS", [(44, "DB backups", doctor_mod.check_db_backups)])
+        monkeypatch.setattr(doctor_mod, "_derive_workspace", lambda override=None: tmp_path)
+
+        doctor_mod.cmd_doctor(argparse.Namespace(json=True, fix=False, workspace=None))
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["checks"][0]["name"] == "DB backups"
+        assert data["status"] == ("degraded" if state == "failed" else "healthy")

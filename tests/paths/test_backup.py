@@ -117,22 +117,30 @@ class TestHealth:
     def test_older_than_48h_warns(self, tmp_path):
         self._snapshot(tmp_path / "snapshots", 49 * 3600)
         health = backup.backup_health(tmp_path / "snapshots", self._status(tmp_path))
-        assert health["severity"] == "warn" and "48h" in health["detail"]
+        assert health["severity"] == "warning" and "48h" in health["detail"]
 
     def test_failed_last_attempt_warns_even_with_a_fresh_backup(self, tmp_path):
         self._snapshot(tmp_path / "snapshots", 60)
         status = self._status(tmp_path, result="failed", verification="failed: page 3 corrupt",
                               error="integrity_check: page 3 corrupt")
         health = backup.backup_health(tmp_path / "snapshots", status)
-        assert health["severity"] == "warn" and "page 3 corrupt" in health["detail"]
+        assert health["severity"] == "warning" and "page 3 corrupt" in health["detail"]
 
-    def test_no_backup_warns(self, tmp_path):
+    def test_no_backup_before_any_run_is_info_and_after_a_run_warns(self, tmp_path):
         health = backup.backup_health(tmp_path / "snapshots", tmp_path / "missing.json")
-        assert health["severity"] == "warn" and health["newest"] is None
+        assert health["severity"] == "info" and health["newest"] is None
+        health = backup.backup_health(tmp_path / "snapshots", self._status(tmp_path))
+        assert health["severity"] == "warning" and "no backup yet" in health["detail"]
 
     def test_uninstall_snapshot_is_not_the_newest_backup(self, tmp_path):
         snap_dir = tmp_path / "snapshots"
         self._snapshot(snap_dir, 72 * 3600)
         snap_dir.joinpath(f"uninstall-{datetime.now().strftime('%Y%m%dT%H%M%S%f')}.db.gz").write_bytes(b"u")
         health = backup.backup_health(snap_dir, self._status(tmp_path))
-        assert health["severity"] == "warn"
+        assert health["severity"] == "warning"
+
+
+def test_a_status_file_that_is_not_an_object_reads_as_no_status(tmp_path):
+    status = tmp_path / "status.json"
+    status.write_text("[1, 2]", encoding="utf-8")
+    assert backup.read_status(status) == {}

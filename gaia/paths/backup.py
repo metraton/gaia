@@ -212,9 +212,10 @@ def write_status(path: Path, status: dict) -> None:
 def read_status(path: Path) -> dict:
     """Return the recorded status, or {} when there is none or it cannot be read."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        status = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return status if isinstance(status, dict) else {}
 
 
 def _size(num_bytes: int) -> str:
@@ -251,9 +252,10 @@ def backup_health(snapshot_dir: Path, status_path: Path, now: Optional[float] = 
             problems.append("older than 48h")
     else:
         detail = f"no backup in {snapshot_dir}"
-        problems.append("no backup yet")
+        if status:
+            problems.append("no backup yet")
     if status.get("result") == "failed":
         problems.append(f"last backup failed: {status.get('error') or verification}")
-    health["severity"] = "warn" if problems else "pass"
+    health["severity"] = "warning" if problems else "pass" if dated else "info"
     health["detail"] = "; ".join([detail, *problems])
     return health
