@@ -1241,16 +1241,17 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("memory", "append"): _flags("--body --body-file --workspace --json"),
     ("memory", "checkpoint"): _flags(
         "--file --project --project-ref --initiative --workspace --json"),
-    ("memory", "conflicts"): _flags("--threshold --json"),
+    ("memory", "conflicts"): _flags("--threshold --owner --exclude-class --limit --json"),
     ("memory", "episode-show"): _flags("--json"),
     ("memory", "get-relevant"): _flags(
         "--workspace --limit --max-chars --types --sections --initiative --project "
         "--json --no-pointer"),
     ("memory", "link"): _flags("--kind --workspace --json"),
     ("memory", "list"): _flags(
-        "--type --audience --class --status --sort --order --workspace --limit --format --json"),
+        "--type --audience --class --status --sort --order --include-superseded --workspace "
+        "--limit --format --json"),
     ("memory", "reclassify"): _flags("--class --status --workspace --json"),
-    ("memory", "search"): _flags("--limit --scope --workspace --json"),
+    ("memory", "search"): _flags("--limit --scope --type --class --workspace --json"),
     ("memory", "show"): _flags("--workspace --links --history --json"),
     ("memory", "stats"): _flags("--json"),
     ("memory", "story"): _flags("--max-depth --workspace --json"),

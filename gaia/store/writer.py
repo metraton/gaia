@@ -3708,16 +3708,15 @@ def close_session_memory(
 
 import re as _re_for_fts
 
-_MEMORY_FTS_SAFE = _re_for_fts.compile(r"^[A-Za-z0-9_*\s\"]+$")
+_MEMORY_FTS_SYNTAX = _re_for_fts.compile(r'["()*^]|\b(?:AND|OR|NOT|NEAR)\b')
 
 
 def _prepare_memory_fts_query(query: str) -> str:
+    """The FTS5 expression for ``query``: its words quoted one by one (implicit AND), or the query as written when it already uses FTS5 syntax."""
     q = (query or "").strip()
-    if not q:
+    if not q or _MEMORY_FTS_SYNTAX.search(q):
         return q
-    if _MEMORY_FTS_SAFE.match(q):
-        return q
-    return '"' + q.replace('"', '""') + '"'
+    return " ".join('"' + word.replace('"', '""') + '"' for word in q.split())
 
 
 def search_memory_curated(
@@ -3726,35 +3725,45 @@ def search_memory_curated(
     *,
     limit: int = 10,
     with_user_scope: bool = False,
+    type: str | None = None,
+    class_: str | None = None,
     db_path: Path | None = None,
 ) -> list[dict]:
     """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
-    ``with_user_scope`` adds the workspace-less :data:`USER_WORKSPACE` rows."""
+    ``with_user_scope`` adds the workspace-less :data:`USER_WORKSPACE` rows;
+    ``type``/``class_`` keep only rows of that type or class."""
     fts_q = _prepare_memory_fts_query(query)
     workspaces = [workspace]
     if with_user_scope and workspace != USER_WORKSPACE:
         workspaces.append(USER_WORKSPACE)
+    filters = ""
+    params: list = [fts_q, *workspaces]
+    for column, value in (("type", type), ("class", class_)):
+        if value is not None:
+            filters += f" AND m.{column} = ?"
+            params.append(value)
     con = _connect(db_path)
     try:
         rows = con.execute(
             f"""
-            SELECT m.name, m.type, m.description,
+            SELECT m.name, m.type, m.class, m.description,
                    snippet(memory_fts, -1, '[', ']', '...', 16) AS snippet,
                    bm25(memory_fts) AS rank
             FROM memory_fts
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
               AND m.workspace IN ({', '.join('?' for _ in workspaces)})
-              AND m.deleted_at IS NULL
+              AND m.deleted_at IS NULL{filters}
             ORDER BY rank
             LIMIT ?
             """,
-            (fts_q, *workspaces, limit),
+            (*params, limit),
         ).fetchall()
         return [
             {
                 "name": r["name"],
                 "type": r["type"],
+                "class": r["class"],
                 "description": r["description"],
                 "snippet": r["snippet"],
                 "rank": r["rank"],
@@ -3831,6 +3840,7 @@ def list_memory(
     class_: str | None = None,
     status: str | None = None,
     include_deleted: bool = False,
+    include_superseded: bool = True,
     order_by: str = "name",
     direction: str | None = None,
     with_user_scope: bool = False,
@@ -3839,6 +3849,10 @@ def list_memory(
     """List curated memory rows, optionally filtered by ``type``/``audience``/
     ``class_``/``status``. ``with_user_scope`` adds the workspace-less
     :data:`USER_WORKSPACE` rows to the listing of ``workspace``.
+
+    Every row carries ``superseded_by``, the comma-joined names of the rows
+    that supersede it (``None`` while it stands); ``include_superseded=False``
+    drops those rows by the same rule as :func:`gaia.store.reader.not_superseded`.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
@@ -3900,10 +3914,14 @@ def list_memory(
             params.append(status)
         if not include_deleted:
             where.append("deleted_at IS NULL")
+        from gaia.store.reader import not_superseded, superseded_by
+        if not include_superseded:
+            where.append(not_superseded())
         sql = (
             "SELECT name, type, description, updated_at, audience, class, "
             "       status, injection_count, deliberate_count, "
-            "       last_injected_at, last_deliberate_at "
+            "       last_injected_at, last_deliberate_at, "
+            f"      {superseded_by()} AS superseded_by "
             "FROM memory WHERE " + " AND ".join(where) +
             " ORDER BY " + order_clause
         )

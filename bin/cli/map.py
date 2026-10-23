@@ -39,6 +39,13 @@ INTENTS = (
     Intent("remember", "remember / find / curate", "Skill memory",
            "gaia memory add|append|search|show",
            "gaia memory search 'release checklist'"),
+    Intent("curate", "dedupe or retire what memory holds", "Skill memory",
+           "gaia memory list --type <t> (live rows) ; gaia memory conflicts --owner <owner> ; "
+           "gaia memory story <slug> ; gaia memory link <new> <old...> --kind supersedes",
+           "gaia memory conflicts --owner user --exclude-class log --limit 10"),
+    Intent("reuse", "reuse what another turn found", "gaia contract",
+           "gaia contract list --since 24h --grep <text> --json ; gaia contract proposals list",
+           "gaia contract list --since 24h --grep 'memory search' --json"),
     Intent("remind", "be reminded, or a routine", "Skill reminders",
            "gaia notifications add --kind reminder --at WHEN | --kind routine --cron EXPR|--every DUR",
            "gaia notifications add --kind routine --cron '0 17 * * 5' --headline 'Load the timesheet'"),

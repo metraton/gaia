@@ -85,9 +85,8 @@ def stale_claude_files(monkeypatch, tmp_path):
 
 
 def _entries(payload: dict) -> list:
-    """The one list the conflicts output carries, whatever its key is named."""
-    (entries,) = [value for value in payload.values() if isinstance(value, list)]
-    return entries
+    """Every pair the conflicts output carries, contradictions and duplicates alike."""
+    return [entry for value in payload.values() if isinstance(value, list) for entry in value]
 
 
 def _pairs(payload: dict) -> list[set]:
@@ -102,10 +101,8 @@ def test_two_contradicting_user_rows_come_back_as_one_candidate(seeded, capsys):
     assert not any(UNRELATED in pair for pair in pairs)
 
 
-def test_stats_counts_the_candidates_conflicts_shows(seeded, capsys):
-    candidates = _entries(_memory(capsys, "conflicts"))
-
-    assert _memory(capsys, "stats")["conflicts"] == len(candidates) > 0
+def test_stats_counts_the_live_user_rows_without_the_pair_scan(seeded, capsys):
+    assert _memory(capsys, "stats")["memory"]["user"] == {"live": 3, "superseded": 0}
 
 
 def test_memory_files_under_the_home_claude_folder_are_never_read(

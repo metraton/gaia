@@ -399,11 +399,10 @@ def _cmd_stats(args) -> int:
 
     Reads episode count from episodes table in gaia.db (primary).
     Reads FTS5 indexed count from episodes_fts table in gaia.db.
-    Legacy index.json is no longer consulted.
+    Legacy index.json is no longer consulted. Curated rows are counted per
+    type, live and superseded; the pairwise conflict scan is `conflicts`'s.
     """
     as_json = getattr(args, "json", False)
-
-    detect_conflicts = _import_conflict_detector()
 
     warnings: list[str] = []
 
@@ -418,18 +417,17 @@ def _cmd_stats(args) -> int:
             "Run: gaia doctor"
         )
 
-    # Candidate contradictions in curated memory, the same set `conflicts` lists.
-    conflicts_count = 0
-    if detect_conflicts is not None:
-        try:
-            conflicts_count = len(detect_conflicts())
-        except Exception as exc:  # noqa: BLE001 -- stats still reports the rest
-            warnings.append(f"conflict candidates not counted: {exc}")
+    memory_counts: dict[str, dict[str, int]] = {}
+    try:
+        from gaia.store.reader import memory_counts_by_type
+        memory_counts = memory_counts_by_type()
+    except Exception as exc:  # noqa: BLE001 -- stats still reports the rest
+        warnings.append(f"curated rows not counted: {exc}")
 
     output = {
         "total_episodes": total_episodes,
         "indexed": indexed,
-        "conflicts": conflicts_count,
+        "memory": memory_counts,
         "warnings": warnings,
     }
 
@@ -440,7 +438,9 @@ def _cmd_stats(args) -> int:
         print(f"\n  Memory Stats")
         print(f"  Total episodes : {total_episodes}")
         print(f"  FTS5 indexed   : {indexed_display}")
-        print(f"  Conflicts      : {conflicts_count}")
+        for type_name, counts in memory_counts.items():
+            print(f"  {type_name:<15}: {counts['live']} live, {counts['superseded']} superseded")
+        print("  Conflicts      : gaia memory conflicts --owner <owner>")
         for w in warnings:
             print(f"  WARN: {w}", file=sys.stderr)
         print()
@@ -536,36 +536,49 @@ def _cmd_episode_show(args) -> int:
 
 
 def _cmd_conflicts(args) -> int:
-    """Handle `gaia memory conflicts [--threshold F]`: candidate pairs, never verdicts."""
+    """Handle `gaia memory conflicts`: candidate pairs, never verdicts.
+
+    A pair holding one slug in two workspaces is a duplicate to merge, not a
+    disagreement, so it is listed apart; ``--limit`` bounds each list.
+    """
     as_json = getattr(args, "json", False)
 
     detect_conflicts = _import_conflict_detector()
     if detect_conflicts is None:
         return _err("conflict_detector module not available", as_json)
 
+    scan = {"owner": args.owner, "exclude_classes": tuple(args.exclude_class or ())}
+    if args.threshold is not None:
+        scan["threshold"] = args.threshold
     try:
-        threshold = getattr(args, "threshold", None)
-        candidates = (detect_conflicts() if threshold is None
-                      else detect_conflicts(threshold=threshold))
+        pairs = detect_conflicts(**scan)
     except Exception as exc:  # noqa: BLE001
         return _err(f"conflict scan failed: {exc}", as_json)
 
+    duplicates = [p for p in pairs if p["a"]["name"] == p["b"]["name"]]
+    candidates = [p for p in pairs if p["a"]["name"] != p["b"]["name"]]
+    if args.limit is not None:
+        duplicates, candidates = duplicates[:args.limit], candidates[:args.limit]
+
     if as_json:
-        print(json.dumps({"candidates": candidates}, indent=2))
+        print(json.dumps({"candidates": candidates, "duplicates": duplicates}, indent=2))
         return 0
-    if not candidates:
+    if not pairs:
         print("No candidate contradictions.")
         return 0
-    print(
-        f"\n  {len(candidates)} candidate pair(s). Each shares wording; read both "
-        "bodies and decide whether they disagree and which one stands.\n"
-    )
-    for c in candidates:
-        print(f"  [{c['score']:.2f}] {c['owner']}")
-        for row in (c["a"], c["b"]):
-            print(f"    {row['name']} ({row['workspace']}, {row['class']}, "
-                  f"{row['updated_at']}): {row['description'] or ''}")
-        print()
+    for title, section in (
+        ("candidate pair(s). Each shares wording; read both bodies and decide "
+         "whether they disagree and which one stands.", candidates),
+        ("duplicate(s): one slug in two workspaces; keep one and supersede or "
+         "delete the other.", duplicates),
+    ):
+        print(f"\n  {len(section)} {title}\n")
+        for c in section:
+            print(f"  [{c['score']:.2f}] {c['owner']}")
+            for row in (c["a"], c["b"]):
+                print(f"    {row['name']} ({row['workspace']}, {row['class']}, "
+                      f"{row['updated_at']}): {row['description'] or ''}")
+            print()
     return 0
 
 
@@ -1298,6 +1311,7 @@ def _cmd_list(args) -> int:
             workspace, type=type_filter, audience=audience_filter,
             class_=class_filter, status=status_filter, order_by=order_by,
             direction=direction, with_user_scope=True,
+            include_superseded=getattr(args, "include_superseded", False),
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -1319,10 +1333,14 @@ def _cmd_list(args) -> int:
         print("(no curated memory)")
         _print_memory_pointer(as_json)
         return 0
+    # Only a thread has a lifecycle status; an anchor or log row shows its class there.
+    statuses = [r.get("status") or r.get("class") or "" for r in rows]
+    successors = [r.get("superseded_by") or "" for r in rows]
     name_w = max(4, max(len(r["name"]) for r in rows))
     type_w = max(4, max(len(r["type"] or "") for r in rows))
     class_w = max(5, max(len(r.get("class") or "") for r in rows))
-    status_w = max(6, max(len(r.get("status") or "") for r in rows))
+    status_w = max(6, max(len(s) for s in statuses))
+    successor_w = max(13, max(len(s) for s in successors))
     desc_w = max(
         11,
         max(min(len(r.get("description") or ""), 60) for r in rows),
@@ -1330,19 +1348,19 @@ def _cmd_list(args) -> int:
     header = (
         f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'CLASS':<{class_w}}  "
         f"{'STATUS':<{status_w}}  {'INJ':>3}  {'DELIB':>5}  "
-        f"{'DESCRIPTION':<{desc_w}}"
+        f"{'SUPERSEDED_BY':<{successor_w}}  {'DESCRIPTION':<{desc_w}}"
     )
     print(header)
     print("-" * len(header))
-    for r in rows:
+    for r, status, successor in zip(rows, statuses, successors):
         desc = (r.get("description") or "")[:desc_w]
         print(
             f"{r['name']:<{name_w}}  {(r['type'] or ''):<{type_w}}  "
             f"{(r.get('class') or ''):<{class_w}}  "
-            f"{(r.get('status') or ''):<{status_w}}  "
+            f"{status:<{status_w}}  "
             f"{r.get('injection_count', 0):>3}  "
             f"{r.get('deliberate_count', 0):>5}  "
-            f"{desc:<{desc_w}}"
+            f"{successor:<{successor_w}}  {desc:<{desc_w}}"
         )
     _print_memory_pointer(as_json)
     return 0
@@ -2918,15 +2936,10 @@ def _cmd_link(args) -> int:
     as_json = getattr(args, "json", False)
     src_name = args.src_name
     workspace = _flag_workspace_holding(args, src_name)
-    dst_name = args.dst_name
-    dst_workspace = _flag_workspace_holding(args, dst_name)
     kind = args.kind
-    do_delete = getattr(args, "delete", False)
 
     try:
-        from gaia.store.writer import (
-            insert_memory_link, delete_memory_link, VALID_MEMORY_LINK_KINDS,
-        )
+        from gaia.store.writer import VALID_MEMORY_LINK_KINDS
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
@@ -2937,20 +2950,35 @@ def _cmd_link(args) -> int:
             as_json,
         )
 
-    try:
-        if do_delete:
-            res = delete_memory_link(workspace, src_name, dst_name, kind)
-            verb = "Deleted" if res["action"] == "deleted" else "Skipped"
-        else:
-            res = insert_memory_link(
-                workspace, src_name, dst_name, kind, dst_workspace=dst_workspace,
-            )
-            verb = "Created" if res["action"] == "inserted" else "Skipped"
-    except ValueError as exc:
-        return _err(str(exc), as_json)
-    except PermissionError as exc:
-        # MemoryWriteForbidden -- structural enforcement layer (T3).
-        return _err(str(exc), as_json)
+    results = []
+    for done, dst_name in enumerate(args.dst_names):
+        try:
+            results.append(_link_pair(args, workspace, src_name, dst_name))
+        except (ValueError, PermissionError) as exc:
+            # PermissionError is MemoryWriteForbidden, the structural T3 layer.
+            return _err(f"{exc} ({done} earlier link(s) of this call applied)", as_json)
+    if as_json:
+        print(json.dumps(results[0] if len(results) == 1 else {"links": results},
+                         indent=2, default=str))
+    return 0
+
+
+def _link_pair(args, workspace: str, src_name: str, dst_name: str) -> dict:
+    """Write or delete one ``src -> dst`` edge, print its text line, and return its JSON record."""
+    from gaia.store.writer import insert_memory_link, delete_memory_link
+
+    as_json = getattr(args, "json", False)
+    kind = args.kind
+    do_delete = getattr(args, "delete", False)
+    dst_workspace = _flag_workspace_holding(args, dst_name)
+    if do_delete:
+        res = delete_memory_link(workspace, src_name, dst_name, kind)
+        verb = "Deleted" if res["action"] == "deleted" else "Skipped"
+    else:
+        res = insert_memory_link(
+            workspace, src_name, dst_name, kind, dst_workspace=dst_workspace,
+        )
+        verb = "Created" if res["action"] == "inserted" else "Skipped"
 
     warnings = []
     # ISO-8601 stamps order as strings. A corrected old row can legitimately
@@ -2966,10 +2994,7 @@ def _cmd_link(args) -> int:
             f"`gaia memory link {dst_name} {src_name} --kind=supersedes`.",
         ))
 
-    if as_json:
-        print(json.dumps({**res, **({"warnings": warnings} if warnings else {})},
-                         indent=2, default=str))
-    else:
+    if not as_json:
         # Arrow uses ASCII-friendly form; no unicode dependence.
         action_label = (
             "link" if res["action"] in ("inserted", "deleted") else "link (no-op)"
@@ -2980,7 +3005,7 @@ def _cmd_link(args) -> int:
         if kind == "supersedes" and res["action"] == "inserted":
             print(f"  {src_name} reemplaza a {dst_name}")
         _emit_write_warnings(warnings, as_json)
-    return 0
+    return {**res, **({"warnings": warnings} if warnings else {})}
 
 
 # ---------------------------------------------------------------------------
@@ -3052,6 +3077,7 @@ def _cmd_search_scoped(args) -> int:
 
     curated = search_memory_curated(
         workspace, query, limit=limit, with_user_scope=True,
+        type=getattr(args, "type", None), class_=getattr(args, "cls", None),
     )
 
     if scope == "memory":
@@ -3149,13 +3175,30 @@ def register(subparsers):
     search_p = actions.add_parser(
         "search",
         help="FTS5 search across curated memory and/or episodes",
-        description="Full-text search; returns ranked results.",
+        description=(
+            "Full-text search; returns ranked results. Plain words must all "
+            "appear in a row, each matched on its own (a hyphenated word as a "
+            "phrase); a query with FTS5 syntax (quotes, parentheses, *, ^, "
+            "AND, OR, NOT, NEAR) is passed as written."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory search 'release' --scope=memory\n"
+               "  gaia memory search 'teams pull-request format' --type=user\n"
+               "  gaia memory search 'teams OR slack' --class=anchor\n"
                "  gaia memory search 'tailscale' --limit=5 --json\n",
     )
-    search_p.add_argument("query", help="FTS5 query string.")
+    search_p.add_argument("query", help="Plain words, or an FTS5 expression.")
+    search_p.add_argument(
+        "--type", default=None,
+        choices=("project", "user", "feedback", "atom", "decision", "negative"),
+        help="Curated rows of this type only; episodes are not filtered.",
+    )
+    search_p.add_argument(
+        "--class", dest="cls", default=None,
+        choices=("anchor", "thread", "log"),
+        help="Curated rows of this class only; episodes are not filtered.",
+    )
     search_p.add_argument(
         "--limit", type=int, default=10, metavar="N",
         help="Max results per scope. int. Default: 10.",
@@ -3249,11 +3292,17 @@ def register(subparsers):
     list_p = actions.add_parser(
         "list",
         help="List curated memory rows",
-        description="Enumerate the curated memory table.",
+        description=(
+            "Enumerate the curated memory rows that stand: a row another one "
+            "supersedes is left out, the same rule get-relevant injects by. "
+            "--include-superseded lists those too, with their successor in "
+            "SUPERSEDED_BY; --format=count counts what would be listed."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia memory list --type=feedback\n"
+            "  gaia memory list --type=user --include-superseded\n"
             "  gaia memory list --limit=10\n"
             "  gaia memory list --sort=deliberate   # most deliberately-read first\n"
             "  gaia memory list --sort=deliberate --order=asc --limit=20   # least-read first\n"
@@ -3292,6 +3341,10 @@ def register(subparsers):
         help="Sort direction. Defaults to asc for --sort=name and desc for "
              "the counters; --order=asc on a counter answers 'which are "
              "barely used' without reading the tail of an untopped list.",
+    )
+    list_p.add_argument(
+        "--include-superseded", action="store_true", default=False,
+        help="Also list rows another row supersedes. bool.",
     )
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
@@ -3472,8 +3525,9 @@ def register(subparsers):
         help="Source memory slug. Must exist. For supersedes: the NEW row, what holds now.",
     )
     link_p.add_argument(
-        "dst_name",
-        help="Destination memory slug. Must exist. For supersedes: the OLD row it replaces.",
+        "dst_names", nargs="+", metavar="dst_name",
+        help="Destination memory slug(s). Each must exist. For supersedes: the OLD "
+             "row(s) it replaces, each pair direction-checked; an existing edge is a no-op.",
     )
     link_p.add_argument(
         "--kind", required=True,
@@ -3838,6 +3892,19 @@ def register(subparsers):
     conflicts_p.add_argument(
         "--json", action="store_true", default=False,
         help="Emit JSON. bool.",
+    )
+    conflicts_p.add_argument(
+        "--owner", default=None, metavar="OWNER",
+        help="Pair only this owner's rows: user, or a project key (gaia or project:gaia).",
+    )
+    conflicts_p.add_argument(
+        "--exclude-class", action="append", default=None,
+        choices=("anchor", "thread", "log"),
+        help="Leave rows of this class out of the scan. Repeatable.",
+    )
+    conflicts_p.add_argument(
+        "--limit", type=int, default=None, metavar="N",
+        help="Show at most N candidates and N duplicates. Default: all.",
     )
     conflicts_p.set_defaults(func=_cmd_conflicts)
 
