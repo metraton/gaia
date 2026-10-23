@@ -70,13 +70,13 @@ OPTIONS = {
     'approvals audit-secrets': '--db --emit-sql --help --json -h',
     'approvals clean': '--dry-run --help --json -h',
     'approvals history': '--help --json --limit --status -h',
-    'approvals list': '--help --json --orphans-only --session -h',
+    'approvals list': '--all-sessions --help --include-stale --json --orphans-only --session -h',
     'approvals opencode-decide': '--call-id --decision-lane --help --json --reply --session-id --token -h',
     'approvals opencode-present': (
         '--agent-id --call-id --help --json --presenter-session-id --preview --session-id '
         '--signature --token -h'
     ),
-    'approvals pending': '--all-sessions --help --json --session -h',
+    'approvals pending': '--all-sessions --help --include-stale --json --session -h',
     'approvals question': '--details --help -h',
     'approvals reject': '--all --help --json --reason -h',
     'approvals reject-all': '--dry-run --help --workspace -h',
@@ -151,8 +151,9 @@ OPTIONS = {
     'contract finalize': '--agent-id --draft-id --help --json --plan-task-id --session-id --workspace -h',
     'contract init': '--agent-id --draft-id --help --json -h',
     'contract list': (
-        '--agent --agent-id --brief --contract-id --cut --harness-id --help --json --limit '
-        '--plan-task --session --since --state --until --workspace -h'
+        '--agent --agent-id --agent-name --brief --contract-id --cut --grep --harness-id '
+        '--help --json --limit --plan-task --session --since --state --task --until '
+        '--workspace -h'
     ),
     'contract proposals': '--help -h',
     'contract proposals accept': '--help --json --project --workspace -h',
@@ -163,7 +164,7 @@ OPTIONS = {
     'contract reconcile': '--contract-id --harness-id --help --json --superseded-by -h',
     'contract set': '--agent-id --draft-id --help --json -h',
     'contract validate': '--agent-id --draft-id --help --json -h',
-    'contract view': '--agent-id --draft-id --field --harness-id --help --json -h',
+    'contract view': '--agent-id --contract-id --draft-id --field --harness-id --help --json --row -h',
     'defects': (
         '--agent --count --help --json --limit --origin --severity --since --type --until '
         '--workspace -h'
@@ -288,7 +289,7 @@ OPTIONS = {
     'task gate remove': '--help --json --workspace -h',
     'task gate reverify': '--help --json --reason --workspace -h',
     'task gate set-status': '--cause --help --json --workspace -h',
-    'task list': '--format --help --json --status --workspace -h',
+    'task list': '--format --help --json --plan --status --workspace -h',
     'task remove': '--help --json --workspace -h',
     'task reorder': '--from --help --json --to --workspace -h',
     'task set-status': '--help --json --override --reason --workspace -h',

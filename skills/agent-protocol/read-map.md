@@ -40,8 +40,8 @@ transcript.
 
 | Verb | Addressing | What comes back |
 |---|---|---|
-| `gaia contract list` | `--harness-id`, `--contract-id`, `--session`, `--agent-id`, `--state`, `--cut [reason]`, `--workspace`, `--since`/`--until`, `--limit`, `--json` | One row per turn: id, agent, state, cut reason, session. The searchable handle when you know the front but not the row. |
-| `gaia contract view` | `--draft-id <contract_id>` or `--harness-id <harness_agent_id>`; `--field <dotted.path>`; `--json` | The whole envelope, or exactly one subtree named by the same schema keys the envelope uses (`evidence_report.open_gaps`, `agent_status.agent_state`). Never writes. |
+| `gaia contract list` | `--harness-id`, `--contract-id`, `--session`, `--agent-id`/`--agent`, `--agent-name`, `--grep <text>`, `--plan-task`/`--task`, `--state`, `--cut [reason]`, `--workspace`, `--since`/`--until`, `--limit`, `--json` | One row per turn: id, agent, state, cut reason, session. The searchable handle when you know the front but not the row; `--grep` matches the goal, description or conclusion, `--agent-name` the dispatched name (open and cut rows only). |
+| `gaia contract view` | `--draft-id`/`--contract-id <contract_id>` or `--harness-id <harness_agent_id>`; `--field <dotted.path>`; `--row`; `--json` | The whole envelope, or exactly one subtree named by the same schema keys the envelope uses (`evidence_report.open_gaps`, `agent_status.agent_state`); `--row` prints the row's goal, description, agent name, project, session and state instead. Never writes. |
 | `gaia contract chain` | `--contract-id <any link>` | Every contract in one continuation chain, oldest first, walking back to the root and forward to the live link. A turn that was never resumed prints as one link. |
 | `gaia contract proposals list` | `--contract-id`, `--kind memory\|context\|thread`, `--all`, `--json` | What closed turns proposed and nobody has decided yet, oldest first, each with its id and proposing contract; `--all` adds the accepted and dismissed. Deciding one (`accept`/`dismiss`) is the orchestrator's write, not a read. |
 
@@ -94,7 +94,7 @@ with exactly one verb.
 | `gaia plan show\|list` | brief slug | The plan attached to that brief, with plan_id, status, version and pause reason; or every plan in the workspace. |
 | `gaia plan history <brief>` | `--content` | Every replaced version of the plan with the reason it was replaced. |
 | `gaia plan change list <brief>` | `--json` | The plan's managed changes: justification, status, and the proposed tasks with their reasons. |
-| `gaia task list <brief>` | `--status`, `--format table\|json\|count` | One row per task: ORDER (plan position) and TASK_ID (`tasks.id`) -- they are different numbers and dispatch wants the second. |
+| `gaia task list <brief>` | `--plan <brief>` (same as the positional), `--status`, `--format table\|json\|count` | One row per task: ORDER (plan position) and TASK_ID (`tasks.id`) -- they are different numbers and dispatch wants the second. |
 | `gaia task show <brief> <order>` | `--json` | One task, printing both numbers with that distinction stated. |
 | `gaia task gate list <brief> <order>` | `--json` | The task's verification gates: id, type, status; `--json` adds the shape, the stale mark and the fail cause. |
 | `gaia evidence list --brief <b>` / `gaia evidence show <id>` | -- | Recorded per-AC evidence. |
@@ -121,7 +121,7 @@ with exactly one verb.
 
 | Verb | What comes back |
 |---|---|
-| `gaia approvals pending` / `gaia approvals list` | Live requests awaiting a decision; `list` adds grant state and command count. |
+| `gaia approvals pending` / `gaia approvals list` | This session's live requests awaiting a decision, with a trailer counting what the scope hides; `list` adds grant state and command count. `--all-sessions` adds other sessions' requests, `--include-stale` the orphaned and expired ones, `--session` names the session. |
 | `gaia approvals show <P-id>` | One approval: its derived State and Outcome, requester, window, directory, grant and sealed payload. `--json` returns the same as machine detail. |
 | `gaia approvals question <P-id> [<P-id> ...]` | The exact question-tool input for 1 to 4 pending commands, one `[ GAIA-SECURITY ]` line per command (`--details`: each command's Details line); it records which signature it handed out at which position, and the hook accepts only that object asked unchanged. Run it again at any time for the approvals still pending. |
 | `gaia approvals history [<P-id>]` | The N most recent approvals, or one approval's full event chain. |
