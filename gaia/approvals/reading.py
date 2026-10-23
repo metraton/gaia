@@ -265,9 +265,52 @@ def read_ids(
         return {}
     con = _open_db(db_path) if db_path is not None else _open_db()
     try:
-        return _read_ids(con, ids, live=live, now=now or datetime.now(timezone.utc))
+        return read_on(con, ids, live=live, now=now)
     finally:
         con.close()
+
+
+def read_on(
+    con: sqlite3.Connection, ids: Iterable[str], *, live: Optional[set] = None, now: Optional[datetime] = None,
+) -> dict[str, dict]:
+    """:func:`read_ids` on a connection the caller already holds; it sets that connection's row factory."""
+    ids = sorted({i for i in ids if i})
+    if not ids:
+        return {}
+    return _read_ids(con, ids, live=live, now=now or datetime.now(timezone.utc))
+
+
+def session_scope(
+    rows: list[dict], session_id: Optional[str], *, all_sessions: bool = False, include_stale: bool = False,
+) -> tuple[list[dict], dict]:
+    """Split pending rows that carry their ``state`` into those *session_id* is shown and a tally of all.
+
+    An approval is consent bound to the session that requested it, so a session
+    sees its own live requests unless it widens the scope; a caller with no
+    session (a shell outside any host) sees every session's.
+    """
+    everywhere = all_sessions or not session_id
+    shown = [
+        row for row in rows
+        if (everywhere or row.get("session_id") == session_id)
+        and (include_stale or row.get("state") == PENDING)
+    ]
+    live = [row for row in rows if row.get("state") == PENDING]
+    here = sum(1 for row in live if session_id and row.get("session_id") == session_id)
+    return shown, {
+        "session_id": session_id or None,
+        "live_here": here,
+        "other_sessions": len(live) - here,
+        "stale": len(rows) - len(live),
+    }
+
+
+def scope_trailer(tally: Mapping[str, Any]) -> str:
+    """The line that says what :func:`session_scope` left out and the flags that bring it back."""
+    return (
+        f"{tally['live_here']} live here; {tally['other_sessions']} in other sessions, "
+        f"{tally['stale']} stale/orphaned -- --all-sessions / --include-stale"
+    )
 
 
 def _select(con: sqlite3.Connection, sql: str, ids: list[str]) -> list[dict]:

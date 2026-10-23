@@ -126,7 +126,10 @@ def _pending_signatures(con, session_id: str) -> list[dict[str, Any]]:
         "WHERE session_id = ? AND status = 'pending' ORDER BY created_at DESC",
         (session_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    from gaia.approvals.reading import PENDING, live_sessions, read_on
+
+    readings = read_on(con, (r["id"] for r in rows), live=live_sessions())
+    return [dict(r) for r in rows if readings.get(r["id"], {}).get("state") == PENDING]
 
 
 def _active_task(con, session_id: str) -> dict[str, Any] | None:

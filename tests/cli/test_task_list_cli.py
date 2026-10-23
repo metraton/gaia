@@ -157,5 +157,33 @@ def test_task_list_missing_brief_errors(tmp_db, tmp_path, monkeypatch, capsys):
     assert _cmd_list(_args(brief="does-not-exist", fmt="count")) == 1
 
 
+def _parse(*argv):
+    from cli import task
+
+    root = argparse.ArgumentParser()
+    task.register(root.add_subparsers(dest="command"))
+    return root.parse_args(["task", *argv])
+
+
+def test_task_list_plan_flag_names_the_plan_by_its_brief(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.task import cmd_task
+
+    monkeypatch.chdir(tmp_path)
+    _seed_tasks(tmp_db)
+
+    assert cmd_task(_parse("list", "--plan", "list-brief", "--format", "count", "--workspace", "me")) == 0
+    assert capsys.readouterr().out.strip() == "3"
+
+
+def test_task_list_refuses_a_plan_that_contradicts_the_brief(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.task import cmd_task
+
+    monkeypatch.chdir(tmp_path)
+    _seed_tasks(tmp_db)
+
+    assert cmd_task(_parse("list", "list-brief", "--plan", "other", "--workspace", "me")) == 1
+    assert cmd_task(_parse("list", "--workspace", "me")) == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
