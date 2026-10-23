@@ -213,8 +213,16 @@ def test_declared_alias_cycle_terminates(monkeypatch):
     assert not is_blocked_command("a1 status").is_blocked
 
 
-def test_undeclared_wrapper_is_not_read_as_gh_by_the_guard(tmp_path):
-    body = _body_file(tmp_path, f"Summary.\n\n{FOOTER}\n")
-    command = f"{WRAPPER} pr create --title t --body-file {body}"
-    allowed, _ = check_publish_attribution(command, str(tmp_path))
-    assert allowed
+@pytest.mark.parametrize("command", [
+    f"{WRAPPER} pr create --title t --body-file {{body}}",
+    "forgectl pr create --title t --body-file {body}",
+    "glab mr create --title t --description-file {body}",
+    "forgectl -C /work/tree pr create --title t --body-file {body}",
+    "forgectl -R o/r pr edit 42 --body-file={body}",
+])
+def test_publish_attribution_guard_reads_the_change_request_body_of_any_binary(tmp_path, command):
+    tainted = _body_file(tmp_path, f"Summary.\n\n{FOOTER}\n")
+    assert not check_publish_attribution(command.format(body=tainted), str(tmp_path))[0]
+    clean = tmp_path / "clean.md"
+    clean.write_text("Summary.\n", encoding="utf-8")
+    assert check_publish_attribution(command.format(body=clean), str(tmp_path))[0]

@@ -58,7 +58,8 @@ def test_a_fake_help_does_not_free_a_subagent_resume_point_write(case_id, spell)
     "gaia task gate remove 12 --help # trailing note",
     "git push --help 2>/dev/null",
 ])
-def test_a_real_help_stays_free(command):
+def test_a_real_help_stays_free(command, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     assert detect_mutative_command(command).is_mutative is False, command
     assert classify_command_tier(command) == SecurityTier.T0_READ_ONLY, command
     result = _validate(command, is_subagent=True)

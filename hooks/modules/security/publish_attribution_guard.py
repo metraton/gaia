@@ -33,6 +33,7 @@ Residual limitation (accepted): a body piped into stdin from a file
 text in the command and is not scanned.
 
 Public API:
+    publishing_body_files(tokens: list[str], cwd: str) -> list[str] | None
     find_attribution(command: str, cwd: str | None) -> tuple[str, int, str] | None
     rejection_message(source: str, line_no: int, line: str) -> str
     check(command: str, cwd: str | None) -> tuple[bool, str | None]
@@ -46,8 +47,15 @@ import shlex
 from typing import Iterator, List, Optional, Tuple
 
 from .cli_aliases import is_cli
+from .forge_shapes import change_request_action
+from .mutative_verbs import _peel_wrapper_readings
 
 _MAX_BODY_BYTES = 1024 * 1024
+
+_CHANGE_REQUEST_PUBLISHING = {"create", "edit", "update", "comment", "note", "review"}
+_CHANGE_REQUEST_BODY_FILE_FLAGS = {"--body-file", "-F", "--description-file", "--file"}
+_HUB_ACTIONLESS_NOUN = "pull-request"
+_LEADING_VALUE_OPTIONS = {"-C", "-R", "--repo"}
 
 # gh subcommands whose text lands on GitHub. ``api`` is included because
 # ``gh api`` posts comments and releases just as well as the porcelain verbs.
@@ -141,10 +149,33 @@ def _flag_values(args: List[str], flags: set) -> Iterator[str]:
             yield arg.split("=", 1)[1]
 
 
-def _publishing_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
-    """Return the body files a publishing segment names, or None if it does not publish."""
-    while tokens and (tokens[0] == "env" or _ENV_ASSIGNMENT.match(tokens[0])):
+def _command_path(args: List[str]) -> List[str]:
+    while len(args) >= 2 and args[0] in _LEADING_VALUE_OPTIONS:
+        args = args[2:]
+    return [a for a in args if not a.startswith("-")]
+
+
+def publishing_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
+    """The files a publishing segment sends as its text, under any wrapper that runs it, or None if it does not publish."""
+    while tokens and _ENV_ASSIGNMENT.match(tokens[0]):
         tokens = tokens[1:]
+    if not tokens:
+        return None
+    readings, peeled = _peel_wrapper_readings(shlex.join(tokens))
+    if not peeled:
+        return _reading_body_files(tokens, cwd)
+    found: Optional[List[str]] = None
+    for reading in readings:
+        try:
+            files = _reading_body_files(shlex.split(reading), cwd)
+        except ValueError:
+            continue
+        if files is not None:
+            found = (found or []) + files
+    return found
+
+
+def _reading_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
     if not tokens:
         return None
     base = os.path.basename(tokens[0])
@@ -168,6 +199,11 @@ def _publishing_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
             files = list(_flag_values(args, _GH_BODY_FILE_FLAGS))
         else:
             return None
+    elif (
+        change_request_action(_command_path(args)) in _CHANGE_REQUEST_PUBLISHING
+        or _command_path(args)[:1] == [_HUB_ACTIONLESS_NOUN]
+    ):
+        files = list(_flag_values(args, _CHANGE_REQUEST_BODY_FILE_FLAGS))
     elif base == "git":
         while len(args) >= 2 and args[0] in ("-C", "-c"):
             if args[0] == "-C":
@@ -208,7 +244,7 @@ def find_attribution(command: str, cwd: Optional[str] = None) -> Optional[Tuple[
         if tokens[0] == "cd" and len(tokens) > 1:
             current_dir = os.path.join(current_dir, os.path.expanduser(tokens[1]))
             continue
-        files = _publishing_body_files(tokens, current_dir)
+        files = publishing_body_files(tokens, current_dir)
         if files is not None:
             publishes = True
             body_files.extend(files)

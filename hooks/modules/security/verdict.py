@@ -70,7 +70,7 @@ _DESTROY_WORDS: FrozenSet[str] = frozenset({
     "wipe", "shred", "clean", "reset", "terminate", "uninstall", "force", "force-with-lease",
 })
 _SPEAK_WORDS: FrozenSet[str] = frozenset({
-    "approve", "review", "comment", "close", "ready", "draft", "abandoned", "rerun",
+    "approve", "review", "comment", "note", "close", "ready", "draft", "abandoned", "rerun",
     "set-vote", "post", "send", "urlopen",
 })
 _NETWORK_SENDERS: FrozenSet[str] = frozenset({"curl", "wget", "nc", "ncat", "netcat", "http", "https"})

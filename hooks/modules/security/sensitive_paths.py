@@ -45,6 +45,10 @@ READABLE_ENV_TEMPLATES = frozenset({".env.example", ".env.sample"})
 SYSTEM_SECRET_FILES = frozenset({"/etc/shadow", "/etc/passwd"})
 SYSTEM_SECRET_DIRS = frozenset({"/etc/ssl/private"})
 
+# A process environment holds the tokens the process was started with; its
+# siblings (status, cmdline) hold none and stay readable.
+PROCESS_ENVIRON = re.compile(r"/proc/(?:self|thread-self|\d+)(?:/task/\d+)?/environ")
+
 READ = "read"
 WRITE = "write"
 _BOTH = frozenset({READ, WRITE})
@@ -214,13 +218,24 @@ def _file_name_label(name: str) -> str:
 
 
 def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
-    """Name why *path* is sensitive to read or list, or "" when it is not.
+    """Name why *path*, or the file its symlinks lead to, is sensitive to read or list, or "" when it is not.
 
     *cwd* anchors a relative path so an account entry under $HOME is still
     recognized; without it a relative path is judged by its names alone.
     """
     if not path:
         return ""
+    label = _spelling_label(path, cwd)
+    anchored = os.path.join(cwd or "", _expand_home(path.strip()))
+    if label or not os.path.isabs(anchored):
+        return label
+    try:
+        return _spelling_label(os.path.realpath(anchored))
+    except (OSError, ValueError):
+        return ""
+
+
+def _spelling_label(path: str, cwd: Optional[str] = None) -> str:
     candidate = _canonical(path)
     if cwd and not is_absolute(candidate):
         candidate = canonical_path(cwd) + "/" + candidate
@@ -230,6 +245,8 @@ def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
             return "system credentials file"
         if any(candidate == d or candidate.startswith(d + "/") for d in SYSTEM_SECRET_DIRS):
             return "system private keys"
+        if PROCESS_ENVIRON.fullmatch(candidate):
+            return "process environment"
         if READ in _home_entry_marks(candidate):
             return "account credentials"
     parts = [part for part in candidate.split("/") if part]

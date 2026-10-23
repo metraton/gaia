@@ -62,6 +62,9 @@ def test_a_branch_push_under_the_limit_passes(under):
     "git -C {repo} push origin :feat",
     "git -C {repo} push origin refs/tags/v1",
     "git -C {repo} push --dry-run origin feat",
+    "git -C {repo} push --help",
+    "git -C {repo} push -h",
+    "cd {repo} && git push origin feat --help",
     "git -C {repo} status",
     "echo push {repo}",
 ])

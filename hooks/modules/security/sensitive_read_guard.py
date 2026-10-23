@@ -7,8 +7,9 @@ a transcript. Writes are not decided here -- an account-path write keeps its
 signature route (``mutative_verbs`` for Bash, ``tool_policy`` for Write/Edit).
 
 A read is recognized by the command that performs it: a Bash component whose
-base command is a known reader or lister and that names a sensitive path, or a
-Read/Glob/Grep/list call whose path or pattern reaches one. What the guard
+base command is a known reader or lister and that names a sensitive path, a
+publishing command whose body file is one, or a Read/Glob/Grep/list call whose
+path or pattern reaches one. What the guard
 cannot see is stated rather than claimed: a program that opens the file itself
 (``python3 script.py``, ``source .env``, ``git show HEAD:.env``), a copy made
 first and read later, and a recursive search started above a sensitive
@@ -17,6 +18,7 @@ directory (``grep -r x ~``, Grep over the home directory).
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import Any, List, Mapping, Optional, Tuple
@@ -31,6 +33,7 @@ from .sensitive_paths import (
     sensitive_read_denial,
 )
 from .canonical_path import command_name
+from .publish_attribution_guard import publishing_body_files
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
 
@@ -261,6 +264,9 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     tokens = _strip_transparent_prefixes(words)
     if not tokens:
         return ""
+    published = first_sensitive_token(publishing_body_files(words, cwd or os.getcwd()) or [], cwd)
+    if published:
+        return published
     base = command_name(tokens[0])
     arguments = tokens[1:]
     if base in _SHELLS and "-c" in arguments:

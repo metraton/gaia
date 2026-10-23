@@ -40,7 +40,6 @@ class TestUnknownWrapperMutationsAreSigned:
         "ghx run rerun 123456",
         "ghx release create v1.0.0",
         "ghx issue close 1",
-        "ghx pr create --title t --body b",
         "ghx pr edit 1 --base main",
         "ghx auth switch -u someone",
         "ghx auth logout",
@@ -144,4 +143,12 @@ class TestUnknownWrapperMutationsAreSigned:
         "ghx auth status",
     ])
     def test_read_is_free(self, command):
+        assert classify_command_tier(command) == T0, command
+
+    @pytest.mark.parametrize("command", [
+        "ghx pr create --title t --body b",
+        "ghx -C /repo pr create --title t",
+        "ghx pr edit 1 --title t",
+    ])
+    def test_opening_or_editing_own_change_request_is_free(self, command):
         assert classify_command_tier(command) == T0, command
