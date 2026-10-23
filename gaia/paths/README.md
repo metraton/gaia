@@ -19,6 +19,7 @@ from gaia.paths import (
 ensure_layout()                  # mkdir -p mode 0700, idempotent
 print(db_path())                 # ~/.gaia/gaia.db
 create_snapshot(db_path(), snapshot_dir(), retain=5, prefix="uninstall")
+enforce_retention(snapshot_dir(), prefix="uninstall", retain=5)   # returns the deleted paths
 ```
 
 ## Modules
@@ -31,7 +32,7 @@ create_snapshot(db_path(), snapshot_dir(), retain=5, prefix="uninstall")
 | `backup`    | Every backup of the live database goes through `write_verified_gzip`: SQLite's Online Backup API copies one committed state, `integrity_check` proves it, gzip compresses it, and an atomic rename publishes it. A copy that fails is deleted and never replaces or prunes an existing backup. |
 | `__init__`  | Re-exports the public API and the `workspace_id` alias.        |
 
-Retention reads the timestamp in the file name, never the clock. Session-start snapshots keep 7 daily, 4 weekly and 3 monthly (`prune_gfs`; `uninstall` snapshots are exempt). Pre-migration and workspace backups keep the newest 3 of each kind (`prune_newest`); plain `.db` backups from earlier versions are left alone. The outcome of the last session-start run is written to `state/db-backup-status.json`, which `backup_health` turns into the verdict `gaia doctor` shows.
+Retention reads the timestamp in the file name, never the clock. `enforce_retention(snapshot_dir, prefix=..., retain=...)` keeps the newest `retain` snapshots of one `prefix` and returns the paths it deleted; `prefix` is required, and snapshots of any other prefix are never touched because each has its own policy. Session-start snapshots keep 7 daily, 4 weekly and 3 monthly (`prune_gfs`; `uninstall` snapshots are exempt). Pre-migration and workspace backups keep the newest 3 of each kind (`prune_newest`); plain `.db` backups from earlier versions are left alone. The outcome of the last session-start run is written to `state/db-backup-status.json`, which `backup_health` turns into the verdict `gaia doctor` shows.
 
 ## Attribution
 

@@ -178,6 +178,82 @@ def test_restore_runs_in_a_standalone_engine_without_the_gaia_package(tmp_path):
     assert not list(tmp_path.glob("gaia.db.restore*")), "a staged copy was left beside the database"
 
 
+_RESTORE_UNDER_REPLACE_FAULT = """
+import os, sys
+from pathlib import Path
+sys.modules["gaia"] = None
+sys.path.insert(0, {scripts!r})
+import bootstrap_database as engine
+real_replace, calls = os.replace, [0]
+def held(src, dst):
+    calls[0] += 1
+    if calls[0] <= {failures}:
+        raise PermissionError(13, "held by another process")
+    real_replace(src, dst)
+os.replace = held
+engine._restore(Path({backup!r}))
+print("replace calls", calls[0])
+"""
+
+
+def _packed_backup(db: Path, tmp: Path) -> Path:
+    backup = tmp / "pre-migrate.db.gz"
+    with open(db, "rb") as src, gzip.open(backup, "wb") as packed:
+        shutil.copyfileobj(src, packed)
+    return backup
+
+
+def test_restore_retries_a_replace_another_process_holds_briefly(tmp_path):
+    runner = _stage(tmp_path)
+    db = _live(tmp_path)
+    before = _snapshot(db)
+    backup = _packed_backup(db, tmp_path)
+    sqlite3.connect(db).executescript("CREATE TABLE __half_migrated (x);")
+
+    script = _RESTORE_UNDER_REPLACE_FAULT.format(scripts=str(runner.parent), backup=str(backup), failures=2)
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=_env(db, tmp_path), capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "replace calls 3" in result.stdout
+    assert _snapshot(db) == before
+    assert not list(tmp_path.glob("gaia.db.restore*"))
+
+
+def test_a_restore_that_never_gets_the_file_exits_one_and_keeps_the_staged_copy(tmp_path):
+    runner = _stage(tmp_path)
+    db = _live(tmp_path)
+    backup = _packed_backup(db, tmp_path)
+    _append(runner, CHAIN[-1], "INSERT INTO __injected_missing_table VALUES (1);")
+    sqlite3.connect(db).executescript("DELETE FROM schema_version;")
+    script = (
+        "import os, sys\n"
+        f"sys.modules['gaia'] = None\nsys.path.insert(0, {str(runner.parent)!r})\n"
+        "import bootstrap_database as engine\n"
+        "real_replace = os.replace\n"
+        "def held(src, dst):\n"
+        "    if os.fspath(dst) == os.environ['GAIA_DB']:\n"
+        "        raise PermissionError(13, 'held by another process')\n"
+        "    real_replace(src, dst)\n"
+        "os.replace = held\n"
+        "engine.time.sleep = lambda s: None\n"
+        "sys.exit(engine.main(['--apply-after-backup']))\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=_env(db, tmp_path), capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert "gaia.db.restore" in result.stderr
+    staged = tmp_path / "gaia.db.restore"
+    assert staged.is_file()
+    with sqlite3.connect(staged) as copy:
+        assert copy.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
 def test_the_uninterrupted_chain_reaches_the_expected_version(tmp_path):
     runner = _stage(tmp_path)
     db = _live(tmp_path)

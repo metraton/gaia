@@ -127,11 +127,14 @@ def restore_gzip(backup: Path, dest: Path) -> None:
 
 
 def snapshot_stamp(path: Path) -> Optional[datetime]:
-    """Return the timestamp written into a backup's file name, or None when it has none."""
+    """Return the timestamp written into a backup's file name, or None when it has none or is not a real date."""
     match = _STAMP.search(path.name)
     if not match:
         return None
-    stamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
+    try:
+        stamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
+    except ValueError:
+        return None
     return stamp.replace(microsecond=int(match.group(2) or 0))
 
 

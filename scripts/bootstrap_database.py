@@ -51,6 +51,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -317,17 +318,30 @@ def _restore(backup: Path) -> None:
 
     Stdlib only: the engine runs without the gaia package beside it.
     """
-    staged = GAIA_DB.with_name(GAIA_DB.name + ".restore")
+    staged = _staged_restore_path()
     try:
         with gzip.open(backup, "rb") as src, open(staged, "wb") as dst:
             shutil.copyfileobj(src, dst, 1 << 20)
             dst.flush()
             os.fsync(dst.fileno())
-        for sidecar in ("-wal", "-shm"):
-            GAIA_DB.with_name(GAIA_DB.name + sidecar).unlink(missing_ok=True)
-        os.replace(staged, GAIA_DB)
-    finally:
+    except BaseException:
         staged.unlink(missing_ok=True)
+        raise
+    for sidecar in ("-wal", "-shm"):
+        GAIA_DB.with_name(GAIA_DB.name + sidecar).unlink(missing_ok=True)
+    for attempt in range(1, 11):
+        try:
+            os.replace(staged, GAIA_DB)
+            return
+        except PermissionError:
+            if attempt == 10:
+                raise
+            time.sleep(0.05 * attempt)
+
+
+def _staged_restore_path() -> Path:
+    """Where _restore stages the decompressed backup; kept when the final replace fails."""
+    return GAIA_DB.with_name(GAIA_DB.name + ".restore")
 
 
 def _apply_chain(
@@ -546,7 +560,15 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                 _err(f"ERROR: migration chain {label} failed and was rolled back. ({exc})")
                 if state == UNSEALED:
                     con.close()
-                    _restore(backup)
+                    try:
+                        _restore(backup)
+                    except OSError as restore_exc:
+                        _err(
+                            f"ERROR: could not restore {backup} over {GAIA_DB} ({restore_exc}). "
+                            f"The restored copy is kept at {_staged_restore_path()}; "
+                            "move it over the database once nothing holds it."
+                        )
+                        return 1
                     _err(f"the journal mode changed before the chain; {GAIA_DB} restored from {backup}.")
                 _err(f"schema_version ledger remains at v{ledger}; no object changed.")
                 if not isinstance(exc, sqlite3.Error):

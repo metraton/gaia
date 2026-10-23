@@ -56,6 +56,21 @@ class TestGfsTable:
         assert backup.gfs_keep(stamps, daily=0, monthly=0) == {_snap(jan2)}
 
 
+class TestImpossibleDate:
+    def test_a_name_with_an_impossible_date_has_no_stamp(self):
+        assert backup.snapshot_stamp(Path("sessionstart-20261399T000000000000.db.gz")) is None
+
+    def test_pruning_and_keep_newest_skip_it_and_delete_nothing_else(self, tmp_path):
+        odd = tmp_path / "sessionstart-20261399T000000000000.db.gz"
+        good = tmp_path / "sessionstart-20260105T080000000000.db.gz"
+        for path in (odd, good):
+            path.write_bytes(b"x")
+
+        assert backup.prune_gfs(tmp_path) == []
+        assert backup.prune_newest(tmp_path, "sessionstart-*.db.gz", keep=1) == []
+        assert odd.exists() and good.exists()
+
+
 class TestVerifiedGzip:
     def test_round_trip(self, tmp_path):
         con = _db(tmp_path / "src.db")

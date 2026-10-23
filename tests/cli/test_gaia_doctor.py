@@ -1095,52 +1095,7 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 28 = 11 base + 2 memory v2 + 4 Pass 4 (package-integrity,
-        # last-install-error, workspace-initialized, schema-version) +
-        # 1 schema-DDL-consistency added by the migration framework rewrite +
-        # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1) +
-        # 1 agent-routing (surface_routing DB table primary agents resolve to files) +
-        # 1 symlinks-freshness (.claude/hooks resolves to the installed pkg
-        #   version -- install-local staleness fix) +
-        # 2 deterministic structural checks migrated from gaia-audit
-        #   (component-naming order 52, skill-cross-refs order 53) +
-        # 1 install-provenance (order 57 -- local vs npm install + local
-        #   freshness vs source; replaces `gaia release sync-local`) +
-        # 1 hooks-active-fresh (order 150 -- running session's hooks == the
-        #   currently wired build; live-freshness vs on-disk freshness) +
-        # 1 episodes-growth (order 48 -- gaia.db size + episodes row count;
-        #   visibility for the 90-day auto-retention added to writer.py) +
-        # 1 hooks-importable (order 145 -- every hooks/*.py entry point
-        #   imports cleanly; catches a broken hook before it reaches
-        #   PreToolUse/PostToolUse at runtime) +
-        # 1 global-cli-alignment (order 58 -- PATH gaia vs workspace-expected
-        #   install; catches a stale global CLI shadowing the workspace's own
-        #   gaia without warning) +
-        # 1 source-parity (order 56 -- installed package == the source checkout
-        #   it was built from; the first link of the freshness chain, which
-        #   went undiagnosed while a package built mid-edit ran for a day) +
-        # 1 symbol-anchors (order 54 -- skill/agent symbol references carry a
-        #   resolvable file::symbol anchor; a prose-paren reference names no
-        #   file, so a deleted symbol left four stale citations and only the
-        #   one anchored citation was caught) +
-        # 1 executed-copy-alignment (order 59 -- names the realpath actually
-        #   resolved from node_modules and reports aligned vs divergent when a
-        #   package-manager install re-materializes a stale pinned tarball
-        #   over a dev symlink, silently and without a version bump) +
-        # 1 opencode-host-liveness (order 61 -- reads the identity.attest
-        #   ledger for the CURRENT host run; pass only with a recorded
-        #   attestation, explicit absence -- never a false ok -- without one) +
-        # 1 opencode-background-subagents (order 62 -- info naming the shell line) +
-        # 1 workspace-roots (order 49 -- active workspaces without the recorded
-        #   root that `gaia worktree create` requires) +
-        # 1 project-copies (order 51 -- second clones the scan recorded as copies) +
-        # 1 workspace-registry (order 63 -- what `gaia workspace curate` fixes) +
-        # 3 channel checks (install-channel 36, hook-registrations 72,
-        #   hook-commands 74 -- hooks counted across plugin and every settings file) +
-        # 1 hook-shell (order 25 -- Windows without a resolvable sh) +
-        # 1 git-long-paths (order 26 -- Windows git with core.longpaths off) +
-        # 3 self-location checks (hook-python 27, path-gaia 28, launcher-python 29) +
-        # 1 db-backups (order 44 -- age, size and verification of the newest backup).
+        # The total of registered doctor checks; raise it with each check added.
         assert len(data["checks"]) == 45
 
         # Each check should have name, severity, ok, detail

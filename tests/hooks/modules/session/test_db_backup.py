@@ -67,6 +67,19 @@ def _status(data: Path) -> dict:
     return backup.read_status(data / "state" / backup.STATUS_FILE)
 
 
+def test_a_snapshot_named_with_an_impossible_date_does_not_break_the_run(sandbox):
+    data, _db, snap_dir = sandbox
+    snap_dir.mkdir()
+    odd = snap_dir / "sessionstart-20261399T000000000000.db.gz"
+    odd.write_bytes(b"x")
+
+    result = run_backup(force=True)
+
+    assert result["result"] == "created"
+    assert _status(data)["result"] == "created"
+    assert odd.exists()
+
+
 class TestSafeCopy:
     def test_first_run_writes_a_verified_restorable_gzip(self, sandbox, tmp_path):
         data, db, snap_dir = sandbox
