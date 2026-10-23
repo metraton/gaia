@@ -1171,7 +1171,7 @@ class BashValidator:
         # chains and quoted forms are inspected intact.
         # ================================================================
         pp_write_allowed, pp_write_reason = check_protected_path_write(
-            write_guard_scope
+            write_guard_scope, cwd=cwd
         )
         if not pp_write_allowed:
             logger.warning(

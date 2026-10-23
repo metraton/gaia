@@ -65,6 +65,13 @@ TOKEN_SHAPE = re.compile(
     r"|ya29\.[A-Za-z0-9._~-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}"
     r"|xox[abprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,})"
 )
+_URL_PASSWORD = re.compile(r"(?P<prefix>\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)(?P<value>[^\s/@]+)(?=@)")
+# An unterminated block is withheld to the end of the text: its END line may sit past an excerpt's cut.
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"(?P<begin>-----BEGIN (?P<label>[A-Z0-9 ]*PRIVATE KEY)-----)"
+    r"(?:.*?(?P<end>-----END (?P=label)-----)|.*\Z)",
+    re.DOTALL,
+)
 _SECRET_KIND = re.compile(r"(?m)^\s*kind\s*:\s*Secret\s*(?:#.*)?$")
 _YAML_DOCUMENT = re.compile(r"(?m)(^---\s*$)")
 _YAML_SECTION = re.compile(r"^(?P<indent>\s*)(?:data|stringData)\s*:\s*(?:#.*)?$")
@@ -82,7 +89,9 @@ def redact_text(text: str) -> str:
     if parsed is not None:
         return json.dumps(redact_tree(parsed), ensure_ascii=False)
 
-    redacted = _redact_secret_yaml(text)
+    redacted = _PRIVATE_KEY_BLOCK.sub(_replace_private_key, text)
+    redacted = _URL_PASSWORD.sub(rf"\g<prefix>{REDACTED}", redacted)
+    redacted = _redact_secret_yaml(redacted)
     redacted = _YAML_ENV_PAIR.sub(_replace_env_pair, redacted)
     redacted = _BEARER_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
     redacted = _QUOTED_VALUE.sub(_replace_quoted_value, redacted)
@@ -237,6 +246,11 @@ def _redact_all_leaves(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_redact_all_leaves(child) for child in value)
     return REDACTED
+
+
+def _replace_private_key(match: re.Match[str]) -> str:
+    end = f"\n{match.group('end')}" if match.group("end") else ""
+    return f"{match.group('begin')}\n{REDACTED}{end}"
 
 
 def _replace_quoted_value(match: re.Match[str]) -> str:

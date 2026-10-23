@@ -1751,28 +1751,12 @@ def write_harness_event(
     Returns:
         Integer primary key of the inserted row.
     """
-    payload = json.dumps(meta, separators=(",", ":")) if meta else None
     con = _connect(db_path)
     try:
-        cur = con.execute(
-            """
-            INSERT INTO harness_events
-                (workspace, ts, type, source, agent, result, severity, payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                workspace,
-                _now_iso(),
-                event_type,
-                source,
-                agent,
-                result,
-                severity,
-                payload,
-            ),
+        row_id = _insert_harness_event(
+            con, event_type, source, agent, result, severity, meta, workspace,
         )
         con.commit()
-        row_id = cur.lastrowid
     finally:
         con.close()
     # Automatic retention (mirrors episodes): occasionally prune events older
@@ -1780,6 +1764,62 @@ def write_harness_event(
     # committed and this one is closed, behind a 1/N gate, and swallows any
     # failure so it can never mask the successful append.
     _maybe_prune_harness_events(db_path=db_path)
+    return row_id
+
+
+def _insert_harness_event(
+    con: sqlite3.Connection,
+    event_type: str,
+    source: str | None,
+    agent: str | None,
+    result: str | None,
+    severity: str | None,
+    meta: Mapping[str, Any] | None,
+    workspace: str | None,
+) -> int:
+    payload = json.dumps(meta, separators=(",", ":")) if meta else None
+    cur = con.execute(
+        """
+        INSERT INTO harness_events
+            (workspace, ts, type, source, agent, result, severity, payload)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (workspace, _now_iso(), event_type, source, agent, result, severity, payload),
+    )
+    return cur.lastrowid
+
+
+def write_harness_event_lean(
+    *,
+    event_type: str,
+    source: str | None = None,
+    agent: str | None = None,
+    result: str | None = None,
+    severity: str | None = "info",
+    meta: Mapping[str, Any] | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Append one ``harness_events`` row on a bare connection, for events raised on every tool call.
+
+    Against ``write_harness_event`` it skips the schema materialization check
+    (the database must already exist, else the insert raises), the retention
+    sweep, and the commit fsync: ``synchronous=NORMAL`` in WAL mode keeps the
+    database consistent and can lose only the last commits to a power cut.
+    A database past this code's schema window is still refused.
+    """
+    path = db_path or _db_path()
+    assert_schema_writable(path)
+    con = sqlite3.connect(str(path))
+    try:
+        con.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+        con.execute("PRAGMA synchronous = NORMAL")
+        row_id = _insert_harness_event(
+            con, event_type, source, agent, result, severity, meta, workspace,
+        )
+        con.commit()
+    finally:
+        con.close()
     return row_id
 
 
@@ -9401,6 +9441,12 @@ def finalize_agent_contract_handoff(
 
     _assert_dispatch_can_write_handoff()
 
+    spool_key = None
+    if cut_reason is not None:
+        raw_handoff_json, spool_key = _seal_cut_harness_record(
+            contract_id, raw_handoff_json, db_path,
+        )
+
     def _work() -> dict:
         con = _connect(db_path)
         try:
@@ -9564,7 +9610,34 @@ def finalize_agent_contract_handoff(
         finally:
             con.close()
 
-    return _retry_on_locked(_work)
+    outcome = _retry_on_locked(_work)
+    if spool_key and outcome["created"]:
+        from gaia.contract import read_spool
+
+        read_spool.discard(spool_key)
+    return outcome
+
+
+def _seal_cut_harness_record(
+    contract_id: str, raw_handoff_json: str, db_path: "Path | None",
+) -> "tuple[str, str | None]":
+    """A cut row's envelope carrying its spooled paths and harness_record, and the harness id whose spool it consumes.
+
+    Every cut lane (reap, backstop capture, truncation salvage) writes through
+    finalize, so sealing here is what keeps a turn resumed under the same
+    harness id from inheriting the cut turn's calls. Failing to read the tool
+    record leaves the envelope as the lane built it: the cut row is still written.
+    """
+    from gaia.contract.tool_record import seal_cut_record
+
+    try:
+        envelope = json.loads(raw_handoff_json)
+        if not isinstance(envelope, dict):
+            return raw_handoff_json, None
+        key = seal_cut_record(envelope, contract_id, db_path=db_path)
+    except (TypeError, ValueError, sqlite3.Error):
+        return raw_handoff_json, None
+    return (json.dumps(envelope), key) if key else (raw_handoff_json, None)
 
 
 # ---------------------------------------------------------------------------
@@ -11313,6 +11386,56 @@ def find_dispatch_row_by_harness_agent_id(
     if len(collapsed) != 1:
         return None
     return collapsed[0]
+
+
+def tool_records_for_contract(contract_id: str, *, db_path: "Path | None" = None) -> dict:
+    """The born row's agent_id and harness id, and the tool calls recorded for that harness id since its previous finalized turn.
+
+    A resumed turn shares its harness id with the turn it continues, so the
+    calls an earlier finalize already consumed (its ``harness_record``) are
+    excluded by event id rather than by timestamp, which has one-second grain.
+    """
+    from gaia.contract.tool_record import TOOL_CALLED
+
+    empty = {"agent_id": None, "harness_agent_id": None, "records": [], "through_event_id": 0}
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id, agent_id, harness_agent_id, continues_handoff_id "
+            "FROM agent_contract_handoffs WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchone()
+        if row is None:
+            return empty
+        handoff_id, agent_id, harness_agent_id, parent = row[0], row[1], row[2], row[3]
+        while not harness_agent_id and parent:
+            ancestor = con.execute(
+                "SELECT harness_agent_id, continues_handoff_id FROM agent_contract_handoffs WHERE id = ?",
+                (parent,),
+            ).fetchone()
+            harness_agent_id, parent = (ancestor[0], ancestor[1]) if ancestor else (None, None)
+        if not harness_agent_id:
+            return {**empty, "agent_id": agent_id}
+        consumed = con.execute(
+            "SELECT MAX(CAST(json_extract(raw, '$.harness_record.through_event_id') AS INTEGER)) "
+            "FROM (SELECT CASE WHEN json_valid(raw_handoff_json) THEN raw_handoff_json END AS raw "
+            "      FROM agent_contract_handoffs WHERE id != ?) "
+            "WHERE json_extract(raw, '$.harness_record.harness_agent_id') = ?",
+            (handoff_id, harness_agent_id),
+        ).fetchone()[0] or 0
+        events = con.execute(
+            "SELECT id, payload FROM harness_events WHERE type = ? AND id > ? "
+            "AND json_extract(payload, '$.harness_agent_id') = ? ORDER BY id",
+            (TOOL_CALLED, consumed, harness_agent_id),
+        ).fetchall()
+    finally:
+        con.close()
+    return {
+        "agent_id": agent_id,
+        "harness_agent_id": harness_agent_id,
+        "records": [json.loads(event[1]) for event in events],
+        "through_event_id": events[-1][0] if events else consumed,
+    }
 
 
 def open_contract_continuation(

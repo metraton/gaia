@@ -3,12 +3,11 @@
 import re
 from typing import AbstractSet, Dict, Iterable, List
 
+from gaia.contract.tool_record import CONTRACT_BOOKKEEPING as _CONTRACT_BOOKKEEPING
 from gaia.redaction import redact_text
 
 RECOVERED_MARK = "[recovered from transcript] "
 
-# These calls are how the turn wrote its record, not evidence it gathered.
-_CONTRACT_BOOKKEEPING = re.compile(r"^\s*gaia\s+contract\b")
 _CONTRACT_FINALIZE = re.compile(r"^\s*gaia\s+contract\s+finalize\b")
 
 

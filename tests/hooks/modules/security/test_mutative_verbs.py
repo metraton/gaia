@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for Mutative Verb Detector (mutative_verbs.py)."""
 
+import os
 import sys
 import pytest
 from pathlib import Path
@@ -12,6 +13,7 @@ from modules.security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
     cwd_after_component,
+    UNKNOWN_CWD,
     MutativeResult,
     COMMAND_ALIASES,
     SIMULATION_FLAGS,
@@ -2908,6 +2910,26 @@ class TestRelativeScriptCwdResolution:
         assert cwd_after_component("cd sub", repo) == repo + "/sub"
         # A non-cd command with no prior cd leaves cwd at the default (None).
         assert cwd_after_component("node build.mjs", None) is None
+
+
+class TestCwdFoldNavigationForms:
+    def test_home_spellings_expand_in_a_cd_target(self):
+        home = os.path.expanduser("~")
+        for target in ("$HOME/x", "${HOME}/x", "~/x"):
+            assert cwd_after_component(f"cd {target}", "/repo") == f"{home}/x"
+
+    def test_pushd_moves_the_directory_like_cd(self):
+        assert cwd_after_component("pushd /a/b", "/repo") == "/a/b"
+        assert cwd_after_component("pushd sub", "/repo") == "/repo/sub"
+
+    @pytest.mark.parametrize("command", ["cd -", "popd", "pushd", "pushd -n /a", "cd a b"])
+    def test_a_navigation_the_fold_cannot_follow_makes_the_directory_unknown(self, command):
+        assert cwd_after_component(command, "/repo") == UNKNOWN_CWD
+
+    def test_unknown_stays_unknown_for_relative_moves_and_ends_at_an_absolute_one(self):
+        assert cwd_after_component("cd sub", UNKNOWN_CWD) == UNKNOWN_CWD
+        assert cwd_after_component("cd /a", UNKNOWN_CWD) == "/a"
+        assert cwd_after_component("ls", UNKNOWN_CWD) == UNKNOWN_CWD
 
 
 class TestRelativeScriptNoCdHookPayloadCwd:

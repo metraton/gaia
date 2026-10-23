@@ -273,6 +273,31 @@ def _record_skill_use(tool_name: str, tool_input: object, hook_data: dict) -> No
         logger.debug("skill load not recorded (non-fatal): %s", exc)
 
 
+def _record_command_run(tool_input: object, tool_result: ToolResult, hook_data: dict) -> None:
+    """Add a finished shell call to the calling subagent's tool record; recording never fails the call."""
+    try:
+        from modules.events.capability_usage import record_command_run
+
+        ran = tool_result.ran and hook_data.get("is_interrupt") is not True
+        record_command_run(
+            tool_input, tool_result.output, tool_result.exit_code if ran else None, hook_data,
+        )
+    except Exception as exc:
+        logger.debug("tool call not recorded (non-fatal): %s", exc)
+
+
+def _record_file_checked(hook_data: dict) -> None:
+    """Add the path of a file tool the policy let run to the calling subagent's tool record; recording never fails the call."""
+    try:
+        from modules.events.capability_usage import record_file_checked
+
+        record_file_checked(
+            str(hook_data.get("tool_name") or ""), hook_data.get("tool_input"), hook_data,
+        )
+    except Exception as exc:
+        logger.debug("file read not recorded (non-fatal): %s", exc)
+
+
 def failure_verdict(error: Exception) -> PolicyVerdict:
     """Refuse a call whose validation raised, naming storage exhaustion apart.
 
@@ -313,13 +338,18 @@ class ToolPolicy:
         ``dispatch_identity_in_env`` is set by a host that exports the
         subagent's identity through the shell environment itself, so the
         command is not rewritten to carry it. A refused gaia call is recorded
-        here, since no terminal event follows a PreToolUse refusal.
+        here, since no terminal event follows a PreToolUse refusal. A Read,
+        Grep or Glob call the policy lets run is recorded here too, with only
+        its path, so a read costs no PostToolUse process; a refused one is not
+        recorded, since nothing was read.
         """
         verdict = self._decide_before_call(
             event, dispatch_identity_in_env=dispatch_identity_in_env,
         )
         if verdict.refusal is not None or verdict.decision == "deny":
             _record_cli_use(event.payload, outcome="denied")
+        elif verdict.consent is None and verdict.decision != "ask":
+            _record_file_checked(event.payload)
         return verdict
 
     def _decide_before_call(
@@ -865,8 +895,10 @@ class ToolPolicy:
             build_reminder_context,
             should_remind,
         )
+        from modules.security import protected_path_guard
         from modules.security.protected_paths import (
             is_protected_hook_path,
+            is_read_spool_path,
             resolved_write_target,
         )
         from modules.security.sensitive_paths import is_account_path
@@ -882,6 +914,8 @@ class ToolPolicy:
         )
         if refusal:
             return PolicyVerdict(decision="deny", reason=refusal)
+        if is_read_spool_path(file_path):
+            return PolicyVerdict(decision="deny", reason=protected_path_guard.rejection_message(file_path))
 
         account_path = is_account_path(file_path)
         if not account_path and not is_protected_hook_path(file_path):
@@ -1009,6 +1043,8 @@ class ToolPolicy:
         if not hook_data.get("agent_id") and is_memory_skill(tool_name, parameters):
             record_skill_loaded(post_session_id)
         _record_skill_use(tool_name, parameters, hook_data)
+        if str(tool_name).lower() in SHELL_TOOLS:
+            _record_command_run(parameters, tool_result, hook_data)
 
         # The dispatch result is the only place a harness-truncated subagent is
         # observable, and where the orchestrator gets its look at the row. The

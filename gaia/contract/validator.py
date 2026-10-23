@@ -707,6 +707,7 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "degraded",
     "dispatch_closed_at_subagent_stop",
     "fallback",
+    "harness_record",
     "reaped",
     "reconciled",
     "reconstructed_from_finalized_draft",
