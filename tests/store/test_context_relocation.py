@@ -111,6 +111,17 @@ def test_an_inactive_or_unknown_project_is_an_error(db):
     assert any("github.com/o/nowhere" in e for e in errors)
 
 
+@pytest.mark.parametrize("kind", ["moves", "unowned"])
+def test_an_entry_with_an_empty_key_list_is_an_error_and_writes_nothing(db, kind):
+    manifest = _manifest()
+    manifest[kind][0]["keys"] = []
+    before = _rows(db, "project_context")
+    assert any("keys" in e and "empty" in e for e in _plan(db, manifest)["errors"])
+    with pytest.raises(RelocationError):
+        apply_relocation(manifest, db_path=db)
+    assert _rows(db, "project_context") == before
+
+
 def test_two_moves_into_one_target_section_is_an_error(db):
     manifest = _manifest()
     manifest["moves"][2]["to"] = "github.com/o/infra"

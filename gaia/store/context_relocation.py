@@ -53,6 +53,9 @@ def plan_relocation(con: sqlite3.Connection, manifest: dict) -> dict:
             if source not in rows:
                 errors.append(f"{label}: no such row in project_context_contracts")
                 continue
+            if entry.get("keys") == []:
+                errors.append(f"{label}: empty keys list; omit keys to move the whole row")
+                continue
             payload = rows[source]
             for key in _claimed_keys(entry, payload):
                 if key is not None and not (isinstance(payload, dict) and key in payload):
