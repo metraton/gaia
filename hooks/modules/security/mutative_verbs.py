@@ -38,7 +38,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
-from .nested_executors import nested_run, opens_session, reads_local_state, writes_or_sends
+from .nested_executors import nested_run, opens_session, reads_local_state, with_target_flags, writes_or_sends
 from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
@@ -4637,8 +4637,34 @@ def _executor_floor_payloads(command: str) -> "Tuple[str, ...]":
     if semantics.base_cmd == "find":
         return _find_exec_payloads(list(semantics.tokens))
     nested = nested_run(semantics.tokens)
-    payloads = (_resolve_executor_payload(semantics.base_cmd, semantics), nested and nested.inner)
+    handed = (nested.inner, *nested.alternatives) if nested else ()
+    payloads = (_resolve_executor_payload(semantics.base_cmd, semantics), *handed)
     return tuple(payload for payload in payloads if payload)
+
+
+def flag_floor_block(command: str) -> "Optional[FlagClassifierResult]":
+    """The flag classifier's permanent block on *command* as ``bash_validator`` reaches it bare: after a verb that signs."""
+    from .flag_classifiers import OUTCOME_BLOCKED, classify_by_flags
+
+    flagged = classify_by_flags(command)
+    if flagged is None or flagged.outcome != OUTCOME_BLOCKED:
+        return None
+    return None if detect_mutative_command(command).is_mutative else flagged
+
+
+def _check_target_environment(
+    command: str, remainder: str, *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge *remainder* run under a variable that picks its target or identity as the flag that variable stands for."""
+    from ..tools.shell_parser import shell_split
+
+    stripped = command.strip()
+    words = shell_split(remainder)
+    flagged = with_target_flags(shell_split(stripped[: len(stripped) - len(remainder)]), words)
+    if flagged is None:
+        return None
+    result = detect_mutative_command(shlex.join(flagged), cwd=cwd, _depth=_depth)
+    return replace(result, reason=f"run as {shlex.join(flagged)!r}: {result.reason}")
 
 
 def _component_verdict(component: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
@@ -5270,6 +5296,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         config_result = _check_package_config_environment(command, env_remainder)
         if config_result is not None:
             return config_result
+        target_result = _check_target_environment(command, env_remainder, cwd=cwd, _depth=_depth)
+        if target_result is not None:
+            return target_result
         if sets_node_options(command):
             node_options_result = node_test_under_node_options(env_remainder, cwd)
             if node_options_result is not None:

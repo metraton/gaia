@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
-from typing import FrozenSet, Optional, Sequence, Tuple
+from typing import FrozenSet, List, Optional, Sequence, Tuple
 
 from .canonical_path import command_name
 
@@ -18,7 +18,8 @@ _GENERIC_VERBS = frozenset({"run", "exec"})
 class NestedRun:
     """What an executor runs: *inner* is None for a session; *unparsed* names the word that stopped the parse.
 
-    *reads* are the local files the executor itself loads, such as an ``--env-file``.
+    *reads* are the local files the executor itself loads, such as an ``--env-file``; *alternatives* are
+    other commands an ambiguous parse may hand over.
     """
 
     executor: str
@@ -27,6 +28,7 @@ class NestedRun:
     remote: bool = False
     generic: bool = False
     reads: Tuple[str, ...] = ()
+    alternatives: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,8 +72,7 @@ def _docker(path: Tuple[str, ...]) -> _Grammar:
 
 
 _GCLOUD_VALUES = frozenset({
-    "--project", "--account", "--configuration", "--verbosity", "--impersonate-service-account",
-    "--billing-project", "--zone",
+    "--project", "--account", "--configuration", "--verbosity", "--billing-project", "--zone",
 })
 _GCLOUD_BOOLEANS = frozenset({"-q", "--quiet"})
 _GCLOUD_SSH = _Grammar(
@@ -102,6 +103,12 @@ _GRAMMARS = {
     "gcloud": (_GCLOUD_SSH,),
     "op": (_OP_RUN,),
     "aws-vault": (_AWS_VAULT_EXEC,),
+}
+
+_TARGET_VARIABLES = {
+    "kubectl": {"KUBECONFIG": "--kubeconfig"},
+    "oc": {"KUBECONFIG": "--kubeconfig"},
+    "docker": {"DOCKER_HOST": "--host", "DOCKER_CONFIG": "--config"},
 }
 
 _SHELL_PROGRAMS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "busybox"})
@@ -151,8 +158,10 @@ def _parse(executor: str, args: Sequence[str], grammar: _Grammar) -> Optional[Ne
     literal = shlex.join(after_dashdash) if after_dashdash and grammar.dashdash != "none" else None
     targets, command, reads, index = [], None, [], 0
 
-    def found(inner: Optional[str], unparsed: Optional[str] = None) -> NestedRun:
-        return NestedRun(executor, inner, unparsed=unparsed, remote=grammar.remote, reads=tuple(reads))
+    def found(inner: Optional[str], unparsed: Optional[str] = None, alternatives: Tuple[str, ...] = ()) -> NestedRun:
+        return NestedRun(
+            executor, inner, unparsed=unparsed, remote=grammar.remote, reads=tuple(reads), alternatives=alternatives,
+        )
 
     while index < len(args):
         token = args[index]
@@ -177,7 +186,7 @@ def _parse(executor: str, args: Sequence[str], grammar: _Grammar) -> Optional[Ne
             index += 1
             continue
         if grammar.dashdash == "legacy" and "--" in args:
-            return found(literal, token)
+            return found(literal, token, (shlex.join(args[index:]),))
         if grammar.dashdash in ("none", "optional", "legacy"):
             after_dashdash = list(args[index:])
             break
@@ -222,6 +231,14 @@ def nested_run(tokens: Sequence[str]) -> Optional[NestedRun]:
         if start is not None:
             return _parse(executor, args[start:], grammar)
     return _parse_generic(program, args)
+
+
+def with_target_flags(prefix: Sequence[str], words: Sequence[str]) -> Optional[List[str]]:
+    """*words* with each variable *prefix* assigns to choose the program's target or identity spelled as its flag, else None."""
+    names = _TARGET_VARIABLES.get(command_name(words[0]), {}) if words else {}
+    assigned = (word.partition("=") for word in prefix)
+    flags = [f"{names[name]}={value}" for name, equals, value in assigned if equals and name in names]
+    return [words[0], *flags, *words[1:]] if flags else None
 
 
 def opens_session(inner: str) -> bool:

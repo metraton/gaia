@@ -104,6 +104,15 @@ def _executor_floor_payloads(command: str) -> Tuple[str, ...]:
         return ()
 
 
+def _flag_floor_block(command: str):
+    """Return the flag classifier's bare permanent block on *command* (``mutative_verbs.flag_floor_block``), or None."""
+    try:
+        from .mutative_verbs import flag_floor_block
+        return flag_floor_block(command)
+    except ImportError:
+        return None
+
+
 def _powershell_positions(command: str) -> Tuple[str, ...]:
     """Return the command positions a PowerShell command line runs (``mutative_verbs._powershell_floor_readings``)."""
     try:
@@ -767,6 +776,12 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
         for executor_payload in _executor_floor_payloads(reading):
             if executor_payload != reading:
                 payload_result = _classify_all_forms(executor_payload)
+                flagged = None if payload_result.is_blocked else _flag_floor_block(executor_payload)
+                if flagged is not None:
+                    payload_result = BlockedCommandResult(
+                        is_blocked=True, pattern_matched=flagged.matched_pattern,
+                        category=flagged.command_family, suggestion=flagged.reason,
+                    )
                 if payload_result.is_blocked:
                     return payload_result
 
