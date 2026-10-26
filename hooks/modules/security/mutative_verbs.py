@@ -308,11 +308,12 @@ def git_grep_opens_pager(tokens: Tuple[str, ...]) -> bool:
     )
 
 _GIT_OUTPUT_LONG_OPTIONS: Tuple[str, ...] = ("output", "output-directory")
-_GIT_SHORT_O_WRITES: FrozenSet[str] = frozenset({"format-patch", "archive"})
+_GIT_SHORT_O_WRITES: FrozenSet[str] = frozenset({"format-patch", "archive", "bugreport", "diagnose"})
+_GIT_WRITES_CWD_BY_DEFAULT: FrozenSet[str] = frozenset({"format-patch", "bugreport", "diagnose"})
 
 
 def _git_output_targets(tokens: tuple, subcommand: str) -> "List[str]":
-    """Return every file or directory a git command writes by option (unique long prefixes included), plus ``.`` for a format-patch without one."""
+    """Return every file or directory a git command writes by option (unique long prefixes included), plus ``.`` for a report or patch written without one."""
     split = _git_subcommand_split(tokens)
     args = split[2] if split else list(tokens[1:])
     targets: List[str] = []
@@ -325,7 +326,7 @@ def _git_output_targets(tokens: tuple, subcommand: str) -> "List[str]":
             targets.append(value if has_value else following)
         elif subcommand in _GIT_SHORT_O_WRITES and token.startswith("-") and not token.startswith("--") and "o" in token:
             targets.append(token.split("o", 1)[1] or following)
-    if subcommand == "format-patch" and not targets and "--stdout" not in args:
+    if subcommand in _GIT_WRITES_CWD_BY_DEFAULT and not targets and "--stdout" not in args:
         targets.append(".")
     return targets
 
@@ -2885,6 +2886,33 @@ def _never_free_paths() -> "Tuple[Tuple[str, ...], Tuple[str, ...]]":
     return tuple(files), tuple(dirs)
 
 
+_KERNEL_VIEW_ROOTS: Tuple[str, ...] = ("/proc", "/dev")
+
+
+def _enters_kernel_view(path: str) -> bool:
+    """True when resolving *path* passes through /proc or /dev, whose links name the resolving process's cwd, root and fds."""
+    import os
+    pending = [part for part in reversed(path.split(os.sep)) if part]
+    current, hops = os.sep, 0
+    while pending:
+        part = pending.pop()
+        if part in (".", ".."):
+            current = current if part == "." else os.path.dirname(current)
+            continue
+        current = os.path.join(current, part)
+        if any(current == root or current.startswith(root + os.sep) for root in _KERNEL_VIEW_ROOTS):
+            return True
+        if hops < 40 and os.path.islink(current):
+            try:
+                target = os.readlink(current)
+            except OSError:
+                return True
+            hops += 1
+            pending.extend(part for part in reversed(target.split(os.sep)) if part)
+            current = os.sep if os.path.isabs(target) else os.path.dirname(current)
+    return False
+
+
 def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool = True) -> "str | None":
     """Return the file the kernel would open for *token* (only its parent unless follow_last), or None if unresolvable."""
     import os
@@ -2897,6 +2925,8 @@ def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool
         if not cwd or not os.path.isabs(cwd):
             return None
         expanded = os.path.join(cwd, expanded)
+    if _enters_kernel_view(expanded):
+        return None
     if follow_last:
         return os.path.realpath(expanded)
     parent, name = os.path.split(expanded.rstrip(os.sep))
@@ -3035,7 +3065,7 @@ def _local_work_destinations(sources: List[str], destination: str, cwd: "Optiona
         name = os.path.basename(source.rstrip(os.sep))
         if name in ("", ".", "..") or source.rstrip(os.sep).endswith(os.sep + "."):
             return None
-        written.append(os.path.realpath(os.path.join(real_destination, name)))
+        written.append(_resolve_local_work_path(os.path.join(real_destination, name), None))
     return written
 
 

@@ -529,8 +529,8 @@ class BashValidator:
 
     last_warning = ""
 
-    def __init__(self, agent_names_scratch: bool = True):
-        """Initialize the validator; *agent_names_scratch* says the host's agent id names scratch entries, the ownership local-work relief keys on."""
+    def __init__(self, agent_names_scratch: bool = False):
+        """Initialize the validator; only a host whose agent id names scratch entries passes *agent_names_scratch*, the ownership local-work relief keys on."""
         self.agent_names_scratch = agent_names_scratch
         self.shell_parser = get_shell_parser()
         self._unwrapper = ShellUnwrapper()

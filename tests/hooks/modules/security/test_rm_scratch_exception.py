@@ -254,7 +254,7 @@ def test_floor_confinement_predicate(scratch):
 
 @pytest.fixture
 def validator():
-    return BashValidator()
+    return BashValidator(agent_names_scratch=True)
 
 
 def test_e2e_scratch_file_is_t0(validator, scratch):

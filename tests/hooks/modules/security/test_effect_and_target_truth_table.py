@@ -107,7 +107,7 @@ def observe(command: str, context: str, world: dict, role: str = "subagent", ses
         payload["session_id"] = session_id
     if subagent:
         payload.update(agent_id="atruthtable01", agent_type="developer")
-    result = BashValidator().validate(command, is_subagent=subagent, session_id=session_id,
+    result = BashValidator(agent_names_scratch=True).validate(command, is_subagent=subagent, session_id=session_id,
                                       agent_type="developer" if subagent else "", hook_payload=payload)
     reason = result.reason or ""
     if result.allowed:

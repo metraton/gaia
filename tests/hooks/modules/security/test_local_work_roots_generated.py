@@ -107,7 +107,7 @@ def observe(command: str, cwd: str, agent: str = "alocalwork01") -> str:
     tiers_module._classify_command_tier_cached.cache_clear()
     payload = {"cwd": cwd, "tool_use_id": "t-local-work", "session_id": "s-local-work",
                "agent_id": agent, "agent_type": "developer"}
-    result = BashValidator().validate(command, is_subagent=True, session_id="s-local-work",
+    result = BashValidator(agent_names_scratch=True).validate(command, is_subagent=True, session_id="s-local-work",
                                       agent_type="developer", hook_payload=payload)
     LAST_REASON[:] = [result.reason or ""]
     return FREE if result.allowed else ASK
@@ -141,6 +141,10 @@ DESTINATIONS = [
     ("drafts", "{DATA}/contract_drafts/x.json", ASK),
     ("backups", "{DATA}/backups/x.db", ASK),
     ("live-db-wal", "{DATA}/gaia.db-wal", ASK),
+    ("proc-self-cwd", "/proc/self/cwd/new.txt", ASK),
+    ("proc-thread-self-root", "/proc/thread-self/root{S}/new.txt", ASK),
+    ("dev-fd", "/dev/fd/9", ASK),
+    ("dev-stdout", "/dev/stdout", ASK),
 ]
 WRITERS = ["cp {S}/a.txt {dest}", "cp -f {S}/a.txt {dest}", "mv {S}/a.txt {dest}", "mv -n {S}/a.txt {dest}",
            "cp -r {S}/real {dest}", "cp -a {S}/real {dest}"]
