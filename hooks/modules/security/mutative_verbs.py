@@ -2738,7 +2738,7 @@ def _gaia_hooks_root() -> "str | None":
         return None
 
 
-def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
+def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
     """Return the canonical rm targets when every one is confined to scratch.
 
     STRICT and fail-closed. Returns the resolved paths only when ALL of the
@@ -2746,7 +2746,7 @@ def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
       (a) at least one positional (non-flag) path argument is present;
       (b) NO token contains an unexpanded glob metacharacter (``*?[]{}``) or
           a parent-traversal component (``..``);
-      (c) each path, after os.path.expanduser + os.path.realpath, is the
+      (c) each path, resolved against the shell's *cwd* (never the hook's), is the
           scratch root itself or lives under ``scratch_root + os.sep``.
 
     Any ambiguity -- no positional path, an unresolvable scratch root, a glob,
@@ -2792,13 +2792,8 @@ def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
             return None
         if ".." in token:
             return None
-        expanded = os.path.expanduser(token)
-        # A residual ~ (unexpandable, e.g. ~unknownuser) is not confined.
-        if expanded.startswith("~"):
-            return None
-        # (c) canonicalise and require strict containment in scratch.
-        real = os.path.realpath(expanded)
-        if not (real == scratch_root or real.startswith(scratch_root + os.sep)):
+        real = _resolve_local_work_path(token, cwd)
+        if real is None or not (real == scratch_root or real.startswith(scratch_root + os.sep)):
             return None
         resolved.append(real)
 
@@ -2814,12 +2809,7 @@ _LOCAL_WORK_UNRESOLVED_CHARS: FrozenSet[str] = frozenset("*?[]{}$`")
 
 
 def _never_free_paths() -> "Tuple[Tuple[str, ...], Tuple[str, ...]]":
-    """Return the files and directories no local-work root may cover, realpath'd.
-
-    The live database with its journal files, its backups and the contract
-    drafts hold state the harness trusts; they stay out even when a root is
-    configured around them.
-    """
+    """Return the harness-trusted files and directories (database, journals, backups, drafts) no root may cover."""
     import os
     from pathlib import Path
     from gaia.paths.resolver import data_dir, db_path
@@ -2833,10 +2823,7 @@ def _never_free_paths() -> "Tuple[Tuple[str, ...], Tuple[str, ...]]":
 
 
 def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool = True) -> "str | None":
-    """Return the file the kernel would open for *token*, or None while the shell could still change it.
-
-    ``follow_last=False`` resolves only the parent: an ``mv`` source moves the link, not its target.
-    """
+    """Return the file the kernel would open for *token* (only its parent unless follow_last), or None if unresolvable."""
     import os
     if not token or any(ch in _LOCAL_WORK_UNRESOLVED_CHARS for ch in token):
         return None
@@ -2856,13 +2843,7 @@ def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool
 
 
 def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
-    """Return the scratch or worktree directory strictly holding *real*, or None.
-
-    ``allow_top`` also accepts the directory itself (a ``tar -C`` target).
-    Inside a managed root only a checked-out worktree counts -- the nearest
-    ancestor holding ``.git`` -- and no path through a ``.git`` component does.
-    Any failure to resolve the roots or the exclusions declines (fail closed).
-    """
+    """Return the scratch dir or checked-out managed worktree holding *real* outside any ``.git``, or None (fail closed)."""
     import os
     try:
         files, dirs = _never_free_paths()
@@ -2952,12 +2933,7 @@ def _local_work_destinations(sources: List[str], destination: str, cwd: "Optiona
 
 
 def _cp_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
-    """Return the canonical paths a ``cp`` writes when all lie inside a local-work root.
-
-    Sources are the secret-read guard's to judge.  A recursive copy is admitted
-    only onto paths that do not exist yet, so none of its nested writes can
-    meet a symlink already waiting there.
-    """
+    """Return the paths a ``cp`` writes when all are local work; a recursive copy only onto paths not yet existing."""
     import os
     parsed = _local_work_operands(tokens, _CP_LOCAL_WORK_SHORT_FLAGS, _CP_LOCAL_WORK_LONG_FLAGS)
     if parsed is None:
@@ -2973,11 +2949,7 @@ def _cp_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> 
 
 
 def _mv_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
-    """Return every path an ``mv`` removes or creates when all lie inside a local-work root.
-
-    A source is removed from where it is named, so it is resolved without
-    following its last component: moving a symlink moves the link.
-    """
+    """Return every path an ``mv`` removes (link itself, not its target) or creates when all are local work."""
     parsed = _local_work_operands(tokens, _MV_LOCAL_WORK_SHORT_FLAGS, _MV_LOCAL_WORK_LONG_FLAGS)
     if parsed is None:
         return None
@@ -2997,11 +2969,11 @@ _PLANTS_NO_LINK: FrozenSet[str] = frozenset({
     "tail", "grep", "diff", "file", "du", "df", "realpath", "readlink",
     "basename", "dirname", "sleep", "date", "sha256sum", "md5sum",
 })
-_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar"})
+_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar", "rm", "rmdir"})
 
 
 def chain_withdraws_local_work_relief(components: List[str]) -> List[str]:
-    """Return the mv/cp/tar stages whose path-judged write another stage of the line could redirect."""
+    """Return the mv/cp/tar/rm stages whose path-judged write another stage of the line could redirect."""
     import os
     bases = []
     for component in components:
@@ -5469,7 +5441,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # /*, ~) still runs first in blocked_commands.py, which defers to this
         # detector only for scratch-confined rm commands.
         if base_cmd in ("rm", "rmdir"):
-            scratch_targets = _rm_scratch_confined_targets(tuple(tokens))
+            scratch_targets = _rm_scratch_confined_targets(tuple(tokens), cwd)
             if scratch_targets:
                 valuable = _durable_store_under_scratch_targets(scratch_targets)
                 if valuable is None:
@@ -5499,9 +5471,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     ),
                 )
 
-        # mv and cp are free when every path they create or remove stays in
-        # scratch or a managed worktree, unless one would overwrite a durable
-        # store already parked there.
+        # mv and cp are free when every path they touch stays in scratch or a
+        # managed worktree and none overwrites a durable store parked there.
         if base_cmd in ("cp", "mv"):
             local_work = _cp_local_work_written_paths if base_cmd == "cp" else _mv_local_work_written_paths
             written = local_work(tuple(tokens), cwd)

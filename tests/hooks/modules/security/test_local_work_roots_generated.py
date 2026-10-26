@@ -242,6 +242,26 @@ def test_a_chain_cannot_redirect_a_freed_write(command, cwd, expected, world):
     assert observe(command, _fill(cwd, world)) == expected, (command, LAST_REASON[0])
 
 
+RM = [
+    ("rm-in-scratch", "rm -f {S}/gone.txt", "{OUT}", "{OUT}", FREE),
+    ("rm-relative-in-scratch", "rm -f gone.txt", "{S}", "{OUT}", FREE),
+    ("rm-cd-scratch-relative", "cd {S} && rm -f gone.txt", "{OUT}", "{OUT}", FREE),
+    ("rm-mkdir-then-rm", "mkdir -p {S}/d3 && rm -rf {S}/d3", "{S}", "{OUT}", FREE),
+    ("rm-relative-hook-cwd-in-scratch", "rm -f f.txt", "{OUT}", "{S}", ASK),
+    ("rm-cd-out-relative", "cd {OUT} && rm -f f.txt", "{S}", "{S}", ASK),
+    ("rm-link-planted", "ln -s {OUT} {S}/fresh_rm && rm -rf {S}/fresh_rm/f.txt", "{S}", "{OUT}", ASK),
+    ("rm-link-moved", "mv {S}/link_out {S}/d_rm && rm -rf {S}/d_rm/f.txt", "{S}", "{OUT}", ASK),
+    ("rm-link-background", "ln -s {OUT} {S}/bg_rm & rm -rf {S}/bg_rm/f.txt", "{S}", "{OUT}", ASK),
+]
+
+
+@pytest.mark.parametrize("command,cwd,hook_cwd,expected", [pytest.param(c, w, h, e, id=n) for n, c, w, h, e in RM])
+def test_a_scratch_rm_is_judged_at_the_shell_cwd_and_after_the_line(command, cwd, hook_cwd, expected, world, monkeypatch):
+    monkeypatch.chdir(_fill(hook_cwd, world))
+    command = _fill(command, world)
+    assert observe(command, _fill(cwd, world)) == expected, (command, LAST_REASON[0])
+
+
 @pytest.mark.parametrize("command,expected", [pytest.param(c, e, id=n) for n, c, e in GIT])
 @pytest.mark.parametrize("repo", ["R", "W"])
 def test_local_git_reads(command, expected, repo, world):

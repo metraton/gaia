@@ -534,12 +534,7 @@ _TAR_MEMBER_BUDGET = 20000
 
 
 def _tar_extract_operands(tokens: List[str]) -> Optional[dict]:
-    """Parse an extraction into its options, or None for anything outside the modelled grammar.
-
-    Short clusters follow getopt (a value letter takes the rest of its cluster
-    or the next word); a first word without a dash is the traditional cluster.
-    Member operands may follow ``-C`` only, so all of them land under it.
-    """
+    """Parse a getopt-style extraction into its options, or None for anything outside the modelled grammar."""
     args = list(tokens[1:])
     if args and not args[0].startswith("-") and args[0].isalpha():
         args[0] = "-" + args[0]
@@ -588,11 +583,7 @@ def _tar_extract_operands(tokens: List[str]) -> Optional[dict]:
 
 
 def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
-    """Return the relative paths an archive's regular members extract to, or None.
-
-    None for an unreadable archive, a link member, an absolute or ``..``
-    member, or more members than the budget: each is a write the caller cannot place.
-    """
+    """Return the relative paths of an archive's members, or None when any member is a link, absolute, ``..`` or over budget."""
     import tarfile
     paths = []
     try:
@@ -611,13 +602,7 @@ def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
 
 
 def _tar_extracts_only_into_local_work(tokens: List[str]) -> bool:
-    """True when every path an extraction writes resolves inside scratch or a managed worktree.
-
-    The members of a readable archive are each placed under the target; an
-    unreadable archive is admitted into scratch only, whose contents nothing
-    trusts, never into a worktree whose ``.git`` a member could replace.
-    ``--to-stdout`` writes no path at all.
-    """
+    """True when every member lands inside scratch or a managed worktree; an unreadable archive only into scratch."""
     import os
     from .mutative_verbs import _gaia_scratch_root, _local_work_root, _resolve_local_work_path
 
