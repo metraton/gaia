@@ -2713,6 +2713,15 @@ def _gaia_scratch_root() -> "str | None":
         return None
 
 
+def _scratch_entry(real: str) -> "str | None":
+    """Return the turn entry (``<scratch>/<first component>``) holding *real*, or None for the shared root or outside it."""
+    import os
+    scratch = _gaia_scratch_root()
+    if not scratch or not real.startswith(scratch + os.sep):
+        return None
+    return os.path.join(scratch, os.path.relpath(real, scratch).split(os.sep, 1)[0])
+
+
 def _gaia_hooks_root() -> "str | None":
     """Return the canonical (realpath) Gaia hooks directory this module ships in.
 
@@ -2746,8 +2755,8 @@ def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> 
       (a) at least one positional (non-flag) path argument is present;
       (b) NO token contains an unexpanded glob metacharacter (``*?[]{}``) or
           a parent-traversal component (``..``);
-      (c) each path, resolved against the shell's *cwd* (never the hook's), is the
-          scratch root itself or lives under ``scratch_root + os.sep``.
+      (c) each path, resolved against the shell's *cwd* (never the hook's), lies
+          in one and the same scratch entry (``_scratch_entry``).
 
     Any ambiguity -- no positional path, an unresolvable scratch root, a glob,
     a ``..``, an unexpandable ``~user``, or a single path outside scratch --
@@ -2763,11 +2772,6 @@ def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> 
         The canonical (realpath) target paths, or None when confinement to
         scratch cannot be established.
     """
-    import os
-    scratch_root = _gaia_scratch_root()
-    if not scratch_root:
-        return None
-
     seen_end_of_opts = False
     path_tokens = []
     i = 1  # skip base_cmd at index 0
@@ -2793,10 +2797,12 @@ def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> 
         if ".." in token:
             return None
         real = _resolve_local_work_path(token, cwd)
-        if real is None or not (real == scratch_root or real.startswith(scratch_root + os.sep)):
+        if real is None or _scratch_entry(real) is None:
             return None
         resolved.append(real)
 
+    if len({_scratch_entry(real) for real in resolved}) != 1:
+        return None
     return tuple(resolved)
 
 
@@ -2843,7 +2849,7 @@ def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool
 
 
 def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
-    """Return the scratch dir or checked-out managed worktree holding *real* outside any ``.git``, or None (fail closed)."""
+    """Return the scratch entry or checked-out managed worktree holding *real* outside any ``.git``, or None (fail closed)."""
     import os
     try:
         files, dirs = _never_free_paths()
@@ -2855,9 +2861,11 @@ def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
             return None
     except Exception:
         return None
-    scratch = _gaia_scratch_root()
-    if scratch and (real.startswith(scratch + os.sep) or (allow_top and real == scratch)):
-        top = scratch
+    entry = _scratch_entry(real)
+    if entry is not None:
+        top = entry
+    elif real == _gaia_scratch_root():
+        return None
     else:
         managed = _gaia_worktrees_root(real)
         if managed is None:
@@ -2872,9 +2880,11 @@ def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
     return top
 
 
-def _confined_to_local_work(paths: "List[str | None]") -> "Tuple[str, ...] | None":
-    """Return *paths* when each one resolved and lies strictly inside a local-work root."""
+def _confined_to_local_work(paths: "List[str | None]", read: "List[str | None]" = ()) -> "Tuple[str, ...] | None":
+    """Return *paths* when each one resolved into a local-work root and they and the *read* paths touch one scratch entry."""
     if not paths or any(p is None or _local_work_root(p) is None for p in paths):
+        return None
+    if len({_scratch_entry(p) for p in [*paths, *read] if p} - {None}) > 1:
         return None
     return tuple(paths)
 
@@ -2933,7 +2943,7 @@ def _local_work_destinations(sources: List[str], destination: str, cwd: "Optiona
 
 
 def _cp_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
-    """Return the paths a ``cp`` writes when all are local work; a recursive copy only onto paths not yet existing."""
+    """Return the paths a ``cp`` writes when all are local work within one scratch entry; recursive only onto new paths."""
     import os
     parsed = _local_work_operands(tokens, _CP_LOCAL_WORK_SHORT_FLAGS, _CP_LOCAL_WORK_LONG_FLAGS)
     if parsed is None:
@@ -2945,7 +2955,7 @@ def _cp_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> 
     if used & (_CP_RECURSIVE_SHORT_FLAGS | {"--recursive", "--archive"}):
         if any(p is None or os.path.lexists(p) for p in written):
             return None
-    return _confined_to_local_work(written)
+    return _confined_to_local_work(written, [_resolve_local_work_path(source, cwd) for source in sources])
 
 
 def _mv_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":

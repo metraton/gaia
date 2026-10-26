@@ -602,9 +602,9 @@ def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
 
 
 def _tar_extracts_only_into_local_work(tokens: List[str]) -> bool:
-    """True when every member lands inside scratch or a managed worktree; an unreadable archive only into scratch."""
+    """True when every member lands inside a scratch entry or a managed worktree; an unreadable archive only into its own entry."""
     import os
-    from .mutative_verbs import _gaia_scratch_root, _local_work_root, _resolve_local_work_path
+    from .mutative_verbs import _local_work_root, _resolve_local_work_path, _scratch_entry
 
     seen = _tar_extract_operands(tokens)
     if seen is None or not seen.get("--extract") and not seen.get("--get"):
@@ -619,14 +619,15 @@ def _tar_extracts_only_into_local_work(tokens: List[str]) -> bool:
     if directory is None or seen["members_before_directory"] or not str(strip).isdigit():
         return False
     target = _resolve_local_work_path(os.path.join(directory, top_level) if top_level else directory, None)
-    if target is None or _local_work_root(target, allow_top=True) is None:
+    root = None if target is None else _local_work_root(target, allow_top=True)
+    if root is None:
         return False
     real_archive = _resolve_local_work_path(archive, None)
     members = _tar_member_paths(real_archive, int(strip))
     if members is None:
-        scratch = _gaia_scratch_root()
-        return _local_work_root(target, allow_top=True) == scratch and real_archive.startswith(f"{scratch}{os.sep}")
-    return all(_local_work_root(os.path.realpath(os.path.join(target, m))) is not None for m in members)
+        return _scratch_entry(real_archive) == root
+    landed = [os.path.realpath(os.path.join(target, m)) for m in members]
+    return all(_local_work_root(path) is not None and _scratch_entry(path) == _scratch_entry(root) for path in landed)
 
 
 def _classify_tar(tokens: List[str]) -> Optional[FlagClassifierResult]:

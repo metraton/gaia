@@ -2056,8 +2056,13 @@ class BashValidator:
         tripped, tripped_command = None, command
         for stage in chain_withdraws_local_work_relief(components):
             flagged = classify_by_flags(stage)
-            if not stage.lstrip().startswith("tar") or (flagged is not None and flagged.matched_pattern == "tar-local-work-extract"):
-                has_t3, tripped, tripped_command = True, detect_mutative_command(stage, cwd=cwd), stage
+            detected = detect_mutative_command(stage, cwd=cwd)
+            relieved = (
+                flagged is not None and flagged.matched_pattern == "tar-local-work-extract"
+                if stage.lstrip().startswith("tar") else not detected.is_mutative
+            )
+            if relieved:
+                has_t3, tripped, tripped_command = True, detected, stage
                 break
         for comp in ([] if has_t3 else components):
             detected = detect_mutative_command(comp, cwd=scan_cwd)

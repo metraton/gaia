@@ -79,9 +79,11 @@ def world(tmp_path_factory):
     ensure_layout()
     managed_root = Path(os.path.realpath(str(worktrees_dir())))
     dirs = {name: _build_context(spec, root, name, managed_root) for name, spec in HEADER["contexts"].items()}
-    with tarfile.open(os.path.join(str(scratch_dir()), "a.tar"), "w") as archive:
+    turn_entry = os.path.join(os.path.realpath(str(scratch_dir())), "atruthtable01.token")
+    os.makedirs(turn_entry)
+    with tarfile.open(os.path.join(turn_entry, "a.tar"), "w") as archive:
         archive.addfile(tarfile.TarInfo("pkg/empty.txt"))
-    yield {"root": root, "dirs": dirs, "SCRATCH": os.path.realpath(str(scratch_dir())), "WORKTREES": str(managed_root)}
+    yield {"root": root, "dirs": dirs, "SCRATCH": turn_entry, "WORKTREES": str(managed_root)}
     patch.undo()
 
 

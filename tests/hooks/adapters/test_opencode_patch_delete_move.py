@@ -127,15 +127,20 @@ def test_patch_move_of_a_repo_file_is_refused_and_its_mv_asks_the_signature(home
     assert _signature_request(bash), bash
 
 
-def test_patch_move_inside_scratch_is_refused_and_its_mv_still_asks_the_signature(home):
+@pytest.mark.parametrize("moved,free", [
+    ("probe.d/moved.txt", True), ("other.token/moved.txt", False), ("moved.txt", False),
+])
+def test_patch_move_inside_scratch_is_refused_and_its_mv_is_free_only_within_the_entry(home, moved, free):
     scratch = home.parent / "gaia_data" / "scratch"
-    command = f"mv -- {scratch / 'probe.txt'} {scratch / 'moved.txt'}"
+    (scratch / "probe.d").mkdir()
+    (scratch / "probe.d" / "probe.txt").write_text("probe\n", encoding="utf-8")
+    command = f"mv -- {scratch / 'probe.d' / 'probe.txt'} {scratch / moved}"
 
     patched = _opencode(
         "apply_patch",
         _patch(
-            f"*** Update File: {scratch / 'probe.txt'}",
-            f"*** Move to: {scratch / 'moved.txt'}",
+            f"*** Update File: {scratch / 'probe.d' / 'probe.txt'}",
+            f"*** Move to: {scratch / moved}",
             "@@", "-probe", "+probe",
         ),
         "call-move-scratch",
@@ -143,7 +148,7 @@ def test_patch_move_inside_scratch_is_refused_and_its_mv_still_asks_the_signatur
     assert _refused_toward(patched, command), patched
 
     bash = _opencode("bash", {"command": command}, "call-mv-scratch")
-    assert _signature_request(bash), bash
+    assert bash["decision"] == "allow" if free else _signature_request(bash), bash
 
 
 def test_patch_add_and_update_keep_the_edit_verdict(home):

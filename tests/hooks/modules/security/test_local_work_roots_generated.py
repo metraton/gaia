@@ -54,7 +54,9 @@ def world(tmp_path_factory):
 
     ensure_layout()
     data = Path(os.path.realpath(root / "data"))
-    scratch = Path(os.path.realpath(scratch_dir()))
+    scratch_root = Path(os.path.realpath(scratch_dir()))
+    scratch = scratch_root / "alocalwork01.token"
+    scratch.mkdir()
     managed = Path(os.path.realpath(worktrees_dir()))
     outside = root / "outside"
     outside.mkdir()
@@ -76,7 +78,7 @@ def world(tmp_path_factory):
     _archive(scratch / "dotgit.tar", [(".git", None)])
     _archive(scratch / "link.tar", [("l", str(outside)), ("l/x", None)])
     _archive(scratch / "strip.tar", [("top/.git/config", None)])
-    yield {"S": str(scratch), "M": str(managed), "W": str(worktree), "R": str(repo), "OUT": str(outside), "DATA": str(data)}
+    yield {"S": str(scratch), "SR": str(scratch_root), "M": str(managed), "W": str(worktree), "R": str(repo), "OUT": str(outside), "DATA": str(data)}
     patch.undo()
 
 
@@ -111,6 +113,8 @@ DESTINATIONS = [
     ("scratch-link-drafts", "{S}/link_drafts/x.json", ASK),
     ("scratch-glob", "{S}/*.txt", ASK),
     ("scratch-var", "$GAIA_DATA_DIR/scratch/new.txt", ASK),
+    ("scratch-shared-root", "{SR}/new.txt", ASK),
+    ("scratch-other-entry", "{SR}/other.token/new.txt", ASK),
     ("home-brace-var", "${HOME}/new.txt", ASK),
     ("home-tilde", "~/new.txt", ASK),
     ("outside", "{OUT}/new.txt", ASK),
@@ -136,7 +140,8 @@ MOVED_SOURCES = [
     ("outside", "{OUT}/f.txt", ASK),
     ("worktree-git", "{W}/.git/config", ASK),
     ("worktree-top", "{W}", ASK),
-    ("scratch-root", "{S}", ASK),
+    ("scratch-root", "{SR}", ASK),
+    ("scratch-other-entry", "{SR}/other.token/f.txt", ASK),
     ("tilde", "~/f.txt", ASK),
 ]
 
@@ -160,6 +165,9 @@ TAR = [
     ("no-directory", "tar -xf {S}/clean.tar", ASK),
     ("missing-into-worktree", "tar -xf {S}/missing.tar -C {W}", ASK),
     ("missing-into-scratch", "tar -xf {S}/missing.tar -C {S}/out", FREE),
+    ("missing-into-other-entry", "tar -xf {S}/missing.tar -C {SR}/other.token", ASK),
+    ("clean-into-shared-root", "tar -xf {S}/clean.tar -C {SR}", ASK),
+    ("clean-into-other-entry", "tar -xf {S}/clean.tar -C {SR}/other.token", ASK),
     ("gitdir-member", "tar -xf {S}/gitdir.tar -C {W}", ASK),
     ("dotgit-file-member", "tar -xf {S}/dotgit.tar -C {W}", ASK),
     ("symlink-member", "tar -xf {S}/link.tar -C {W}", ASK),
@@ -273,4 +281,4 @@ def test_local_git_reads(command, expected, repo, world):
                                            ("backups/x.db", ASK), ("contract_drafts/x.json", ASK), ("notes.txt", FREE)])
 def test_the_live_db_backups_and_drafts_are_never_a_free_root(name, expected, world, monkeypatch):
     monkeypatch.setattr(mutative_verbs, "_gaia_scratch_root", lambda: world["DATA"])
-    assert observe(f"cp {world['S']}/a.txt {world['DATA']}/{name}", world["S"]) == expected
+    assert observe(f"cp /dev/null {world['DATA']}/{name}", world["S"]) == expected
