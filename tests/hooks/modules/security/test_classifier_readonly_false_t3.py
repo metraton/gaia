@@ -99,7 +99,7 @@ def _as_entry_owner(command, cwd):
     """Validate *command* as the subagent whose id names the scratch entry."""
     detect_mutative_command.cache_clear()
     payload = {"agent_id": ENTRY_OWNER, "cwd": str(cwd)}
-    return BashValidator().validate(command, hook_payload=payload)
+    return BashValidator(agent_names_scratch=True).validate(command, hook_payload=payload)
 
 
 def test_rmdir_inside_the_turn_scratch_entry_is_free(scratch):

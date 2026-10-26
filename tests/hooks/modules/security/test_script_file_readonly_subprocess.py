@@ -127,7 +127,7 @@ def scratch(monkeypatch, tmp_path):
 
 @pytest.fixture
 def validator():
-    return BashValidator()
+    return BashValidator(agent_names_scratch=True)
 
 
 def _write(directory: Path, name: str, body: str) -> Path:
