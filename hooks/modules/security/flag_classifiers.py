@@ -607,7 +607,9 @@ def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
 def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[LocalWorkCaller]") -> bool:
     """True when every member lands in the caller's scratch entry or a managed worktree; an unreadable archive only into its own entry."""
     import os
-    from .mutative_verbs import _local_work_root, _resolve_local_work_path, _scratch_entry
+    from .mutative_verbs import (
+        _local_work_root, _resolve_local_work_path, _scratch_entry, _shares_inode, _tree_shares_inode,
+    )
 
     seen = _tar_extract_operands(tokens)
     if caller is None or seen is None or not seen.get("--extract") and not seen.get("--get"):
@@ -628,9 +630,9 @@ def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[Loca
     real_archive = _resolve_local_work_path(archive, None)
     members = _tar_member_paths(real_archive, int(strip))
     if members is None:
-        return _scratch_entry(real_archive) == root
+        return _scratch_entry(real_archive) == root and not _tree_shares_inode(target)
     landed = [os.path.realpath(os.path.join(target, m)) for m in members]
-    return all(_local_work_root(path, caller) is not None for path in landed)
+    return all(_local_work_root(path, caller) is not None and not _shares_inode(path) for path in landed)
 
 
 def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None) -> Optional[FlagClassifierResult]:

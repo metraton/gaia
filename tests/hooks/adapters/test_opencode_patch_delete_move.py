@@ -128,18 +128,18 @@ def test_patch_move_of_a_repo_file_is_refused_and_its_mv_asks_the_signature(home
     assert _signature_request(bash), bash
 
 
-@pytest.mark.parametrize("moved", ["probe.d/moved.txt", "other.token/moved.txt", "moved.txt"])
+@pytest.mark.parametrize("moved", ["a6666666666666666.tok1/moved.txt", "other.token/moved.txt", "moved.txt"])
 def test_patch_move_inside_scratch_is_refused_and_its_mv_asks_since_the_child_owns_no_entry(home, moved):
     """Even a move within one scratch entry asks: an OpenCode child's id is never the entry owner."""
     scratch = home.parent / "gaia_data" / "scratch"
-    (scratch / "probe.d").mkdir()
-    (scratch / "probe.d" / "probe.txt").write_text("probe\n", encoding="utf-8")
-    command = f"mv -- {scratch / 'probe.d' / 'probe.txt'} {scratch / moved}"
+    (scratch / "a6666666666666666.tok1").mkdir()
+    (scratch / "a6666666666666666.tok1" / "probe.txt").write_text("probe\n", encoding="utf-8")
+    command = f"mv -- {scratch / 'a6666666666666666.tok1' / 'probe.txt'} {scratch / moved}"
 
     patched = _opencode(
         "apply_patch",
         _patch(
-            f"*** Update File: {scratch / 'probe.d' / 'probe.txt'}",
+            f"*** Update File: {scratch / 'a6666666666666666.tok1' / 'probe.txt'}",
             f"*** Move to: {scratch / moved}",
             "@@", "-probe", "+probe",
         ),

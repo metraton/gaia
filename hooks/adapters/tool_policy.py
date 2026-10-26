@@ -342,10 +342,13 @@ class ToolPolicy:
     carries no agent; the approval core never defaults an identity, so a host
     whose main session sends none declares its own name here. ``HOST_NAME`` is
     the host an approval's chain names when that host refused a signed call.
+    ``AGENT_ID_NAMES_SCRATCH`` is set by a host whose subagent id is the name
+    of its scratch entries; only such a host's subagent gets local-work relief.
     """
 
     PRIMARY_AGENT_TYPE = ""
     HOST_NAME = "unattributed"
+    AGENT_ID_NAMES_SCRATCH = False
 
     # ------------------------------------------------------------------ #
     # Before the call
@@ -477,7 +480,7 @@ class ToolPolicy:
         # state file and lost EXECUTED terminal events.
         tool_use_id = (hook_data or {}).get("tool_use_id", "")
 
-        validator = BashValidator()
+        validator = BashValidator(agent_names_scratch=self.AGENT_ID_NAMES_SCRATCH)
         result = validator.validate(
             command, is_subagent=is_subagent, session_id=session_id,
             agent_type=agent_type, hook_payload=hook_data,

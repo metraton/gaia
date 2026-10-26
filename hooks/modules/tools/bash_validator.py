@@ -529,8 +529,9 @@ class BashValidator:
 
     last_warning = ""
 
-    def __init__(self):
-        """Initialize validator with parser, unwrapper, and decomposer."""
+    def __init__(self, agent_names_scratch: bool = True):
+        """Initialize the validator; *agent_names_scratch* says the host's agent id names scratch entries, the ownership local-work relief keys on."""
+        self.agent_names_scratch = agent_names_scratch
         self.shell_parser = get_shell_parser()
         self._unwrapper = ShellUnwrapper()
         self._decomposer = StageDecomposer()
@@ -1497,7 +1498,7 @@ class BashValidator:
         # An interpreter's heredoc is its program: splitting it into shell
         # components would validate the body's lines one by one and never
         # show the classifier the program whose effect decides the tier.
-        agent_id = str((hook_payload or {}).get("agent_id") or "")
+        agent_id = str((hook_payload or {}).get("agent_id") or "") if self.agent_names_scratch else ""
         if not has_operators or program is not None:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,

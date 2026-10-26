@@ -307,6 +307,44 @@ def git_grep_opens_pager(tokens: Tuple[str, ...]) -> bool:
         for token in tokens
     )
 
+_GIT_OUTPUT_LONG_OPTIONS: Tuple[str, ...] = ("output", "output-directory")
+_GIT_SHORT_O_WRITES: FrozenSet[str] = frozenset({"format-patch", "archive"})
+
+
+def _git_output_targets(tokens: tuple, subcommand: str) -> "List[str]":
+    """Return every file or directory a git command writes by option (unique long prefixes included), plus ``.`` for a format-patch without one."""
+    split = _git_subcommand_split(tokens)
+    args = split[2] if split else list(tokens[1:])
+    targets: List[str] = []
+    for index, token in enumerate(args):
+        following = args[index + 1] if index + 1 < len(args) else ""
+        if token == "--":
+            break
+        name, has_value, value = token[2:].partition("=")
+        if token.startswith("--") and len(name) >= 3 and any(o.startswith(name) for o in _GIT_OUTPUT_LONG_OPTIONS):
+            targets.append(value if has_value else following)
+        elif subcommand in _GIT_SHORT_O_WRITES and token.startswith("-") and not token.startswith("--") and "o" in token:
+            targets.append(token.split("o", 1)[1] or following)
+    if subcommand == "format-patch" and not targets and "--stdout" not in args:
+        targets.append(".")
+    return targets
+
+
+def _git_output_in_owned_entry(tokens: tuple, targets: "List[str]", caller: "Optional[LocalWorkCaller]") -> bool:
+    """True when each output path, resolved from the directory git runs in, lies in the caller's own scratch entry."""
+    split = _git_subcommand_split(tokens)
+    if split is None or caller is None:
+        return False
+    base = _git_repo_dir(split[0], caller.cwd)
+    for target in targets:
+        real = _resolve_local_work_path(target, base)
+        if real is None or _scratch_entry(real) is None or _local_work_root(real, caller, allow_top=True) is None:
+            return False
+        if _shares_inode(real):
+            return False
+    return True
+
+
 # Flags that turn a local-safe branch switch into a reset of an EXISTING branch:
 # `-B`/`-C` create the branch, or repoint it when it already exists, so the
 # commits only it reached become unreachable. The lowercase `-b`/`-c` refuse an
@@ -2824,7 +2862,7 @@ def _rm_scratch_confined_targets(tokens: tuple, caller: "Optional[LocalWorkCalle
         if ".." in token:
             return None
         real = _resolve_local_work_path(token, caller.cwd if caller else None)
-        if real is None or not _owned_by(_scratch_entry(real), caller):
+        if real is None or not _owned_by(_scratch_entry(real), caller) or _shares_inode(real):
             return None
         resolved.append(real)
     return tuple(resolved)
@@ -2911,6 +2949,28 @@ def _confined_to_local_work(paths: "List[str | None]", caller: "Optional[LocalWo
 _TREE_WALK_BUDGET = 20000
 
 
+def _shares_inode(real: "str | None") -> bool:
+    """True when *real* is an existing non-directory with another hard link, which a write through it also changes."""
+    import os
+    import stat
+    try:
+        status = os.lstat(real) if real else None
+    except OSError:
+        return False
+    return status is not None and not stat.S_ISDIR(status.st_mode) and status.st_nlink > 1
+
+
+def _tree_shares_inode(real: str) -> bool:
+    """True when any file under *real* has another hard link, or the tree cannot be walked within budget (fail closed)."""
+    import os
+    seen = 0
+    for top, _, files in os.walk(real):
+        seen += len(files)
+        if seen > _TREE_WALK_BUDGET or any(_shares_inode(os.path.join(top, name)) for name in files):
+            return True
+    return False
+
+
 def _tree_carries_git(real: "str | None") -> bool:
     """True when the tree at *real* is or holds a ``.git`` entry, or cannot be walked within budget (fail closed)."""
     import os
@@ -2987,7 +3047,7 @@ def _cp_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tup
         return None
     (*sources, destination), used = parsed
     written = _local_work_destinations(sources, destination, caller.cwd)
-    if written is None:
+    if written is None or any(map(_shares_inode, written)):
         return None
     read = [_resolve_local_work_path(source, caller.cwd) for source in sources]
     if used & (_CP_RECURSIVE_SHORT_FLAGS | {"--recursive", "--archive"}):
@@ -3003,7 +3063,7 @@ def _mv_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tup
         return None
     (*sources, destination), _ = parsed
     written = _local_work_destinations(sources, destination, caller.cwd)
-    if written is None:
+    if written is None or any(map(_shares_inode, written)):
         return None
     removed = [_resolve_local_work_path(source, caller.cwd, follow_last=False) for source in sources]
     if any(map(_tree_carries_git, removed)):
@@ -3019,7 +3079,7 @@ _PLANTS_NO_LINK: FrozenSet[str] = frozenset({
     "tail", "grep", "diff", "file", "du", "df", "realpath", "readlink",
     "basename", "dirname", "sleep", "date", "sha256sum", "md5sum",
 })
-_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar", "rm", "rmdir"})
+_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar", "rm", "rmdir", "git"})
 
 
 def chain_withdraws_local_work_relief(components: List[str]) -> List[str]:
@@ -3041,12 +3101,12 @@ _SHELL_CWD_WORD_RE = re.compile(r"(?<![\w./-])(?:cd|pushd|popd)(?![\w./-])")
 
 
 def local_work_cwd_known(command: str) -> bool:
-    """True when every cwd change on the line is a leading, success-gated ``cd <literal path> &&``."""
+    """True when every cwd change on the line is a leading, success-gated ``cd <absolute or ~/ path> &&``; CDPATH can redirect a relative one."""
     remaining = command
     while True:
         match = _LITERAL_CD_AND_RE.match(remaining)
         target = match.group(1) if match else ""
-        if not match or target.startswith("-") or target.startswith("~") and target != "~" and not target.startswith("~/"):
+        if not target.startswith("/") and target != "~" and not target.startswith("~/"):
             break
         remaining = remaining[match.end():]
     return _SHELL_CWD_WORD_RE.search(remaining) is None
@@ -5950,6 +6010,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 cli_family=family,
                 confidence="high",
                 reason="'git grep -O' runs a command over every matching file",
+            )
+        written = _git_output_targets(tuple(tokens), git_subcmd)
+        if written and not _git_output_in_owned_entry(tuple(tokens), written, caller):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=git_subcmd,
+                cli_family=family,
+                confidence="high",
+                reason=f"'git {git_subcmd}' writes {written[0] or 'a file'} outside the caller's own scratch entry",
             )
         if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)

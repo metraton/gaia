@@ -219,6 +219,15 @@ GIT = [
     ("count-objects", "git count-objects -v", FREE),
     ("rev-parse", "git rev-parse HEAD", FREE),
     ("cherry", "git cherry main feature-x", FREE),
+    ("diff-output-outside", "git diff --output={OUT}/d.patch", ASK),
+    ("log-output-abbreviated", "git log --outp {OUT}/l.txt", ASK),
+    ("show-output-relative", "git show --output=s.txt HEAD", ASK),
+    ("format-patch-into-cwd", "git format-patch -1 HEAD", ASK),
+    ("format-patch-o-outside", "git format-patch -o{OUT}/p -1 HEAD", ASK),
+    ("archive-o-outside", "git archive -o {OUT}/a.tar HEAD", ASK),
+    ("diff-output-own-entry", "git diff --output={S}/d.patch", FREE),
+    ("format-patch-stdout", "git format-patch --stdout -1 HEAD", FREE),
+    ("diff-output-indicator", "git diff --output-indicator-new=+", FREE),
     ("grep-open-in-pager", "git grep -O TODO", ASK),
     ("grep-open-in-named-pager", "git grep --open-files-in-pager=vim TODO", ASK),
     ("merge", "git merge feature-x", ASK),
@@ -357,11 +366,18 @@ def box(tmp_path, monkeypatch):
     ensure_layout()
     entry = Path(os.path.realpath(scratch_dir())) / "alocalwork01.replay"
     outside = Path(os.path.realpath(tmp_path)) / "outside"
-    for directory in (entry, outside):
+    for directory in (entry, outside, entry / "real", outside / "real"):
         directory.mkdir()
         (directory / "a.txt").write_text("a")
+    os.link(outside / "a.txt", entry / "hardlink_out")
     _archive(entry / "clean.tar", [("pkg/file.txt", None)])
+    _archive(entry / "onto_link.tar", [("hardlink_out", None)])
     return {"S": str(entry), "OUT": str(outside)}
+
+
+def _outside_tree(box: dict) -> list:
+    return sorted((top, name, os.stat(os.path.join(top, name)).st_size)
+                  for top, _, files in os.walk(box["OUT"]) for name in files)
 
 
 CWD_SHIFTS = [
@@ -379,14 +395,23 @@ CWD_SHIFTS = [
     ("second-cd-later", "cd {S} && true && cd {OUT} && cp a.txt b10.txt", "{S}", ASK),
     ("literal-cd-and", "cd {S} && cp a.txt b11.txt", "{OUT}", FREE),
     ("no-cd", "cp a.txt b12.txt", "{S}", FREE),
+    ("cdpath-relative-cd", "cd real && cp a.txt b13.txt", "{S}", ASK),
+    ("cp-onto-hardlink", "cp {S}/a.txt {S}/hardlink_out", "{S}", ASK),
+    ("cp-f-onto-hardlink", "cp -f /dev/null {S}/hardlink_out", "{S}", ASK),
+    ("mv-onto-hardlink", "mv {S}/a.txt {S}/hardlink_out", "{S}", ASK),
+    ("tar-member-onto-hardlink", "tar -xf {S}/onto_link.tar -C {S}", "{S}", ASK),
+    ("rm-hardlink", "rm -f {S}/hardlink_out", "{S}", ASK),
+    ("cp-onto-plain-file", "cp {S}/a.txt {S}/real/a.txt", "{S}", FREE),
 ]
 
 
 @pytest.mark.parametrize("line,cwd,expected", [pytest.param(c, w, e, id=n) for n, c, w, e in CWD_SHIFTS])
 def test_relief_needs_the_directory_every_write_resolves_against(line, cwd, expected, box):
+    """A freed line, replayed in bash with CDPATH aimed outside, changes nothing outside; an asked one may (a hardlink is outside)."""
     line, cwd = _fill(line, box), _fill(cwd, box)
     verdict = observe(line, cwd)
-    before = sorted(os.listdir(box["OUT"]))
-    subprocess.run(["bash", "-c", line], cwd=cwd, capture_output=True, env={**os.environ, "D": box["OUT"]})
-    touched_outside = sorted(os.listdir(box["OUT"])) != before
-    assert (verdict, touched_outside) == (expected, expected == ASK), (line, LAST_REASON[0])
+    before = _outside_tree(box)
+    subprocess.run(["bash", "-c", line], cwd=cwd, capture_output=True,
+                   env={**os.environ, "D": box["OUT"], "CDPATH": box["OUT"]})
+    touched_outside = _outside_tree(box) != before
+    assert verdict == expected and not (verdict == FREE and touched_outside), (line, LAST_REASON[0])
