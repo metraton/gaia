@@ -348,6 +348,7 @@ def evaluate_contract_gate(
 GATE_SOURCE_ROW = "row"
 GATE_SOURCE_ROW_UNFINALIZED = "row_unfinalized"
 GATE_SOURCE_ROW_MISSING = "row_missing"
+GATE_SOURCE_GATE_ERROR = "gate_error"
 
 
 def _row_gate_candidate(
@@ -1153,7 +1154,6 @@ def run_subagent_stop(
                 "(session=%s) -- treating turn as unbound.",
                 agent_type, session_id, exc_info=True,
             )
-        _gate_source = GATE_SOURCE_ROW_MISSING
         _authoritative_envelope: Any = None
         # A raising gate must not take down the approval cleanup below; it
         # degrades to a non-rejecting verdict and is logged loudly.
@@ -1173,6 +1173,7 @@ def run_subagent_stop(
                 agent_type, _gate_mode,
             )
             _gate = ContractGateVerdict(False, "", (), _gate_mode)
+            _gate_source = GATE_SOURCE_GATE_ERROR
 
         # The host's summarizer never has a row; a turn that finalized one is gated.
         _summarizer_without_row = (

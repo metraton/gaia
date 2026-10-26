@@ -42,6 +42,21 @@ def _isolated_substrate(tmp_path, monkeypatch):
     clear_path_cache()
 
 
+@pytest.fixture
+def persisted_handoffs(monkeypatch) -> list:
+    from modules.agents import handoff_persister
+
+    calls: list = []
+    real = handoff_persister.persist_handoff
+
+    def _recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(handoff_persister, "persist_handoff", _recording)
+    return calls
+
+
 def _run_compact_hook(name: str) -> None:
     spec = importlib.util.spec_from_file_location(f"_{name}_under_test", _HOOKS_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
@@ -153,7 +168,41 @@ def test_the_summarizer_still_runs_the_post_close_steps():
     assert "episode_id" in response.output
 
 
-def test_an_orchestrator_typed_turn_with_a_finalized_row_takes_the_normal_path(tmp_path):
+@pytest.mark.parametrize("window_open", [True, False], ids=["inside-window", "outside-window"])
+def test_a_raising_gate_is_never_read_as_a_missing_row(
+    tmp_path, monkeypatch, persisted_handoffs, window_open,
+):
+    from adapters import subagent_stop_core
+    from gaia.store.writer import insert_dispatched_handoff, stamp_harness_agent_id
+    from tests.fixtures.agent_ids import valid_agent_id
+
+    db = tmp_path / "gaia_data" / "gaia.db"
+    agent_id = valid_agent_id("compaction-raise")
+    contract_id = f"{agent_id}.gate-raises"
+    insert_dispatched_handoff(
+        contract_id=contract_id, agent_id=agent_id, workspace="me",
+        session_id=SESSION_ID, db_path=db,
+    )
+    stamp_harness_agent_id(contract_id, "aaf7d33b349d75c6b", db_path=db)
+
+    def _raising_gate(**_kwargs):
+        raise RuntimeError("gate failure under test")
+
+    monkeypatch.setattr(subagent_stop_core, "_resolve_subagent_stop_gate_full", _raising_gate)
+    if window_open:
+        _run_compact_hook("pre_compact")
+
+    response = _stop("gaia-orchestrator")
+
+    assert response.exit_code == 0
+    assert not response.output.get("compaction_summarizer")
+    assert response.output.get("contract_gate_source") == "gate_error"
+    assert len(persisted_handoffs) == 1
+
+
+def test_an_orchestrator_typed_turn_with_a_finalized_row_takes_the_normal_path(
+    tmp_path, persisted_handoffs,
+):
     from gaia.store.writer import (
         finalize_agent_contract_handoff,
         insert_dispatched_handoff,
@@ -196,3 +245,5 @@ def test_an_orchestrator_typed_turn_with_a_finalized_row_takes_the_normal_path(t
     assert not response.output.get("compaction_summarizer")
     assert response.output.get("contract_gate_source") == "row"
     assert "episode_id" in response.output
+    assert len(persisted_handoffs) == 1
+    assert persisted_handoffs[0]["session_id"] == SESSION_ID
