@@ -114,6 +114,39 @@ def test_a_python_script_that_does_not_parse_is_unknown_and_asks(tmp_path):
     assert _verdict(f"python3 {tmp_path / 'broken.py'}", str(tmp_path)) == "ASK"
 
 
+PY_BLOCK_READ = "import json\ndata = json.loads('{\"a\": 1}')\nfor key in sorted(data):\n    print(key, data[key])"
+PY_BLOCK_EFFECT = "import shutil\nfor path in ['build']:\n    shutil.rmtree(path)"
+
+
+def _multiline_c_spellings(code: str) -> dict:
+    long_code = LONG_PAD + "\n" + code
+    ansi_c = long_code.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+    return {
+        "single-quoted": f"python3 -c {shlex.quote(long_code)}",
+        "double-quoted": 'python3 -c "' + long_code.replace('"', '\\"') + '"',
+        "ansi-c": f"python3 -c $'{ansi_c}'",
+        "cat heredoc": f"python3 -c \"$(cat <<'PY'\n{long_code}\nPY\n)\"",
+        "shift operator": f"python3 -c {shlex.quote('x = 1 << 2' + chr(10) + long_code)}",
+    }
+
+
+@pytest.mark.parametrize("spelling", list(_multiline_c_spellings(PY_BLOCK_READ)))
+def test_a_multiline_python_c_payload_is_parsed_as_the_shell_passes_it(spelling, tmp_path):
+    assert _verdict(_multiline_c_spellings(PY_BLOCK_READ)[spelling], str(tmp_path)) == "FREE"
+    assert _verdict(_multiline_c_spellings(PY_BLOCK_EFFECT)[spelling], str(tmp_path)) == "ASK"
+
+
+def test_a_heredoc_after_a_c_program_is_its_stdin_not_its_program(tmp_path):
+    command = "python3 -c 'import shutil; shutil.rmtree(\"build\")' <<'D'\nprint(1)\nD"
+    assert _verdict(command, str(tmp_path)) == "ASK"
+
+
+@pytest.mark.parametrize("code", ["print 'hello'", LONG_PAD + "\nprint 'hello'", "def f(:\n    pass"])
+def test_inline_python_that_does_not_parse_is_unknown_and_asks(code, tmp_path):
+    result = detect_mutative_command(f"python3 -c {shlex.quote(code)}", cwd=str(tmp_path))
+    assert result.is_mutative and result.category == "UNKNOWN", result
+
+
 JS_ASKS = {
     "fs-write": "require('fs').writeFileSync('o.txt', 'x')",
     "fs-rm": "require('fs').rmSync('build', {recursive: true})",

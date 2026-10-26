@@ -238,6 +238,8 @@ A heredoc body is data only when that reader, after its wrappers (`sudo`, `env`,
 
 `awk`, `gawk`, `sed` and `yq` are not on the list, whatever their flags. Their languages run commands or write files (`system()`, sed's `e` and `w`, `print >`), so a heredoc they read fails closed even when it only feeds them input.
 
+A heredoc that `ruby`, `perl` or `php` reads as its program asks: no parser here can prove what that code does.
+
 `xargs` is never relief. Each body line is evaluated through the whole validator as `<target> <line>`, the command xargs would run (`_xargs_payload`, value flags such as `-d`, `-I` and `--arg-file` skipped). `xargs cat` with `~/.ssh/id_rsa` is refused as a secret read, `xargs tee` with `~/.bashrc` signs as an account write, and `xargs cat` with `notes.txt` runs free. Each line is checked in the caller's working directory, the one the hook payload carries, so `xargs tee` with `notes.txt` inside a git repository is refused exactly as `tee notes.txt` is there. When that directory is unknown, a line with a relative word (neither `/`, `~` nor `-` first) asks for a signature instead of resolving against the hook's own directory.
 
 | Program | Subcommand path | Flag reading `-` |

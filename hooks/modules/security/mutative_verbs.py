@@ -6450,17 +6450,17 @@ detect_mutative_command.cache_info = _detect_mutative_command.cache_info
 # ============================================================================
 
 def _extract_python_payload(command: str, base_cmd: str) -> str:
-    """Return the Python source string passed via ``-c "..."`` or ``-`` heredoc.
+    """Return the Python source the interpreter runs: its ``-c`` word as the shell passes it, else a ``-`` heredoc body.
 
-    The extractor looks for the canonical ``<python> -c <payload>`` shape,
-    accepting single, double, or unquoted payloads.  When the interpreter is
-    invoked with ``-`` (stdin) and a heredoc body, the body between
-    ``<<MARKER`` and ``MARKER`` is returned instead.
-
-    Empty string is returned when extraction fails -- the caller is expected
-    to fall back to its regex layer in that case.
+    A ``-c`` program wins over a heredoc, which is then only its stdin, and a
+    ``"$(cat <<'D' ... D)"`` word is read as the lines it prints.  Empty string
+    is returned when extraction fails.
     """
-    # Heredoc form: python3 - <<'PYEOF' ... PYEOF
+    from .gaia_cli_invocation import resolve_cat_heredocs
+
+    payload = _inline_code_text(resolve_cat_heredocs(command, keep_newlines=True), base_cmd, "")
+    if payload:
+        return payload
     if "<<" in command:
         m = _re.search(
             r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\s*\1\s*$",
@@ -6468,10 +6468,6 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
         )
         if m:
             return m.group(2)
-
-    payload = _inline_code_text(command, base_cmd, "")
-    if payload:
-        return payload
     m = _re.search(
         r"(?:^|\s)" + _re.escape(base_cmd) + r"\b[^-]*?-c\s+(['\"])(.*?)\1",
         command, _re.DOTALL,
@@ -9610,11 +9606,11 @@ def _check_inline_code(
     Layer 2 (Python only): Parse the payload with ``ast.parse`` and walk
              ``Call`` nodes.  ``import subprocess; print('hi')`` is **not**
              flagged because ``subprocess.run`` is never invoked, while
-             ``subprocess.run([...])`` is.  When parsing fails we degrade to
-             Layer 2b.
+             ``subprocess.run([...])`` is.  Python that does not parse is
+             UNKNOWN and asks.
 
-    Layer 2b: Universal regex scan for dangerous API keywords (used for non-
-             Python interpreters and as the fallback for un-parseable Python).
+    Layer 2b: Universal regex scan for dangerous API keywords (non-Python
+             interpreters).
 
     Layer 3: Heuristic safety classification (length, sensitive paths, encoding).
 
@@ -9670,13 +9666,13 @@ def _check_inline_code(
                     ),
                     rule="sign.foreign-code" if ast_result.category == "DYNAMIC_CODE" else "",
                 )
-            if not ast_result.parse_failed:
-                if not _parse_finds_no_effect(payload, argv_is_mutative):
-                    return _uncatalogued_python_effect(family, "Inline Python")
-                return _layer3_length_check(
-                    command, base_cmd, family, skip_length_check, argv_is_mutative,
-                )
-            # parse_failed=True -> fall through to regex layer 2b below.
+            if ast_result.parse_failed:
+                return _unparsed_code(family, "Inline Python that does not parse")
+            if not _parse_finds_no_effect(payload, argv_is_mutative):
+                return _uncatalogued_python_effect(family, "Inline Python")
+            return _layer3_length_check(
+                command, base_cmd, family, skip_length_check, argv_is_mutative,
+            )
 
     # Layer 2a, shared with the script-file code lane so the two cannot diverge
     # on exec sinks; a JS backtick is a template literal, not a command.
@@ -9715,9 +9711,8 @@ def _layer3_full_check(
 ) -> MutativeResult:
     """Run heuristic checks (3a suspicious patterns + 3b length).
 
-    Used as the tail for non-Python interpreters and for Python payloads
-    whose AST parse failed -- the regex layer needs the suspicious-pattern
-    fallback to keep network/encoding heuristics live.
+    Used as the tail for non-Python interpreters -- the regex layer needs the
+    suspicious-pattern fallback to keep network/encoding heuristics live.
     """
     # 3a: Check for suspicious indicators (sensitive paths, encoding, IPs)
     for pattern, label in _SUSPICIOUS_HEURISTICS:

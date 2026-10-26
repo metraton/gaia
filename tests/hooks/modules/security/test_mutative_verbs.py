@@ -3416,11 +3416,12 @@ class TestExecSinkStringArgInScriptFile:
         result = detect_mutative_command(f"node {script}")
         assert result.is_mutative is False
 
-    def test_ruby_file_system_echo_stays_safe(self, tmp_path):
+    def test_ruby_file_system_echo_asks_as_unknown_not_mutative(self, tmp_path):
         script = tmp_path / "ok.rb"
         script.write_text('system("echo hello")\n')
         result = detect_mutative_command(f"ruby {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
     def test_node_regex_exec_non_command_stays_safe(self, tmp_path):
         """``/re/.exec("some string")`` extracts a non-command string that does
@@ -3433,11 +3434,12 @@ class TestExecSinkStringArgInScriptFile:
         result = detect_mutative_command(f"node {script}")
         assert result.is_mutative is False
 
-    def test_perl_file_system_read_only_stays_safe(self, tmp_path):
+    def test_perl_file_system_read_only_asks_as_unknown_not_mutative(self, tmp_path):
         script = tmp_path / "r.pl"
         script.write_text('system("cat /etc/hostname");\nprint "done\\n";\n')
         result = detect_mutative_command(f"perl {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
     # ---- Inline path parity preserved (shared helper, no regression) ----
 
@@ -3788,8 +3790,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script.write_text(
             "<?php\n"
             "// update the user cache before returning the record\n"
-            "function getUser($id) { return $repo->find($id); }\n"
-            "echo getUser(1);\n"
+            "echo 'user 1';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3801,7 +3802,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script.write_text(
             "<?php\n"
             "# delete the temp files described below\n"
-            "$total = compute();\n"
+            "echo 'total';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3814,7 +3815,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "/*\n"
             " * This file does NOT deploy, install, or destroy anything.\n"
             " */\n"
-            "$x = render();\n"
+            "echo 'rendered';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3825,7 +3826,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script = tmp_path / "inline.php"
         script.write_text(
             "<?php\n"
-            "$n = 1;  // update the counter and delete the stale key\n"
+            "echo 1;  // update the counter and delete the stale key\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3837,7 +3838,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=begin\n"
             "delete all the records and push to prod\n"
             "=end\n"
-            "x = 1  # update the counter\n"
+            "puts 1  # update the counter\n"
         )
         result = detect_mutative_command(f"ruby {script}")
         assert result.is_mutative is False
@@ -3845,7 +3846,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
     def test_ruby_inline_hash_comment_is_safe(self, tmp_path):
         """A ruby inline `#` comment must be stripped from the scan."""
         script = tmp_path / "note.rb"
-        script.write_text("y = 2  # deploy and delete later\n")
+        script.write_text("puts 2  # deploy and delete later\n")
         result = detect_mutative_command(f"ruby {script}")
         assert result.is_mutative is False
 
@@ -3856,7 +3857,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=pod\n"
             "This POD mentions delete and update and apply repeatedly.\n"
             "=cut\n"
-            "my $x = 1;  # update the local variable\n"
+            "print 1;  # update the local variable\n"
         )
         result = detect_mutative_command(f"perl {script}")
         assert result.is_mutative is False
@@ -3868,7 +3869,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=head1 NAME\n"
             "tool - deletes and applies things (documentation only)\n"
             "=cut\n"
-            "my $n = 42;\n"
+            "print 42;\n"
         )
         result = detect_mutative_command(f"perl {script}")
         assert result.is_mutative is False
@@ -3945,16 +3946,17 @@ class TestRubyPerlPhpSourceCommentStringAware:
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is True
 
-    def test_php_system_ls_stays_safe(self, tmp_path):
-        """Benign inner command is not escalated (false-positive mitigation
-        preserved for the ruby/perl/php lane too)."""
+    def test_php_system_ls_asks_as_unknown_not_mutative(self, tmp_path):
+        """A benign inner command is not escalated to MUTATIVE; code that does
+        more than print literals still asks, as UNKNOWN."""
         script = tmp_path / "read.php"
         script.write_text(
             "<?php\n"
             '$out = system("ls -la");\n'
         )
         result = detect_mutative_command(f"php {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
 
 class TestSourceLexer:

@@ -143,13 +143,13 @@ def literal_words(component: str) -> List[Tuple[str, bool]]:
     return pairs
 
 
-def resolve_cat_heredocs(command: str) -> str:
-    """*command* with each whole word ``"$(cat <<'D' ... D)"`` written as the single-quoted value it prints."""
+def resolve_cat_heredocs(command: str, keep_newlines: bool = False) -> str:
+    """*command* with each whole word ``"$(cat <<'D' ... D)"`` written as the single-quoted value it prints, its lines joined by spaces unless *keep_newlines*."""
     pieces, copied = [], 0
     for match in _CAT_HEREDOC_WORD.finditer(command):
         if match.start() < copied:
             continue
-        value_end = _cat_heredoc_value(command, match.end())
+        value_end = _cat_heredoc_value(command, match.end(), keep_newlines)
         if value_end is None:
             continue
         value, end = value_end
@@ -158,7 +158,7 @@ def resolve_cat_heredocs(command: str) -> str:
     return "".join(pieces) + command[copied:]
 
 
-def _cat_heredoc_value(command: str, opener_at: int) -> Optional[Tuple[str, int]]:
+def _cat_heredoc_value(command: str, opener_at: int, keep_newlines: bool) -> Optional[Tuple[str, int]]:
     opener = _read_heredoc_opener(command, opener_at)
     if opener is None:
         return None
@@ -173,7 +173,8 @@ def _cat_heredoc_value(command: str, opener_at: int) -> Optional[Tuple[str, int]
     terminator_end = resume - 1 if command[resume - 1:resume] == "\n" else resume
     lines = command[body_start:command.rfind("\n", 0, terminator_end) + 1].split("\n")
     value = "\n".join(line.lstrip("\t") if strip_tabs else line for line in lines)
-    return value.rstrip("\n").replace("\n", " "), closing.end(1)
+    value = value.rstrip("\n")
+    return (value if keep_newlines else value.replace("\n", " ")), closing.end(1)
 
 
 def _is_gaia_entry(words: Sequence[str], index: int) -> bool:
