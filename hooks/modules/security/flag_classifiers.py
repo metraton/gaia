@@ -607,7 +607,7 @@ def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
 def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[LocalWorkCaller]") -> bool:
     """True when every member lands in the caller's scratch entry or a managed worktree; an unreadable archive only into its own entry."""
     import os
-    from .mutative_verbs import _local_work_root, _owned_by, _resolve_local_work_path, _scratch_entry
+    from .mutative_verbs import _local_work_root, _resolve_local_work_path, _scratch_entry
 
     seen = _tar_extract_operands(tokens)
     if caller is None or seen is None or not seen.get("--extract") and not seen.get("--get"):
@@ -629,8 +629,6 @@ def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[Loca
     members = _tar_member_paths(real_archive, int(strip))
     if members is None:
         return _scratch_entry(real_archive) == root
-    if _scratch_entry(real_archive) is not None and not _owned_by(_scratch_entry(real_archive), caller):
-        return False
     landed = [os.path.realpath(os.path.join(target, m)) for m in members]
     return all(_local_work_root(path, caller) is not None for path in landed)
 

@@ -2901,13 +2901,9 @@ def _local_work_root(real: str, caller: "Optional[LocalWorkCaller]", allow_top: 
     return top
 
 
-def _confined_to_local_work(
-    paths: "List[str | None]", caller: "Optional[LocalWorkCaller]", read: "List[str | None]" = (),
-) -> "Tuple[str, ...] | None":
-    """Return *paths* when each one resolved into a local-work root and every scratch entry read is the caller's too."""
+def _confined_to_local_work(paths: "List[str | None]", caller: "Optional[LocalWorkCaller]") -> "Tuple[str, ...] | None":
+    """Return the written or removed *paths* when each resolved into a caller-owned local-work root; reads need no owner."""
     if not paths or any(p is None or _local_work_root(p, caller) is None for p in paths):
-        return None
-    if any(_scratch_entry(p) is not None and not _owned_by(_scratch_entry(p), caller) for p in read if p):
         return None
     return tuple(paths)
 
@@ -2997,7 +2993,7 @@ def _cp_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tup
     if used & (_CP_RECURSIVE_SHORT_FLAGS | {"--recursive", "--archive"}):
         if any(p is None or os.path.lexists(p) for p in written) or any(map(_tree_carries_git, read)):
             return None
-    return _confined_to_local_work(written, caller, read)
+    return _confined_to_local_work(written, caller)
 
 
 def _mv_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tuple[str, ...] | None":

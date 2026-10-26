@@ -286,9 +286,11 @@ def test_local_git_reads(command, expected, repo, world):
 
 
 @pytest.mark.parametrize("name,expected", [("gaia.db", ASK), ("gaia.db-wal", ASK), ("gaia.db-shm", ASK),
-                                           ("backups/x.db", ASK), ("contract_drafts/x.json", ASK), ("notes.txt", FREE)])
+                                           ("backups/x.db", ASK), ("contract_drafts/x.json", ASK), ("notes.txt", ASK),
+                                           ("alocalwork01.notes/notes.txt", FREE)])
 def test_the_live_db_backups_and_drafts_are_never_a_free_root(name, expected, world, monkeypatch):
     monkeypatch.setattr(mutative_verbs, "_gaia_scratch_root", lambda: world["DATA"])
+    os.makedirs(os.path.dirname(os.path.join(world["DATA"], name)), exist_ok=True)
     assert observe(f"cp /dev/null {world['DATA']}/{name}", world["S"]) == expected
 
 
@@ -315,6 +317,9 @@ IDENTITY = [
     ("main-session-rm-scratch", "rm -f {S}/gone.txt", "", ASK),
     ("main-session-tar-scratch", "tar -xf {S}/clean.tar -C {S}/out", "", ASK),
     ("main-session-cp-worktree", "cp {S}/a.txt {W}/new.txt", "", FREE),
+    ("cp-reads-other-entry", "cp {O}/x.txt {S}/from_other.txt", "alocalwork01", FREE),
+    ("tar-reads-other-entry", "tar -xf {O}/clean.tar -C {S}/out_other", "alocalwork01", FREE),
+    ("mv-removes-from-other-entry", "mv {O}/x.txt {S}/taken.txt", "alocalwork01", ASK),
     ("new-entry-not-owned", "cp {S}/a.txt {SR}/aotheragent03.json", "alocalwork01", ASK),
     ("new-entry-tar-not-owned", "tar -xf {S}/clean.tar -C {SR}/aotheragent03.token", "alocalwork01", ASK),
     ("new-entry-owned", "cp {S}/a.txt {SR}/alocalwork01.notes", "alocalwork01", FREE),
