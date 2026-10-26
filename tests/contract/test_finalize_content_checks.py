@@ -51,12 +51,12 @@ def _turn() -> tuple:
     return agent, contract_id
 
 
-def _bash(agent: str, command: str, stdout: str = "ok") -> None:
+def _bash(agent: str, command: str, stdout: str = "ok", exit_code: int = 0) -> None:
     adapter = ClaudeCodeAdapter()
     adapter.adapt_post_tool_use(adapter.parse_event(json.dumps({
         "hook_event_name": "PostToolUse", "session_id": "ses-parent", "cwd": "/repo",
         "tool_name": "Bash", "tool_input": {"command": command},
-        "tool_response": {"stdout": stdout, "stderr": "", "interrupted": False},
+        "tool_response": {"stdout": stdout, "stderr": "", "interrupted": False, "exit_code": exit_code},
         "tool_use_id": f"toolu-{uuid.uuid4().hex[:8]}", "agent_id": agent, "agent_type": "developer",
     })))
 
@@ -126,10 +126,36 @@ def test_a_command_verification_naming_a_recorded_command_finalizes(cli, capsys)
     code, _ = _finalize(cli, contract_id, _draft(agent, _command_check(f"  {PYTEST} ")), capsys)
 
     assert code == 0
-    assert "content_checks" not in _row(contract_id)[1]
+    assert _row(contract_id)[1]["content_checks"] == {"skipped": []}
 
 
-def test_a_command_the_turn_only_echoed_is_refused(cli, capsys):
+@pytest.mark.parametrize("vtype", ["shell", "pytest", "test", "tests", "cmd", "none"])
+def test_any_verification_carrying_a_command_is_checked_whatever_its_type_word(cli, capsys, vtype):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed")
+
+    code, out = _finalize(cli, contract_id, _draft(agent, {**_command_check("pass"), "type": vtype}), capsys)
+
+    assert code == 1 and "is a verdict, not a check" in out["errors"][0]
+
+
+def test_a_pass_backed_by_a_command_whose_last_run_failed_is_refused(cli, capsys):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="5 passed")
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, _command_check(PYTEST)), capsys)
+
+    assert code == 1 and "last exited 1" in out["errors"][0]
+
+
+def test_a_declared_expect_exit_backs_a_pass_over_a_nonzero_exit(cli, capsys):
+    agent, contract_id = _turn()
+    _bash(agent, "grep -q secret config.yaml", stdout="", exit_code=1)
+
+    code, _ = _finalize(cli, contract_id, _draft(agent, _command_check("grep -q secret config.yaml", expect_exit=1)), capsys)
+
+    assert code == 0
     agent, contract_id = _turn()
     _bash(agent, f"echo {PYTEST}", stdout=PYTEST)
 
@@ -197,6 +223,35 @@ def test_an_elided_excerpt_must_keep_its_fragments_in_recorded_order(cli, capsys
     assert code == 1 and [error.split(":")[0] for error in out["errors"]] == ["evidence_report.verbatim_outputs[1]"]
 
 
+def test_an_excerpt_attributed_to_a_command_the_turn_never_ran_is_refused(cli, capsys):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed")
+
+    code, out = _finalize(cli, contract_id, _draft(agent, verbatim=[{"command": "make test-all", "excerpt": "all 99 passed"}]), capsys)
+
+    assert code == 1 and "'make test-all' is not a command this turn ran" in out["errors"][0]
+
+
+@pytest.mark.parametrize("excerpt", ["...", "", "   ", "… ..."])
+def test_an_excerpt_with_no_content_is_refused(cli, capsys, excerpt):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed")
+
+    code, out = _finalize(cli, contract_id, _draft(agent, verbatim=[{"command": PYTEST, "excerpt": excerpt}]), capsys)
+
+    assert code == 1 and "the excerpt quotes nothing" in out["errors"][0]
+
+
+def test_an_excerpt_matches_whole_tokens_only(cli, capsys):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 15 passed")
+    verbatim = [{"command": PYTEST, "excerpt": "5 passed"}, {"command": PYTEST, "excerpt": "15 passed"}]
+
+    code, out = _finalize(cli, contract_id, _draft(agent, verbatim=verbatim), capsys)
+
+    assert code == 1 and [error.split(":")[0] for error in out["errors"]] == ["evidence_report.verbatim_outputs[0]"]
+
+
 def test_an_excerpt_past_a_truncated_record_is_skipped_with_its_reason(cli, capsys):
     agent, contract_id = _turn()
     _bash(agent, PYTEST, stdout="HEAD-MARK " + "x " * 2000 + "TAIL-MARK")
@@ -218,7 +273,7 @@ def test_an_excerpt_quoting_a_secret_matches_its_redacted_record(cli, capsys):
     assert code == 0
 
 
-def test_without_a_bound_record_only_bare_verdicts_are_refused(cli, capsys):
+def test_without_a_bound_record_a_runnable_command_is_skipped_and_a_verdict_refused(cli, capsys):
     from gaia.store import writer
 
     agent = "a" + uuid.uuid4().hex[:16]
@@ -230,6 +285,31 @@ def test_without_a_bound_record_only_bare_verdicts_are_refused(cli, capsys):
 
     assert (refused, accepted) == (1, 0)
     assert "no tool record is bound" in _row(contract_id)[1]["content_checks"]["skipped"][0]
+
+
+@pytest.mark.parametrize("command", ["PASS.", "pass ✓", "all tests pass", "exit 0", "Passed!"])
+def test_without_a_bound_record_a_command_no_shell_could_run_is_refused(cli, capsys, command):
+    from gaia.store import writer
+
+    agent = "a" + uuid.uuid4().hex[:16]
+    contract_id = f"{agent}.{uuid.uuid4().hex[:12]}"
+    writer.insert_dispatched_handoff(contract_id, agent, "me", agent_name="developer", dispatch_tool_use_id=f"toolu-{agent}")
+
+    code, out = _finalize(cli, contract_id, _draft(agent, _command_check(command)), capsys)
+
+    assert code == 1 and "evidence_report.verification.command" in out["errors"][0]
+
+
+def test_a_row_this_check_closed_is_checked_again_on_refinalize(cli, capsys):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="5 passed")
+    first, _ = _finalize(cli, contract_id, _draft(agent, _command_check(PYTEST)), capsys)
+    forged = _draft(agent, _command_check("pass"), verbatim=[{"command": PYTEST, "excerpt": "99 passed"}])
+
+    second, out = _finalize(cli, contract_id, forged, capsys)
+
+    assert (first, second) == (0, 1) and len(out["errors"]) == 2
+    assert _row(contract_id)[1]["evidence_report"]["verification"]["command"] == PYTEST
 
 
 def test_a_row_finalized_before_the_check_is_not_revalidated(cli, capsys):

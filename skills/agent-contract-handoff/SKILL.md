@@ -153,19 +153,31 @@ Finalize then checks what the contract cites against the turn's tool record
 (`gaia/contract/content_checks.py`), and refuses a refuted citation as
 `content_unverified`:
 
-- A `command`/`code` verification names a command this turn ran, exactly as
-  run, or cites existing evidence in `verification.evidence_ids` (the id
-  `gaia evidence add` prints). A bare verdict such as `pass` is always refused.
+- A verification carrying a `command`, whatever its `type` word, names a
+  command this turn ran, exactly as run, or cites existing evidence in
+  `verification.evidence_ids` (the id `gaia evidence add` prints). A bare
+  verdict such as `pass` is always refused.
+- With `result: pass`, the last recorded run of that command must have exited
+  0, or the exit declared in `verification.expect_exit` when a nonzero exit is
+  the expected outcome (`grep -q` finding nothing).
+- In a turn with no bound tool record, the command must be something a shell
+  could run: past leading `NAME=value` words, its first word is a path, a
+  program on PATH, or a builtin that runs one (`cd`, `source`, `export`), and
+  not a verdict word. `PASS.`, `all tests pass` and `exit 0` are refused.
 - A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
   attributed: its excerpt, with `...` marking elisions, must appear in order in
-  that command's recorded output. A plain string entry is not compared.
+  that command's recorded output, each fragment on whole-token boundaries
+  (`5 passed` does not match `15 passed`). An excerpt with nothing but
+  whitespace or elisions is refused, and so is one attributed to a command
+  this turn never ran, unless the entry cites an `evidence_id`. A plain string
+  entry is not compared.
 - An `evidence_id` on a verbatim entry must exist.
 
 A comparison the record cannot settle is skipped and named in the row's
-`content_checks.skipped`, never refused: no output kept, the command absent
-from this segment's record, or an output truncated before the excerpt (the
-record keeps its first 500 characters). A row already closed clean is not
-checked again.
+`content_checks.skipped`, never refused: no output or exit kept, or an output
+truncated before the excerpt (the record keeps its first 500 characters). Every
+row these checks closed carries `content_checks`, and is checked again on a
+re-finalize; only a row closed clean before they existed is not.
 
 `verification.method` is a different, free-text field: prose naming HOW the
 check was done, stored verbatim and never read as a classifier. It does not

@@ -1885,21 +1885,20 @@ def _finalize_worktree_scope() -> str:
 
 
 def _content_rejected(envelope: dict, draft_id: str, found: dict, as_json: bool) -> bool:
-    """Refuse a close whose cited commands, excerpts or evidence ids the record refutes; a row already closed clean is not checked again."""
+    """Refuse a close whose cited commands, excerpts or evidence ids the record refutes; a row closed clean before these checks existed (no content_checks) is not checked again."""
     from gaia.contract.content_checks import check_content
     from gaia.evidence.store import get_evidence
-    from gaia.store.writer import agent_contract_handoff_closed_clean
+    from gaia.store.writer import agent_contract_handoff_closed_clean, agent_contract_handoff_envelope
 
     envelope.pop("content_checks", None)
-    if agent_contract_handoff_closed_clean(draft_id):
+    if agent_contract_handoff_closed_clean(draft_id) and "content_checks" not in (agent_contract_handoff_envelope(draft_id) or {}):
         return False
     errors, skipped = check_content(
         envelope, found["records"], bound=bool(found["harness_agent_id"]),
         evidence_exists=lambda evidence_id: get_evidence(evidence_id) is not None,
     )
-    if skipped:
-        envelope["content_checks"] = {"skipped": skipped}
     if not errors:
+        envelope["content_checks"] = {"skipped": skipped}
         return False
     if as_json:
         print(json.dumps({"status": "rejected", "reason": "content_unverified", "errors": errors}))
