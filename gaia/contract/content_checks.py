@@ -5,19 +5,25 @@ from __future__ import annotations
 import re
 import shlex
 import shutil
+import unicodedata
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from gaia.redaction import redact_text
 
 TRUNCATION_SUFFIX = "...[truncated]"
 PASS_VERDICTS = frozenset({"pass", "passed", "ok", "true", "done", "green", "yes", "success"})
-BARE_VERDICTS = PASS_VERDICTS | {"fail", "failed", "false"}
+FAIL_VERDICTS = frozenset({"fail", "failed", "false", "failure", "failures"})
+BARE_VERDICTS = PASS_VERDICTS | FAIL_VERDICTS
 QUOTE_KEYS = ("excerpt", "output")
 COMMAND_RUNNING_BUILTINS = frozenset({"cd", "source", ".", "export", "command", "time"})
 _ELISION = re.compile(r"\.\.\.|…")
 _ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=.*")
+_MARKS = str.maketrans({"✅": " pass ", "✓": " pass ", "✔": " pass ", "☑": " pass ", "❌": " fail ", "✗": " fail ", "✘": " fail "})
+_TRAILING_COUNT = re.compile(r"\(\s*\d+\s*/\s*\d+\s*\)\s*\Z")
+_DECORATION = re.compile(r"\A[\W_]+|[\W_]+\Z")
 
 Run = Tuple[str, bool, Optional[int]]
+Binding = Mapping[str, frozenset]
 
 
 def _norm(text: str) -> str:
@@ -25,7 +31,17 @@ def _norm(text: str) -> str:
 
 
 def _verdict_word(text: str) -> str:
-    return re.sub(r"\W+\Z", "", text.strip().lower())
+    folded = unicodedata.normalize("NFKC", text).translate(_MARKS).strip().lower()
+    return _DECORATION.sub("", _TRAILING_COUNT.sub("", folded))
+
+
+def _is_bare_verdict(text: str) -> bool:
+    return "/" not in _TRAILING_COUNT.sub("", text) and _verdict_word(text) in BARE_VERDICTS
+
+
+def _claims_pass(result: str) -> bool:
+    words = set(re.findall(r"[^\W\d_]+", _verdict_word(result)))
+    return bool(words & PASS_VERDICTS) and not words & FAIL_VERDICTS
 
 
 def _recorded_runs(records: List[Mapping[str, Any]]) -> Dict[str, List[Run]]:
@@ -73,14 +89,30 @@ def runs_a_program(command: str) -> bool:
     return "/" in program or program in COMMAND_RUNNING_BUILTINS or shutil.which(program) is not None
 
 
-def _evidence_errors(path: str, cited: Any, evidence_exists: Callable[[int], bool]) -> List[str]:
+def _tied(row: Mapping[str, Any], binding: Binding) -> bool:
+    task = row.get("task_id")
+    return row.get("brief_id") in binding["brief_ids"] or (task is not None and str(task) in binding["task_ids"])
+
+
+def _evidence_errors(
+    path: str, cited: Any, evidence: Callable[[int], Optional[Mapping[str, Any]]], binding: Binding,
+) -> List[str]:
+    """An evidence id proves a claim only when its row exists and belongs to this turn's brief or plan task."""
     ids = cited if isinstance(cited, list) else [cited]
     errors = []
     for value in ids:
         if isinstance(value, bool) or not str(value).strip().isdigit():
             errors.append(f"{path}: {value!r} is not an evidence id")
-        elif not evidence_exists(int(str(value).strip())):
+            continue
+        row = evidence(int(str(value).strip()))
+        if row is None:
             errors.append(f"{path}: evidence id {value} does not exist (gaia evidence show {value})")
+        elif not _tied(row, binding):
+            errors.append(
+                f"{path}: evidence id {value} is not tied to this turn's work: it was recorded under brief "
+                f"{row.get('brief_id')} and task {row.get('task_id')!r}, and this turn is bound to briefs "
+                f"{sorted(binding['brief_ids'])} and plan tasks {sorted(binding['task_ids'])}"
+            )
     return errors
 
 
@@ -89,7 +121,7 @@ def _exit_errors(verification: Mapping[str, Any], command: str, runs: List[Run])
     if isinstance(expected, bool) or not isinstance(expected, int):
         return [f"evidence_report.verification.expect_exit {expected!r} is not an exit code"], []
     result = str(verification.get("result") or "").strip()
-    if _verdict_word(result) not in PASS_VERDICTS:
+    if not _claims_pass(result):
         return [], []
     last_exit = runs[-1][2]
     if last_exit is None:
@@ -103,21 +135,19 @@ def _exit_errors(verification: Mapping[str, Any], command: str, runs: List[Run])
     return [], []
 
 
-def _verification_errors(
-    verification: Mapping[str, Any], recorded: Dict[str, List[Run]], *, bound: bool,
-    evidence_exists: Callable[[int], bool],
+def _command_errors(
+    verification: Mapping[str, Any], command: str, recorded: Dict[str, List[Run]], *, bound: bool, proven: bool,
 ) -> Tuple[List[str], List[str]]:
-    command = _norm(verification["command"]) if isinstance(verification.get("command"), str) else ""
-    cited = verification.get("evidence_ids")
-    if cited not in (None, []):
-        return _evidence_errors("evidence_report.verification.evidence_ids", cited, evidence_exists), []
-    if not command:
-        return [], []
-    if command.lower() in BARE_VERDICTS:
+    if _is_bare_verdict(command):
         return [
             f"evidence_report.verification.command {command!r} is a verdict, not a check: name the "
-            "command a verifier re-runs, as this turn ran it, or cite verification.evidence_ids"
+            "command a verifier re-runs, as this turn ran it"
         ], []
+    runs = recorded.get(_norm(redact_text(command)))
+    if runs is not None:
+        return _exit_errors(verification, command, runs)
+    if proven:
+        return [], []
     if not bound and not runs_a_program(command):
         return [
             f"evidence_report.verification.command {command!r} names nothing a shell could run (a path, a "
@@ -126,20 +156,54 @@ def _verification_errors(
         ], []
     if not bound:
         return [], ["evidence_report.verification.command not compared: no tool record is bound to this turn"]
-    runs = recorded.get(_norm(redact_text(command)))
-    if runs is None:
-        return [
-            f"evidence_report.verification.command {command!r} is not a command this turn ran: run it "
-            "and name it exactly as run, or cite verification.evidence_ids"
-        ], []
-    return _exit_errors(verification, command, runs)
+    return [
+        f"evidence_report.verification.command {command!r} is not a command this turn ran: run it "
+        "and name it exactly as run, or cite verification.evidence_ids"
+    ], []
+
+
+def _verification_errors(
+    verification: Mapping[str, Any], recorded: Dict[str, List[Run]], *, bound: bool,
+    evidence: Callable[[int], Optional[Mapping[str, Any]]], binding: Binding,
+) -> Tuple[List[str], List[str]]:
+    command = _norm(verification["command"]) if isinstance(verification.get("command"), str) else ""
+    cited = verification.get("evidence_ids")
+    errors: List[str] = []
+    if cited not in (None, []):
+        errors = _evidence_errors("evidence_report.verification.evidence_ids", cited, evidence, binding)
+    if not command:
+        return errors, []
+    command_errors, skipped = _command_errors(
+        verification, command, recorded, bound=bound, proven=cited not in (None, []) and not errors,
+    )
+    return errors + command_errors, skipped
+
+
+def _uncompared_reason(entry: Any) -> Optional[str]:
+    if not isinstance(entry, (str, dict)):
+        return f"it is {'an' if type(entry).__name__[0] in 'aeiou' else 'a'} {type(entry).__name__}, neither a quote nor an object"
+    if isinstance(entry, str):
+        return None
+    for key in QUOTE_KEYS:
+        if key in entry and not isinstance(entry[key], str):
+            return f"its {key} is a {type(entry[key]).__name__}, not a string"
+    if any(key in entry for key in QUOTE_KEYS):
+        return None
+    others = [key for key in entry if key not in ("command", "evidence_id")]
+    if others:
+        return f"it quotes under {', '.join(repr(key) for key in others)}, not excerpt or output"
+    return "it quotes nothing under excerpt or output"
 
 
 def check_content(
     envelope: Mapping[str, Any], records: List[Mapping[str, Any]], *, bound: bool,
-    evidence_exists: Callable[[int], bool],
+    evidence: Callable[[int], Optional[Mapping[str, Any]]], binding: Binding,
 ) -> Tuple[List[str], List[str]]:
-    """Return (errors, skipped): what the tool record or evidence store refutes, and each check left unmade with its reason."""
+    """Return (errors, skipped): what the tool record or evidence store refutes, and each check left unmade with its reason.
+
+    ``evidence`` returns an evidence row by id, or None; ``binding`` holds the ``brief_ids`` and ``task_ids``
+    (as strings) of this turn's work, which a cited evidence row must belong to.
+    """
     report = envelope.get("evidence_report") or {}
     recorded = _recorded_runs(records) if bound else {}
     errors: List[str] = []
@@ -147,23 +211,28 @@ def check_content(
 
     verification = report.get("verification")
     if isinstance(verification, dict):
-        errors, skipped = _verification_errors(verification, recorded, bound=bound, evidence_exists=evidence_exists)
+        errors, skipped = _verification_errors(verification, recorded, bound=bound, evidence=evidence, binding=binding)
 
     for index, entry in enumerate(report.get("verbatim_outputs") or []):
         path = f"evidence_report.verbatim_outputs[{index}]"
         fields = entry if isinstance(entry, dict) else {"excerpt": entry}
         cited = "evidence_id" in fields
         if cited:
-            errors += _evidence_errors(f"{path}.evidence_id", fields["evidence_id"], evidence_exists)
-        quotes = [fields[key] for key in QUOTE_KEYS if isinstance(fields.get(key), str)]
+            errors += _evidence_errors(f"{path}.evidence_id", fields["evidence_id"], evidence, binding)
+        reason = _uncompared_reason(entry)
         command = fields.get("command")
-        if quotes and not isinstance(command, str) and not cited:
-            skipped.append(f"{path} not compared: it names no command and cites no evidence_id")
+        if reason is None and not isinstance(command, str):
+            reason = (
+                "it names no command; the excerpt is not compared to the text of the evidence it cites" if cited
+                else "it names no command and cites no evidence_id"
+            )
+        if reason is not None:
+            skipped.append(f"{path} not compared: {reason}")
             continue
-        if not quotes or not isinstance(command, str):
-            continue
-        for excerpt in quotes:
-            error, skip = _excerpt_finding(path, command, excerpt, recorded, bound=bound, cited=cited)
+        for key in QUOTE_KEYS:
+            if key not in fields:
+                continue
+            error, skip = _excerpt_finding(path, command, fields[key], recorded, bound=bound, cited=cited)
             if error and error not in errors:
                 errors.append(error)
             if skip and skip not in skipped:
@@ -186,7 +255,12 @@ def _excerpt_finding(
             f"{path}: {command!r} is not a command this turn ran: attribute the excerpt to the command "
             "exactly as run, or cite the evidence_id that holds it"
         ), None
-    if runs is None or any(_found_in_order(fragments, output) for output, _ in held):
+    if runs is None:
+        return None, (
+            f"{path} not compared: {command!r} is not a command this turn ran; the excerpt is not compared "
+            "to the text of the evidence it cites"
+        )
+    if any(_found_in_order(fragments, output) for output, _ in held):
         return None, None
     if not held:
         return None, f"{path} not compared: the record holds no output for {command!r}"

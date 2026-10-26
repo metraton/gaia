@@ -40,13 +40,15 @@ def cli():
     return module
 
 
-def _turn() -> tuple:
+def _turn(brief_id: int | None = None) -> tuple:
     from gaia.store import writer
 
     agent = "a" + uuid.uuid4().hex[:16]
     contract_id = f"{agent}.{uuid.uuid4().hex[:12]}"
     dispatch = f"toolu-dispatch-{uuid.uuid4().hex[:8]}"
-    writer.insert_dispatched_handoff(contract_id, agent, "me", agent_name="developer", dispatch_tool_use_id=dispatch)
+    writer.insert_dispatched_handoff(
+        contract_id, agent, "me", agent_name="developer", dispatch_tool_use_id=dispatch, brief_id=brief_id,
+    )
     writer.bind_harness_child_session(dispatch, agent)
     return agent, contract_id
 
@@ -99,13 +101,18 @@ def _row(contract_id: str) -> tuple:
     return state, json.loads(raw) if raw else {}
 
 
-def _evidence_id() -> int:
+def _brief_id(name: str = "brief-content-checks") -> int:
     from gaia.briefs.store import get_brief, upsert_brief
+
+    upsert_brief("me", name, {"title": "t", "objective": "o"})
+    return get_brief("me", name)["id"]
+
+
+def _evidence_id(brief_id: int | None = None, task_id: str | None = None) -> int:
     from gaia.evidence.store import insert_evidence
 
-    upsert_brief("me", "brief-content-checks", {"title": "t", "objective": "o"})
-    brief_id = get_brief("me", "brief-content-checks")["id"]
-    return insert_evidence("me", brief_id, "AC-1", type="text", text="5 passed")["id"]
+    brief = brief_id if brief_id is not None else _brief_id()
+    return insert_evidence("me", brief, "AC-1", type="text", text="5 passed", task_id=task_id)["id"]
 
 
 def test_the_measured_bare_verdict_over_a_rejected_artifact_is_refused(cli, capsys):
@@ -159,7 +166,30 @@ def test_every_pass_word_gets_the_exit_check_a_pass_gets(cli, capsys, result):
     assert code == 1 and "last exited 1" in out["errors"][0]
 
 
-@pytest.mark.parametrize("result", ["fail", "failed", "false"])
+@pytest.mark.parametrize("result", [
+    "**pass**", "'pass'", "(pass)", "✅ pass", "Pass ✅", " - passed", "pass (5/5)", "all passed",
+    "PASS - all green", "Passed: 5 tests", "ＰＡＳＳ", "✅",
+])
+def test_a_decorated_pass_claim_gets_the_exit_check(cli, capsys, result):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, {**_command_check(PYTEST), "result": result}), capsys)
+
+    assert code == 1 and "last exited 1" in out["errors"][0]
+
+
+@pytest.mark.parametrize("command", ["**pass**", "(pass)", "PASS (5/5)", "✅", "ＰＡＳＳ"])
+def test_a_decorated_verdict_named_as_the_command_is_refused(cli, capsys, command):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="5 passed")
+
+    code, out = _finalize(cli, contract_id, _draft(agent, _command_check(command)), capsys)
+
+    assert code == 1 and "is a verdict, not a check" in out["errors"][0]
+
+
+@pytest.mark.parametrize("result", ["fail", "failed", "false", "**FAILED**", "1 failed, 4 passed", "❌ fail (1/5)"])
 def test_a_fail_word_over_a_failing_run_is_not_refused(cli, capsys, result):
     agent, contract_id = _turn()
     _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
@@ -184,12 +214,66 @@ def test_a_declared_expect_exit_backs_a_pass_over_a_nonzero_exit(cli, capsys):
     assert code == 1 and "is not a command this turn ran" in out["errors"][0]
 
 
-def test_an_existing_evidence_id_backs_a_command_verification(cli, capsys):
-    agent, contract_id = _turn()
+def test_evidence_from_the_turns_brief_backs_a_command_the_turn_did_not_run(cli, capsys):
+    brief = _brief_id()
+    agent, contract_id = _turn(brief)
+    evidence = _evidence_id(brief)
 
-    code, _ = _finalize(cli, contract_id, _draft(agent, _command_check("pass", evidence_ids=[_evidence_id()])), capsys)
+    check = _command_check(f"gaia evidence show {evidence}", evidence_ids=[evidence])
+    code, _ = _finalize(cli, contract_id, _draft(agent, check), capsys)
 
     assert code == 0
+
+
+@pytest.mark.parametrize("bound_brief", [None, "brief-other-work"])
+def test_evidence_not_tied_to_the_turns_work_proves_nothing(cli, capsys, bound_brief):
+    agent, contract_id = _turn(_brief_id(bound_brief) if bound_brief else None)
+    _bash(agent, PYTEST, stdout="5 passed")
+    unrelated = _evidence_id(_brief_id("brief-unrelated"))
+    check = _command_check("rm -rf build --never-ran", evidence_ids=[unrelated])
+
+    code, out = _finalize(cli, contract_id, _draft(agent, check, verbatim=[{"evidence_id": unrelated, "excerpt": "5 passed"}]), capsys)
+
+    assert code == 1
+    assert [error.split(" ")[0].rstrip(":") for error in out["errors"]] == [
+        "evidence_report.verification.evidence_ids", "evidence_report.verification.command",
+        "evidence_report.verbatim_outputs[0].evidence_id",
+    ]
+    assert "not tied to this turn's work" in out["errors"][0]
+
+
+def test_a_bare_verdict_is_refused_even_beside_tied_evidence(cli, capsys):
+    brief = _brief_id()
+    agent, contract_id = _turn(brief)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, _command_check("pass", evidence_ids=[_evidence_id(brief)])), capsys)
+
+    assert code == 1 and "is a verdict, not a check" in out["errors"][0]
+
+
+def test_tied_evidence_does_not_mask_the_last_exit_of_a_command_the_turn_ran(cli, capsys):
+    brief = _brief_id()
+    agent, contract_id = _turn(brief)
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, _command_check(PYTEST, evidence_ids=[_evidence_id(brief)])), capsys)
+
+    assert code == 1 and out["errors"] == [
+        f"evidence_report.verification.command {PYTEST!r} last exited 1, so it cannot back result 'pass': run it "
+        "until it exits 0, or declare verification.expect_exit when that exit is the expected outcome",
+    ]
+
+
+def test_evidence_recorded_under_the_turns_plan_task_is_tied():
+    from gaia.contract.content_checks import check_content
+
+    envelope = {"evidence_report": {"verification": {"command": "make check", "evidence_ids": [7]}}}
+    rows = {7: {"brief_id": 1, "task_id": "42"}}
+    binding = {"brief_ids": frozenset({9}), "task_ids": frozenset({"42"})}
+
+    errors, _ = check_content(envelope, [], bound=True, evidence=rows.get, binding=binding)
+
+    assert errors == []
 
 
 @pytest.mark.parametrize("cited", [[999999], ["x"], [True]])
@@ -248,6 +332,30 @@ def test_a_quote_naming_no_command_is_stamped_uncompared(cli, capsys, entry):
     assert _row(contract_id)[1]["content_checks"]["skipped"] == [
         "evidence_report.verbatim_outputs[0] not compared: it names no command and cites no evidence_id",
     ]
+
+
+@pytest.mark.parametrize("entry, reason", [
+    ({"command": PYTEST, "stdout": "99 passed"}, "it quotes under 'stdout', not excerpt or output"),
+    ({"command": PYTEST, "Output": "99 passed"}, "it quotes under 'Output', not excerpt or output"),
+    ({"command": PYTEST}, "it quotes nothing under excerpt or output"),
+    ({"command": PYTEST, "excerpt": ["99 passed"]}, "its excerpt is a list, not a string"),
+    (42, "it is an int, neither a quote nor an object"),
+    ({"excerpt": "99 passed", "evidence_id": "TIED"},
+     "it names no command; the excerpt is not compared to the text of the evidence it cites"),
+    ({"command": "make never-ran", "excerpt": "99 passed", "evidence_id": "TIED"},
+     "'make never-ran' is not a command this turn ran; the excerpt is not compared to the text of the evidence it cites"),
+])
+def test_every_verbatim_entry_left_uncompared_is_stamped_with_its_reason(cli, capsys, entry, reason):
+    brief = _brief_id()
+    agent, contract_id = _turn(brief)
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+    if isinstance(entry, dict) and entry.get("evidence_id") == "TIED":
+        entry = {**entry, "evidence_id": _evidence_id(brief)}
+
+    code, out = _finalize(cli, contract_id, _draft(agent, verbatim=[entry]), capsys)
+
+    assert code == 0, out
+    assert _row(contract_id)[1]["content_checks"]["skipped"] == [f"evidence_report.verbatim_outputs[0] not compared: {reason}"]
 
 
 def test_an_excerpt_passes_when_the_record_holds_no_output_and_the_skip_is_recorded(cli, capsys):

@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -25,7 +27,7 @@ def _create(slug: str) -> dict:
         "body": f"{slug} was measured in the end-to-end test."}}
 
 
-def test_proposals_projectless_end_to_end(tmp_path, monkeypatch):
+def _isolated_cli(tmp_path, monkeypatch):
     data = tmp_path / "data"
     env = {k: v for k, v in os.environ.items()
            if k not in ("GAIA_DISPATCH_AGENT", "GAIA_WORKSPACE", "GAIA_SESSION_ID")}
@@ -49,15 +51,22 @@ def test_proposals_projectless_end_to_end(tmp_path, monkeypatch):
         con.commit()
     finally:
         con.close()
-    insert_dispatched_handoff(CONTRACT_ID, AGENT, "me", dispatch_project=None)
 
     from gaia.briefs.store import get_brief, upsert_brief
     from gaia.evidence.store import insert_evidence
 
-    upsert_brief("me", "brief-projectless-proposals", {"title": "t", "objective": "o"})
-    brief_id = get_brief("me", "brief-projectless-proposals")["id"]
-    evidence_id = insert_evidence("me", brief_id, "AC-1", type="text", text="2 facts measured")["id"]
+    briefs = {}
+    for name in ("brief-projectless-proposals", "brief-unrelated"):
+        upsert_brief("me", name, {"title": "t", "objective": "o"})
+        briefs[name] = get_brief("me", name)["id"]
+    insert_dispatched_handoff(CONTRACT_ID, AGENT, "me", dispatch_project=None,
+                              brief_id=briefs["brief-projectless-proposals"])
+    evidence = {name: insert_evidence("me", brief_id, "AC-1", type="text", text="2 facts measured")["id"]
+                for name, brief_id in briefs.items()}
+    return gaia, data, evidence
 
+
+def _close_citing(gaia, evidence_id: int) -> subprocess.CompletedProcess:
     patch = {
         "user_facing_summary": "Two facts proposed.",
         "memory_delta": {"version": 1, "proposals": [
@@ -70,10 +79,29 @@ def test_proposals_projectless_end_to_end(tmp_path, monkeypatch):
         ("fill", "--draft-id", CONTRACT_ID, "--json", json.dumps(patch)),
         ("set", "--draft-id", CONTRACT_ID, "agent_status.next_action", "done"),
         ("set", "--draft-id", CONTRACT_ID, "agent_status.agent_state", "COMPLETE"),
-        ("finalize", "--draft-id", CONTRACT_ID),
     ):
         step = gaia("contract", *argv)
         assert step.returncode == 0, (argv, step.stdout, step.stderr)
+    return gaia("contract", "finalize", "--draft-id", CONTRACT_ID)
+
+
+@pytest.mark.parametrize("cited, refusal", [
+    (987654321, "does not exist"),
+    ("brief-unrelated", "not tied to this turn's work"),
+])
+def test_a_close_citing_evidence_outside_the_turns_brief_is_refused(tmp_path, monkeypatch, cited, refusal):
+    gaia, _, evidence = _isolated_cli(tmp_path, monkeypatch)
+
+    closed = _close_citing(gaia, evidence.get(cited, cited))
+
+    assert closed.returncode != 0 and refusal in closed.stderr, (closed.stdout, closed.stderr)
+
+
+def test_proposals_projectless_end_to_end(tmp_path, monkeypatch):
+    gaia, data, evidence = _isolated_cli(tmp_path, monkeypatch)
+
+    closed = _close_citing(gaia, evidence["brief-projectless-proposals"])
+    assert closed.returncode == 0, (closed.stdout, closed.stderr)
 
     listed = gaia("contract", "proposals", "list", "--json")
     assert listed.returncode == 0, listed.stderr

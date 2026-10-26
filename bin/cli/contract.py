@@ -1884,6 +1884,34 @@ def _finalize_worktree_scope() -> str:
     return "managed" if root is not None else "shared"
 
 
+def _work_binding(contract_id: str) -> dict:
+    """The briefs and plan task a cited evidence row must belong to: the row's brief, the brief of its plan or plan task, and the plan task inherited along its continuation chain.
+
+    The evidence table records no contract id (created_by_agent is a free-form slug), so authorship by this
+    turn cannot be read; the brief and plan task are the coordinates both tables hold.
+    """
+    from gaia.store.writer import _connect, dispatched_binding_plan_task_id_by_contract
+
+    plan_task_id = dispatched_binding_plan_task_id_by_contract(contract_id)
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT brief_id, plan_id FROM agent_contract_handoffs WHERE contract_id = ?", (contract_id,),
+        ).fetchone()
+        briefs = {row["brief_id"]} if row is not None else set()
+        plans = {row["plan_id"]} if row is not None else set()
+        if plan_task_id is not None:
+            task = con.execute("SELECT plan_id FROM tasks WHERE id = ?", (plan_task_id,)).fetchone()
+            plans.add(task["plan_id"] if task is not None else None)
+        for plan_id in plans - {None}:
+            plan = con.execute("SELECT brief_id FROM plans WHERE id = ?", (plan_id,)).fetchone()
+            briefs.add(plan["brief_id"] if plan is not None else None)
+    finally:
+        con.close()
+    tasks = {str(plan_task_id)} if plan_task_id is not None else set()
+    return {"brief_ids": frozenset(briefs - {None}), "task_ids": frozenset(tasks)}
+
+
 def _content_rejected(envelope: dict, draft_id: str, found: dict, as_json: bool) -> bool:
     """Refuse a close whose cited commands, excerpts or evidence ids the record refutes; a row closed clean before these checks existed (no content_checks) is not checked again."""
     from gaia.contract.content_checks import check_content
@@ -1895,7 +1923,7 @@ def _content_rejected(envelope: dict, draft_id: str, found: dict, as_json: bool)
         return False
     errors, skipped = check_content(
         envelope, found["records"], bound=bool(found["harness_agent_id"]),
-        evidence_exists=lambda evidence_id: get_evidence(evidence_id) is not None,
+        evidence=get_evidence, binding=_work_binding(draft_id),
     )
     if not errors:
         envelope["content_checks"] = {"skipped": skipped}
