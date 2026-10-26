@@ -128,3 +128,71 @@ def test_a_window_past_its_ttl_exempts_nothing():
     )
 
     assert not compaction_bracket.in_bracket(SESSION_ID)
+
+
+def test_a_future_dated_window_exempts_nothing(tmp_path):
+    compaction_bracket._marker(SESSION_ID).write_text(
+        str(time.time() + 3600), encoding="utf-8",
+    )
+
+    response = _stop("gaia-orchestrator")
+
+    assert not compaction_bracket.in_bracket(SESSION_ID)
+    assert response.exit_code == 2
+    assert _backstop_rows(tmp_path) == 1
+
+
+def test_the_summarizer_still_runs_the_post_close_steps():
+    _run_compact_hook("pre_compact")
+
+    response = _stop("gaia-orchestrator")
+
+    assert response.exit_code == 0
+    assert response.output.get("compaction_summarizer") is True
+    assert response.output.get("contract_gate_source") == "row_missing"
+    assert "episode_id" in response.output
+
+
+def test_an_orchestrator_typed_turn_with_a_finalized_row_takes_the_normal_path(tmp_path):
+    from gaia.store.writer import (
+        finalize_agent_contract_handoff,
+        insert_dispatched_handoff,
+        stamp_harness_agent_id,
+    )
+    from tests.fixtures.agent_ids import valid_agent_id
+
+    db = tmp_path / "gaia_data" / "gaia.db"
+    agent_id = valid_agent_id("compaction-row")
+    contract_id = f"{agent_id}.inside-window"
+    insert_dispatched_handoff(
+        contract_id=contract_id, agent_id=agent_id, workspace="me",
+        session_id=SESSION_ID, db_path=db,
+    )
+    stamp_harness_agent_id(contract_id, "aaf7d33b349d75c6b", db_path=db)
+    envelope = {
+        "agent_status": {
+            "agent_state": "COMPLETE", "agent_id": agent_id,
+            "pending_steps": [], "next_action": "done",
+        },
+        "evidence_report": {
+            "patterns_checked": [], "files_checked": [], "commands_run": [],
+            "key_outputs": [], "verbatim_outputs": [], "cross_layer_impacts": [],
+            "open_gaps": [],
+            "verification": {"method": "test", "result": "pass", "details": "green"},
+        },
+        "consolidation_report": None,
+        "approval_request": None,
+    }
+    finalize_agent_contract_handoff(
+        contract_id=contract_id, agent_id=agent_id, workspace="me",
+        agent_state="COMPLETE", raw_handoff_json=json.dumps(envelope),
+        session_id=SESSION_ID, db_path=db,
+    )
+    _run_compact_hook("pre_compact")
+
+    response = _stop("gaia-orchestrator")
+
+    assert response.exit_code == 0
+    assert not response.output.get("compaction_summarizer")
+    assert response.output.get("contract_gate_source") == "row"
+    assert "episode_id" in response.output

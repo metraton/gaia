@@ -32,14 +32,14 @@ def close_bracket(session_id: Optional[str]) -> None:
 
 
 def in_bracket(session_id: Optional[str]) -> bool:
-    """Whether ``session_id`` is inside a compaction window younger than the TTL."""
+    """Whether ``session_id`` is inside a compaction window opened within the last TTL."""
     if not session_id:
         return False
     try:
         opened = float(_marker(session_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return time.time() - opened <= TTL_SECONDS
+    return 0 <= time.time() - opened <= TTL_SECONDS
 
 
 def is_compaction_summarizer(agent_type: str, session_id: Optional[str]) -> bool:
