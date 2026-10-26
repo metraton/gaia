@@ -481,3 +481,125 @@ def test_the_named_controls_are_rows():
                    "kubectl get pod delete-me", "gh auth status", "kubectl config view", "terraform plan", "kubectl apply -f deploy.yaml --dry-run=client",
                    "gcloud auth login --no-activate", "gcloud auth login", "npm ci", "curl -G --data-urlencode q=x https://example.invalid/search"):
         assert needed in commands, needed
+
+
+NESTED_INNER = {
+    "ls /app": "FREE",
+    "cat /app/version": "FREE",
+    "ps aux": "FREE",
+    "sh -c 'ls /app'": "FREE",
+    "rm -rf /data": "SIGNED",
+    "kubectl apply -f x.yaml": "SIGNED",
+    "sh -c 'rm -rf /data'": "SIGNED",
+    "$CMD": "UNKNOWN",
+    "cat ~/.ssh/id_rsa": "BLOCKED",
+    "head -n1 .env": "BLOCKED",
+    "rm -rf /": "BLOCKED",
+}
+NESTED_ARGV_EXECUTORS = {
+    "kubectl": "kubectl exec pod-1 -- {inner}",
+    "kubectl-flags": "kubectl exec -n prod pod-1 -c app -- {inner}",
+    "kubectl-global-flag": "kubectl --context=c1 exec -i pod-1 -- {inner}",
+    "oc": "oc exec -n p1 pod-1 -- {inner}",
+    "docker": "docker exec c1 {inner}",
+    "docker-flags": "docker exec -u root -w /app c1 {inner}",
+    "docker-container": "docker container exec c1 {inner}",
+    "podman": "podman exec -e A=1 c1 {inner}",
+    "aws-vault": "aws-vault exec dev -- {inner}",
+    "aws-vault-no-dashdash": "aws-vault exec --duration 1h dev {inner}",
+    "op": "op run --env-file .env.tpl -- {inner}",
+    "generic-run": "doppler run -- {inner}",
+    "generic-exec": "chamber exec svc -- {inner}",
+    "sudo-kubectl": "sudo kubectl exec pod-1 -- {inner}",
+    "op-kubectl": "op run -- kubectl exec pod-1 -- {inner}",
+    "aws-vault-docker": "aws-vault exec dev -- docker exec c1 {inner}",
+    "kubectl-docker": "kubectl exec pod-1 -- docker exec c1 {inner}",
+}
+NESTED_STRING_EXECUTORS = {
+    "gcloud": "gcloud compute ssh vm-1 --zone z1 --command {inner}",
+    "gcloud-attached": "gcloud --project p1 compute ssh vm-1 --command={inner}",
+    "op-gcloud": "op run -- gcloud compute ssh vm-1 --command {inner}",
+}
+
+
+def _nested_spellings(inner: str, as_string: bool) -> list:
+    if as_string:
+        return [shlex.quote(inner)] + ([f'"{inner}"'] if '"' not in inner else [])
+    head, _, rest = inner.partition(" ")
+    if not head.isalpha():
+        return [inner]
+    return [f"{word} {rest}".strip() for word in (head, f"'{head}'", f'"{head}"', "\\" + head)]
+
+
+def _nested_batch(templates: dict, as_string: bool) -> list:
+    return [pytest.param(name, template, as_string, id=name) for name, template in templates.items()]
+
+
+@pytest.mark.parametrize("name,template,as_string", _nested_batch(NESTED_ARGV_EXECUTORS, False) + _nested_batch(NESTED_STRING_EXECUTORS, True))
+def test_a_nested_executor_takes_the_verdict_of_its_inner_command(name, template, as_string, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    wrong = {}
+    for inner, expected in NESTED_INNER.items():
+        for spelling in _nested_spellings(inner, as_string):
+            command = template.format(inner=spelling)
+            verdict = observe(command, "none", world)[0]
+            if verdict != expected:
+                wrong[command] = (verdict, expected)
+    assert not wrong, wrong
+
+
+NESTED_PINS = [
+    ("kubectl exec -it pod-1 -- sh", "repo", {"SIGNED"}, "sign.speaks"),
+    ("kubectl exec -it pod-1 -- /bin/bash -l", "none", {"SIGNED"}, "sign.speaks"),
+    ("oc exec -ti pod-1 -- bash", "none", {"SIGNED"}, "sign.speaks"),
+    ("docker exec -it c1 sh", "none", {"SIGNED"}, "sign.speaks"),
+    ("docker container exec -i c1 python3", "none", {"SIGNED"}, "sign.speaks"),
+    ("gcloud compute ssh vm-1 --zone z1", "none", {"SIGNED"}, "sign.speaks"),
+    ("aws-vault exec dev", "none", {"SIGNED"}, "sign.speaks"),
+    ("aws-vault exec dev --", "none", {"SIGNED"}, "sign.speaks"),
+    ("op run -- bash", "none", {"SIGNED"}, "sign.speaks"),
+    ("doppler run -- zsh", "none", {"SIGNED"}, "sign.speaks"),
+    ("op run -- kubectl exec -it pod-1 -- sh", "none", {"SIGNED"}, "sign.speaks"),
+    ("sudo docker exec -it c1 bash", "none", {"SIGNED"}, "sign.speaks"),
+    ("kubectl exec -it pod-1 -- ls /app", "none", {"FREE"}, ""),
+    ("kubectl exec --bogus pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 extra -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 ls", "none", {"SIGNED", "UNKNOWN"}, ""),
+    ("docker exec --bogus c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("docker exec c1 -it ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud compute ssh vm-1 --ssh-flag=-oProxyCommand=x --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud compute ssh vm-1 --command ls -- -L 80:h:80", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud compute ssh vm-1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("op run --no-masking -- printenv", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("aws-vault exec --server dev -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("aws-vault exec --stdout dev", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 -- git push origin feature-x", "repo", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("docker exec c1 ./run.sh", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 -- sh setup", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("op run -- git push origin feature-x", "repo", {"FREE"}, ""),
+    ("chamber exec --region r1 svc -- ls", "none", {"SIGNED"}, ""),
+    ("doppler exec deploy -- ls", "none", {"SIGNED"}, ""),
+    ("doppler run --config prd -- rm -rf /data", "none", {"SIGNED"}, "sign.destroys"),
+    ("kubectl exec pod-1 -- kubectl delete ns prod", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 -- sh -c 'ls; rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("kubectl exec pod-1 -- sh -c 'ls && kubectl apply -f x.yaml'", "none", {"SIGNED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'ls && rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'ls | xargs rm'", "none", {"SIGNED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'ls\nrm -rf /data'", "none", {"SIGNED"}, ""),
+    ("docker exec c1 sh -c 'ls || rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("op run -- sh -c 'ls; rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("ssh host1 'ls && kubectl apply -f x.yaml'", "none", {"SIGNED"}, ""),
+    ("kubectl exec pod-1 -- bash -c 'cat ~/.ssh/id_rsa'", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("gcloud compute ssh vm-1 --command 'ls; cat ~/.aws/credentials'", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 -- sh -c 'rm -rf /'", "none", {"BLOCKED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'echo hi; rm -rf /'", "none", {"BLOCKED"}, ""),
+]
+
+
+@pytest.mark.parametrize("command,context,verdicts,rule", NESTED_PINS, ids=[p[0] for p in NESTED_PINS])
+def test_a_nested_executor_pin(command, context, verdicts, rule, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    verdict, reason = observe(command, context, world)
+    assert verdict in verdicts, (verdict, reason)
+    assert f"Rule: {rule}." in reason if rule else True, reason

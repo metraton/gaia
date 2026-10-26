@@ -33,6 +33,7 @@ from .sensitive_paths import (
     sensitive_read_denial,
 )
 from .canonical_path import command_name
+from .nested_executors import nested_run
 from .publish_attribution_guard import publishing_body_files
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -272,6 +273,9 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     if base in _SHELLS and "-c" in arguments:
         inline = arguments[arguments.index("-c") + 1:]
         return reads_sensitive_path(inline[0], cwd) if inline else ""
+    nested = nested_run(tokens)
+    if nested is not None and nested.inner:
+        return reads_sensitive_path(nested.inner, cwd)
     inline_flags = _WINDOWS_SHELL_INLINE_FLAGS.get(base, ())
     flag_index = next(
         (index for index, arg in enumerate(arguments) if arg.lower() in inline_flags), None,

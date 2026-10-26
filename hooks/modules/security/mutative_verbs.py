@@ -38,6 +38,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .nested_executors import nested_run, opens_session, reads_local_state
 from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
@@ -4634,8 +4635,54 @@ def _executor_floor_payloads(command: str) -> "Tuple[str, ...]":
     semantics = analyze_command(command)
     if semantics.base_cmd == "find":
         return _find_exec_payloads(list(semantics.tokens))
-    payload = _resolve_executor_payload(semantics.base_cmd, semantics)
-    return (payload,) if payload else ()
+    nested = nested_run(semantics.tokens)
+    payloads = (_resolve_executor_payload(semantics.base_cmd, semantics), nested and nested.inner)
+    return tuple(payload for payload in payloads if payload)
+
+
+def _strictest_component(command: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
+    """Classify each component of the chain or pipeline *command*; the first mutative one wins."""
+    from ..tools.shell_parser import parse_command
+
+    for component in parse_command(command) or [command]:
+        result = detect_mutative_command(component, cwd=cwd, _depth=_depth)
+        if result.is_mutative:
+            break
+    return result
+
+
+def _check_nested_executor(
+    semantics: "CommandSemantics", *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge an executor that runs a command elsewhere (``nested_executors``) by that command; only a full parse relieves."""
+    run = nested_run(semantics.tokens)
+    if run is None:
+        return None
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("nested executor")
+    if run.unparsed is None and (run.inner is None or opens_session(run.inner)):
+        return MutativeResult(
+            is_mutative=True, category=CATEGORY_MUTATIVE, verb="exec", cli_family=semantics.base_cmd,
+            reason=f"'{run.executor}' opens an interactive session", rule="sign.speaks",
+        )
+    inner = _strictest_component(run.inner, cwd=cwd, _depth=_depth + 1) if run.inner else None
+    if inner is not None and inner.is_mutative:
+        return replace(inner, reason=f"'{run.executor}' runs {run.inner!r}: {inner.reason}")
+    if run.unparsed is not None:
+        if run.generic:
+            return None
+        undetermined = f"'{run.executor}' word {run.unparsed!r} is outside its grammar"
+    elif run.remote and reads_local_state(run.inner):
+        undetermined = f"'{run.executor}' runs {run.inner!r} on another host, whose files decide its effect"
+    else:
+        return MutativeResult(
+            is_mutative=False, category=CATEGORY_READ_ONLY, verb=inner.verb, cli_family=semantics.base_cmd,
+            confidence=inner.confidence, reason=f"'{run.executor}' runs {run.inner!r}: {inner.reason}",
+        )
+    return MutativeResult(
+        is_mutative=True, category=CATEGORY_UNKNOWN, verb="executor-unparsed-flag", cli_family=semantics.base_cmd,
+        reason=f"{undetermined}, so the command it runs could not be determined", rule="unknown.dynamic-span",
+    )
 
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
@@ -4805,7 +4852,7 @@ def _check_executor_payload(
         return _budget_exhausted_result("executor payload")
 
     for payload in payloads:
-        inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
+        inner = _strictest_component(payload, cwd=cwd, _depth=_depth + 1)
         if inner.is_mutative:
             break
     else:
@@ -5393,6 +5440,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             confidence="high",
             reason=f"Command alias '{base_cmd}' is {alias_category.lower()}",
         )
+
+    nested_result = _check_nested_executor(semantics, cwd=cwd, _depth=_depth)
+    if nested_result is not None:
+        return nested_result
 
     # --- Step 1a-exec: a command handed to an executor as a STRING ---
     # Runs ahead of the read-only fast path because one of the executors that
