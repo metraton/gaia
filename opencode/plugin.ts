@@ -2285,12 +2285,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         return
       }
     },
-    // Stable hook (session/prompt.ts at 1.18.32), handed the user's message
-    // parts before they are stored. Synthetic keeps Gaia's blocks out of the
-    // transcript the user reads.
+    // Handed the user's parts before they are stored; synthetic keeps Gaia's blocks out of the transcript.
+    // message.agent is the prompt's own, absent when the client names none (1.19.0): it never decides the session.
     "chat.message": async (message: any, output: any) => {
       const sessionID = message?.sessionID
-      if (typeof sessionID !== "string" || !message.agent) return
+      if (typeof sessionID !== "string") return
       const parts = Array.isArray(output?.parts) ? output.parts : undefined
       if (!parts?.some((part: any) => part?.type === "text" && !part.synthetic)) return
       if (await hostRecordsMain(sessionID) !== true) return
