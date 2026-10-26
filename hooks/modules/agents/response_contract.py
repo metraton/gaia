@@ -401,15 +401,18 @@ def _free_shape_create(entry: dict) -> Optional[Dict[str, Any]]:
 
 
 def _extract_memory_delta(contract: dict) -> MemoryDeltaBlock:
-    """Parse memory_delta, then append each legacy memorialize_suggestions entry as a create."""
+    """Parse memory_delta, then append each legacy memorialize_suggestions entry as a create it does not already hold."""
     delta = _parse_memory_delta_field(contract.get("memory_delta"))
     legacy = _extract_memorialize_suggestions(contract)
+    proposals = list(delta.proposals)
+    for suggestion in legacy.suggestions:
+        proposal = {"operation": "create", "create": suggestion}
+        if proposal not in proposals:
+            proposals.append(proposal)
     return MemoryDeltaBlock(
         marker_present=delta.marker_present or legacy.marker_present,
         version=delta.version,
-        proposals=delta.proposals + [
-            {"operation": "create", "create": suggestion} for suggestion in legacy.suggestions
-        ],
+        proposals=proposals,
         warnings=delta.warnings + legacy.warnings,
     )
 

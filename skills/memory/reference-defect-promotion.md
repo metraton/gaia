@@ -19,7 +19,7 @@ executes the write. A dispatched subagent never promotes -- `subagent_memory_wri
 rejects `gaia memory add` from any dispatch other than `gaia-operator`,
 categorically and unapprovably (no `approval_id`, not a T3 grant). Its
 participation is to PROPOSE (a `failure_report` in its contract, or a
-`memorialize_suggestions` entry).
+`memory_delta` create proposal).
 
 ## The row: existing flags only, no new schema
 
@@ -95,7 +95,7 @@ defect from that alone. Adding the reproduction is the work promotion does.
 The anomaly's `severity` does not become a body field -- it informs whether
 the defect is worth promoting at all.
 
-**Source B -- a subagent proposal.** A `memorialize_suggestions` entry with
+**Source B -- a subagent proposal.** A `memory_delta` create proposal with
 `type: "feedback"` whose `body` already carries the four headings. The
 suggestion block carries `slug`, `type`, `class`, `description`, `body` and
 `rationale` -- it carries neither `status` nor `initiative`

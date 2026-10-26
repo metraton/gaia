@@ -40,6 +40,10 @@ EVIDENCE_KEYS = (
     "patterns_checked", "files_checked", "commands_run", "key_outputs",
     "verbatim_outputs", "cross_layer_impacts", "open_gaps",
 )
+DROPPED_FIELDS = {
+    "work_phase": "verifying", "rollback_executed": False,
+    "context_consumption": {"sections": []}, "memory_suggestions": [],
+}
 
 
 @pytest.fixture()
@@ -75,6 +79,7 @@ def _close_first_turn(db: Path) -> None:
         },
         "consolidation_report": None, "approval_request": None,
         "user_facing_summary": "Work recorded for the test.",
+        **DROPPED_FIELDS,
     }
     finalize_agent_contract_handoff(
         contract_id=CLOSED_ID, agent_id=AGENT_ID, workspace="me",
@@ -104,12 +109,14 @@ def test_resumed_turn_on_a_finalized_contract_can_still_close(env):
     assert not allowed and CLOSED_ID in reason
 
     # The command the denial names must itself work on the closed row.
-    opened = _cli(env, "set", "work_phase", "executing", "--draft-id", CLOSED_ID)
+    opened = _cli(env, "set", "agent_status.next_action", "resuming", "--draft-id", CLOSED_ID)
     assert opened.returncode == 0, opened.stderr
     link = _link_of(db)
     assert link["harness_agent_id"] == HARNESS_ID
     assert link["agent_state"] == "DISPATCHED"
     link_id = link["contract_id"]
+    seeded = json.loads(_cli(env, "view", "--draft-id", link_id).stdout)
+    assert not set(DROPPED_FIELDS) & set(seeded)
 
     # Init is now refused for the live link, and writes to it are not.
     assert not guard.check("gaia contract init", HARNESS_ID)[0]

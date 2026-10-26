@@ -293,7 +293,7 @@ Curation looks for two kinds of inconsistency, and the CLI resolves neither.
 - The **orchestrator** reads deliberately, resolves ownership, adjudicates,
   curates within the exception boundary, and reports.
 - `gaia-operator` materializes already-adjudicated instructions exactly.
-- Other specialists only propose (`memory_delta`, `memorialize_suggestions`);
+- Other specialists only propose, in their contract's `memory_delta`;
   they never write curated memory directly. They can read `gaia memory add
   --help` and `gaia memory link --help`, so a proposed row arrives in the
   shape it will be written in.

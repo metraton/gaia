@@ -129,19 +129,18 @@ summary written from memory at the end is a second telling, produced under the
 pressure that ends the turn, and it drops fields. What the contract already
 holds gets queried later, at whatever granularity the question needs.
 
-### 6. Declaring the phase before the phase's work
+### 6. Progress read from the record, not announced
 
-`framing`, `investigating`, `planning`, `executing`, `verifying` -- write the
-phase before that phase's work, not after. It is what makes half a turn legible
-from outside: a turn observed mid-flight either reads as "investigating, four
-files in" or as an opaque box, and that difference decides whether the
-orchestrator waits or dispatches again over the top of you.
+Half a turn is legible from outside only through what it already wrote: the
+evidence lists, `pending_steps`, and the harness record of each tool call. A
+turn observed mid-flight either reads as "four files in, two findings, one step
+left" or as an opaque box, and that difference decides whether the orchestrator
+waits or dispatches again over the top of you.
 
-Write only the phases you actually entered. A turn answered from framing alone
-never touches the other four, and a phase written to satisfy a checklist makes
-the record state something that did not happen -- worse than a gap, because a
-reader cannot tell it from a true one. A phase's spelling is validated when it
-is present (`WORK_PHASE_SHAPE`); that it is present at all is never checked.
+There is no phase field to set. A self-declared phase was never read by any
+code, and a label written to satisfy a checklist states something the record
+cannot back -- worse than a gap, because a reader cannot tell it from a true
+one. Keep `pending_steps` naming what is left; the lists show what is done.
 
 ### 7. Verified increments, and which search a failure calls for
 
@@ -235,9 +234,7 @@ thought it was -- into work another agent had in flight. `gaia worktree
 create`/`release` (T0, see `security-tiers`) is the isolation that removes
 both failure shapes at the source: one tree, one index, one writer.
 
-## The two state machines
-
-A turn runs two machines at once, and they never collapse into one.
+## The state machine
 
 **`agent_status.agent_state` -- the communication machine.** How the turn
 currently reports back. It feeds routing and the finalize gate.
@@ -254,20 +251,13 @@ currently reports back. It feeds routing and the finalize gate.
 Canonical list: `VALID_PLAN_STATUSES` in `gaia/state/__init__.py`, re-exported
 by `hooks/modules/agents/response_contract.py`.
 
-**`work_phase` -- the work machine.** Where the producer is in the work itself:
-`framing` -> `investigating` -> `planning` -> `executing` -> `verifying`
-(`VALID_WORK_PHASES` in `gaia/contract/validator.py`).
-
-The two are orthogonal: a turn sits at `agent_state=IN_PROGRESS` through every
-one of its five work phases. `work_phase` is optional at the schema level --
-`WORK_PHASE_SHAPE` fires only when the field is present and outside the enum --
-which is what makes it safe to omit a phase that did not happen rather than
-simulate it.
+A turn sits at `agent_state=IN_PROGRESS` through all of its work; where it
+stands inside that work is read from the record (principle 6), not from a field.
 
 ## Where each moment's answer lands
 
-The envelope is a form with one section active at a time. This maps the work
-machine's moments onto the sections they fill; several sections span more than
+The envelope is a form with one section active at a time. This maps a turn's
+moments onto the sections they fill; several sections span more than
 one moment, because the work does.
 
 | Moment | Section |
@@ -407,7 +397,7 @@ silent: each is printed on stderr and carried in `--json`, because a write that
 lands differently from what you sent is exactly what must not happen quietly.
 
 1. **Canonicalization on write.** A validated value is persisted in its canonical
-   spelling -- `work_phase: ' Verifying ' -> 'verifying'`, reported under
+   spelling -- `agent_state: 'in_progress' -> 'IN_PROGRESS'`, reported under
    `canonicalized`. What you read back is the canonical form, not your input.
 2. **Repair of an inherited draft.** A draft carrying a key from an older
    vocabulary would otherwise reject every write, including the one that would
@@ -439,9 +429,9 @@ rejected write leaves the draft at its last-known-good state, but a terminal row
 is immutable once `finalize` persists it.
 
 **The turn that never leaves framing.** A question answered entirely from
-already-known context sets `work_phase=framing` once and closes `COMPLETE`
-having touched no other phase. `COMPLETE` has no `work_phase` precondition --
-only `COMPLETE_SHAPE` and `VERIFICATION_RESULT` gate it. `finalize` still runs.
+already-known context closes `COMPLETE` with short evidence lists, and that is
+honest: only `COMPLETE_SHAPE` and `VERIFICATION_RESULT` gate it. `finalize`
+still runs.
 
 **No contract at dispatch.** A dispatch outside this harness, or one whose born
 row could not be claimed, arrives with no `# Your Contract` block. Then and only
