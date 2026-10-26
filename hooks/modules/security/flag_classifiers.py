@@ -42,7 +42,10 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .mutative_verbs import LocalWorkCaller
 
 
 # ---------------------------------------------------------------------------
@@ -601,13 +604,13 @@ def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
     return paths
 
 
-def _tar_extracts_only_into_local_work(tokens: List[str]) -> bool:
-    """True when every member lands inside a scratch entry or a managed worktree; an unreadable archive only into its own entry."""
+def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[LocalWorkCaller]") -> bool:
+    """True when every member lands in the caller's scratch entry or a managed worktree; an unreadable archive only into its own entry."""
     import os
-    from .mutative_verbs import _local_work_root, _resolve_local_work_path, _scratch_entry
+    from .mutative_verbs import _local_work_root, _owned_by, _resolve_local_work_path, _scratch_entry
 
     seen = _tar_extract_operands(tokens)
-    if seen is None or not seen.get("--extract") and not seen.get("--get"):
+    if caller is None or seen is None or not seen.get("--extract") and not seen.get("--get"):
         return False
     archive = seen.get("--file")
     if not archive or archive == "-" or _resolve_local_work_path(archive, None) is None:
@@ -619,25 +622,25 @@ def _tar_extracts_only_into_local_work(tokens: List[str]) -> bool:
     if directory is None or seen["members_before_directory"] or not str(strip).isdigit():
         return False
     target = _resolve_local_work_path(os.path.join(directory, top_level) if top_level else directory, None)
-    root = None if target is None else _local_work_root(target, allow_top=True)
+    root = None if target is None else _local_work_root(target, caller, allow_top=True)
     if root is None:
         return False
     real_archive = _resolve_local_work_path(archive, None)
     members = _tar_member_paths(real_archive, int(strip))
     if members is None:
         return _scratch_entry(real_archive) == root
-    if _scratch_entry(root) is not None and _scratch_entry(real_archive) not in (None, root):
+    if _scratch_entry(real_archive) is not None and not _owned_by(_scratch_entry(real_archive), caller):
         return False
     landed = [os.path.realpath(os.path.join(target, m)) for m in members]
-    return all(_local_work_root(path) is not None and _scratch_entry(path) == _scratch_entry(root) for path in landed)
+    return all(_local_work_root(path, caller) is not None for path in landed)
 
 
-def _classify_tar(tokens: List[str]) -> Optional[FlagClassifierResult]:
+def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] != "tar":
         return None
     args = tokens[1:]
 
-    if _tar_extracts_only_into_local_work(tokens):
+    if _tar_extracts_only_into_local_work(tokens, caller):
         return FlagClassifierResult(
             outcome=OUTCOME_READ_ONLY,
             reason="tar extraction writing only inside the Gaia scratch directory or a Gaia-managed worktree",
@@ -976,7 +979,7 @@ _CLASSIFIER_REGISTRY: Dict[str, Callable[[List[str]], Optional[FlagClassifierRes
 # Public API
 # ---------------------------------------------------------------------------
 
-def classify_by_flags(command: str) -> Optional[FlagClassifierResult]:
+def classify_by_flags(command: str, caller: "Optional[LocalWorkCaller]" = None) -> Optional[FlagClassifierResult]:
     """Classify a command based on flags and sub-commands.
 
     This is the primary entry point.  Call this BEFORE detect_mutative_command()
@@ -984,7 +987,11 @@ def classify_by_flags(command: str) -> Optional[FlagClassifierResult]:
     classification.  If it returns None, fall through to the existing pipeline.
 
     Args:
-        command: The full shell command string (already unwrapped if applicable).
+        command: The full shell command string.  Behind a transparent wrapper
+            (``sudo``, ``env -C``) each wrapped reading is classified with no
+            caller, and only a blocked or mutative verdict is adopted.
+        caller: Who runs the command and from where; tar's local-work relief
+            needs it.
 
     Returns:
         FlagClassifierResult if the command belongs to a known family, else None.
@@ -998,5 +1005,14 @@ def classify_by_flags(command: str) -> Optional[FlagClassifierResult]:
     base_cmd = tokens[0]
     classifier = _CLASSIFIER_REGISTRY.get(base_cmd)
     if classifier is None:
+        from .mutative_verbs import _peel_wrapper_readings
+        readings, peeled = _peel_wrapper_readings(command)
+        wrapped = [classify_by_flags(r) for r in readings if peeled and r.strip() != command.strip()]
+        for outcome in (OUTCOME_BLOCKED, OUTCOME_MUTATIVE):
+            for result in wrapped:
+                if result is not None and result.outcome == outcome:
+                    return result
         return None
+    if classifier is _classify_tar:
+        return _classify_tar(tokens, caller)
     return classifier(tokens)

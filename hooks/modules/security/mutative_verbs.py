@@ -2722,6 +2722,22 @@ def _scratch_entry(real: str) -> "str | None":
     return os.path.join(scratch, os.path.relpath(real, scratch).split(os.sep, 1)[0])
 
 
+@dataclass(frozen=True)
+class LocalWorkCaller:
+    """Who a local-work write runs for and the directory its relative paths resolve against (None when unproven)."""
+
+    agent_id: str
+    cwd: Optional[str]
+
+
+def _owned_by(entry: "str | None", caller: "Optional[LocalWorkCaller]") -> bool:
+    """True when *entry* is a scratch entry named ``<agent_id>`` or ``<agent_id>.<token>`` for the caller's agent."""
+    import os
+    if not entry or caller is None or not caller.agent_id:
+        return False
+    return os.path.basename(entry).split(".", 1)[0] == caller.agent_id
+
+
 def _gaia_hooks_root() -> "str | None":
     """Return the canonical (realpath) Gaia hooks directory this module ships in.
 
@@ -2747,7 +2763,7 @@ def _gaia_hooks_root() -> "str | None":
         return None
 
 
-def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
+def _rm_scratch_confined_targets(tokens: tuple, caller: "Optional[LocalWorkCaller]" = None) -> "Tuple[str, ...] | None":
     """Return the canonical rm targets when every one is confined to scratch.
 
     STRICT and fail-closed. Returns the resolved paths only when ALL of the
@@ -2755,8 +2771,9 @@ def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> 
       (a) at least one positional (non-flag) path argument is present;
       (b) NO token contains an unexpanded glob metacharacter (``*?[]{}``) or
           a parent-traversal component (``..``);
-      (c) each path, resolved against the shell's *cwd* (never the hook's), lies
-          in one and the same scratch entry (``_scratch_entry``).
+      (c) each path, resolved against the caller's cwd (never the hook's), lies
+          in a scratch entry the caller owns (``_owned_by``); ``rmdir -p`` also
+          removes every parent its operand names, so those are targets too.
 
     Any ambiguity -- no positional path, an unresolvable scratch root, a glob,
     a ``..``, an unexpandable ``~user``, or a single path outside scratch --
@@ -2772,7 +2789,9 @@ def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> 
         The canonical (realpath) target paths, or None when confinement to
         scratch cannot be established.
     """
+    import os
     seen_end_of_opts = False
+    removes_parents = False
     path_tokens = []
     i = 1  # skip base_cmd at index 0
     while i < len(tokens):
@@ -2782,12 +2801,20 @@ def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> 
             seen_end_of_opts = True
             continue
         if not seen_end_of_opts and token.startswith("-"):
-            # rm has no value-consuming short flags relevant here.
+            removes_parents = removes_parents or token == "--parents" or (
+                not token.startswith("--") and "p" in token
+            )
             continue
         path_tokens.append(token)
 
     if not path_tokens:
         return None  # (a) -- no clear path target
+    if removes_parents and os.path.basename(tokens[0]) == "rmdir":
+        for token in list(path_tokens):
+            head = os.path.dirname(token.rstrip(os.sep))
+            while head:
+                path_tokens.append(head)
+                head = "" if head == os.sep else os.path.dirname(head)
 
     resolved = []
     for token in path_tokens:
@@ -2796,19 +2823,11 @@ def _rm_scratch_confined_targets(tokens: tuple, cwd: "Optional[str]" = None) -> 
             return None
         if ".." in token:
             return None
-        real = _resolve_local_work_path(token, cwd)
-        if real is None or _scratch_entry(real) is None:
+        real = _resolve_local_work_path(token, caller.cwd if caller else None)
+        if real is None or not _owned_by(_scratch_entry(real), caller):
             return None
         resolved.append(real)
-
-    if len({_scratch_entry(real) for real in resolved}) != 1:
-        return None
     return tuple(resolved)
-
-
-def _rm_targets_only_scratch(tokens: tuple) -> bool:
-    """Return True only if every rm target resolves strictly inside scratch."""
-    return _rm_scratch_confined_targets(tokens) is not None
 
 
 _LOCAL_WORK_UNRESOLVED_CHARS: FrozenSet[str] = frozenset("*?[]{}$`")
@@ -2848,8 +2867,8 @@ def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool
     return os.path.join(os.path.realpath(parent or os.sep), name)
 
 
-def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
-    """Return the scratch entry or checked-out managed worktree holding *real* outside any ``.git``, or None (fail closed)."""
+def _local_work_root(real: str, caller: "Optional[LocalWorkCaller]", allow_top: bool = False) -> "str | None":
+    """Return the caller-owned scratch entry or managed worktree holding *real* outside any ``.git``, or None (fail closed)."""
     import os
     try:
         files, dirs = _never_free_paths()
@@ -2863,6 +2882,8 @@ def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
         return None
     entry = _scratch_entry(real)
     if entry is not None:
+        if not _owned_by(entry, caller):
+            return None
         top = entry
     elif real == _gaia_scratch_root():
         return None
@@ -2880,13 +2901,33 @@ def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
     return top
 
 
-def _confined_to_local_work(paths: "List[str | None]", read: "List[str | None]" = ()) -> "Tuple[str, ...] | None":
-    """Return *paths* when each one resolved into a local-work root and they and the *read* paths touch one scratch entry."""
-    if not paths or any(p is None or _local_work_root(p) is None for p in paths):
+def _confined_to_local_work(
+    paths: "List[str | None]", caller: "Optional[LocalWorkCaller]", read: "List[str | None]" = (),
+) -> "Tuple[str, ...] | None":
+    """Return *paths* when each one resolved into a local-work root and every scratch entry read is the caller's too."""
+    if not paths or any(p is None or _local_work_root(p, caller) is None for p in paths):
         return None
-    if len({_scratch_entry(p) for p in [*paths, *read] if p} - {None}) > 1:
+    if any(_scratch_entry(p) is not None and not _owned_by(_scratch_entry(p), caller) for p in read if p):
         return None
     return tuple(paths)
+
+
+_TREE_WALK_BUDGET = 20000
+
+
+def _tree_carries_git(real: "str | None") -> bool:
+    """True when the tree at *real* is or holds a ``.git`` entry, or cannot be walked within budget (fail closed)."""
+    import os
+    if real is None or os.path.basename(real) == ".git":
+        return True
+    if os.path.islink(real) or not os.path.isdir(real):
+        return False
+    seen = 0
+    for _, dirs, files in os.walk(real, followlinks=True):
+        seen += len(dirs) + len(files)
+        if ".git" in dirs or ".git" in files or seen > _TREE_WALK_BUDGET:
+            return True
+    return False
 
 
 # Options that cannot move where mv or cp write; -t, -T, -l, -s, -b and any
@@ -2942,33 +2983,36 @@ def _local_work_destinations(sources: List[str], destination: str, cwd: "Optiona
     return written
 
 
-def _cp_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
-    """Return the paths a ``cp`` writes when all are local work within one scratch entry; recursive only onto new paths."""
+def _cp_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tuple[str, ...] | None":
+    """Return the paths a ``cp`` writes when all are the caller's local work; recursive only onto new paths, never a ``.git``."""
     import os
     parsed = _local_work_operands(tokens, _CP_LOCAL_WORK_SHORT_FLAGS, _CP_LOCAL_WORK_LONG_FLAGS)
     if parsed is None:
         return None
     (*sources, destination), used = parsed
-    written = _local_work_destinations(sources, destination, cwd)
+    written = _local_work_destinations(sources, destination, caller.cwd)
     if written is None:
         return None
+    read = [_resolve_local_work_path(source, caller.cwd) for source in sources]
     if used & (_CP_RECURSIVE_SHORT_FLAGS | {"--recursive", "--archive"}):
-        if any(p is None or os.path.lexists(p) for p in written):
+        if any(p is None or os.path.lexists(p) for p in written) or any(map(_tree_carries_git, read)):
             return None
-    return _confined_to_local_work(written, [_resolve_local_work_path(source, cwd) for source in sources])
+    return _confined_to_local_work(written, caller, read)
 
 
-def _mv_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
-    """Return every path an ``mv`` removes (link itself, not its target) or creates when all are local work."""
+def _mv_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tuple[str, ...] | None":
+    """Return every path an ``mv`` removes (link itself, not its target) or creates when all are the caller's local work."""
     parsed = _local_work_operands(tokens, _MV_LOCAL_WORK_SHORT_FLAGS, _MV_LOCAL_WORK_LONG_FLAGS)
     if parsed is None:
         return None
     (*sources, destination), _ = parsed
-    written = _local_work_destinations(sources, destination, cwd)
+    written = _local_work_destinations(sources, destination, caller.cwd)
     if written is None:
         return None
-    removed = [_resolve_local_work_path(source, cwd, follow_last=False) for source in sources]
-    return _confined_to_local_work(removed + written)
+    removed = [_resolve_local_work_path(source, caller.cwd, follow_last=False) for source in sources]
+    if any(map(_tree_carries_git, removed)):
+        return None
+    return _confined_to_local_work(removed + written, caller)
 
 
 # Stages that never create, move or extract a symlink; every stage of a line is
@@ -2994,6 +3038,35 @@ def chain_withdraws_local_work_relief(components: List[str]) -> List[str]:
         if base in _LOCAL_WORK_RELIEF_COMMANDS
         and any(other not in _PLANTS_NO_LINK for i, other in enumerate(bases) if i != index)
     ]
+
+
+_LITERAL_CD_AND_RE = re.compile(r"\s*cd\s+([^\s$`*?\[\]{}()<>|;&'\"\\]+)\s*&&")
+_SHELL_CWD_WORD_RE = re.compile(r"(?<![\w./-])(?:cd|pushd|popd)(?![\w./-])")
+
+
+def local_work_cwd_known(command: str) -> bool:
+    """True when every cwd change on the line is a leading, success-gated ``cd <literal path> &&``."""
+    remaining = command
+    while True:
+        match = _LITERAL_CD_AND_RE.match(remaining)
+        target = match.group(1) if match else ""
+        if not match or target.startswith("-") or target.startswith("~") and target != "~" and not target.startswith("~/"):
+            break
+        remaining = remaining[match.end():]
+    return _SHELL_CWD_WORD_RE.search(remaining) is None
+
+
+def local_work_callers(
+    command: str, components: List[str], cwd: "Optional[str]", agent_id: str,
+) -> "List[Optional[LocalWorkCaller]]":
+    """Return each component's local-work caller: None when another stage could redirect its write, cwd None when unproven."""
+    withdrawn = set(chain_withdraws_local_work_relief(components))
+    known = local_work_cwd_known(command)
+    callers: "List[Optional[LocalWorkCaller]]" = []
+    for component in components:
+        callers.append(None if component in withdrawn else LocalWorkCaller(agent_id, cwd if known else None))
+        cwd = cwd_after_component(component, cwd)
+    return callers
 
 
 _DURABLE_STORE_SIGNATURES: Tuple[Tuple[bytes, str], ...] = (
@@ -5130,7 +5203,7 @@ def _absorbing_form(command: str) -> "Optional[str]":
 
 def detect_mutative_command(
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
-    _depth: int = 0, _in_prefix: bool = False,
+    _depth: int = 0, _in_prefix: bool = False, caller: "Optional[LocalWorkCaller]" = None,
 ) -> MutativeResult:
     """Classify *command*, then hold the result to a non-regression floor.
 
@@ -5167,7 +5240,7 @@ def detect_mutative_command(
     if sync is not None:
         return sync
 
-    result = _detect_mutative_command(command, from_source_code, cwd, _depth)
+    result = _detect_mutative_command(command, from_source_code, cwd, _depth, caller)
 
     declared = declared_wrapper(command)
     if declared is not None:
@@ -5213,7 +5286,7 @@ def detect_mutative_command(
 @functools.lru_cache(maxsize=128)
 def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step per lane
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
-    _depth: int = 0,
+    _depth: int = 0, caller: "Optional[LocalWorkCaller]" = None,
 ) -> MutativeResult:
     """Analyze a shell command and return a structured mutative assessment.
 
@@ -5242,6 +5315,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             in the command chain overrides this (see the ``cd``-peel below), so
             Gaia governs a script in the workspace it is actually run from, not
             only the Gaia install dir.
+        caller: Who runs the command and from where, as the validator proved
+            it; without one the rm/rmdir/mv/cp relief never applies.  The peels
+            below re-classify without it, so a wrapper (``sudo``, ``env -C``)
+            or a cd inside the string withdraws the relief.
 
     Returns:
         MutativeResult with full classification details.
@@ -5451,7 +5528,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # /*, ~) still runs first in blocked_commands.py, which defers to this
         # detector only for scratch-confined rm commands.
         if base_cmd in ("rm", "rmdir"):
-            scratch_targets = _rm_scratch_confined_targets(tuple(tokens), cwd)
+            scratch_targets = _rm_scratch_confined_targets(tuple(tokens), caller)
             if scratch_targets:
                 valuable = _durable_store_under_scratch_targets(scratch_targets)
                 if valuable is None:
@@ -5483,9 +5560,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
         # mv and cp are free when every path they touch stays in scratch or a
         # managed worktree and none overwrites a durable store parked there.
-        if base_cmd in ("cp", "mv"):
+        if base_cmd in ("cp", "mv") and caller is not None:
             local_work = _cp_local_work_written_paths if base_cmd == "cp" else _mv_local_work_written_paths
-            written = local_work(tuple(tokens), cwd)
+            written = local_work(tuple(tokens), caller)
             if written and _durable_store_under_scratch_targets(written) is None:
                 return MutativeResult(
                     is_mutative=False,
