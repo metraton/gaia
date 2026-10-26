@@ -13,6 +13,7 @@ for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "hooks")):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
+from modules.security import sensitive_read_guard  # noqa: E402
 from modules.security.blocked_commands import is_blocked_command  # noqa: E402
 from modules.security.mutative_verbs import MAX_NORMAL_INLINE_LENGTH, detect_mutative_command  # noqa: E402
 
@@ -81,6 +82,30 @@ PY_PURE_READS = {
     "gethostname": "import socket\nprint(socket.gethostname())",
     "cpu-count": "from multiprocessing import cpu_count\nprint(cpu_count())",
     "http-status": "import http\nprint(http.HTTPStatus(404).phrase)",
+}
+PY_DYNAMIC_IMPORT_EFFECTS = {
+    "dunder-os-remove": "__import__('os').remove('x')",
+    "dunder-shutil-rmtree": "__import__('shutil').rmtree('build')",
+    "dunder-dotted-name": "__import__('os.path').remove('x')",
+    "import-module-subprocess": "import importlib\nimportlib.import_module('subprocess').run(['kubectl', 'apply', '-f', 'x.yaml'])",
+    "from-import-module": "from importlib import import_module\nimport_module('shutil').rmtree('build')",
+    "importlib-dunder-import": "import importlib\nimportlib.__import__('shutil').rmtree('build')",
+    "dunder-socket": "__import__('socket').socket()",
+    "dunder-sqlite-delete": "__import__('sqlite3').connect('x.db').execute('DELETE FROM t')",
+    "dunder-tempfile-mkdtemp": "print(__import__('tempfile').mkdtemp())",
+    "dunder-effect-module": "c = __import__('ctypes')",
+    "sys-modules": "import sys\nsys.modules['os'].remove('x')",
+    "getattr-dunder": "getattr(__import__('os'), 'remove')('x')",
+    "bound-dunder": "m = __import__('shutil')\nm.rmtree('build')",
+    "bound-sys-modules": "import sys\nm = sys.modules['os']\nm.remove('x')",
+    "sys-modules-computed": "import sys\nsys.modules[name].remove('x')",
+    "getattr-computed-on-dunder": "getattr(__import__('os'), attr)('x')",
+}
+PY_DYNAMIC_IMPORT_READS = {
+    "dunder-tempfile-gettempdir": "print(__import__('tempfile').gettempdir())",
+    "import-module-json": "import importlib\nprint(importlib.import_module('json').dumps([1]))",
+    "sys-modules-read": "import sys\nprint(sys.modules['os'].getcwd())",
+    "getattr-dunder-read": "print(getattr(__import__('socket'), 'gethostname')())",
 }
 JS_READ = (
     "const fs=require('fs');const p=JSON.parse(fs.readFileSync('prd.json','utf8'));"
@@ -156,6 +181,38 @@ def test_a_pure_read_from_an_effect_module_is_free_in_every_spelling(name, tmp_p
     for command in (f"python3 -c {shlex.quote(code.replace(chr(10), '; '))}",
                     f"python3 - <<'PY'\n{code}\nPY", "python3 short.py"):
         assert _judge(command, str(tmp_path)) == "FREE", (name, command)
+
+
+def _short_and_long(code: str, tmp_path: Path) -> dict:
+    (tmp_path / "short.py").write_text(code + "\n", encoding="utf-8")
+    spellings = {"short -c": f"python3 -c {shlex.quote(code.replace(chr(10), '; '))}"}
+    long_code = _python(PY_READ_BODY + code.split("\n"))
+    spellings.update({f"long {name}": command for name, command in _spellings(long_code, tmp_path, "long").items()})
+    return spellings
+
+
+@pytest.mark.parametrize("name", list(PY_DYNAMIC_IMPORT_EFFECTS))
+def test_a_literal_dynamic_import_is_judged_like_import(name, tmp_path):
+    for spelling, command in _short_and_long(PY_DYNAMIC_IMPORT_EFFECTS[name], tmp_path).items():
+        assert _judge(command, str(tmp_path)) != "FREE", (name, spelling)
+
+
+@pytest.mark.parametrize("name", list(PY_DYNAMIC_IMPORT_READS))
+def test_a_catalogued_read_through_a_literal_dynamic_import_is_free(name, tmp_path):
+    for spelling, command in _short_and_long(PY_DYNAMIC_IMPORT_READS[name], tmp_path).items():
+        assert _judge(command, str(tmp_path)) == "FREE", (name, spelling)
+
+
+@pytest.mark.parametrize("code", [
+    "print(__import__('builtins').open('/home/u/.ssh/id_rsa').read())",
+    "import importlib\nprint(importlib.import_module('pathlib').Path('/home/u/.ssh/id_rsa').read_text())",
+    "import sys\nprint(sys.modules['pathlib'].Path('/home/u/.aws/credentials').read_text())",
+    "print(getattr(__import__('pathlib'), 'Path')('/home/u/.ssh/id_rsa').read_text())",
+])
+def test_a_secret_read_through_a_dynamic_import_stays_refused(code, tmp_path):
+    for spelling, command in _short_and_long(code, tmp_path).items():
+        allowed, _ = sensitive_read_guard.check(command, str(tmp_path))
+        assert not allowed, spelling
 
 
 def test_long_javascript_that_only_reads_is_free():

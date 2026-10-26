@@ -241,6 +241,39 @@ _DYNAMIC_CODE_CALLS: FrozenSet[str] = frozenset({
     "importlib.import_module", "importlib.__import__", "runpy.run_path", "runpy.run_module",
 })
 _CODE_STRING_CALLS: FrozenSet[str] = frozenset({"eval", "exec", "compile", "builtins.eval", "builtins.exec"})
+_IMPORT_CALLS: FrozenSet[str] = frozenset({
+    "__import__", "builtins.__import__", "importlib.__import__", "importlib.import_module",
+})
+
+
+def _is_str_literal(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def _imported_module(call: ast.Call, dotted: Optional[str]) -> Optional[str]:
+    """The module an import call evaluates to when its name is a literal, else None.
+
+    ``__import__('a.b')`` hands back the top package ``a`` unless a non-empty
+    ``fromlist`` asks for ``a.b``; a fromlist the parse cannot read is None.
+    """
+    if dotted not in _IMPORT_CALLS or not call.args or not _is_str_literal(call.args[0]):
+        return None
+    name = call.args[0].value
+    if not all(part.isidentifier() for part in name.split(".")):
+        return None
+    if dotted == "importlib.import_module":
+        return name
+    fromlist = call.args[3] if len(call.args) > 3 else None
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            return None
+        if keyword.arg == "fromlist":
+            fromlist = keyword.value
+    if fromlist is None or isinstance(fromlist, ast.Constant) and fromlist.value is None:
+        return name.split(".")[0]
+    if isinstance(fromlist, (ast.List, ast.Tuple)):
+        return name if fromlist.elts else name.split(".")[0]
+    return None
 
 _DANGEROUS_BY_DOTTED = {entry[0]: entry for entry in _DANGEROUS_CALLS}
 
@@ -596,7 +629,10 @@ def _dynamic_code_result(
 ) -> InlineAstResult:
     """Judge a call that runs code chosen at runtime by the code it is handed."""
     first = node.args[0] if node.args else None
-    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+    if dotted in _IMPORT_CALLS:
+        if _imported_module(node, dotted) is not None:
+            return InlineAstResult()
+    elif _is_str_literal(first):
         if dotted not in _CODE_STRING_CALLS:
             return InlineAstResult()
         inner = analyze_python_inline(first.value, argv_is_mutative)
@@ -651,25 +687,36 @@ def uncatalogued_effect(tree: ast.AST) -> str:
     alias_map.collect(tree)
     sql = _ReadOnlyChecker()
     receivers = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    receivers |= {
+        id(node.args[0]) for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and alias_map.getattr_name(node) is not None
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
             imported = [f"{node.module or ''}.{alias.name}" for alias in node.names]
+        elif isinstance(node, ast.Call):
+            imported = [_imported_module(node, alias_map.resolve_call(node.func)) or ""]
         else:
             imported = []
         for name in imported:
             effect_module = name.split(".")[0] in _UNCATALOGUED_EFFECT_MODULES
             if effect_module and name not in _EFFECT_MODULE_READS and not _effect_module_read(name):
                 return "module"
-        if isinstance(node, (ast.Name, ast.Attribute)) and id(node) not in receivers:
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Call, ast.Subscript)) and id(node) not in receivers:
             used = alias_map.resolve_bound(node) or ""
             if used.split(".")[0] in _EFFECT_MODULE_READS and not _effect_module_read(used):
                 return "module"
+        if isinstance(node, ast.Subscript) and alias_map.resolve_call(node.value) == "sys.modules":
+            if not _is_str_literal(node.slice):
+                return "call"
         if not isinstance(node, ast.Call):
             continue
         dotted = alias_map.resolve_call(node.func) or ""
-        leaf = node.func.attr if isinstance(node.func, ast.Attribute) else dotted
+        leaf = node.func.attr if isinstance(node.func, ast.Attribute) else dotted.rpartition(".")[2]
+        if alias_map.getattr_name(node) is not None and alias_map.resolve_call(node.args[0]) is not None:
+            continue
         if leaf in _RUNTIME_NAME_CALLS or (leaf in _EFFECT_METHODS and dotted not in _STDIO_WRITERS):
             return "call"
         if leaf in _SQL_EXEC_METHODS and not sql._sql_arg_is_read_only(node):
@@ -1042,8 +1089,8 @@ class _AliasResolver:
     Call reported ``None`` for all of them, silently making the entire
     ``pathlib.Path.*`` block unmatchable.
 
-    Unresolved cases (``getattr(subprocess, "run")(...)``, a subscripted
-    receiver, an element of a list) still return ``None`` from
+    A computed name (``getattr(m, "r" + "un")``, ``sys.modules[n]``), any other
+    subscript and an element of a list still return ``None`` from
     :meth:`resolve_call`.
     """
 
@@ -1076,53 +1123,62 @@ class _AliasResolver:
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
             target = node.targets[0]
-            if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Call):
+            if not isinstance(target, ast.Name) or not isinstance(node.value, (ast.Call, ast.Subscript)):
                 continue
-            resolved = self.resolve_call(node.value.func)
+            resolved = self.resolve_call(node.value)
             if resolved is not None:
                 self._aliases[target.id] = resolved
 
     def resolve_call(self, func: ast.AST) -> Optional[str]:
         """Return the dotted name of a Call's ``func`` expression, if known."""
-        # Attribute chain, traversing intermediate calls: a.b(x).c
-        parts = self._dotted_parts(func)
-        if parts is None:
-            return None
-        head, *rest = parts
-        canonical = self._aliases.get(head, head)
-        if rest:
-            return f"{canonical}.{'.'.join(rest)}"
-        return canonical
+        chain = self._chain(func)
+        return ".".join(chain[0]) if chain else None
 
     def resolve_bound(self, node: ast.AST) -> Optional[str]:
-        """The dotted name of *node* when its head name was bound by an import or a resolvable call, else None."""
-        parts = self._dotted_parts(node)
-        if parts is None or parts[0] not in self._aliases:
-            return None
-        return self.resolve_call(node)
+        """The dotted name of *node* when its head was bound by an import or a resolvable call, else None."""
+        chain = self._chain(node)
+        return ".".join(chain[0]) if chain and chain[1] else None
 
-    def _dotted_parts(self, node: ast.AST) -> Optional[list]:
-        """Walk an Attribute/Name/Call chain into a list of identifier parts.
+    def getattr_name(self, call: ast.Call) -> Optional[str]:
+        """The attribute a ``getattr`` call names by a string literal, which makes it a plain attribute access."""
+        if self.resolve_call(call.func) not in ("getattr", "builtins.getattr") or call.keywords:
+            return None
+        if len(call.args) not in (2, 3) or not _is_str_literal(call.args[1]):
+            return None
+        return call.args[1].value
+
+    def _chain(self, node: ast.AST) -> Optional[Tuple[list, bool]]:
+        """The canonical dotted parts of an expression, and whether its head is a known binding.
 
         Intermediate calls are transparent: ``Path("/x").open`` yields
-        ``["Path", "open"]``, because the receiver's IDENTITY is what selects
-        the API and its arguments are irrelevant to that choice.
-
-        Returns None if the expression is not a static chain (a subscript, a
-        literal receiver, a lambda).
+        ``pathlib.Path.open``, because the receiver's IDENTITY is what selects
+        the API.  A call or subscript that evaluates to a module or attribute
+        named by a literal -- ``__import__('os')``, ``sys.modules['os']``,
+        ``getattr(m, 'run')`` -- stands for that name, as ``import`` binds it.
+        Returns None for anything else that is not a static chain.
         """
-        parts: list = []
+        tail: list = []
         cur = node
         while True:
             if isinstance(cur, ast.Attribute):
-                parts.append(cur.attr)
+                tail.append(cur.attr)
                 cur = cur.value
             elif isinstance(cur, ast.Call):
+                attr = self.getattr_name(cur)
+                if attr is not None:
+                    tail.append(attr)
+                    cur = cur.args[0]
+                    continue
+                module = _imported_module(cur, self.resolve_call(cur.func))
+                if module is not None:
+                    return module.split(".") + tail[::-1], True
                 cur = cur.func
+            elif isinstance(cur, ast.Subscript):
+                if self.resolve_call(cur.value) != "sys.modules" or not _is_str_literal(cur.slice):
+                    return None
+                return cur.slice.value.split(".") + tail[::-1], True
             else:
                 break
-        if isinstance(cur, ast.Name):
-            parts.append(cur.id)
-            parts.reverse()
-            return parts
-        return None
+        if not isinstance(cur, ast.Name):
+            return None
+        return self._aliases.get(cur.id, cur.id).split(".") + tail[::-1], cur.id in self._aliases
