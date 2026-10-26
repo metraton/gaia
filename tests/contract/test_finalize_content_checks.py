@@ -335,15 +335,18 @@ def test_a_quote_naming_no_command_is_stamped_uncompared(cli, capsys, entry):
 
 
 @pytest.mark.parametrize("entry, reason", [
-    ({"command": PYTEST, "stdout": "99 passed"}, "it quotes under 'stdout', not excerpt or output"),
-    ({"command": PYTEST, "Output": "99 passed"}, "it quotes under 'Output', not excerpt or output"),
-    ({"command": PYTEST}, "it quotes nothing under excerpt or output"),
-    ({"command": PYTEST, "excerpt": ["99 passed"]}, "its excerpt is a list, not a string"),
-    (42, "it is an int, neither a quote nor an object"),
+    ({"command": PYTEST, "stdout": "99 passed"}, ".stdout not compared: only excerpt and output are compared to the record"),
+    ({"command": PYTEST, "Output": "99 passed"}, ".Output not compared: only excerpt and output are compared to the record"),
+    ({"command": PYTEST, "excerpt": "4 passed", "stdout": "999 passed"},
+     ".stdout not compared: only excerpt and output are compared to the record"),
+    ({"command": PYTEST}, " not compared: it quotes nothing"),
+    ({"command": PYTEST, "excerpt": ["99 passed"]}, ".excerpt not compared: it is a list, not a string"),
+    ({"command": 7, "excerpt": "99 passed"}, " not compared: its command is an int, not a string"),
+    (42, " not compared: it is an int, neither a quote nor an object"),
     ({"excerpt": "99 passed", "evidence_id": "TIED"},
-     "it names no command; the excerpt is not compared to the text of the evidence it cites"),
+     " not compared: it names no command; the excerpt is not compared to the text of the evidence it cites"),
     ({"command": "make never-ran", "excerpt": "99 passed", "evidence_id": "TIED"},
-     "'make never-ran' is not a command this turn ran; the excerpt is not compared to the text of the evidence it cites"),
+     " not compared: 'make never-ran' is not a command this turn ran; the excerpt is not compared to the text of the evidence it cites"),
 ])
 def test_every_verbatim_entry_left_uncompared_is_stamped_with_its_reason(cli, capsys, entry, reason):
     brief = _brief_id()
@@ -355,7 +358,64 @@ def test_every_verbatim_entry_left_uncompared_is_stamped_with_its_reason(cli, ca
     code, out = _finalize(cli, contract_id, _draft(agent, verbatim=[entry]), capsys)
 
     assert code == 0, out
-    assert _row(contract_id)[1]["content_checks"]["skipped"] == [f"evidence_report.verbatim_outputs[0] not compared: {reason}"]
+    assert _row(contract_id)[1]["content_checks"]["skipped"] == [f"evidence_report.verbatim_outputs[0]{reason}"]
+
+
+def _negative_evidence_id(brief_id: int) -> int:
+    from gaia.evidence.store import insert_evidence
+
+    return insert_evidence("me", brief_id, "AC-1", type="text", text="1 failed", polarity="negative")["id"]
+
+
+def test_negative_evidence_does_not_prove_a_pass(cli, capsys):
+    brief = _brief_id()
+    agent, contract_id = _turn(brief)
+
+    check = _command_check("make verify-everything", evidence_ids=[_negative_evidence_id(brief)])
+    code, out = _finalize(cli, contract_id, _draft(agent, check), capsys)
+
+    assert code == 1 and "only positive evidence proves a claim" in out["errors"][0]
+
+
+def test_evidence_of_a_task_does_not_prove_a_turn_bound_to_the_brief_alone(cli, capsys):
+    brief = _brief_id()
+    agent, contract_id = _turn(brief)
+
+    check = _command_check("make verify-everything", evidence_ids=[_evidence_id(brief, task_id="99999")])
+    code, out = _finalize(cli, contract_id, _draft(agent, check), capsys)
+
+    assert code == 1 and "not tied to this turn's work" in out["errors"][0]
+
+
+def test_brief_wide_evidence_does_not_prove_a_turn_bound_to_a_plan_task():
+    from gaia.contract.content_checks import check_content
+
+    envelope = {"evidence_report": {"verification": {"command": "make check", "evidence_ids": [7]}}}
+    binding = {"brief_ids": frozenset({1}), "task_ids": frozenset({"42"})}
+
+    errors, _ = check_content(envelope, [], bound=True, evidence={7: {"brief_id": 1, "task_id": None}}.get, binding=binding)
+
+    assert "not tied to this turn's work" in errors[0]
+
+
+@pytest.mark.parametrize("command", ["**PASS** ✅", "pass/", "/pass", "PASS ✅ /", "pass/ok", "12880 passed, 0 failed"])
+def test_a_decorated_verdict_is_refused_beside_tied_evidence(cli, capsys, command):
+    brief = _brief_id()
+    agent, contract_id = _turn(brief)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, _command_check(command, evidence_ids=[_evidence_id(brief)])), capsys)
+
+    assert code == 1 and "is a verdict, not a check" in out["errors"][0]
+
+
+@pytest.mark.parametrize("result", ["PASS (0 failures)", "12880 passed, 0 failed", "passing", "succeeded", "Failures: 0, all green"])
+def test_a_pass_claim_reporting_zero_failures_gets_the_exit_check(cli, capsys, result):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, {**_command_check(PYTEST), "result": result}), capsys)
+
+    assert code == 1 and "last exited 1" in out["errors"][0]
 
 
 def test_an_excerpt_passes_when_the_record_holds_no_output_and_the_skip_is_recorded(cli, capsys):

@@ -154,17 +154,27 @@ Finalize then checks what the contract cites against the turn's tool record
 `content_unverified`:
 
 - A verification carrying a `command`, whatever its `type` word, names a
-  command this turn ran, exactly as run, or cites existing evidence in
-  `verification.evidence_ids` (the id `gaia evidence add` prints). A bare
-  verdict such as `pass` is always refused.
-- With a `result` that means pass (`pass`, `passed`, `ok`, `success` or any
-  other pass word in `PASS_VERDICTS`), the last recorded run of that command
-  must have exited 0, or the exit declared in `verification.expect_exit` when a
-  nonzero exit is the expected outcome (`grep -q` finding nothing).
+  command this turn ran, exactly as run, or cites evidence in
+  `verification.evidence_ids` (the id `gaia evidence add` prints) that proves
+  it: the row exists, its polarity is positive, and it belongs to this turn's
+  work. A turn bound to a plan task is proven only by evidence recorded for
+  that task; a turn bound to a brief with no task, only by that brief's
+  evidence recorded with no task.
+- Verdicts are read after normalization, not by spelling: Unicode folded, check
+  and cross marks read as pass and fail, case, punctuation, emphasis, quotes,
+  slashes and spacing dropped. A command made only of verdict words, counts and
+  numbers (`**PASS** ✅`, `pass/ok`, `12880 passed, 0 failed`) is a verdict,
+  and always refused.
+- A `result` claims a pass when it holds a pass word not negated (`not
+  passed` is no claim) and no failure other than a zero count (`PASS (0
+  failures)` claims a pass; `1 failed, 4 passed` does not). Then the last
+  recorded run of that command must have exited 0, or the exit declared in
+  `verification.expect_exit` when a nonzero exit is the expected outcome
+  (`grep -q` finding nothing).
 - In a turn with no bound tool record, the command must be something a shell
   could run: past leading `NAME=value` words, its first word is a path, a
   program on PATH, or a builtin that runs one (`cd`, `source`, `export`), and
-  not a verdict word. `PASS.`, `all tests pass` and `exit 0` are refused.
+  not a verdict. `PASS.`, `all tests pass` and `exit 0` are refused.
 - A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
   attributed: its excerpt (an `output` key is read the same way), with `...`
   marking elisions, must appear in order in that command's recorded output,
@@ -173,9 +183,11 @@ Finalize then checks what the contract cites against the turn's tool record
   and so is one attributed to a command this turn never ran, unless the entry
   cites an `evidence_id`. A plain string, or a quote with no `command` and no
   `evidence_id`, names nothing to compare against: it is kept, uncompared, and
-  named in `content_checks.skipped`. Write the dict form for any output you
-  want proven.
-- An `evidence_id` on a verbatim entry must exist.
+  named in `content_checks.skipped`. Any other key of the entry (`stdout`,
+  `Output`) and any quote that is not a string is named there too, key and
+  reason. Write the dict form for any output you want proven.
+- An `evidence_id` on a verbatim entry must exist and belong to this turn's
+  work; it may be negative, since a quote can attest a failure.
 
 A comparison the record cannot settle is skipped and named in the row's
 `content_checks.skipped`, never refused: no output or exit kept, or an output

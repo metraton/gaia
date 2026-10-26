@@ -11,16 +11,23 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from gaia.redaction import redact_text
 
 TRUNCATION_SUFFIX = "...[truncated]"
-PASS_VERDICTS = frozenset({"pass", "passed", "ok", "true", "done", "green", "yes", "success"})
-FAIL_VERDICTS = frozenset({"fail", "failed", "false", "failure", "failures"})
-BARE_VERDICTS = PASS_VERDICTS | FAIL_VERDICTS
+PASS_WORDS = frozenset({
+    "pass", "passed", "passes", "passing", "ok", "okay", "success", "successful", "succeeded", "succeeds",
+    "done", "true", "green", "yes",
+})
+FAIL_WORDS = frozenset({"fail", "failed", "fails", "failing", "failure", "failures", "false", "error", "errors", "red"})
+NEGATIONS = frozenset({"not", "never", "no", "didnt", "doesnt", "dont", "isnt", "wasnt", "cannot", "cant"})
+ZERO_COUNTS = frozenset({"0", "zero", "no", "none"})
+COUNTED_NOUNS = frozenset({"all", "test", "tests", "check", "checks", "case", "cases", "of"})
+VERDICT_VOCABULARY = PASS_WORDS | FAIL_WORDS | NEGATIONS | ZERO_COUNTS | COUNTED_NOUNS
 QUOTE_KEYS = ("excerpt", "output")
 COMMAND_RUNNING_BUILTINS = frozenset({"cd", "source", ".", "export", "command", "time"})
 _ELISION = re.compile(r"\.\.\.|…")
 _ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=.*")
-_MARKS = str.maketrans({"✅": " pass ", "✓": " pass ", "✔": " pass ", "☑": " pass ", "❌": " fail ", "✗": " fail ", "✘": " fail "})
-_TRAILING_COUNT = re.compile(r"\(\s*\d+\s*/\s*\d+\s*\)\s*\Z")
-_DECORATION = re.compile(r"\A[\W_]+|[\W_]+\Z")
+_APOSTROPHE = re.compile(r"['’ʼ]")
+_TOKEN = re.compile(r"[^\W\d_]+|\d+")
+_NON_ALNUM = re.compile(r"[\W_]")
+SEGMENT_LIMIT = 160
 
 Run = Tuple[str, bool, Optional[int]]
 Binding = Mapping[str, frozenset]
@@ -30,18 +37,65 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
-def _verdict_word(text: str) -> str:
-    folded = unicodedata.normalize("NFKC", text).translate(_MARKS).strip().lower()
-    return _DECORATION.sub("", _TRAILING_COUNT.sub("", folded))
+def _mark_word(char: str) -> str:
+    if not unicodedata.category(char).startswith("S"):
+        return char
+    name = unicodedata.name(char, "").split()
+    if "CHECK" in name or name[:2] == ["THUMBS", "UP"]:
+        return " pass "
+    if {"CROSS", "MARK"} <= set(name) or name[-2:] == ["BALLOT", "X"] or name[:2] == ["THUMBS", "DOWN"]:
+        return " fail "
+    return " "
+
+
+def _segment(run: str) -> Optional[List[str]]:
+    """Split ``run`` wholly into numbers and verdict vocabulary words, or None when it holds anything else."""
+    if len(run) > SEGMENT_LIMIT:
+        return None
+    splits: List[Optional[List[str]]] = [[]] + [None] * len(run)
+    for end in range(1, len(run) + 1):
+        for start in range(end):
+            piece = run[start:end]
+            if splits[start] is not None and (piece in VERDICT_VOCABULARY or piece.isdigit()):
+                splits[end] = splits[start] + [piece]
+                break
+    return splits[-1]
+
+
+def _readings(text: str) -> List[List[str]]:
+    """The NFKC, case-folded words of ``text``, marks read as pass/fail: split at non-alphanumerics, rejoined per blank-separated word, and rejoined whole when that splits into verdict words."""
+    folded = _APOSTROPHE.sub("", "".join(_mark_word(char) for char in unicodedata.normalize("NFKC", text)).lower())
+    per_word = []
+    for word in folded.split():
+        run = _NON_ALNUM.sub("", word)
+        per_word += _segment(run) or _TOKEN.findall(run)
+    readings = [_TOKEN.findall(folded), per_word]
+    whole = _segment(_NON_ALNUM.sub("", folded))
+    return readings + [whole] if whole else readings
 
 
 def _is_bare_verdict(text: str) -> bool:
-    return "/" not in _TRAILING_COUNT.sub("", text) and _verdict_word(text) in BARE_VERDICTS
+    return any(all(token.isdigit() or token in VERDICT_VOCABULARY for token in tokens) for tokens in _readings(text))
+
+
+def _counts_zero(tokens: List[str], index: int) -> bool:
+    before = index - 1
+    while before >= 0 and tokens[before] in COUNTED_NOUNS:
+        before -= 1
+    after = index + 1
+    while after < len(tokens) and tokens[after] in COUNTED_NOUNS:
+        after += 1
+    return (before >= 0 and tokens[before] in ZERO_COUNTS) or (after < len(tokens) and tokens[after] in ZERO_COUNTS)
 
 
 def _claims_pass(result: str) -> bool:
-    words = set(re.findall(r"[^\W\d_]+", _verdict_word(result)))
-    return bool(words & PASS_VERDICTS) and not words & FAIL_VERDICTS
+    """A result claims a pass when it holds an unnegated pass word and no failure word other than a zero count of one."""
+    for tokens in _readings(result):
+        passes = any(token in PASS_WORDS and (i == 0 or tokens[i - 1] not in NEGATIONS) for i, token in enumerate(tokens))
+        fails = any(token in FAIL_WORDS and not _counts_zero(tokens, i) for i, token in enumerate(tokens))
+        if passes and not fails:
+            return True
+    return False
 
 
 def _recorded_runs(records: List[Mapping[str, Any]]) -> Dict[str, List[Run]]:
@@ -84,20 +138,23 @@ def runs_a_program(command: str) -> bool:
     except ValueError:
         return False
     program = next((word for word in words if not _ASSIGNMENT.fullmatch(word)), "")
-    if not program or _verdict_word(program) in BARE_VERDICTS:
+    if not program or _is_bare_verdict(program):
         return False
     return "/" in program or program in COMMAND_RUNNING_BUILTINS or shutil.which(program) is not None
 
 
 def _tied(row: Mapping[str, Any], binding: Binding) -> bool:
+    """A turn bound to a plan task is proven only by evidence of that task; a turn bound to a brief alone, only by the brief's task-less evidence."""
     task = row.get("task_id")
-    return row.get("brief_id") in binding["brief_ids"] or (task is not None and str(task) in binding["task_ids"])
+    if binding["task_ids"]:
+        return task is not None and str(task) in binding["task_ids"]
+    return task is None and row.get("brief_id") in binding["brief_ids"]
 
 
 def _evidence_errors(
-    path: str, cited: Any, evidence: Callable[[int], Optional[Mapping[str, Any]]], binding: Binding,
+    path: str, cited: Any, evidence: Callable[[int], Optional[Mapping[str, Any]]], binding: Binding, *, proves: bool,
 ) -> List[str]:
-    """An evidence id proves a claim only when its row exists and belongs to this turn's brief or plan task."""
+    """An evidence id holds only when its row exists and is tied to this turn's work; one cited as proof must also be positive."""
     ids = cited if isinstance(cited, list) else [cited]
     errors = []
     for value in ids:
@@ -107,11 +164,19 @@ def _evidence_errors(
         row = evidence(int(str(value).strip()))
         if row is None:
             errors.append(f"{path}: evidence id {value} does not exist (gaia evidence show {value})")
+        elif proves and row.get("polarity", "positive") != "positive":
+            errors.append(
+                f"{path}: evidence id {value} has polarity {row.get('polarity')!r}: it records a refutation, and "
+                "only positive evidence proves a claim"
+            )
         elif not _tied(row, binding):
+            scope = (
+                f"plan task {sorted(binding['task_ids'])}" if binding["task_ids"]
+                else f"brief {sorted(binding['brief_ids'])} with no plan task, so only that brief's task-less evidence counts"
+            )
             errors.append(
                 f"{path}: evidence id {value} is not tied to this turn's work: it was recorded under brief "
-                f"{row.get('brief_id')} and task {row.get('task_id')!r}, and this turn is bound to briefs "
-                f"{sorted(binding['brief_ids'])} and plan tasks {sorted(binding['task_ids'])}"
+                f"{row.get('brief_id')} and task {row.get('task_id')!r}, and this turn is bound to {scope}"
             )
     return errors
 
@@ -170,7 +235,7 @@ def _verification_errors(
     cited = verification.get("evidence_ids")
     errors: List[str] = []
     if cited not in (None, []):
-        errors = _evidence_errors("evidence_report.verification.evidence_ids", cited, evidence, binding)
+        errors = _evidence_errors("evidence_report.verification.evidence_ids", cited, evidence, binding, proves=True)
     if not command:
         return errors, []
     command_errors, skipped = _command_errors(
@@ -179,20 +244,27 @@ def _verification_errors(
     return errors + command_errors, skipped
 
 
-def _uncompared_reason(entry: Any) -> Optional[str]:
+def _kind(value: Any) -> str:
+    name = type(value).__name__
+    return f"{'an' if name[0] in 'aeiou' else 'a'} {name}"
+
+
+def _entry_reason(entry: Any, cited: bool) -> Optional[str]:
+    """Why no quote of a verbatim entry can be compared, or None when each quote key is judged on its own."""
     if not isinstance(entry, (str, dict)):
-        return f"it is {'an' if type(entry).__name__[0] in 'aeiou' else 'a'} {type(entry).__name__}, neither a quote nor an object"
-    if isinstance(entry, str):
-        return None
-    for key in QUOTE_KEYS:
-        if key in entry and not isinstance(entry[key], str):
-            return f"its {key} is a {type(entry[key]).__name__}, not a string"
-    if any(key in entry for key in QUOTE_KEYS):
-        return None
-    others = [key for key in entry if key not in ("command", "evidence_id")]
-    if others:
-        return f"it quotes under {', '.join(repr(key) for key in others)}, not excerpt or output"
-    return "it quotes nothing under excerpt or output"
+        return f"it is {_kind(entry)}, neither a quote nor an object"
+    fields = entry if isinstance(entry, dict) else {"excerpt": entry}
+    if not any(key not in ("command", "evidence_id") for key in fields):
+        return "it quotes nothing"
+    command = fields.get("command")
+    if command is not None and not isinstance(command, str):
+        return f"its command is {_kind(command)}, not a string"
+    if command is None:
+        return (
+            "it names no command; the excerpt is not compared to the text of the evidence it cites" if cited
+            else "it names no command and cites no evidence_id"
+        )
+    return None
 
 
 def check_content(
@@ -215,24 +287,24 @@ def check_content(
 
     for index, entry in enumerate(report.get("verbatim_outputs") or []):
         path = f"evidence_report.verbatim_outputs[{index}]"
-        fields = entry if isinstance(entry, dict) else {"excerpt": entry}
-        cited = "evidence_id" in fields
+        cited = isinstance(entry, dict) and "evidence_id" in entry
         if cited:
-            errors += _evidence_errors(f"{path}.evidence_id", fields["evidence_id"], evidence, binding)
-        reason = _uncompared_reason(entry)
-        command = fields.get("command")
-        if reason is None and not isinstance(command, str):
-            reason = (
-                "it names no command; the excerpt is not compared to the text of the evidence it cites" if cited
-                else "it names no command and cites no evidence_id"
-            )
+            errors += _evidence_errors(f"{path}.evidence_id", entry["evidence_id"], evidence, binding, proves=False)
+        reason = _entry_reason(entry, cited)
         if reason is not None:
             skipped.append(f"{path} not compared: {reason}")
             continue
-        for key in QUOTE_KEYS:
-            if key not in fields:
+        fields = entry if isinstance(entry, dict) else {"excerpt": entry}
+        for key, quote in fields.items():
+            if key in ("command", "evidence_id"):
                 continue
-            error, skip = _excerpt_finding(path, command, fields[key], recorded, bound=bound, cited=cited)
+            if key not in QUOTE_KEYS:
+                skipped.append(f"{path}.{key} not compared: only excerpt and output are compared to the record")
+                continue
+            if not isinstance(quote, str):
+                skipped.append(f"{path}.{key} not compared: it is {_kind(quote)}, not a string")
+                continue
+            error, skip = _excerpt_finding(path, fields["command"], quote, recorded, bound=bound, cited=cited)
             if error and error not in errors:
                 errors.append(error)
             if skip and skip not in skipped:
