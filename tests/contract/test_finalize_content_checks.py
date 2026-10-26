@@ -149,6 +149,26 @@ def test_a_pass_backed_by_a_command_whose_last_run_failed_is_refused(cli, capsys
     assert code == 1 and "last exited 1" in out["errors"][0]
 
 
+@pytest.mark.parametrize("result", ["passed", "ok", "success", "done", "true", "green", "yes", "Passed!"])
+def test_every_pass_word_gets_the_exit_check_a_pass_gets(cli, capsys, result):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, {**_command_check(PYTEST), "result": result}), capsys)
+
+    assert code == 1 and "last exited 1" in out["errors"][0]
+
+
+@pytest.mark.parametrize("result", ["fail", "failed", "false"])
+def test_a_fail_word_over_a_failing_run_is_not_refused(cli, capsys, result):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, _ = _finalize(cli, contract_id, _draft(agent, {**_command_check(PYTEST), "result": result}), capsys)
+
+    assert code == 0
+
+
 def test_a_declared_expect_exit_backs_a_pass_over_a_nonzero_exit(cli, capsys):
     agent, contract_id = _turn()
     _bash(agent, "grep -q secret config.yaml", stdout="", exit_code=1)
@@ -199,6 +219,34 @@ def test_an_excerpt_absent_from_its_commands_recorded_output_is_refused(cli, cap
 
     assert code == 1 and out["errors"] == [
         f"evidence_report.verbatim_outputs[1]: the excerpt is not in the recorded output of {PYTEST!r}",
+    ]
+
+
+@pytest.mark.parametrize("entry", [
+    {"command": PYTEST, "output": "99 passed"},
+    {"command": PYTEST, "excerpt": "4 passed", "output": "99 passed"},
+])
+def test_an_output_key_is_compared_as_an_excerpt(cli, capsys, entry):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, out = _finalize(cli, contract_id, _draft(agent, verbatim=[entry]), capsys)
+
+    assert code == 1 and out["errors"] == [
+        f"evidence_report.verbatim_outputs[0]: the excerpt is not in the recorded output of {PYTEST!r}",
+    ]
+
+
+@pytest.mark.parametrize("entry", [f"{PYTEST} -> 99 passed", {"excerpt": "99 passed"}])
+def test_a_quote_naming_no_command_is_stamped_uncompared(cli, capsys, entry):
+    agent, contract_id = _turn()
+    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
+
+    code, _ = _finalize(cli, contract_id, _draft(agent, verbatim=[entry]), capsys)
+
+    assert code == 0
+    assert _row(contract_id)[1]["content_checks"]["skipped"] == [
+        "evidence_report.verbatim_outputs[0] not compared: it names no command and cites no evidence_id",
     ]
 
 

@@ -10,9 +10,9 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from gaia.redaction import redact_text
 
 TRUNCATION_SUFFIX = "...[truncated]"
-BARE_VERDICTS = frozenset({
-    "pass", "passed", "ok", "fail", "failed", "true", "false", "done", "green", "yes", "success",
-})
+PASS_VERDICTS = frozenset({"pass", "passed", "ok", "true", "done", "green", "yes", "success"})
+BARE_VERDICTS = PASS_VERDICTS | {"fail", "failed", "false"}
+QUOTE_KEYS = ("excerpt", "output")
 COMMAND_RUNNING_BUILTINS = frozenset({"cd", "source", ".", "export", "command", "time"})
 _ELISION = re.compile(r"\.\.\.|…")
 _ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=.*")
@@ -22,6 +22,10 @@ Run = Tuple[str, bool, Optional[int]]
 
 def _norm(text: str) -> str:
     return " ".join(text.split())
+
+
+def _verdict_word(text: str) -> str:
+    return re.sub(r"\W+\Z", "", text.strip().lower())
 
 
 def _recorded_runs(records: List[Mapping[str, Any]]) -> Dict[str, List[Run]]:
@@ -64,7 +68,7 @@ def runs_a_program(command: str) -> bool:
     except ValueError:
         return False
     program = next((word for word in words if not _ASSIGNMENT.fullmatch(word)), "")
-    if not program or re.sub(r"\W+\Z", "", program.lower()) in BARE_VERDICTS:
+    if not program or _verdict_word(program) in BARE_VERDICTS:
         return False
     return "/" in program or program in COMMAND_RUNNING_BUILTINS or shutil.which(program) is not None
 
@@ -84,7 +88,8 @@ def _exit_errors(verification: Mapping[str, Any], command: str, runs: List[Run])
     expected = verification.get("expect_exit", 0)
     if isinstance(expected, bool) or not isinstance(expected, int):
         return [f"evidence_report.verification.expect_exit {expected!r} is not an exit code"], []
-    if str(verification.get("result") or "").strip().lower() != "pass":
+    result = str(verification.get("result") or "").strip()
+    if _verdict_word(result) not in PASS_VERDICTS:
         return [], []
     last_exit = runs[-1][2]
     if last_exit is None:
@@ -92,8 +97,8 @@ def _exit_errors(verification: Mapping[str, Any], command: str, runs: List[Run])
     if last_exit != expected:
         return [
             f"evidence_report.verification.command {command!r} last exited {last_exit}, so it cannot back result "
-            f"pass: run it until it exits {expected}, or declare verification.expect_exit when that exit is the "
-            "expected outcome"
+            f"{result!r}: run it until it exits {expected}, or declare verification.expect_exit when that exit is "
+            "the expected outcome"
         ], []
     return [], []
 
@@ -145,34 +150,46 @@ def check_content(
         errors, skipped = _verification_errors(verification, recorded, bound=bound, evidence_exists=evidence_exists)
 
     for index, entry in enumerate(report.get("verbatim_outputs") or []):
-        if not isinstance(entry, dict):
-            continue
         path = f"evidence_report.verbatim_outputs[{index}]"
-        if "evidence_id" in entry:
-            errors += _evidence_errors(f"{path}.evidence_id", entry["evidence_id"], evidence_exists)
-        command, excerpt = entry.get("command"), entry.get("excerpt")
-        if not isinstance(command, str) or not isinstance(excerpt, str):
+        fields = entry if isinstance(entry, dict) else {"excerpt": entry}
+        cited = "evidence_id" in fields
+        if cited:
+            errors += _evidence_errors(f"{path}.evidence_id", fields["evidence_id"], evidence_exists)
+        quotes = [fields[key] for key in QUOTE_KEYS if isinstance(fields.get(key), str)]
+        command = fields.get("command")
+        if quotes and not isinstance(command, str) and not cited:
+            skipped.append(f"{path} not compared: it names no command and cites no evidence_id")
             continue
-        fragments = _fragments(excerpt)
-        runs = recorded.get(_norm(redact_text(command)))
-        held = [(output, truncated) for output, truncated, _ in runs or [] if output]
-        if not fragments:
-            errors.append(f"{path}: the excerpt quotes nothing: quote the output lines it attests")
-        elif not bound:
-            skipped.append(f"{path} not compared: no tool record is bound to this turn")
-        elif runs is None and "evidence_id" not in entry:
-            errors.append(
-                f"{path}: {command!r} is not a command this turn ran: attribute the excerpt to the command "
-                "exactly as run, or cite the evidence_id that holds it"
-            )
-        elif runs is None:
+        if not quotes or not isinstance(command, str):
             continue
-        elif not held:
-            skipped.append(f"{path} not compared: the record holds no output for {command!r}")
-        elif any(_found_in_order(fragments, output) for output, _ in held):
-            continue
-        elif any(truncated for _, truncated in held):
-            skipped.append(f"{path} not compared: the recorded output of {command!r} is truncated and its head lacks the excerpt")
-        else:
-            errors.append(f"{path}: the excerpt is not in the recorded output of {command!r}")
+        for excerpt in quotes:
+            error, skip = _excerpt_finding(path, command, excerpt, recorded, bound=bound, cited=cited)
+            if error and error not in errors:
+                errors.append(error)
+            if skip and skip not in skipped:
+                skipped.append(skip)
     return errors, skipped
+
+
+def _excerpt_finding(
+    path: str, command: str, excerpt: str, recorded: Dict[str, List[Run]], *, bound: bool, cited: bool,
+) -> Tuple[Optional[str], Optional[str]]:
+    fragments = _fragments(excerpt)
+    runs = recorded.get(_norm(redact_text(command)))
+    held = [(output, truncated) for output, truncated, _ in runs or [] if output]
+    if not fragments:
+        return f"{path}: the excerpt quotes nothing: quote the output lines it attests", None
+    if not bound:
+        return None, f"{path} not compared: no tool record is bound to this turn"
+    if runs is None and not cited:
+        return (
+            f"{path}: {command!r} is not a command this turn ran: attribute the excerpt to the command "
+            "exactly as run, or cite the evidence_id that holds it"
+        ), None
+    if runs is None or any(_found_in_order(fragments, output) for output, _ in held):
+        return None, None
+    if not held:
+        return None, f"{path} not compared: the record holds no output for {command!r}"
+    if any(truncated for _, truncated in held):
+        return None, f"{path} not compared: the recorded output of {command!r} is truncated and its head lacks the excerpt"
+    return f"{path}: the excerpt is not in the recorded output of {command!r}", None

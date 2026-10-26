@@ -51,13 +51,20 @@ def test_proposals_projectless_end_to_end(tmp_path, monkeypatch):
         con.close()
     insert_dispatched_handoff(CONTRACT_ID, AGENT, "me", dispatch_project=None)
 
+    from gaia.briefs.store import get_brief, upsert_brief
+    from gaia.evidence.store import insert_evidence
+
+    upsert_brief("me", "brief-projectless-proposals", {"title": "t", "objective": "o"})
+    brief_id = get_brief("me", "brief-projectless-proposals")["id"]
+    evidence_id = insert_evidence("me", brief_id, "AC-1", type="text", text="2 facts measured")["id"]
+
     patch = {
         "user_facing_summary": "Two facts proposed.",
         "memory_delta": {"version": 1, "proposals": [
             _create("atom_projectless_kept"), _create("atom_projectless_dropped")]},
         "evidence_report": {"verification": {
-            "type": "command", "command": "true", "method": "e2e", "result": "pass",
-            "details": "ok"}},
+            "type": "command", "command": f"gaia evidence show {evidence_id}", "evidence_ids": [evidence_id],
+            "method": "e2e", "result": "pass", "details": "ok"}},
     }
     for argv in (
         ("fill", "--draft-id", CONTRACT_ID, "--json", json.dumps(patch)),

@@ -157,20 +157,24 @@ Finalize then checks what the contract cites against the turn's tool record
   command this turn ran, exactly as run, or cites existing evidence in
   `verification.evidence_ids` (the id `gaia evidence add` prints). A bare
   verdict such as `pass` is always refused.
-- With `result: pass`, the last recorded run of that command must have exited
-  0, or the exit declared in `verification.expect_exit` when a nonzero exit is
-  the expected outcome (`grep -q` finding nothing).
+- With a `result` that means pass (`pass`, `passed`, `ok`, `success` or any
+  other pass word in `PASS_VERDICTS`), the last recorded run of that command
+  must have exited 0, or the exit declared in `verification.expect_exit` when a
+  nonzero exit is the expected outcome (`grep -q` finding nothing).
 - In a turn with no bound tool record, the command must be something a shell
   could run: past leading `NAME=value` words, its first word is a path, a
   program on PATH, or a builtin that runs one (`cd`, `source`, `export`), and
   not a verdict word. `PASS.`, `all tests pass` and `exit 0` are refused.
 - A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
-  attributed: its excerpt, with `...` marking elisions, must appear in order in
-  that command's recorded output, each fragment on whole-token boundaries
-  (`5 passed` does not match `15 passed`). An excerpt with nothing but
-  whitespace or elisions is refused, and so is one attributed to a command
-  this turn never ran, unless the entry cites an `evidence_id`. A plain string
-  entry is not compared.
+  attributed: its excerpt (an `output` key is read the same way), with `...`
+  marking elisions, must appear in order in that command's recorded output,
+  each fragment on whole-token boundaries (`5 passed` does not match
+  `15 passed`). An excerpt with nothing but whitespace or elisions is refused,
+  and so is one attributed to a command this turn never ran, unless the entry
+  cites an `evidence_id`. A plain string, or a quote with no `command` and no
+  `evidence_id`, names nothing to compare against: it is kept, uncompared, and
+  named in `content_checks.skipped`. Write the dict form for any output you
+  want proven.
 - An `evidence_id` on a verbatim entry must exist.
 
 A comparison the record cannot settle is skipped and named in the row's
