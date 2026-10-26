@@ -38,7 +38,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
-from .nested_executors import nested_run, opens_session, reads_local_state
+from .nested_executors import nested_run, opens_session, reads_local_state, writes_or_sends
 from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
@@ -105,6 +105,7 @@ CATEGORY_MUTATIVE = "MUTATIVE"
 CATEGORY_SIMULATION = "SIMULATION"
 CATEGORY_READ_ONLY = "READ_ONLY"
 CATEGORY_UNKNOWN = "UNKNOWN"
+_READING_CATEGORIES = frozenset({CATEGORY_READ_ONLY, CATEGORY_SIMULATION})
 
 
 # ============================================================================
@@ -4640,15 +4641,51 @@ def _executor_floor_payloads(command: str) -> "Tuple[str, ...]":
     return tuple(payload for payload in payloads if payload)
 
 
+def _component_verdict(component: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
+    """Classify one component with the flag-dependent effects (``sed -i``, ``curl -X POST``) the verb ladder leaves to the validator."""
+    from .flag_classifiers import OUTCOME_READ_ONLY, classify_by_flags
+
+    result = detect_mutative_command(component, cwd=cwd, _depth=_depth)
+    if result.is_mutative:
+        return result
+    flagged = classify_by_flags(_peel_wrapper_readings(component)[0][0])
+    if flagged is None or flagged.command_family.startswith("git_"):
+        return result
+    if flagged.outcome == OUTCOME_READ_ONLY:
+        return replace(result, category=CATEGORY_READ_ONLY)
+    return replace(
+        result, is_mutative=True, category=CATEGORY_MUTATIVE, verb=flagged.matched_pattern or result.verb,
+        reason=f"Flag classifier: {flagged.reason}",
+    )
+
+
 def _strictest_component(command: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
     """Classify each component of the chain or pipeline *command*; the first mutative one wins."""
     from ..tools.shell_parser import parse_command
 
     for component in parse_command(command) or [command]:
-        result = detect_mutative_command(component, cwd=cwd, _depth=_depth)
+        result = _component_verdict(component, cwd=cwd, _depth=_depth)
         if result.is_mutative:
             break
     return result
+
+
+def _unproven_writer_or_sender(command: str, *, cwd: "Optional[str]", _depth: int) -> str:
+    """The first component of *command* whose program writes files or sends data and that no lane showed to only read."""
+    from ..tools.shell_parser import parse_command
+    from .shell_unwrapper import shell_command_string
+
+    for component in parse_command(command) or [command]:
+        payload = shell_command_string(component)
+        if payload is not None:
+            found = _unproven_writer_or_sender(payload, cwd=cwd, _depth=_depth + 1)
+        else:
+            program = analyze_command(_peel_wrapper_readings(component)[0][0]).base_cmd
+            reads = _component_verdict(component, cwd=cwd, _depth=_depth).category in _READING_CATEGORIES
+            found = "" if reads or not writes_or_sends(program) else component
+        if found:
+            return found
+    return ""
 
 
 def _check_nested_executor(
@@ -4674,6 +4711,8 @@ def _check_nested_executor(
         undetermined = f"'{run.executor}' word {run.unparsed!r} is outside its grammar"
     elif run.remote and reads_local_state(run.inner):
         undetermined = f"'{run.executor}' runs {run.inner!r} on another host, whose files decide its effect"
+    elif _unproven_writer_or_sender(run.inner, cwd=cwd, _depth=_depth + 1):
+        undetermined = f"'{run.executor}' runs {run.inner!r}, which may write files or send data"
     else:
         return MutativeResult(
             is_mutative=False, category=CATEGORY_READ_ONLY, verb=inner.verb, cli_family=semantics.base_cmd,

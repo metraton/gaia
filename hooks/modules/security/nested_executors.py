@@ -16,17 +16,23 @@ _GENERIC_VERBS = frozenset({"run", "exec"})
 
 @dataclass(frozen=True)
 class NestedRun:
-    """What an executor runs: *inner* is None for a session; *unparsed* names the word that stopped the parse."""
+    """What an executor runs: *inner* is None for a session; *unparsed* names the word that stopped the parse.
+
+    *reads* are the local files the executor itself loads, such as an ``--env-file``.
+    """
 
     executor: str
     inner: Optional[str] = None
     unparsed: Optional[str] = None
     remote: bool = False
     generic: bool = False
+    reads: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class _Grammar:
+    """``dashdash="legacy"`` also takes the command from the first word after the targets, when no ``--`` follows."""
+
     path: Tuple[str, ...]
     global_values: FrozenSet[str]
     global_booleans: FrozenSet[str]
@@ -37,29 +43,29 @@ class _Grammar:
     payload: str
     dashdash: str
     remote: bool
+    file_values: FrozenSet[str] = frozenset()
 
 
 _KUBECTL_VALUES = frozenset({
-    "-n", "--namespace", "--context", "--cluster", "--user", "--kubeconfig", "-s", "--server",
-    "--as", "--as-group", "--token", "--request-timeout", "-v", "--v",
+    "-n", "--namespace", "--context", "--cluster", "--request-timeout", "-v", "--v",
 })
 _KUBECTL_EXEC = _Grammar(
     path=("exec",), global_values=_KUBECTL_VALUES, global_booleans=frozenset(),
     values=_KUBECTL_VALUES | {"-c", "--container", "-f", "--filename", "--pod-running-timeout"},
     booleans=frozenset({"-i", "-t", "-q", "--stdin", "--tty", "--quiet"}), bundled="itq",
-    targets=1, payload=ARGV, dashdash="required", remote=True,
+    targets=1, payload=ARGV, dashdash="legacy", remote=True,
 )
-_DOCKER_GLOBAL_VALUES = frozenset({"-H", "--host", "--context", "-c", "--config", "-l", "--log-level"})
+_DOCKER_GLOBAL_VALUES = frozenset({"--context", "-c", "-l", "--log-level"})
 _DOCKER_GLOBAL_BOOLEANS = frozenset({"-D", "--debug", "--tls", "--tlsverify"})
 _DOCKER_EXEC_VALUES = frozenset({"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys"})
-_DOCKER_EXEC_BOOLEANS = frozenset({"-d", "-i", "-t", "--detach", "--interactive", "--tty", "--privileged"})
+_DOCKER_EXEC_BOOLEANS = frozenset({"-d", "-i", "-t", "--detach", "--interactive", "--tty"})
 
 
 def _docker(path: Tuple[str, ...]) -> _Grammar:
     return _Grammar(
         path=path, global_values=_DOCKER_GLOBAL_VALUES, global_booleans=_DOCKER_GLOBAL_BOOLEANS,
         values=_DOCKER_EXEC_VALUES, booleans=_DOCKER_EXEC_BOOLEANS, bundled="dit",
-        targets=1, payload=ARGV, dashdash="none", remote=True,
+        targets=1, payload=ARGV, dashdash="none", remote=True, file_values=frozenset({"--env-file"}),
     )
 
 
@@ -79,7 +85,7 @@ _OP_GLOBAL_BOOLEANS = frozenset({"--cache", "--debug", "--iso-timestamps", "--no
 _OP_RUN = _Grammar(
     path=("run",), global_values=_OP_GLOBAL_VALUES, global_booleans=_OP_GLOBAL_BOOLEANS,
     values=_OP_GLOBAL_VALUES | {"--env-file"}, booleans=_OP_GLOBAL_BOOLEANS, bundled="",
-    targets=0, payload=ARGV, dashdash="required", remote=False,
+    targets=0, payload=ARGV, dashdash="required", remote=False, file_values=frozenset({"--env-file"}),
 )
 _AWS_VAULT_GLOBAL_VALUES = frozenset({"--backend", "--prompt"})
 _AWS_VAULT_EXEC = _Grammar(
@@ -108,6 +114,7 @@ _LOCAL_STATE_PROGRAMS = frozenset({
     "npm", "npx", "pnpm", "yarn", "bun", "bunx", "uv", "uvx", "poetry", "pipx",
     "git", "gaia", "rm", "rmdir", "cp", "tar",
 })
+_COPIERS_TO_HOSTS = frozenset({"scp", "sftp", "rsync"})
 _SCRIPT_WORD = re.compile(r"(^|/)[\w.-]+\.(sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|pm|php|ps1)$")
 _WORD = re.compile(r"[^\s'\"`;&|()<>]+")
 
@@ -124,22 +131,29 @@ def _flag_kind(token: str, values: FrozenSet[str], booleans: FrozenSet[str], bun
     return ""
 
 
-def _skip_to_path(args: Sequence[str], grammar: _Grammar) -> Optional[int]:
+def _skip_to_path(args: Sequence[str], grammar: _Grammar) -> Tuple[Optional[int], Optional[str]]:
+    """Where the executor's own words start, or else the unknown global flag standing before its path."""
     index = 0
     while index < len(args) and args[index].startswith("-"):
         kind = _flag_kind(args[index], grammar.global_values, grammar.global_booleans, "")
         if not kind:
-            return None
+            width = len(grammar.path)
+            reaches = any(tuple(args[at:at + width]) == grammar.path for at in range(index + 1, len(args)))
+            return None, args[index] if reaches else None
         index += 2 if kind == "value" else 1
     if tuple(args[index:index + len(grammar.path)]) != grammar.path:
-        return None
-    return index + len(grammar.path)
+        return None, None
+    return index + len(grammar.path), None
 
 
 def _parse(executor: str, args: Sequence[str], grammar: _Grammar) -> Optional[NestedRun]:
     after_dashdash = list(args[args.index("--") + 1:]) if "--" in args else None
     literal = shlex.join(after_dashdash) if after_dashdash and grammar.dashdash != "none" else None
-    targets, command, index = [], None, 0
+    targets, command, reads, index = [], None, [], 0
+
+    def found(inner: Optional[str], unparsed: Optional[str] = None) -> NestedRun:
+        return NestedRun(executor, inner, unparsed=unparsed, remote=grammar.remote, reads=tuple(reads))
+
     while index < len(args):
         token = args[index]
         if token == "--":
@@ -149,31 +163,37 @@ def _parse(executor: str, args: Sequence[str], grammar: _Grammar) -> Optional[Ne
                 return None
             kind = _flag_kind(token, grammar.values, grammar.booleans, grammar.bundled)
             if not kind or (kind == "value" and index + 1 >= len(args)):
-                return NestedRun(executor, literal, unparsed=token, remote=grammar.remote)
-            if token.partition("=")[0] == "--command":
-                command = token.partition("=")[2] if kind == "value-attached" else args[index + 1]
+                return found(literal, token)
+            name, _, attached = token.partition("=")
+            value = attached if kind == "value-attached" else args[index + 1] if kind == "value" else None
+            if name == "--command":
+                command = value
+            if name in grammar.file_values:
+                reads.append(value)
             index += 2 if kind == "value" else 1
             continue
         if len(targets) < grammar.targets:
             targets.append(token)
             index += 1
             continue
-        if grammar.dashdash in ("none", "optional"):
+        if grammar.dashdash == "legacy" and "--" in args:
+            return found(literal, token)
+        if grammar.dashdash in ("none", "optional", "legacy"):
             after_dashdash = list(args[index:])
             break
-        return NestedRun(executor, literal, unparsed=token, remote=grammar.remote)
+        return found(literal, token)
     if len(targets) < grammar.targets:
-        return NestedRun(executor, literal, unparsed="the target it runs in", remote=grammar.remote)
+        return found(literal, "the target it runs in")
     if grammar.payload == COMMAND_OPTION:
         if after_dashdash is not None:
-            return NestedRun(executor, command, unparsed="--", remote=grammar.remote)
+            return found(command, "--")
         inner = command.strip() if command is not None else ""
-        return NestedRun(executor, inner or None, remote=grammar.remote)
+        return found(inner or None)
     if grammar.dashdash == "required" and after_dashdash is None:
         return None
     if after_dashdash and after_dashdash[0].startswith("-"):
-        return NestedRun(executor, shlex.join(after_dashdash), unparsed=after_dashdash[0], remote=grammar.remote)
-    return NestedRun(executor, shlex.join(after_dashdash) if after_dashdash else None, remote=grammar.remote)
+        return found(shlex.join(after_dashdash), after_dashdash[0])
+    return found(shlex.join(after_dashdash) if after_dashdash else None)
 
 
 def _parse_generic(program: str, args: Sequence[str]) -> Optional[NestedRun]:
@@ -195,9 +215,12 @@ def nested_run(tokens: Sequence[str]) -> Optional[NestedRun]:
         return None
     program, args = command_name(tokens[0]), list(tokens[1:])
     for grammar in _GRAMMARS.get(program, ()):
-        start = _skip_to_path(args, grammar)
+        executor = f"{program} {' '.join(grammar.path)}"
+        start, stopper = _skip_to_path(args, grammar)
+        if stopper is not None:
+            return NestedRun(executor, unparsed=stopper, remote=grammar.remote)
         if start is not None:
-            return _parse(f"{program} {' '.join(grammar.path)}", args[start:], grammar)
+            return _parse(executor, args[start:], grammar)
     return _parse_generic(program, args)
 
 
@@ -210,6 +233,15 @@ def opens_session(inner: str) -> bool:
     if not words or command_name(words[0]) not in _SESSION_PROGRAMS:
         return False
     return all(word.startswith("-") and word not in _INLINE_FLAGS for word in words[1:])
+
+
+def writes_or_sends(program: str) -> bool:
+    """True when *program* is a file writer or a network sender, whose effect only its flags can show to be a read."""
+    from .composition_rules import _NETWORK_EXECUTABLES
+    from .protected_path_guard import _FILESYSTEM_WRITE_COMMANDS
+
+    name = command_name(program)
+    return name in _FILESYSTEM_WRITE_COMMANDS or name in _NETWORK_EXECUTABLES or name in _COPIERS_TO_HOSTS
 
 
 def reads_local_state(inner: str) -> bool:

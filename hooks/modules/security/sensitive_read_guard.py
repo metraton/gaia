@@ -255,7 +255,27 @@ def http_client_written_paths(command: str) -> List[str]:
 
 
 def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
-    """The sensitive path a single command component reads or lists, or ""."""
+    """The sensitive path a component reads or lists as written, under its assignments and wrappers, or through what it executes."""
+    from .mutative_verbs import _executor_floor_payloads, _peel_wrapper_readings
+
+    hit = _component_reads_sensitive_as_written(component, cwd)
+    if hit:
+        return hit
+    readings, peeled = _peel_wrapper_readings(component)
+    for reading in readings if peeled else ():
+        hit = reading.strip() != component.strip() and _component_reads_sensitive(reading, cwd)
+        if hit:
+            return hit
+    nested = nested_run(_tokenize(component))
+    hit = first_sensitive_token(nested.reads, cwd) if nested is not None else ""
+    for payload in () if hit else _executor_floor_payloads(component):
+        hit = reads_sensitive_path(payload, cwd)
+        if hit:
+            break
+    return hit
+
+
+def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) -> str:
     words, inputs = _split_redirects(strip_grouping_wrappers(component))
     fed = first_sensitive_token(inputs, cwd)
     if fed:
@@ -263,6 +283,8 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     if component.lstrip().startswith(_UNDETERMINED_PROGRAM_MARKS):
         return first_sensitive_token(words, cwd)
     tokens = _strip_transparent_prefixes(words)
+    while tokens[:1] == ["--"]:
+        tokens = tokens[1:]
     if not tokens:
         return ""
     published = first_sensitive_token(publishing_body_files(words, cwd or os.getcwd()) or [], cwd)
@@ -273,9 +295,6 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     if base in _SHELLS and "-c" in arguments:
         inline = arguments[arguments.index("-c") + 1:]
         return reads_sensitive_path(inline[0], cwd) if inline else ""
-    nested = nested_run(tokens)
-    if nested is not None and nested.inner:
-        return reads_sensitive_path(nested.inner, cwd)
     inline_flags = _WINDOWS_SHELL_INLINE_FLAGS.get(base, ())
     flag_index = next(
         (index for index, arg in enumerate(arguments) if arg.lower() in inline_flags), None,
