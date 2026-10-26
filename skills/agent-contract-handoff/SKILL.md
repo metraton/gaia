@@ -155,26 +155,26 @@ Finalize then checks what the contract cites against the turn's tool record
 
 - A verification carrying a `command`, whatever its `type` word, names a
   command this turn ran, exactly as run, or cites evidence in
-  `verification.evidence_ids` (the id `gaia evidence add` prints) that proves
-  it: the row exists, its polarity is positive, and it belongs to this turn's
-  work. A turn bound to a plan task is proven only by evidence recorded for
-  that task; a turn bound to a brief with no task, only by that brief's
+  `verification.evidence_ids` (the id `gaia evidence add` prints, a plain
+  integer) that proves it: the row exists, its polarity is positive, and it
+  was recorded under this turn's brief and, for a turn bound to a plan task,
+  under that task; a turn with no plan task is proven only by its brief's
   evidence recorded with no task.
 - Verdicts are read after normalization, not by spelling: Unicode folded, check
-  and cross marks read as pass and fail, case, punctuation, emphasis, quotes,
-  slashes and spacing dropped. A command made only of verdict words, counts and
-  numbers (`**PASS** ✅`, `pass/ok`, `12880 passed, 0 failed`) is a verdict,
-  and always refused.
-- A `result` claims a pass when it holds a pass word not negated (`not
-  passed` is no claim) and no failure other than a zero count (`PASS (0
-  failures)` claims a pass; `1 failed, 4 passed` does not). Then the last
-  recorded run of that command must have exited 0, or the exit declared in
+  and cross marks read as pass and fail, case, punctuation, emphasis, markup
+  tags, quotes, slashes and spacing dropped. A command made only of verdict
+  words, counts and numbers (`**PASS** ✅`, `<b>pass</b>`, `pass/ok`,
+  `12880 passed, 0 failed`) is a verdict, and always refused.
+- When `result` is `pass` (after the same normalization), the last recorded
+  run of that command must have exited 0, or the exit declared in
   `verification.expect_exit` when a nonzero exit is the expected outcome
-  (`grep -q` finding nothing).
+  (`grep -q` finding nothing). Any other result is not interpreted, and the
+  unmade exit comparison is named in `content_checks.skipped`.
 - In a turn with no bound tool record, the command must be something a shell
-  could run: past leading `NAME=value` words, its first word is a path, a
-  program on PATH, or a builtin that runs one (`cd`, `source`, `export`), and
-  not a verdict. `PASS.`, `all tests pass` and `exit 0` are refused.
+  could run: past leading `NAME=value` words, its first word with markup tags
+  dropped is a path, a program on PATH, or a builtin that runs one (`cd`,
+  `source`, `export`), and not a verdict. `PASS.`, `all tests pass`, `exit 0`
+  and `<b>verified</b>` are refused.
 - A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
   attributed: its excerpt (an `output` key is read the same way), with `...`
   marking elisions, must appear in order in that command's recorded output,

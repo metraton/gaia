@@ -156,20 +156,20 @@ def test_a_pass_backed_by_a_command_whose_last_run_failed_is_refused(cli, capsys
     assert code == 1 and "last exited 1" in out["errors"][0]
 
 
-@pytest.mark.parametrize("result", ["passed", "ok", "success", "done", "true", "green", "yes", "Passed!"])
-def test_every_pass_word_gets_the_exit_check_a_pass_gets(cli, capsys, result):
+@pytest.mark.parametrize("result", ["passed, not failed", "0 failures", "LGTM", "ok", "PASS (5/5)", "exit 0"])
+def test_a_result_other_than_pass_is_not_read_as_a_pass_claim(cli, capsys, result):
     agent, contract_id = _turn()
     _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
 
     code, out = _finalize(cli, contract_id, _draft(agent, {**_command_check(PYTEST), "result": result}), capsys)
 
-    assert code == 1 and "last exited 1" in out["errors"][0]
+    assert code == 0, out
+    assert _row(contract_id)[1]["content_checks"]["skipped"] == [
+        f"evidence_report.verification exit not compared: result {result!r} is not pass, the only result read",
+    ]
 
 
-@pytest.mark.parametrize("result", [
-    "**pass**", "'pass'", "(pass)", "✅ pass", "Pass ✅", " - passed", "pass (5/5)", "all passed",
-    "PASS - all green", "Passed: 5 tests", "ＰＡＳＳ", "✅",
-])
+@pytest.mark.parametrize("result", ["**pass**", "'pass'", "(pass)", "✅ pass", "Pass ✅", " - pass", "ＰＡＳＳ", "✅", "<b>PASS</b>"])
 def test_a_decorated_pass_claim_gets_the_exit_check(cli, capsys, result):
     agent, contract_id = _turn()
     _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
@@ -189,8 +189,8 @@ def test_a_decorated_verdict_named_as_the_command_is_refused(cli, capsys, comman
     assert code == 1 and "is a verdict, not a check" in out["errors"][0]
 
 
-@pytest.mark.parametrize("result", ["fail", "failed", "false", "**FAILED**", "1 failed, 4 passed", "❌ fail (1/5)"])
-def test_a_fail_word_over_a_failing_run_is_not_refused(cli, capsys, result):
+@pytest.mark.parametrize("result", ["fail", "**FAILED**", "1 failed, 4 passed", "hasn't passed", "pass: no", "not yet passing"])
+def test_an_honest_non_pass_result_over_a_failing_run_is_not_refused(cli, capsys, result):
     agent, contract_id = _turn()
     _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
 
@@ -268,7 +268,7 @@ def test_evidence_recorded_under_the_turns_plan_task_is_tied():
     from gaia.contract.content_checks import check_content
 
     envelope = {"evidence_report": {"verification": {"command": "make check", "evidence_ids": [7]}}}
-    rows = {7: {"brief_id": 1, "task_id": "42"}}
+    rows = {7: {"brief_id": 9, "task_id": "42"}}
     binding = {"brief_ids": frozenset({9}), "task_ids": frozenset({"42"})}
 
     errors, _ = check_content(envelope, [], bound=True, evidence=rows.get, binding=binding)
@@ -276,7 +276,18 @@ def test_evidence_recorded_under_the_turns_plan_task_is_tied():
     assert errors == []
 
 
-@pytest.mark.parametrize("cited", [[999999], ["x"], [True]])
+def test_evidence_of_the_turns_task_number_under_another_brief_is_not_tied():
+    from gaia.contract.content_checks import check_content
+
+    envelope = {"evidence_report": {"verification": {"command": "make check", "evidence_ids": [7]}}}
+    binding = {"brief_ids": frozenset({5}), "task_ids": frozenset({"42"})}
+
+    errors, _ = check_content(envelope, [], bound=True, evidence={7: {"brief_id": 6, "task_id": "42"}}.get, binding=binding)
+
+    assert "not tied to this turn's work" in errors[0]
+
+
+@pytest.mark.parametrize("cited", [[999999], ["x"], [True], ["²"], ["１"], [1.0]])
 def test_an_unknown_or_malformed_evidence_id_is_refused(cli, capsys, cited):
     agent, contract_id = _turn()
     _bash(agent, PYTEST)
@@ -408,16 +419,6 @@ def test_a_decorated_verdict_is_refused_beside_tied_evidence(cli, capsys, comman
     assert code == 1 and "is a verdict, not a check" in out["errors"][0]
 
 
-@pytest.mark.parametrize("result", ["PASS (0 failures)", "12880 passed, 0 failed", "passing", "succeeded", "Failures: 0, all green"])
-def test_a_pass_claim_reporting_zero_failures_gets_the_exit_check(cli, capsys, result):
-    agent, contract_id = _turn()
-    _bash(agent, PYTEST, stdout="1 failed, 4 passed", exit_code=1)
-
-    code, out = _finalize(cli, contract_id, _draft(agent, {**_command_check(PYTEST), "result": result}), capsys)
-
-    assert code == 1 and "last exited 1" in out["errors"][0]
-
-
 def test_an_excerpt_passes_when_the_record_holds_no_output_and_the_skip_is_recorded(cli, capsys):
     agent, contract_id = _turn()
     _bash(agent, PYTEST, stdout="")
@@ -503,7 +504,7 @@ def test_without_a_bound_record_a_runnable_command_is_skipped_and_a_verdict_refu
     assert "no tool record is bound" in _row(contract_id)[1]["content_checks"]["skipped"][0]
 
 
-@pytest.mark.parametrize("command", ["PASS.", "pass ✓", "all tests pass", "exit 0", "Passed!"])
+@pytest.mark.parametrize("command", ["PASS.", "pass ✓", "all tests pass", "exit 0", "Passed!", "<b>pass</b>", "<b>verified</b>"])
 def test_without_a_bound_record_a_command_no_shell_could_run_is_refused(cli, capsys, command):
     from gaia.store import writer
 

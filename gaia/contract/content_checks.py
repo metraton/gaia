@@ -11,20 +11,19 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from gaia.redaction import redact_text
 
 TRUNCATION_SUFFIX = "...[truncated]"
-PASS_WORDS = frozenset({
+VERDICT_VOCABULARY = frozenset({
     "pass", "passed", "passes", "passing", "ok", "okay", "success", "successful", "succeeded", "succeeds",
-    "done", "true", "green", "yes",
+    "done", "true", "green", "yes", "fail", "failed", "fails", "failing", "failure", "failures", "false",
+    "error", "errors", "red", "not", "never", "no", "didnt", "doesnt", "dont", "isnt", "wasnt", "cannot", "cant",
+    "zero", "none", "all", "test", "tests", "check", "checks", "case", "cases", "of",
 })
-FAIL_WORDS = frozenset({"fail", "failed", "fails", "failing", "failure", "failures", "false", "error", "errors", "red"})
-NEGATIONS = frozenset({"not", "never", "no", "didnt", "doesnt", "dont", "isnt", "wasnt", "cannot", "cant"})
-ZERO_COUNTS = frozenset({"0", "zero", "no", "none"})
-COUNTED_NOUNS = frozenset({"all", "test", "tests", "check", "checks", "case", "cases", "of"})
-VERDICT_VOCABULARY = PASS_WORDS | FAIL_WORDS | NEGATIONS | ZERO_COUNTS | COUNTED_NOUNS
 QUOTE_KEYS = ("excerpt", "output")
 COMMAND_RUNNING_BUILTINS = frozenset({"cd", "source", ".", "export", "command", "time"})
 _ELISION = re.compile(r"\.\.\.|…")
 _ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=.*")
 _APOSTROPHE = re.compile(r"['’ʼ]")
+_MARKUP = re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>")
+_ASCII_DIGITS = re.compile(r"[0-9]+")
 _TOKEN = re.compile(r"[^\W\d_]+|\d+")
 _NON_ALNUM = re.compile(r"[\W_]")
 SEGMENT_LIMIT = 160
@@ -63,39 +62,27 @@ def _segment(run: str) -> Optional[List[str]]:
 
 
 def _readings(text: str) -> List[List[str]]:
-    """The NFKC, case-folded words of ``text``, marks read as pass/fail: split at non-alphanumerics, rejoined per blank-separated word, and rejoined whole when that splits into verdict words."""
-    folded = _APOSTROPHE.sub("", "".join(_mark_word(char) for char in unicodedata.normalize("NFKC", text)).lower())
-    per_word = []
-    for word in folded.split():
-        run = _NON_ALNUM.sub("", word)
-        per_word += _segment(run) or _TOKEN.findall(run)
-    readings = [_TOKEN.findall(folded), per_word]
-    whole = _segment(_NON_ALNUM.sub("", folded))
-    return readings + [whole] if whole else readings
+    """The NFKC, case-folded words of ``text`` as written and with markup tags dropped, marks read as pass/fail: split at non-alphanumerics, rejoined per blank-separated word, and rejoined whole when that splits into verdict words."""
+    normalized = unicodedata.normalize("NFKC", text)
+    readings = []
+    for variant in dict.fromkeys((normalized, _MARKUP.sub(" ", normalized))):
+        folded = _APOSTROPHE.sub("", "".join(_mark_word(char) for char in variant).lower())
+        per_word = []
+        for word in folded.split():
+            run = _NON_ALNUM.sub("", word)
+            per_word += _segment(run) or _TOKEN.findall(run)
+        whole = _segment(_NON_ALNUM.sub("", folded))
+        readings += [_TOKEN.findall(folded), per_word] + ([whole] if whole else [])
+    return readings
 
 
 def _is_bare_verdict(text: str) -> bool:
     return any(all(token.isdigit() or token in VERDICT_VOCABULARY for token in tokens) for tokens in _readings(text))
 
 
-def _counts_zero(tokens: List[str], index: int) -> bool:
-    before = index - 1
-    while before >= 0 and tokens[before] in COUNTED_NOUNS:
-        before -= 1
-    after = index + 1
-    while after < len(tokens) and tokens[after] in COUNTED_NOUNS:
-        after += 1
-    return (before >= 0 and tokens[before] in ZERO_COUNTS) or (after < len(tokens) and tokens[after] in ZERO_COUNTS)
-
-
-def _claims_pass(result: str) -> bool:
-    """A result claims a pass when it holds an unnegated pass word and no failure word other than a zero count of one."""
-    for tokens in _readings(result):
-        passes = any(token in PASS_WORDS and (i == 0 or tokens[i - 1] not in NEGATIONS) for i, token in enumerate(tokens))
-        fails = any(token in FAIL_WORDS and not _counts_zero(tokens, i) for i, token in enumerate(tokens))
-        if passes and not fails:
-            return True
-    return False
+def _reads_pass(result: str) -> bool:
+    """True when ``result`` is the word pass alone, whatever its case or decoration; no other result text is interpreted."""
+    return any(tokens and all(token == "pass" for token in tokens) for tokens in _readings(result))
 
 
 def _recorded_runs(records: List[Mapping[str, Any]]) -> Dict[str, List[Run]]:
@@ -137,18 +124,29 @@ def runs_a_program(command: str) -> bool:
         words = shlex.split(command)
     except ValueError:
         return False
-    program = next((word for word in words if not _ASSIGNMENT.fullmatch(word)), "")
+    program = _MARKUP.sub("", next((word for word in words if not _ASSIGNMENT.fullmatch(word)), ""))
     if not program or _is_bare_verdict(program):
         return False
     return "/" in program or program in COMMAND_RUNNING_BUILTINS or shutil.which(program) is not None
 
 
 def _tied(row: Mapping[str, Any], binding: Binding) -> bool:
-    """A turn bound to a plan task is proven only by evidence of that task; a turn bound to a brief alone, only by the brief's task-less evidence."""
+    """Evidence proves a turn only when recorded under the turn's brief, and under its plan task when it has one, else under no task."""
+    if row.get("brief_id") not in binding["brief_ids"]:
+        return False
     task = row.get("task_id")
     if binding["task_ids"]:
         return task is not None and str(task) in binding["task_ids"]
-    return task is None and row.get("brief_id") in binding["brief_ids"]
+    return task is None
+
+
+def _evidence_number(value: Any) -> Optional[int]:
+    """The id ``value`` names when it is a plain ASCII integer, as a JSON number or a string of digits; None otherwise."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 0 else None
+    if isinstance(value, str) and _ASCII_DIGITS.fullmatch(value):
+        return int(value)
+    return None
 
 
 def _evidence_errors(
@@ -158,10 +156,11 @@ def _evidence_errors(
     ids = cited if isinstance(cited, list) else [cited]
     errors = []
     for value in ids:
-        if isinstance(value, bool) or not str(value).strip().isdigit():
+        number = _evidence_number(value)
+        if number is None:
             errors.append(f"{path}: {value!r} is not an evidence id")
             continue
-        row = evidence(int(str(value).strip()))
+        row = evidence(number)
         if row is None:
             errors.append(f"{path}: evidence id {value} does not exist (gaia evidence show {value})")
         elif proves and row.get("polarity", "positive") != "positive":
@@ -171,7 +170,7 @@ def _evidence_errors(
             )
         elif not _tied(row, binding):
             scope = (
-                f"plan task {sorted(binding['task_ids'])}" if binding["task_ids"]
+                f"plan task {sorted(binding['task_ids'])} of brief {sorted(binding['brief_ids'])}" if binding["task_ids"]
                 else f"brief {sorted(binding['brief_ids'])} with no plan task, so only that brief's task-less evidence counts"
             )
             errors.append(
@@ -186,8 +185,8 @@ def _exit_errors(verification: Mapping[str, Any], command: str, runs: List[Run])
     if isinstance(expected, bool) or not isinstance(expected, int):
         return [f"evidence_report.verification.expect_exit {expected!r} is not an exit code"], []
     result = str(verification.get("result") or "").strip()
-    if not _claims_pass(result):
-        return [], []
+    if not _reads_pass(result):
+        return [], [f"evidence_report.verification exit not compared: result {result!r} is not pass, the only result read"]
     last_exit = runs[-1][2]
     if last_exit is None:
         return [], [f"evidence_report.verification exit not compared: the record holds no exit code for {command!r}"]
