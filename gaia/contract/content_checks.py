@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import reprlib
 import shlex
 import shutil
 import unicodedata
@@ -19,6 +20,8 @@ VERDICT_VOCABULARY = frozenset({
 })
 QUOTE_KEYS = ("excerpt", "output")
 COMMAND_RUNNING_BUILTINS = frozenset({"cd", "source", ".", "export", "command", "time"})
+PATH_PREFIXES = ("/", "./", "../", "~/")
+MAX_EVIDENCE_ID = 2 ** 63 - 1
 _ELISION = re.compile(r"\.\.\.|…")
 _ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=.*")
 _APOSTROPHE = re.compile(r"['’ʼ]")
@@ -119,7 +122,7 @@ def _found_in_order(fragments: List[str], output: str) -> bool:
 
 
 def runs_a_program(command: str) -> bool:
-    """True when a shell could run ``command``: past leading assignments its first word is a path, a program on PATH, or a builtin that runs one, and not a verdict word."""
+    """True when a shell could run ``command``: past leading assignments its first word is a path (absolute, ./, ../ or ~/), a program on PATH, or a builtin that runs one, and not a verdict word."""
     try:
         words = shlex.split(command)
     except ValueError:
@@ -127,7 +130,9 @@ def runs_a_program(command: str) -> bool:
     program = _MARKUP.sub("", next((word for word in words if not _ASSIGNMENT.fullmatch(word)), ""))
     if not program or _is_bare_verdict(program):
         return False
-    return "/" in program or program in COMMAND_RUNNING_BUILTINS or shutil.which(program) is not None
+    if program.startswith(PATH_PREFIXES):
+        return True
+    return "/" not in program and (program in COMMAND_RUNNING_BUILTINS or shutil.which(program) is not None)
 
 
 def _tied(row: Mapping[str, Any], binding: Binding) -> bool:
@@ -141,11 +146,11 @@ def _tied(row: Mapping[str, Any], binding: Binding) -> bool:
 
 
 def _evidence_number(value: Any) -> Optional[int]:
-    """The id ``value`` names when it is a plain ASCII integer, as a JSON number or a string of digits; None otherwise."""
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value if value >= 0 else None
-    if isinstance(value, str) and _ASCII_DIGITS.fullmatch(value):
-        return int(value)
+    """The id ``value`` names when it is a positive integer SQLite can hold, as a JSON number or a string of ASCII digits; None otherwise."""
+    if isinstance(value, str) and _ASCII_DIGITS.fullmatch(value) and len(value.lstrip("0")) <= len(str(MAX_EVIDENCE_ID)):
+        value = int(value)
+    if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= MAX_EVIDENCE_ID:
+        return value
     return None
 
 
@@ -158,7 +163,7 @@ def _evidence_errors(
     for value in ids:
         number = _evidence_number(value)
         if number is None:
-            errors.append(f"{path}: {value!r} is not an evidence id")
+            errors.append(f"{path}: {reprlib.repr(value)} is not an evidence id, a positive integer up to {MAX_EVIDENCE_ID}")
             continue
         row = evidence(number)
         if row is None:

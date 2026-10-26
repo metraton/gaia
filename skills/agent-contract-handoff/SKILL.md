@@ -155,8 +155,9 @@ Finalize then checks what the contract cites against the turn's tool record
 
 - A verification carrying a `command`, whatever its `type` word, names a
   command this turn ran, exactly as run, or cites evidence in
-  `verification.evidence_ids` (the id `gaia evidence add` prints, a plain
-  integer) that proves it: the row exists, its polarity is positive, and it
+  `verification.evidence_ids` (the id `gaia evidence add` prints, a positive
+  integer within SQLite's 64-bit range; anything else is refused as malformed
+  before any lookup) that proves it: the row exists, its polarity is positive, and it
   was recorded under this turn's brief and, for a turn bound to a plan task,
   under that task; a turn with no plan task is proven only by its brief's
   evidence recorded with no task.
@@ -172,9 +173,10 @@ Finalize then checks what the contract cites against the turn's tool record
   unmade exit comparison is named in `content_checks.skipped`.
 - In a turn with no bound tool record, the command must be something a shell
   could run: past leading `NAME=value` words, its first word with markup tags
-  dropped is a path, a program on PATH, or a builtin that runs one (`cd`,
-  `source`, `export`), and not a verdict. `PASS.`, `all tests pass`, `exit 0`
-  and `<b>verified</b>` are refused.
+  dropped is a path (absolute, `./`, `../` or `~/`), a program on PATH, or a
+  builtin that runs one (`cd`, `source`, `export`), and not a verdict. `PASS.`,
+  `all tests pass`, `exit 0`, `<b>verified</b>`, `[PASS](/ci)` and `n/a` are
+  refused.
 - A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
   attributed: its excerpt (an `output` key is read the same way), with `...`
   marking elisions, must appear in order in that command's recorded output,

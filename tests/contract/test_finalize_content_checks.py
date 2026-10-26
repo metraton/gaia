@@ -287,7 +287,7 @@ def test_evidence_of_the_turns_task_number_under_another_brief_is_not_tied():
     assert "not tied to this turn's work" in errors[0]
 
 
-@pytest.mark.parametrize("cited", [[999999], ["x"], [True], ["²"], ["１"], [1.0]])
+@pytest.mark.parametrize("cited", [[999999], ["x"], [True], ["²"], ["１"], [1.0], [0], [2 ** 63], [10 ** 30], ["9" * 30], ["9" * 5000]])
 def test_an_unknown_or_malformed_evidence_id_is_refused(cli, capsys, cited):
     agent, contract_id = _turn()
     _bash(agent, PYTEST)

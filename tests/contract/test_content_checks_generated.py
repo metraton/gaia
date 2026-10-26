@@ -68,6 +68,15 @@ def test_without_a_tool_record_a_command_in_markup_is_read_without_it():
     assert accepted == []
 
 
+def test_without_a_tool_record_a_slash_reads_as_a_path_only_in_path_shape():
+    verdicts = ("[PASS](/ci)", "<b>pass</b>", "verified/ok", "n/a", "&lt;b&gt;pass&lt;/b&gt;", "tests/ green", "/pass",
+                "./ok", "../", "~/✅")
+    accepted = [command for command in verdicts if not _check({"command": command, "result": "pass"}, bound=False)]
+    paths = ("/usr/bin/env true", "./run-checks.sh", "../bin/verify", "~/bin/verify --all")
+    refused = [command for command in paths if _check({"command": command, "result": "pass"}, bound=False)]
+    assert (accepted, refused) == ([], [])
+
+
 def test_a_command_that_runs_a_program_is_not_read_as_a_verdict():
     commands = (PYTEST, "make test", "npm test", "go test ./...", "test -f out.txt", "git status", "gaia evidence show 5", "ls -la")
     refused = [command for command in commands if _check({"command": command, "result": "pass", "evidence_ids": [1]},
@@ -116,3 +125,20 @@ def test_an_evidence_id_that_is_not_a_plain_integer_is_refused_without_a_crash()
         if sum("is not an evidence id" in error for error in cited) != 2:
             wrong.append((value, cited))
     assert wrong == []
+
+
+def test_an_evidence_id_outside_sqlites_positive_integer_range_is_refused_before_any_lookup():
+    looked_up = []
+
+    def cite(*values):
+        envelope = {"evidence_report": {"verification": {"command": "make verify-everything", "evidence_ids": list(values)}}}
+        return check_content(envelope, [], bound=False, evidence=looked_up.append, binding=BRIEF_TURN)[0]
+
+    wrong = []
+    for value in (0, "0", 2 ** 63, -(2 ** 70), 10 ** 30, "9" * 30, "9" * 5000, "9223372036854775808"):
+        errors = cite(value)
+        if len(errors) != 1 or "is not an evidence id" not in errors[0] or len(errors[0]) > 300:
+            wrong.append((str(value)[:40], errors and errors[0][:120]))
+    largest = 2 ** 63 - 1
+    cite(largest, str(largest), "01")
+    assert (wrong, looked_up) == ([], [largest, largest, 1])
