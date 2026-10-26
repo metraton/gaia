@@ -68,14 +68,6 @@ two pure-shape cross-field conditionals the form layer previously missed):
                            sub-field missing/blank, an empty evidence list, or
                            a severity outside the enum). Absent or null ==
                            no check, on every agent_state.
-    WORK_PHASE_SHAPE    -- the OPTIONAL top-level work_phase field is present
-                           but not one of VALID_WORK_PHASES. Absent or null ==
-                           no check, on every agent_state -- work_phase is the
-                           observable WORK cycle (framing/investigating/
-                           planning/executing/verifying), orthogonal to the
-                           agent_state communication states above; see the
-                           VALID_WORK_PHASES comment for why the two are kept
-                           as separate enums.
 
 Design notes:
     - SHAPE ONLY: the form layer takes the already-parsed envelope dict. Fence
@@ -268,45 +260,6 @@ def _canonical_verification_type(raw: Any) -> str:
         return ""
     return _VERIFICATION_TYPE_SEPARATOR_RE.sub("_", text).strip("_")
 
-# ---------------------------------------------------------------------------
-# work_phase -- the observable WORK cycle (agent-protocol, work-cycle-observability
-# design). Orthogonal to agent_state on purpose:
-#
-#   agent_state (VALID_PLAN_STATUSES above) is the COMMUNICATION state machine --
-#   how THIS TURN currently reports back (IN_PROGRESS/BLOCKED/NEEDS_INPUT/
-#   APPROVAL_REQUEST/NEEDS_VERIFICATION/COMPLETE). It feeds routing and the
-#   finalize/verification gate, a pure function of (agent_state, plan_task_id),
-#   and that gate must not grow a second axis.
-#
-#   work_phase is the WORK state machine -- WHERE the producer is in framing ->
-#   investigating -> planning -> executing -> verifying. Two turns can carry the
-#   identical agent_state (IN_PROGRESS) while being in entirely different work
-#   phases; collapsing the two into one enum would force agent_state to grow
-#   phase-shaped values and break the routing/verification gate's purity. Kept
-#   separate instead.
-#
-# Like ENVELOPE_VERIFICATION_TYPES's "none" above, this enum backs NO DB CHECK
-# column -- agent_contract_handoffs persists the whole envelope in
-# raw_handoff_json, so a new top-level key needs no migration -- and therefore
-# does NOT belong in gaia.state.STATE_MACHINE_REGISTRY (that registry is
-# reserved for tuples paired with a real SQL CHECK). It is defined here, local
-# to the form layer, exactly where the DB-free envelope-only enum precedent
-# already lives.
-#
-# work_phase is OPTIONAL on every agent_state (mirrors failure_report): a
-# turn with no investigating/planning/executing/verifying phase -- a single
-# read-only lookup, say -- never sets it, and its absence is never an error.
-# Presence is validated in full: an out-of-enum value is a WORK_PHASE_SHAPE
-# rejection, so a typo'd phase does not silently pass as a null-equivalent.
-# ---------------------------------------------------------------------------
-VALID_WORK_PHASES: Tuple[str, ...] = (
-    "framing",
-    "investigating",
-    "planning",
-    "executing",
-    "verifying",
-)
-
 # Evidence is required for every valid status (no exclusions), matching
 # EVIDENCE_REQUIRED_PLAN_STATUSES in response_contract.py.
 _EVIDENCE_REQUIRING_STATUSES = frozenset(VALID_PLAN_STATUSES)
@@ -373,8 +326,8 @@ REQUIRED_AGENT_STATUS_FIELDS: Tuple[str, ...] = (
 #
 # A turn can end in a valid contract and still have suffered a concrete defect
 # along the way: something it attempted broke. The envelope had no place to say
-# so -- open_gaps is free prose about what is UNKNOWN, and rollback_executed is
-# about a rollback, not a defect -- so those failures were only ever recoverable
+# so -- open_gaps is free prose about what is UNKNOWN, not a defect -- so those
+# failures were only ever recoverable
 # by reading a transcript. This block is that place, and it is ADVISORY in the
 # strict sense: its ABSENCE is never an error on any agent_state, and its
 # PRESENCE is never a substitute for any other requirement. Thousands of
@@ -494,21 +447,15 @@ _COMMIT_TOKEN_PATTERN = re.compile(COMMIT_TOKEN_PATTERN_TEXT)
 #
 #   dict-valued     agent_status / evidence_report (7201 / 7133 dicts, no
 #                   counterexample), consolidation_report, approval_request,
-#                   failure_report, context_consumption
+#                   failure_report
 #   memory_delta    dict -- anchored to its consumer,
 #                   ``modules.agents.response_contract._extract_memory_delta``,
 #                   which requires an object carrying ``version`` +
 #                   ``proposals``; the population holds only nulls
-#   list-valued     update_contracts, memory_suggestions,
-#                   memorialize_suggestions (lists, with a single dict
-#                   counterexample that is itself the defect this closes)
-#   str-valued      work_phase, user_facing_summary
-#
-# ``rollback_executed`` is the one field admitting two spellings, and that is
-# its consumer's doing rather than a hedge: ``parse_rollback_executed`` returns
-# ``str(val)``, so a boolean and a sentence are both real, already-supported
-# inputs. Narrowing it to ``bool`` here would reject a value the reader
-# explicitly accepts.
+#   list-valued     update_contracts, memorialize_suggestions (lists, with a
+#                   single dict counterexample that is itself the defect this
+#                   closes)
+#   str-valued      user_facing_summary
 #
 # A type is enforced only on a value that is PRESENT and not null: an explicit
 # null is the seeded convention for every optional block (see
@@ -563,53 +510,33 @@ def conclusion_of(envelope: Any) -> "str | None":
 # and a key in this table is not in that enumeration. Adding one here can
 # never make a field mandatory.
 
-# ``failure_report`` and ``work_phase`` are declared fields whose type IS
-# checked -- by the dedicated code that already owned them,
-# FAILURE_REPORT_SHAPE and WORK_PHASE_SHAPE, each of which reports a
-# wrong-typed value with a message written for that field (the required
-# sub-fields, the five phase names). Adding them to the table above would
-# rename an existing rejection for no gain and stack two codes on one defect.
-# They are listed here so the schema is complete where it is read.
+# ``failure_report`` is a declared field whose type IS checked -- by the
+# dedicated code that already owned it, FAILURE_REPORT_SHAPE, which reports a
+# wrong-typed value with a message naming the required sub-fields. Adding it
+# to the table above would rename an existing rejection for no gain and stack
+# two codes on one defect. It is listed here so the schema is complete where
+# it is read.
 _FIELDS_TYPED_BY_A_DEDICATED_CODE: Tuple[str, ...] = (
     "failure_report",
-    "work_phase",
 )
 
 # ---------------------------------------------------------------------------
 # The advisory optional fields -- declared, allowlisted, deliberately UNTYPED.
 #
-# These carry an EXPLICIT pre-existing contract, written three times in
-# ``modules.agents.contract_validator``: "The return value is purely
-# informational; the validator never rejects based on this field"
-# (``parse_rollback_executed``, ``parse_context_consumption``,
-# ``parse_user_facing_summary``). Their parsers degrade to ``None`` on a
-# malformed value and the turn still closes, and a test asserts exactly that:
-# ``test_non_string_summary_is_none`` -- "a malformed optional field never
-# blocks".
+# Their parsers degrade to nothing on a malformed value and the turn still
+# closes; typing them would reject turns that close today. Observed types, so
+# flipping one into TOP_LEVEL_FIELD_TYPES needs no re-measurement:
+# user_facing_summary str (236, 1 null), update_contracts list (282, 1 dict,
+# 5 null), memorialize_suggestions list (27, 1 null), memory_delta null only.
 #
-# Type-checking them would reverse that contract: a turn that emits a
-# malformed advisory field closes today and would be REJECTED instead. That is
-# a runtime behaviour change for a field nothing load-bearing reads, so it is
-# NOT taken here on the validator's own initiative. They stay in the
-# allowlists (a typo among them is still caught by UNKNOWN_FIELD) and out of
-# the type table.
-#
-# Flipping this is one edit -- move a name from this tuple into
-# TOP_LEVEL_FIELD_TYPES with its type -- and the observed types are recorded
-# here so the decision needs no re-measurement: user_facing_summary str (236,
-# with 1 null), update_contracts list (282, 1 dict, 5 null),
-# memorialize_suggestions list (27, 1 null), memory_suggestions list (12, 1
-# null), context_consumption dict (4, 2 null),
-# memory_delta null only (its consumer ``_extract_memory_delta`` requires an
-# object carrying version + proposals), rollback_executed null only (its
-# consumer returns ``str(val)``, so a boolean and a sentence are both real).
+# work_phase, rollback_executed, context_consumption and memory_suggestions
+# are not declared: no code read them. A write carrying one is UNKNOWN_FIELD,
+# the next write strips one a draft inherited, and the read verbs never
+# validate, so old rows holding them still open.
 # ---------------------------------------------------------------------------
 ADVISORY_UNTYPED_FIELDS: Tuple[str, ...] = (
-    "context_consumption",
     "memorialize_suggestions",
     "memory_delta",
-    "memory_suggestions",
-    "rollback_executed",
     "update_contracts",
     "user_facing_summary",
 )
@@ -804,11 +731,6 @@ class FormErrorCode(str, Enum):
     # but malformed. Never fires on an envelope that omits the block, which is
     # what makes the field additive over already-persisted history.
     FAILURE_REPORT_SHAPE = "FAILURE_REPORT_SHAPE"
-    # Additive (work-cycle observability): the OPTIONAL top-level work_phase
-    # field is present but outside VALID_WORK_PHASES. Never fires on an
-    # envelope that omits the field, so every already-persisted contract
-    # keeps its verdict.
-    WORK_PHASE_SHAPE = "WORK_PHASE_SHAPE"
     # Additive: a DECLARED field is present with the wrong JSON type -- a
     # string where a list is declared, an object where a string is. Presence
     # was all the form layer used to check, which is how the seven evidence
@@ -1891,33 +1813,8 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                 )
             )
 
-    # --- work_phase (OPTIONAL, pure SHAPE, orthogonal to agent_state) -------
-    # Same presence-gating idiom as failure_report above: checked independently
-    # of agent_state (a turn's WORK phase is meaningful whatever it reports
-    # back), and gated only on presence -- absence or an explicit null (the
-    # seeded default in bin/cli/contract.py's _initial_envelope) reaches no
-    # check at all, so no already-persisted contract is affected.
-    raw_work_phase = envelope.get("work_phase")
-    if raw_work_phase is not None:
-        normalized_phase = str(raw_work_phase).strip().lower()
-        if normalized_phase not in VALID_WORK_PHASES:
-            errors.append(
-                FormError(
-                    code=FormErrorCode.WORK_PHASE_SHAPE,
-                    field="work_phase",
-                    detail=(
-                        f"{raw_work_phase!r} is not one of "
-                        f"{list(VALID_WORK_PHASES)}. work_phase is optional "
-                        "and orthogonal to agent_state -- omit it entirely "
-                        "for a turn with no distinguishable work phase, or "
-                        "set it to one of the enum values at each phase "
-                        "transition."
-                    ),
-                )
-            )
-
     # --- files_checked commit references (OPTIONAL form, pure SHAPE) --------
-    # Same presence-gating idiom as failure_report and work_phase above, and
+    # Same presence-gating idiom as failure_report above, and
     # gated one level deeper: only an ENTRY that declares itself a reference by
     # being an object is checked at all. An envelope whose files_checked holds
     # nothing but strings -- which is every envelope written before this form
@@ -1949,8 +1846,7 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
 # Canonicalization -- persist the value that was VALIDATED, not the raw one.
 #
 # Every enum in this module is compared NORMALIZED and was persisted RAW, so a
-# lower-case agent_state, a work_phase with surrounding spaces and capitals,
-# and an upper-case verification result all passed validation and then sat in
+# lower-case agent_state and an upper-case verification result all passed validation and then sat in
 # the database in whatever spelling they arrived with, forever. Two spellings
 # of one value are two values to every reader downstream -- a GROUP BY, a
 # filter, a metric -- and no amount of care at the read end recovers what the
@@ -2015,12 +1911,6 @@ def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> A
         # persist as "done". Any other next_action is prose and stays verbatim.
         if isinstance(raw_next, str) and raw_next.strip().lower() == "done":
             _replace(agent_status, "next_action", "done", "agent_status.next_action")
-
-    raw_phase = result.get("work_phase")
-    if isinstance(raw_phase, str):
-        normalized = raw_phase.strip().lower()
-        if normalized in VALID_WORK_PHASES:
-            _replace(result, "work_phase", normalized, "work_phase")
 
     evidence = result.get("evidence_report")
     if isinstance(evidence, dict):
@@ -2281,7 +2171,6 @@ __all__ = [
     "REQUIRED_AGENT_STATUS_FIELDS",
     "REQUIRED_FAILURE_REPORT_FIELDS",
     "VALID_FAILURE_SEVERITIES",
-    "VALID_WORK_PHASES",
     "FILE_REFERENCE_KEYS",
     "COMMIT_TOKEN_PATTERN_TEXT",
 ]

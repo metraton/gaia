@@ -13,7 +13,7 @@ The `memory` skill declares the contract explicitly ("Who writes"):
     the CLI. Subagents dispatched into a task do **not** call
     `gaia memory add` -- the writer hook rejects mutation from a dispatch
     context. Subagents propose impact with a versioned `memory_delta` in
-    `agent_contract_handoff`; `memorialize_suggestions` is the legacy lane.
+    `agent_contract_handoff`.
 
 That contract was documented but NOT enforced at runtime: `gaia memory add`
 (and `append` / `reclassify` / `link`) carry no verb in MUTATIVE_VERBS, so
@@ -74,7 +74,7 @@ ALLOWED_AGENTS = frozenset({"gaia-operator"})
 REJECTION_MESSAGE = (
     "Direct memory writes are not allowed from a subagent dispatch context. "
     "Subagents propose memory impact by emitting a versioned `memory_delta` "
-    "block in their contract row (`memorialize_suggestions` is legacy); the orchestrator (or gaia-operator) "
+    "block in their contract row; the orchestrator (or gaia-operator) "
     "persists it on user confirmation. Do NOT retry -- this is not approvable."
 )
 

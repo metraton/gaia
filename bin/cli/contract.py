@@ -642,8 +642,8 @@ def _write_if_valid(
         _print_error(refusal, as_json)
         return 1
     # What gets persisted is what got VALIDATED. Every enum in the envelope is
-    # compared normalized (agent_state upper-cased, work_phase stripped and
-    # lower-cased, verification.result lower-cased), and persisting the raw
+    # compared normalized (agent_state upper-cased, verification.result
+    # lower-cased), and persisting the raw
     # spelling instead left two spellings of one value in the database for
     # every reader downstream to reconcile. Canonicalizing here, after the
     # verdict and before the write, is the one point where the validated value

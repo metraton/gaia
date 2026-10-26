@@ -1080,7 +1080,7 @@ class BashValidator:
         # context, EXCEPT for the sanctioned writers (gaia-operator). The
         # orchestrator (is_subagent False) is never blocked here. Categorical
         # deny, NOT approvable: the correct subagent path is to PROPOSE via a
-        # `memorialize_suggestions` block, not to escalate. Runs on the full
+        # `memory_delta` proposal, not to escalate. Runs on the full
         # (footer-normalized) command BEFORE unwrap/decompose so compound
         # chains and wrappers are inspected intact. See the memory skill's
         # "Who writes" section for the contract this enforces.
@@ -1099,8 +1099,8 @@ class BashValidator:
                 reason=mem_write_reason,
                 rule=_MEMORY_GUARD_RULES.get(mem_write_reason, "floor.subagent-memory-write"),
                 suggestions=[] if mem_write_reason in _MEMORY_GUARD_RULES else [
-                    "Write a `memorialize_suggestions` block into your "
-                    "contract row with `gaia contract fill --json` instead.",
+                    "Propose it in your contract row's `memory_delta` "
+                    "with `gaia contract set memory_delta '<json>'` instead.",
                 ],
             )
 

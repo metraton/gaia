@@ -42,19 +42,16 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    retention rule can attribute and reclaim it once the contract closes, then
    deposit it as evidence through the contract's evidence clause -- see
    `agent-contract-handoff` -- rather than leaving it as a loose file.
-5. Two rules apply here, at two different levels, and they do not compete.
-   Entering this phase at all is `agent-protocol`'s phase-transition floor: the
-   instant work becomes investigation, write `work_phase=investigating` once
-   (or fold it into the first evidence write) -- that mark is not optional
-   when this phase genuinely runs. WITHIN the phase, what else gets
-   checkpointed is governed by value-at-risk, not a fixed list: write a
+5. What gets checkpointed is governed by value-at-risk, not a fixed list; the
+   orchestrator reads your progress from the evidence lists you have written
+   (`agent-protocol` principle 6), so there is no phase mark to set: write a
    finding the instant re-deriving it would cost more than recording it. A
    long synthesis that runs with no tool calls in between is the costliest
    case: checkpoint the gathered evidence and hypotheses before you start it
    (you cannot predict where it lands), then fill the conclusion the instant
    you reach it -- before composing the report that states it, not after. A
    one-file read that never reaches a costly-to-redo finding earns zero
-   mid-turn checkpoints beyond the one phase mark; do not add ritual where
+   mid-turn checkpoints; do not add ritual where
    nothing is at risk.
 
 ## Forecast mutations after read-only work
