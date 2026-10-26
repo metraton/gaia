@@ -2261,9 +2261,7 @@ _JS_UNSEEN_EFFECT_RE = _re.compile(
     r"|\b(?:rename|copyFile|cp|mkdir|mkdtemp|symlink|link|truncate|ftruncate|utimes|chown|lchown|open|"
     r"createWriteStream|writev?)(?:Sync)?\s*\("
 )
-# JavaScript effects judged at every length and in every lane: code built at
-# runtime, a network module, a computed member of an effect module bound to a
-# name, a fetch with a body or method.
+# JavaScript effects judged at every length and in every lane.
 _JS_NETWORK_MODULE_RE = _re.compile(
     r"""(?:\brequire\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)['"](?:node:)?"""
     r"""(?:net|https?|http2|dgram|tls|cluster|worker_threads|inspector|vm)['"]"""
@@ -2278,9 +2276,8 @@ _JS_EFFECT_BINDING_RE = _re.compile(
     r"""(?:node:)?(?:fs|fs/promises|net|child_process)['"]\s*\)"""
     r"""|\bimport\s+(?:\*\s+as\s+)?(\w+)\s+from\s+['"](?:node:)?(?:fs|fs/promises|net|child_process)['"]"""
 )
-# Ruby, perl and php have no parser here, so their code asks unless every
-# statement is a print verb followed only by literals: quoted strings with no
-# interpolation (no $, @, #, { or backtick), numbers and arithmetic.
+# Ruby, perl and php have no parser here: their code asks unless every statement
+# prints only literals (no interpolation), numbers and arithmetic.
 _UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php"})
 _PRINT_ONLY_STATEMENT_RE = _re.compile(
     r"""\s*(?:(?:print|puts|pp|p|echo|say|printf)\b"""
@@ -9764,11 +9761,7 @@ def _prints_literals_only(code: str) -> bool:
 
 
 def _js_hidden_effect(code: str, calls_view: "Optional[str]" = None) -> bool:
-    """True when JavaScript *code* reaches an effect the call-shape layers do not look for.
-
-    *calls_view* is the same code with string contents blanked, so a string
-    that only mentions a call shape is not read as one.
-    """
+    """True when JavaScript *code* (call shapes read in *calls_view*, strings blanked) reaches an unseen effect."""
     calls = code if calls_view is None else calls_view
     if _JS_NETWORK_MODULE_RE.search(code) or _JS_HIDDEN_CALL_RE.search(calls):
         return True
@@ -9806,14 +9799,7 @@ def _long_code_judged_by_content(
     command: str, code_portion: str, base_cmd: str,
     argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]",
 ) -> bool:
-    """True when long inline code can be judged by its content rather than its length.
-
-    Python must parse, pass the catalog, and carry no uncatalogued effect
-    (``parse_finds_no_effect``).  JavaScript has no parser here, so it must
-    already have passed Layers 1-3a and carry none of the effects those layers
-    do not look for (``_JS_UNSEEN_EFFECT_RE``).  Any other language keeps the
-    length heuristic.
-    """
+    """True when long Python or JavaScript inline code shows no effect, so its content outranks its length."""
     if any(pattern.search(command) for pattern, _ in _SUSPICIOUS_HEURISTICS):
         return False
     if base_cmd in _PYTHON_INTERPRETERS:

@@ -29,8 +29,6 @@ Design:
   builds carries a body or a non-GET/HEAD method, matching a ``curl`` GET.  A
   process call with a literal argv is judged by the command it runs only when
   the caller passes ``argv_is_mutative`` (the script-file and inline lanes do).
-  ``eval``/``exec``/``compile``/``__import__``/``importlib`` on anything but a
-  literal is foreign code; a literal code string is analyzed as a payload.
 - Call CHAINS are resolved through intermediate calls, because the idiomatic
   form of most mutating APIs is a chain, not a flat ``module.function(...)``:
   ``Path("/x").unlink()`` resolves to ``pathlib.Path.unlink`` and
@@ -234,8 +232,7 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     ("socket.create_connection", "socket-open", "NETWORK"),
 )
 
-# Calls that run code chosen at runtime: a literal is read as its payload or
-# import, any other argument is foreign code.
+# Calls that run code chosen at runtime: any argument but a literal is foreign code.
 _DYNAMIC_CODE_CALLS: FrozenSet[str] = frozenset({
     "eval", "exec", "compile", "__import__", "builtins.eval", "builtins.exec",
     "importlib.import_module", "importlib.__import__", "runpy.run_path", "runpy.run_module",
@@ -251,11 +248,7 @@ def _is_str_literal(node: ast.AST) -> bool:
 
 
 def _imported_module(call: ast.Call, dotted: Optional[str]) -> Optional[str]:
-    """The module an import call evaluates to when its name is a literal, else None.
-
-    ``__import__('a.b')`` hands back the top package ``a`` unless a non-empty
-    ``fromlist`` asks for ``a.b``; a fromlist the parse cannot read is None.
-    """
+    """The module a literal import call evaluates to (``__import__`` yields the top package without a fromlist), else None."""
     if dotted not in _IMPORT_CALLS or not call.args or not _is_str_literal(call.args[0]):
         return None
     name = call.args[0].value
@@ -641,15 +634,12 @@ def _dynamic_code_result(
     return InlineAstResult(is_dangerous=True, label="dynamic-code", category="DYNAMIC_CODE", detail=dotted)
 
 
-# Effects the catalog does not name: an uncatalogued network or process module, a
-# bound-handle or path write, a SQL write, a call whose target is named at runtime.
 _UNCATALOGUED_EFFECT_MODULES: FrozenSet[str] = frozenset({
     "socket", "ssl", "http", "requests", "httpx", "urllib3", "aiohttp", "ftplib", "smtplib",
     "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "xmlrpc", "ctypes",
     "asyncio", "multiprocessing", "pty", "shelve", "dbm", "tempfile", "webbrowser",
 })
-# The members of an effect module that touch nothing outside the process; every other
-# use of the module asks. gettempdir's probe file is removed before it returns.
+# Effect-module members that touch nothing outside the process (gettempdir removes its probe file).
 _EFFECT_MODULE_READS: Dict[str, FrozenSet[str]] = {
     "tempfile": frozenset({"gettempdir", "gettempdirb", "gettempprefix", "gettempprefixb"}),
     "socket": frozenset({"gethostname"}),
@@ -682,12 +672,7 @@ def parse_finds_no_effect(
 
 
 def uncatalogued_effect(tree: ast.AST) -> str:
-    """The first effect in *tree* the catalog does not name, or "".
-
-    Named as ``module``, ``call``, ``sql``, ``write`` (an archive opened to
-    write), ``env`` (a changed environment a launched process inherits) or
-    ``path`` (a file reached through a path the parse cannot prove).
-    """
+    """The first uncatalogued effect in *tree* (``module``, ``call``, ``sql``, ``write``, ``env`` or ``path``), or ""."""
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     if _environment_reaches_a_process(tree, alias_map):
@@ -741,8 +726,7 @@ def uncatalogued_effect(tree: ast.AST) -> str:
     return ""
 
 
-# Openers whose mode (positional index, keyword) decides read or write; shelve
-# defaults to creating its file.
+# Openers whose mode (positional index, keyword) decides read or write.
 _ARCHIVE_OPENERS: Dict[str, Tuple[int, str]] = {
     **{name: (1, "mode") for name in (
         "zipfile.ZipFile", "zipfile.PyZipFile", "tarfile.open", "tarfile.TarFile", "gzip.open",
@@ -795,8 +779,7 @@ def _environment_reaches_a_process(tree: ast.AST, alias_map: "_AliasResolver") -
     return writes and launches
 
 
-# Dunders that only describe an object; any other reaches the interpreter's
-# internals (``__subclasses__``, ``__globals__``, ``__builtins__``, ``__dict__``).
+# Dunders that only describe an object; any other reaches the interpreter's internals.
 _INERT_DUNDERS: FrozenSet[str] = frozenset({
     "__name__", "__qualname__", "__doc__", "__version__", "__file__", "__module__", "__class__",
     "__init__", "__enter__", "__exit__", "__annotations__", "__all__", "__path__", "__len__",
@@ -814,10 +797,8 @@ def _reaches_interpreter_internals(node: ast.AST) -> bool:
     return attr.startswith("__") and attr.endswith("__") and attr not in _INERT_DUNDERS
 
 
-# Calls that open, list or copy files named by their leading positional
-# arguments (count per call; every ``shutil`` function takes two).  The
-# secret-read floor reads only path literals, so such a call is relieved only
-# when every path argument is one the parse proves (``_provable_path``).
+# File calls by their count of leading path arguments; the secret-read floor reads
+# only literals, so each must be one ``_provable_path`` proves.
 _PATH_CALLS: Dict[str, int] = {name: 1 for name in (
     "open", "builtins.open", "io.open", "io.FileIO", "codecs.open", "os.open", "pathlib.Path",
     "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath", "os.listdir", "os.scandir",
@@ -867,11 +848,7 @@ def _single_bindings(tree: ast.AST) -> Dict[str, ast.AST]:
 
 
 def _provable_path(node: ast.AST, alias_map: "_AliasResolver", bindings: Dict[str, ast.AST], depth: int = 0) -> bool:
-    """True when *node* is a path the parse proves: literals joined as path segments under a known root.
-
-    Concatenation, slicing, decoding, formatting with names and anything read at
-    runtime is not proven: the secret-read floor could not see the result.
-    """
+    """True when *node* is a path the parse proves: literals joined as path segments under a known root."""
     if depth > 8 or isinstance(node, ast.Starred):
         return False
     if isinstance(node, ast.Constant):
