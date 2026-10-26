@@ -32,7 +32,7 @@ number. The twelve run the arc of a turn:
 ```
 Ground   what already governs this -- injected context, memory, the code, the skills
 Plan     what "done" means, what the pieces are, which exits need one signature
-Work     declare the phase, write each finding as you reach it
+Work     write each finding as you reach it; progress is read from the record
 Verify   close each increment verified; on failure, back to the sources
 Close    declare a state, finalize, degrade honestly
 ```
@@ -63,8 +63,8 @@ gate decides between, and why the final message is not an input to it.
 
 It exists before you read your goal. `# Your Contract` shows it to you, and your
 first `gaia contract set/add/fill --draft-id <contract_id>` adopts it; there is
-no separate adoption step. Pass `--draft-id` on every later call and copy
-`agent_id` verbatim.
+no separate adoption step. Pass `--draft-id` on every later call; the harness
+stamps `agent_id`.
 
 The gate checks that identifier's shape. Nothing checks that it is *yours*. A
 `gaia contract init` run on a turn that already has a contract mints a second,
@@ -285,7 +285,7 @@ and as an on-disk draft -- before you run anything.
 | Field | Meaning |
 |---|---|
 | `contract_id` | The id passed as `--draft-id <contract_id>` on every `gaia contract` call. It addresses both the row and the draft. |
-| `agent_id` | Copied verbatim into `agent_status.agent_id` whenever state is declared. Shape: `a` plus 16 or more lowercase hex characters. |
+| `agent_id` | Stamped into `agent_status.agent_id` by the harness; the CLI refuses an agent write to it. Shape: `a` plus 16 or more lowercase hex characters. |
 | `goal` | The assignment, whole and bounded. Nothing outside it belongs to this turn. |
 | `role` / `surface` | The turn's relationship to the task, and the surface that owns it. |
 | `project` | The project this turn is about, as `name (/abs/path)`. Dispatch data first (the orchestrator's `project=<name>` token), cwd resolution only as fallback. A name the substrate does not know yet appears bare, with no path suffix. Absent when the dispatch named no project and the cwd matched none. |

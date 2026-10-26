@@ -13,7 +13,7 @@ The gate validates only your persisted contract: one found unfinalized -- or no 
 
 ## 2. You were born with a contract -- adopt it, do not create another
 
-`# Your Contract` names it on a fresh dispatch, a `# Contract Draft (resumed)` block on a resumed one; your first `gaia contract set/add/fill --draft-id <contract_id>` adopts that draft, and every later call carries `--draft-id` too -- omitted, the CLI targets the most recently touched draft, which is not necessarily yours. Copy `agent_id` verbatim into `agent_status.agent_id`. `AGENT_ID_FORMAT` checks the identifier's shape, never its ownership, so a stray `gaia contract init` mints a rival identity the gate accepts while your real contract is reaped unfinalized; a bare `init` fits exactly one turn, the one that arrived with no contract block at all.
+`# Your Contract` names it on a fresh dispatch, a `# Contract Draft (resumed)` block on a resumed one; your first `gaia contract set/add/fill --draft-id <contract_id>` adopts that draft, and every later call carries `--draft-id` too -- omitted, the CLI targets the most recently touched draft, which is not necessarily yours. The harness stamps `agent_status.agent_id`. `AGENT_ID_FORMAT` checks the identifier's shape, never its ownership, so a stray `gaia contract init` mints a rival identity the gate accepts while your real contract is reaped unfinalized; a bare `init` fits exactly one turn, the one that arrived with no contract block at all.
 
 ## 3. Ground yourself before acting
 
