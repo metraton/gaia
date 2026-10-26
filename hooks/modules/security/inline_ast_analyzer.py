@@ -28,7 +28,9 @@ Design:
 - ``urlopen`` is a read when it sends no body and no ``Request`` the module
   builds carries a body or a non-GET/HEAD method, matching a ``curl`` GET.  A
   process call with a literal argv is judged by the command it runs only when
-  the caller passes ``argv_is_mutative`` (the script-file lane does).
+  the caller passes ``argv_is_mutative`` (the script-file and inline lanes do).
+  ``eval``/``exec``/``compile``/``__import__``/``importlib`` on anything but a
+  literal is foreign code; a literal code string is analyzed as a payload.
 - Call CHAINS are resolved through intermediate calls, because the idiomatic
   form of most mutating APIs is a chain, not a flat ``module.function(...)``:
   ``Path("/x").unlink()`` resolves to ``pathlib.Path.unlink`` and
@@ -229,7 +231,17 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     ("httpx.get", "httpx-get", "NETWORK"),
     ("httpx.post", "httpx-post", "NETWORK"),
     ("socket.socket", "socket-open", "NETWORK"),
+    ("socket.create_connection", "socket-open", "NETWORK"),
 )
+
+# Calls that run code chosen at runtime.  A literal code string is read as its
+# own payload and a literal module name is just an import; any other argument
+# names code nobody can read here, which is foreign code.
+_DYNAMIC_CODE_CALLS: FrozenSet[str] = frozenset({
+    "eval", "exec", "compile", "__import__", "builtins.eval", "builtins.exec",
+    "importlib.import_module", "importlib.__import__", "runpy.run_path", "runpy.run_module",
+})
+_CODE_STRING_CALLS: FrozenSet[str] = frozenset({"eval", "exec", "compile", "builtins.eval", "builtins.exec"})
 
 _DANGEROUS_BY_DOTTED = {entry[0]: entry for entry in _DANGEROUS_CALLS}
 
@@ -527,6 +539,11 @@ def analyze_python_inline(
         if dotted is None:
             continue
 
+        if dotted in _DYNAMIC_CODE_CALLS:
+            result = _dynamic_code_result(node, dotted, argv_is_mutative)
+            if result.is_dangerous:
+                return result
+            continue
         if dotted == _URLOPEN and _urlopen_is_read(node, provenance):
             continue
         if argv_is_mutative is not None and dotted in _ARGV_PROCESS_CALLS:
@@ -572,6 +589,77 @@ def analyze_python_inline(
             )
 
     return InlineAstResult()
+
+
+def _dynamic_code_result(
+    node: ast.Call, dotted: str,
+    argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]],
+) -> InlineAstResult:
+    """Judge a call that runs code chosen at runtime by the code it is handed."""
+    first = node.args[0] if node.args else None
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        if dotted not in _CODE_STRING_CALLS:
+            return InlineAstResult()
+        inner = analyze_python_inline(first.value, argv_is_mutative)
+        if inner.is_dangerous or not inner.parse_failed:
+            return inner
+    return InlineAstResult(is_dangerous=True, label="dynamic-code", category="DYNAMIC_CODE", detail=dotted)
+
+
+# Effects the catalog above does not name, which a long payload must not carry
+# to be judged by its parse alone: a network or process module whose surface is
+# not catalogued, a write through a bound handle or path object, a database
+# write, and a call that picks its target by a name computed at runtime.
+_UNCATALOGUED_EFFECT_MODULES: FrozenSet[str] = frozenset({
+    "socket", "ssl", "http", "requests", "httpx", "urllib3", "aiohttp", "ftplib", "smtplib",
+    "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "xmlrpc", "ctypes",
+    "asyncio", "multiprocessing", "pty", "shelve", "dbm", "tempfile", "webbrowser",
+})
+_EFFECT_METHODS: FrozenSet[str] = frozenset({
+    "write", "writelines", "write_text", "write_bytes", "touch", "mkdir", "makedirs", "rmdir",
+    "unlink", "rename", "chmod", "chown", "lchmod", "symlink_to", "hardlink_to", "truncate",
+    "send", "sendall", "sendto", "sendmsg", "sendfile", "commit", "extractall", "extract",
+    "rmtree", "copyfile", "copytree", "removedirs", "kill", "terminate",
+})
+_STDIO_WRITERS: FrozenSet[str] = frozenset({"sys.stdout.write", "sys.stderr.write"})
+_RUNTIME_NAME_CALLS: FrozenSet[str] = frozenset({"getattr", "setattr", "delattr", "breakpoint"})
+
+
+def parse_finds_no_effect(
+    code: str, argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]] = None,
+) -> bool:
+    """True when ``code`` parses and neither the catalog nor the uncatalogued-effect screen finds an effect."""
+    if not code or not code.strip():
+        return False
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return False
+    if analyze_python_inline(code, argv_is_mutative).is_dangerous:
+        return False
+    alias_map = _AliasResolver()
+    alias_map.collect(tree)
+    sql = _ReadOnlyChecker()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        else:
+            modules = []
+        if any(name.split(".")[0] in _UNCATALOGUED_EFFECT_MODULES for name in modules):
+            return False
+        if not isinstance(node, ast.Call):
+            continue
+        dotted = alias_map.resolve_call(node.func) or ""
+        leaf = node.func.attr if isinstance(node.func, ast.Attribute) else dotted
+        if leaf in _RUNTIME_NAME_CALLS:
+            return False
+        if leaf in _EFFECT_METHODS and dotted not in _STDIO_WRITERS:
+            return False
+        if leaf in _SQL_EXEC_METHODS and not sql._sql_arg_is_read_only(node):
+            return False
+    return True
 
 
 # ============================================================================

@@ -22,7 +22,7 @@ import re
 import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
@@ -69,12 +69,10 @@ except ImportError:
 
 try:
     from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
-    from .inline_ast_analyzer import (
-        is_provably_read_only_python as _is_provably_read_only_python,
-    )
+    from .inline_ast_analyzer import parse_finds_no_effect as _parse_finds_no_effect
 except ImportError:  # pragma: no cover -- defensive
     _analyze_python_inline = None
-    _is_provably_read_only_python = None
+    _parse_finds_no_effect = None
     logging.getLogger(__name__).warning(
         "inline_ast_analyzer.analyze_python_inline not importable; "
         "AST-based Python inline analysis disabled (falling back to regex)"
@@ -2230,6 +2228,18 @@ _SUSPICIOUS_HEURISTICS: Tuple[Tuple[_re.Pattern, str], ...] = (
 
 MAX_SAFE_INLINE_LENGTH = 150
 MAX_NORMAL_INLINE_LENGTH = 500
+
+_JS_INLINE_INTERPRETERS: FrozenSet[str] = frozenset({"node"})
+# What long JavaScript can do that Layers 1-3a do not look for: run code it
+# builds, load a network or process module, or change the filesystem through
+# an fs call outside the delete/write/append patterns.
+_JS_UNSEEN_EFFECT_RE = _re.compile(
+    r"\b(?:eval|Function|import)\s*\(|\bnew\s+Function\b|\bvm\b|\brequire\s*\(\s*[^'\"\s]"
+    r"|\brequire\s*\(\s*['\"](?:node:)?(?:net|https?|http2|dgram|tls|dns|cluster|worker_threads|inspector|child_process)['\"]"
+    r"|\bprocess\.(?:binding|dlopen|kill)\b"
+    r"|\b(?:rename|copyFile|cp|mkdir|mkdtemp|symlink|link|truncate|ftruncate|utimes|chown|lchown|open|"
+    r"createWriteStream|writev?)(?:Sync)?\s*\("
+)
 
 
 # ============================================================================
@@ -5670,7 +5680,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # false-positive on generic keywords like "import", "create", etc.).
     cli_flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
     if base_cmd in _INLINE_CODE_CLIS and cli_flags & set(semantics.flag_tokens):
-        return _check_inline_code(command, base_cmd, family)
+        return _check_inline_code(command, base_cmd, family, cwd=cwd, _depth=_depth)
 
     # --- Step 3c: Heredoc safety check ---
     # When a runtime interpreter is invoked with '-' (stdin) and the command
@@ -5688,7 +5698,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         program is not None
         or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
     ):
-        return _check_inline_code(command, base_cmd, family, skip_length_check=True)
+        return _check_inline_code(command, base_cmd, family, skip_length_check=True, cwd=cwd, _depth=_depth)
 
     # --- Step 3d: CLI-specific mutative command paths ---
     command_path = tuple(token.lower() for token in semantics.non_flag_tokens)
@@ -8127,7 +8137,8 @@ def _read_script_content(
     the surrounding chain), else against the process cwd -- the previous,
     hook-cwd-only behavior.  This is what lets ``cd /repo && node build.mjs``
     find ``build.mjs`` under ``/repo`` instead of the Gaia install dir.  An
-    absolute path is unaffected.
+    absolute path is unaffected, and a leading ``~`` is the home directory the
+    shell expands it to.
 
     Returns ``None`` when the path cannot be resolved to a readable regular
     file -- the caller treats that as the conservative (mutative) case, because
@@ -8137,7 +8148,7 @@ def _read_script_content(
     """
     import os
 
-    resolved = path
+    resolved = path = os.path.expanduser(path)
     if not os.path.isabs(path):
         base = cwd if cwd is not None else os.getcwd()
         resolved = os.path.join(base, path)
@@ -9538,7 +9549,10 @@ def _check_package_manager(
     return None
 
 
-def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:
+def _check_inline_code(
+    command: str, base_cmd: str, family: str, skip_length_check: bool = False,
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> MutativeResult:
     """Check inline code for dangerous patterns.
 
     Pipeline:
@@ -9584,10 +9598,13 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                 )
 
     # ---- Layer 2 (Python only): AST-based invocation analysis ----
+    def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
+        return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
+
     if base_cmd in _PYTHON_INTERPRETERS and _analyze_python_inline is not None:
         payload = _extract_python_payload(command, base_cmd)
         if payload:
-            ast_result = _analyze_python_inline(payload)
+            ast_result = _analyze_python_inline(payload, argv_is_mutative)
             if ast_result.is_dangerous:
                 return MutativeResult(
                     is_mutative=True,
@@ -9599,6 +9616,7 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                         f"Inline Python invokes {ast_result.detail} "
                         f"({ast_result.category})"
                     ),
+                    rule="sign.foreign-code" if ast_result.category == "DYNAMIC_CODE" else "",
                 )
             if not ast_result.parse_failed:
                 # AST parsed cleanly and found nothing dangerous: trust it
@@ -9606,7 +9624,7 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                 # bare ``import subprocess`` or quoted strings).  Fall
                 # through to Layer 3 heuristics for length only.
                 return _layer3_length_check(
-                    command, base_cmd, family, skip_length_check,
+                    command, base_cmd, family, skip_length_check, argv_is_mutative,
                 )
             # parse_failed=True -> fall through to regex layer 2b below.
 
@@ -9615,13 +9633,17 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
     # so the two lanes cannot diverge on how a command handed to a subprocess
     # sink is detected.  Runs before the broader Layer 2b keyword scan.  For a
     # payload that already parsed cleanly as Python this point is unreachable
-    # (the AST block returned above), so Python behavior is unchanged.
-    sink_result = _scan_exec_sink_string_args(command, family)
+    # (the AST block returned above), so Python behavior is unchanged.  A JS
+    # backtick is a template literal, so it is no command there.
+    is_js = base_cmd in _JS_INLINE_INTERPRETERS
+    sink_result = _scan_exec_sink_string_args(command, family, shell_backticks=not is_js, cwd=cwd, _depth=_depth)
     if sink_result is not None and sink_result.is_mutative:
         return sink_result
 
     # ---- Layer 2b: Universal dangerous API keyword patterns ----
     for pattern, label, category in _UNIVERSAL_DANGEROUS_PATTERNS:
+        if is_js and label == "backtick-exec":
+            continue
         if pattern.search(command):
             return MutativeResult(
                 is_mutative=True,
@@ -9660,14 +9682,32 @@ def _layer3_full_check(
     return _layer3_length_check(command, base_cmd, family, skip_length_check)
 
 
+def _long_code_judged_by_content(
+    command: str, code_portion: str, base_cmd: str,
+    argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]",
+) -> bool:
+    """True when long inline code can be judged by its content rather than its length.
+
+    Python must parse, pass the catalog, and carry no uncatalogued effect
+    (``parse_finds_no_effect``).  JavaScript has no parser here, so it must
+    already have passed Layers 1-3a and carry none of the effects those layers
+    do not look for (``_JS_UNSEEN_EFFECT_RE``).  Any other language keeps the
+    length heuristic.
+    """
+    if any(pattern.search(command) for pattern, _ in _SUSPICIOUS_HEURISTICS):
+        return False
+    if base_cmd in _PYTHON_INTERPRETERS:
+        return _parse_finds_no_effect is not None and _parse_finds_no_effect(
+            _extract_python_payload(command, base_cmd), argv_is_mutative,
+        )
+    return base_cmd in _JS_INLINE_INTERPRETERS and not _JS_UNSEEN_EFFECT_RE.search(code_portion)
+
+
 def _layer3_length_check(
     command: str, base_cmd: str, family: str, skip_length_check: bool,
+    argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]" = None,
 ) -> MutativeResult:
-    """Run only the length heuristic (3b).
-
-    Used when AST analysis cleared a Python payload -- we trust the AST for
-    semantic safety but still flag suspiciously long inline code.
-    """
+    """Run only the length heuristic (3b), which yields to a content judgment that finds no effect."""
     code_portion = command
     cli_flag_tokens = _INLINE_CODE_MAP.get(base_cmd, frozenset())
     for flag in cli_flag_tokens:
@@ -9677,22 +9717,7 @@ def _layer3_length_check(
             break
 
     if not skip_length_check and len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
-        # AC-9 (Brief: endurecimiento-de-tests-del-security-core): the length
-        # heuristic is a *proxy* for "too complex to vet"; it must not flag
-        # inline code that is PROVABLY read-only just because it is long.  For
-        # Python payloads we re-parse the exact code and require a positive
-        # allowlist match (import + SELECT/PRAGMA + print + local assignments,
-        # no write call, no attribute/subscript assignment, no dynamic
-        # dispatch).  This is the inverse of analyze_python_inline's blocklist:
-        # a mutation never classifies as read-only, so the exemption cannot
-        # open a hole -- an AST-clean-but-mutating payload (``cur.execute(
-        # 'INSERT ...')``, ``con.commit()``) is NOT provably read-only and
-        # stays flagged.  Non-Python payloads are never exempted (no AST).
-        if (
-            base_cmd in _PYTHON_INTERPRETERS
-            and _is_provably_read_only_python is not None
-            and _is_provably_read_only_python(_extract_python_payload(command, base_cmd))
-        ):
+        if _long_code_judged_by_content(command, code_portion, base_cmd, argv_is_mutative):
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_READ_ONLY,
@@ -9700,8 +9725,8 @@ def _layer3_length_check(
                 cli_family=family,
                 confidence="medium",
                 reason=(
-                    f"Inline Python is long ({len(code_portion)} chars) but "
-                    "provably read-only (allowlisted constructs only)"
+                    f"Inline {base_cmd} code is long ({len(code_portion)} chars) "
+                    "but its content judgment finds no effect"
                 ),
             )
         return MutativeResult(

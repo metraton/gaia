@@ -358,6 +358,24 @@ AC_SHAPES = {
 }
 
 
+INLINE_LANES = [
+    "inline-lanes-python-long-json-read", "inline-lanes-python-long-rmtree-twin", "seed-roo-node-e-long-read",
+    "inline-lanes-node-long-rename-twin", "inline-python-subprocess-read", "inline-python-subprocess-write-twin",
+    "inline-lanes-cd-chain-script-read", "inline-lanes-cd-chain-script-write-twin", "inline-script-missing",
+    "inline-foreign-exec-fetched-code", "inline-template-literal-read",
+]
+
+
+@pytest.mark.parametrize("row_id", INLINE_LANES)
+def test_inline_lanes_judge_code_by_its_content(row_id, world, monkeypatch):
+    row = {r["id"]: r for r in ROWS}[row_id]
+    assert row["owner"] == "T1"
+    if "long" in row_id:
+        assert len(row["command"]) > 500, row_id
+    verdict, reason = _observe_isolated(row, world, monkeypatch)
+    assert verdict == row["expected"], (row["command"], reason)
+
+
 def test_every_shape_named_in_every_brief_criterion_maps_to_rows():
     by_id = {r["id"]: r for r in ROWS}
     for ac, shapes in AC_SHAPES.items():
