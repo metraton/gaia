@@ -1222,7 +1222,7 @@ class BashValidator:
         # A sensitive read is refused before any check that can ask, and before the
         # sanitizer, which would strip a `< file` input with the trailing redirect.
         sensitive_allowed, sensitive_reason = check_sensitive_read(
-            _scan_heredocs(command)[0], cwd,
+            _scan_heredocs(command)[0], cwd, program=command,
         )
         if not sensitive_allowed:
             logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
@@ -2886,13 +2886,13 @@ def _build_sealed_payload(
 
 def _categorical_refusal(command: str, cwd: str | None) -> BashValidationResult | None:
     """The refusal *command* carries anywhere in it, which outranks every signature request."""
-    command = _scan_heredocs(command)[0]
+    written, command = command, _scan_heredocs(command)[0]
     parts = [command, *(part.strip() for part in get_shell_parser().parse(command))]
     blocked = next((verdict for verdict in map(is_blocked_command, parts) if verdict.is_blocked), None)
     if blocked is not None:
         reason, rule = f"Command blocked by security policy: {blocked.category}", "floor.blocked"
     else:
-        reason, rule = check_sensitive_read(command, cwd)[1], "floor.secret-read"
+        reason, rule = check_sensitive_read(command, cwd, program=written)[1], "floor.secret-read"
     if not reason:
         return None
     return BashValidationResult(allowed=False, tier=SecurityTier.T3_BLOCKED, reason=reason, rule=rule)

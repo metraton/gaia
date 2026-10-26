@@ -53,7 +53,7 @@ PY_EFFECT_TAILS = {
     "requests": "import requests\nrequests.post('https://example.invalid', data='x')",
     "sql-write": "import sqlite3\nsqlite3.connect('x.db').execute('delete from t')",
     "sql-commit": "import sqlite3\nc = sqlite3.connect('x.db')\nc.commit()",
-    "base64": "import base64\nprint(base64.b64decode('eA=='))",
+    "base64-exec": "import base64\nexec(base64.b64decode('cHJpbnQoMSk='))",
     "tempfile": "import tempfile\ntempfile.mkstemp()",
     "chmod": "import os\nos.chmod('x', 0o777)",
 }
@@ -96,12 +96,7 @@ def _spellings(code: str, tmp_path: Path, name: str) -> dict:
         "heredoc": f"python3 - <<'PY'\n{code}\nPY",
         "script": f"python3 {script.name}",
     }
-    return {k: v for k, v in spellings.items() if name not in LONG_SCREEN_ONLY or k == "python -c"}
-
-
-# Effects the catalog cannot name, refused only by the long-code screen; the
-# heredoc and script lanes have no length heuristic, so they stay free there.
-LONG_SCREEN_ONLY = {"getattr-dispatch", "bound-write", "sql-write", "sql-commit", "base64", "tempfile"}
+    return spellings
 
 
 @pytest.mark.parametrize("tail", [[]] + [[line] for line in PY_READ_TAILS if not line.startswith("import")]
@@ -120,9 +115,13 @@ def test_long_python_with_an_effect_asks_in_every_spelling(name, tmp_path):
         assert _judge(command, str(tmp_path)) != "FREE", (spelling, name)
 
 
-@pytest.mark.parametrize("name", [n for n in PY_EFFECT_TAILS if n not in LONG_SCREEN_ONLY])
-def test_short_python_with_an_effect_asks(name):
-    assert _judge(f"python3 -c {shlex.quote(PY_EFFECT_TAILS[name].replace(chr(10), '; '))}") != "FREE", name
+@pytest.mark.parametrize("name", list(PY_EFFECT_TAILS))
+def test_short_python_with_an_effect_asks_in_every_spelling(name, tmp_path):
+    code = PY_EFFECT_TAILS[name]
+    (tmp_path / "short.py").write_text(code + "\n", encoding="utf-8")
+    for command in (f"python3 -c {shlex.quote(code.replace(chr(10), '; '))}",
+                    f"python3 - <<'PY'\n{code}\nPY", "python3 short.py"):
+        assert _judge(command, str(tmp_path)) != "FREE", (name, command)
 
 
 def test_long_javascript_that_only_reads_is_free():

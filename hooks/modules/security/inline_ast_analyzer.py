@@ -234,9 +234,8 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     ("socket.create_connection", "socket-open", "NETWORK"),
 )
 
-# Calls that run code chosen at runtime.  A literal code string is read as its
-# own payload and a literal module name is just an import; any other argument
-# names code nobody can read here, which is foreign code.
+# Calls that run code chosen at runtime: a literal is read as its payload or
+# import, any other argument is foreign code.
 _DYNAMIC_CODE_CALLS: FrozenSet[str] = frozenset({
     "eval", "exec", "compile", "__import__", "builtins.eval", "builtins.exec",
     "importlib.import_module", "importlib.__import__", "runpy.run_path", "runpy.run_module",
@@ -606,10 +605,8 @@ def _dynamic_code_result(
     return InlineAstResult(is_dangerous=True, label="dynamic-code", category="DYNAMIC_CODE", detail=dotted)
 
 
-# Effects the catalog above does not name, which a long payload must not carry
-# to be judged by its parse alone: a network or process module whose surface is
-# not catalogued, a write through a bound handle or path object, a database
-# write, and a call that picks its target by a name computed at runtime.
+# Effects the catalog does not name: an uncatalogued network or process module, a
+# bound-handle or path write, a SQL write, a call whose target is named at runtime.
 _UNCATALOGUED_EFFECT_MODULES: FrozenSet[str] = frozenset({
     "socket", "ssl", "http", "requests", "httpx", "urllib3", "aiohttp", "ftplib", "smtplib",
     "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "xmlrpc", "ctypes",
@@ -637,6 +634,11 @@ def parse_finds_no_effect(
         return False
     if analyze_python_inline(code, argv_is_mutative).is_dangerous:
         return False
+    return not uncatalogued_effect(tree)
+
+
+def uncatalogued_effect(tree: ast.AST) -> str:
+    """The first effect in *tree* the catalog does not name, as ``module``, ``call`` or ``sql``, or ""."""
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     sql = _ReadOnlyChecker()
@@ -648,18 +650,16 @@ def parse_finds_no_effect(
         else:
             modules = []
         if any(name.split(".")[0] in _UNCATALOGUED_EFFECT_MODULES for name in modules):
-            return False
+            return "module"
         if not isinstance(node, ast.Call):
             continue
         dotted = alias_map.resolve_call(node.func) or ""
         leaf = node.func.attr if isinstance(node.func, ast.Attribute) else dotted
-        if leaf in _RUNTIME_NAME_CALLS:
-            return False
-        if leaf in _EFFECT_METHODS and dotted not in _STDIO_WRITERS:
-            return False
+        if leaf in _RUNTIME_NAME_CALLS or (leaf in _EFFECT_METHODS and dotted not in _STDIO_WRITERS):
+            return "call"
         if leaf in _SQL_EXEC_METHODS and not sql._sql_arg_is_read_only(node):
-            return False
-    return True
+            return "sql"
+    return ""
 
 
 # ============================================================================

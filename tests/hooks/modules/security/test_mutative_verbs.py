@@ -607,10 +607,10 @@ class TestInlineCodeDetection:
     def test_subprocess_is_mutative(self):
         """subprocess in python -c is flagged -- the inner command runs in-process,
         bypassing the hook entirely (no separate Bash tool invocation)."""
-        result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"ls\"])"')
+        result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"kubectl\", \"apply\", \"-f\", \"x\"])"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "process-module"
+        assert result.verb == "subprocess-run"
 
     def test_python_variant(self):
         """python (not python3) with -c should also be checked."""
@@ -658,7 +658,7 @@ class TestInlineCodeDetection:
     def test_python_variant_subprocess_still_mutative(self):
         """No hole: a genuinely mutative `python -c` (subprocess) stays T3."""
         result = detect_mutative_command(
-            'python -c "import subprocess; subprocess.run([\'ls\'])"'
+            'python -c "import subprocess; subprocess.run([\'rm\', \'-rf\', \'build\'])"'
         )
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
@@ -862,7 +862,7 @@ class TestUniversalInlineCodeDetection:
         """Very long inline code (>500 chars) -> suspicious via heuristic."""
         long_code = "x" * 510
         result = detect_mutative_command(
-            f'node -e "{long_code}"'
+            f'ruby -e "{long_code}"'
         )
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
@@ -941,7 +941,7 @@ class TestLongInlineReadOnlyExemption:
         result = detect_mutative_command(self._long_mutating_ast_clean())
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "heuristic-long-code"
+        assert result.verb == "uncatalogued-effect"
 
     def test_long_open_write_still_t3(self):
         """NO REGRESSION: open(...,'w').write caught by AST before length."""
@@ -967,8 +967,8 @@ class TestLongInlineReadOnlyExemption:
         assert result.category == "MUTATIVE"
 
     def test_long_non_python_interpreter_still_t3(self):
-        """NO REGRESSION: exemption is Python-only; long node code stays T3."""
-        result = detect_mutative_command('node -e "%s"' % ("x" * 510))
+        """NO REGRESSION: the exemption is for Python and JavaScript; long ruby code stays T3."""
+        result = detect_mutative_command('ruby -e "%s"' % ("x" * 510))
         assert result.is_mutative is True
         assert result.verb == "heuristic-long-code"
 
@@ -982,7 +982,7 @@ class TestLongInlineReadOnlyExemption:
         result = detect_mutative_command('python3 -c "%s"' % body.replace('"', '\\"'))
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "heuristic-long-code"
+        assert result.verb == "uncatalogued-effect"
 
 
 class TestBuildT3BlockResponse:

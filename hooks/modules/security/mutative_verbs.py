@@ -1384,6 +1384,26 @@ _INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "php": frozenset({"-r"}),
 }
 
+_PYTHON_OPTION_VALUE_FLAGS: FrozenSet[str] = frozenset({"-W", "-X", "--check-hash-based-pycs"})
+
+
+def script_positional(interpreter: str, arguments: List[str]) -> Optional[str]:
+    """The script file *interpreter* runs from *arguments*, or None when it runs inline code, a module or stdin."""
+    defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(interpreter, frozenset())
+    value_flags = _PYTHON_OPTION_VALUE_FLAGS if interpreter in _PYTHON_INTERPRETERS else frozenset()
+    skip_value = False
+    for token in arguments:
+        if skip_value:
+            skip_value = False
+        elif token == "-" or token in defer_flags:
+            return None
+        elif token in value_flags:
+            skip_value = True
+        elif not token.startswith("-"):
+            return token
+    return None
+
+
 # Interpreter flags that VALIDATE SYNTAX ONLY and never execute the script
 # body.  ``bash -n <script>`` reads the script and reports parse errors without
 # running a single command; ``node --check <script>`` / ``node -c <script>``
@@ -2230,9 +2250,8 @@ MAX_SAFE_INLINE_LENGTH = 150
 MAX_NORMAL_INLINE_LENGTH = 500
 
 _JS_INLINE_INTERPRETERS: FrozenSet[str] = frozenset({"node"})
-# What long JavaScript can do that Layers 1-3a do not look for: run code it
-# builds, load a network or process module, or change the filesystem through
-# an fs call outside the delete/write/append patterns.
+# Long-JavaScript effects Layers 1-3a miss: built code, a network or process
+# module, an fs change outside the delete/write/append patterns.
 _JS_UNSEEN_EFFECT_RE = _re.compile(
     r"\b(?:eval|Function|import)\s*\(|\bnew\s+Function\b|\bvm\b|\brequire\s*\(\s*[^'\"\s]"
     r"|\brequire\s*\(\s*['\"](?:node:)?(?:net|https?|http2|dgram|tls|dns|cluster|worker_threads|inspector|child_process)['\"]"
@@ -6423,7 +6442,9 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
         if m:
             return m.group(2)
 
-    # Inline -c form, with quoted or unquoted payload.
+    payload = _inline_code_text(command, base_cmd, "")
+    if payload:
+        return payload
     m = _re.search(
         r"(?:^|\s)" + _re.escape(base_cmd) + r"\b[^-]*?-c\s+(['\"])(.*?)\1",
         command, _re.DOTALL,
@@ -7718,22 +7739,8 @@ def _resolve_script_argument(
             lane = "code"
         else:
             lane = "shell"
-        defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(base_cmd, frozenset())
-        # Walk the args (original casing) and return the first true positional
-        # -- the script file.  Standalone interpreter switches (-u, -O, -x, ...)
-        # are skipped; flags that consume the next token as inline code or a
-        # module name (-c, -m, -e, ...) mean there is NO script file, so we
-        # defer to the inline path / verb scanner by returning None.  The stdin
-        # sentinel "-" likewise defers (heredoc path owns it).
-        for token in raw_tokens[1:]:
-            if token == "-":
-                return None
-            if token in defer_flags:
-                return None
-            if token.startswith("-"):
-                continue
-            return (token, lane)
-        return None
+        path = script_positional(base_cmd, raw_tokens[1:])
+        return (path, lane) if path else None
 
     # Direct ``./script`` or ``path/script.ext`` invocation: the executable
     # token IS the script.  Use the original-case token so the path resolves
@@ -8558,12 +8565,10 @@ def _check_script_file(
         )
 
     if lane == "python" and _analyze_python_inline is not None:
-        ast_result = _analyze_python_inline(
-            content,
-            argv_is_mutative=lambda argv: _argv_command_is_mutative(
-                argv, cwd=cwd, _depth=_depth + 1,
-            ),
-        )
+        def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
+            return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
+
+        ast_result = _analyze_python_inline(content, argv_is_mutative=argv_is_mutative)
         if ast_result.is_dangerous:
             return MutativeResult(
                 is_mutative=True,
@@ -8577,6 +8582,8 @@ def _check_script_file(
                 ),
             )
         if not ast_result.parse_failed:
+            if not _parse_finds_no_effect(content, argv_is_mutative):
+                return _uncatalogued_python_effect(family, f"Python script '{script_path}'")
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_READ_ONLY,
@@ -9619,22 +9626,15 @@ def _check_inline_code(
                     rule="sign.foreign-code" if ast_result.category == "DYNAMIC_CODE" else "",
                 )
             if not ast_result.parse_failed:
-                # AST parsed cleanly and found nothing dangerous: trust it
-                # and skip the regex layer (which would false-positive on
-                # bare ``import subprocess`` or quoted strings).  Fall
-                # through to Layer 3 heuristics for length only.
+                if not _parse_finds_no_effect(payload, argv_is_mutative):
+                    return _uncatalogued_python_effect(family, "Inline Python")
                 return _layer3_length_check(
                     command, base_cmd, family, skip_length_check, argv_is_mutative,
                 )
             # parse_failed=True -> fall through to regex layer 2b below.
 
-    # ---- Layer 2a: Exec-sink string-argument re-classification ----
-    # Shared with the script-file code lane (``_classify_script_content_by_regex``)
-    # so the two lanes cannot diverge on how a command handed to a subprocess
-    # sink is detected.  Runs before the broader Layer 2b keyword scan.  For a
-    # payload that already parsed cleanly as Python this point is unreachable
-    # (the AST block returned above), so Python behavior is unchanged.  A JS
-    # backtick is a template literal, so it is no command there.
+    # Layer 2a, shared with the script-file code lane so the two cannot diverge
+    # on exec sinks; a JS backtick is a template literal, not a command.
     is_js = base_cmd in _JS_INLINE_INTERPRETERS
     sink_result = _scan_exec_sink_string_args(command, family, shell_backticks=not is_js, cwd=cwd, _depth=_depth)
     if sink_result is not None and sink_result.is_mutative:
@@ -9682,6 +9682,33 @@ def _layer3_full_check(
     return _layer3_length_check(command, base_cmd, family, skip_length_check)
 
 
+def _uncatalogued_python_effect(family: str, source: str) -> MutativeResult:
+    """The verdict for Python that parses clean of catalogued calls yet carries an effect the catalog does not name."""
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="uncatalogued-effect",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"{source} carries an effect the call catalog does not name (a network, process or "
+            "temp-file module, a write through a bound handle, a SQL write, or a name chosen at runtime)"
+        ),
+    )
+
+
+def _inline_code_text(command: str, base_cmd: str, fallback: str) -> str:
+    """The code an interpreter's inline flag hands it, unquoted as the shell passes it, else *fallback*."""
+    from ..tools.shell_parser import program_argv
+
+    words = program_argv(command)
+    flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
+    for index, word in enumerate(words[:-1]):
+        if word in flags:
+            return words[index + 1]
+    return fallback
+
+
 def _long_code_judged_by_content(
     command: str, code_portion: str, base_cmd: str,
     argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]",
@@ -9700,7 +9727,9 @@ def _long_code_judged_by_content(
         return _parse_finds_no_effect is not None and _parse_finds_no_effect(
             _extract_python_payload(command, base_cmd), argv_is_mutative,
         )
-    return base_cmd in _JS_INLINE_INTERPRETERS and not _JS_UNSEEN_EFFECT_RE.search(code_portion)
+    return base_cmd in _JS_INLINE_INTERPRETERS and not _JS_UNSEEN_EFFECT_RE.search(
+        _inline_code_text(command, base_cmd, code_portion),
+    )
 
 
 def _layer3_length_check(
