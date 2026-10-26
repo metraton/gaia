@@ -55,7 +55,32 @@ PY_EFFECT_TAILS = {
     "sql-commit": "import sqlite3\nc = sqlite3.connect('x.db')\nc.commit()",
     "base64-exec": "import base64\nexec(base64.b64decode('cHJpbnQoMSk='))",
     "tempfile": "import tempfile\ntempfile.mkstemp()",
+    "tempfile-mkdtemp": "import tempfile\nprint(tempfile.mkdtemp())",
+    "tempfile-named": "import tempfile\nprint(tempfile.NamedTemporaryFile().name)",
+    "tempfile-file": "import tempfile\ntempfile.TemporaryFile()",
+    "tempfile-spooled": "import tempfile\ntempfile.SpooledTemporaryFile()",
+    "tempfile-dir": "import tempfile\nprint(tempfile.TemporaryDirectory().name)",
+    "tempfile-from-import": "from tempfile import mkdtemp\nprint(mkdtemp())",
+    "tempfile-star": "from tempfile import *\nprint(gettempdir())",
+    "tempfile-module-alias": "import tempfile\nt = tempfile\nt.mkdtemp()",
+    "tempfile-module-as-value": "import tempfile\nprint(vars(tempfile))",
+    "tempfile-globals": "import tempfile\ntempfile.gettempdir.__globals__",
+    "tempfile-read-then-create":"import tempfile as t\nprint(t.gettempdir(), t.mkdtemp())",
+    "socket-connect": "import socket\ns = socket.socket()\ns.connect(('example.invalid', 80))",
+    "socket-dns": "import socket\nprint(socket.getaddrinfo('example.invalid', 80))",
+    "socket-fqdn": "import socket\nprint(socket.getfqdn())",
+    "http-client": "import http.client\nhttp.client.HTTPSConnection('example.invalid').request('GET', '/')",
+    "http-from-client": "from http import client\nclient.HTTPSConnection('example.invalid')",
+    "multiprocessing-process": "import multiprocessing\nmultiprocessing.Process(target=print).start()",
     "chmod": "import os\nos.chmod('x', 0o777)",
+}
+PY_PURE_READS = {
+    "gettempdir": "import tempfile\nprint(tempfile.gettempdir())",
+    "gettempprefix": "import tempfile\nprint(tempfile.gettempprefix(), tempfile.gettempdirb())",
+    "gettempdir-from": "from tempfile import gettempdir as g\nd = g()\nprint(d.upper())",
+    "gethostname": "import socket\nprint(socket.gethostname())",
+    "cpu-count": "from multiprocessing import cpu_count\nprint(cpu_count())",
+    "http-status": "import http\nprint(http.HTTPStatus(404).phrase)",
 }
 JS_READ = (
     "const fs=require('fs');const p=JSON.parse(fs.readFileSync('prd.json','utf8'));"
@@ -122,6 +147,15 @@ def test_short_python_with_an_effect_asks_in_every_spelling(name, tmp_path):
     for command in (f"python3 -c {shlex.quote(code.replace(chr(10), '; '))}",
                     f"python3 - <<'PY'\n{code}\nPY", "python3 short.py"):
         assert _judge(command, str(tmp_path)) != "FREE", (name, command)
+
+
+@pytest.mark.parametrize("name", list(PY_PURE_READS))
+def test_a_pure_read_from_an_effect_module_is_free_in_every_spelling(name, tmp_path):
+    code = PY_PURE_READS[name]
+    (tmp_path / "short.py").write_text(code + "\n", encoding="utf-8")
+    for command in (f"python3 -c {shlex.quote(code.replace(chr(10), '; '))}",
+                    f"python3 - <<'PY'\n{code}\nPY", "python3 short.py"):
+        assert _judge(command, str(tmp_path)) == "FREE", (name, command)
 
 
 def test_long_javascript_that_only_reads_is_free():

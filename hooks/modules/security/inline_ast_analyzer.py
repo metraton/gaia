@@ -612,6 +612,14 @@ _UNCATALOGUED_EFFECT_MODULES: FrozenSet[str] = frozenset({
     "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "xmlrpc", "ctypes",
     "asyncio", "multiprocessing", "pty", "shelve", "dbm", "tempfile", "webbrowser",
 })
+# The members of an effect module that touch nothing outside the process; every other
+# use of the module asks. gettempdir's probe file is removed before it returns.
+_EFFECT_MODULE_READS: Dict[str, FrozenSet[str]] = {
+    "tempfile": frozenset({"gettempdir", "gettempdirb", "gettempprefix", "gettempprefixb"}),
+    "socket": frozenset({"gethostname"}),
+    "multiprocessing": frozenset({"cpu_count"}),
+    "http": frozenset({"HTTPStatus"}),
+}
 _EFFECT_METHODS: FrozenSet[str] = frozenset({
     "write", "writelines", "write_text", "write_bytes", "touch", "mkdir", "makedirs", "rmdir",
     "unlink", "rename", "chmod", "chown", "lchmod", "symlink_to", "hardlink_to", "truncate",
@@ -642,15 +650,22 @@ def uncatalogued_effect(tree: ast.AST) -> str:
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     sql = _ReadOnlyChecker()
+    receivers = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
+            imported = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
-            modules = [node.module or ""]
+            imported = [f"{node.module or ''}.{alias.name}" for alias in node.names]
         else:
-            modules = []
-        if any(name.split(".")[0] in _UNCATALOGUED_EFFECT_MODULES for name in modules):
-            return "module"
+            imported = []
+        for name in imported:
+            effect_module = name.split(".")[0] in _UNCATALOGUED_EFFECT_MODULES
+            if effect_module and name not in _EFFECT_MODULE_READS and not _effect_module_read(name):
+                return "module"
+        if isinstance(node, (ast.Name, ast.Attribute)) and id(node) not in receivers:
+            used = alias_map.resolve_bound(node) or ""
+            if used.split(".")[0] in _EFFECT_MODULE_READS and not _effect_module_read(used):
+                return "module"
         if not isinstance(node, ast.Call):
             continue
         dotted = alias_map.resolve_call(node.func) or ""
@@ -660,6 +675,13 @@ def uncatalogued_effect(tree: ast.AST) -> str:
         if leaf in _SQL_EXEC_METHODS and not sql._sql_arg_is_read_only(node):
             return "sql"
     return ""
+
+
+def _effect_module_read(dotted: str) -> bool:
+    """True when *dotted* names a read of an effect module, with no private attribute after it."""
+    root, _, rest = dotted.partition(".")
+    member, *tail = rest.split(".")
+    return member in _EFFECT_MODULE_READS.get(root, ()) and not any(part.startswith("_") for part in tail)
 
 
 # ============================================================================
@@ -1071,6 +1093,13 @@ class _AliasResolver:
         if rest:
             return f"{canonical}.{'.'.join(rest)}"
         return canonical
+
+    def resolve_bound(self, node: ast.AST) -> Optional[str]:
+        """The dotted name of *node* when its head name was bound by an import or a resolvable call, else None."""
+        parts = self._dotted_parts(node)
+        if parts is None or parts[0] not in self._aliases:
+            return None
+        return self.resolve_call(node)
 
     def _dotted_parts(self, node: ast.AST) -> Optional[list]:
         """Walk an Attribute/Name/Call chain into a list of identifier parts.
