@@ -149,6 +149,24 @@ folds on separators only, so `self-review` and `self_review` are one type and
 `observation` stays itself. `type` is optional: absent or blank, no evidence is
 demanded, which is what keeps every contract that never declared one valid.
 
+Finalize then checks what the contract cites against the turn's tool record
+(`gaia/contract/content_checks.py`), and refuses a refuted citation as
+`content_unverified`:
+
+- A `command`/`code` verification names a command this turn ran, exactly as
+  run, or cites existing evidence in `verification.evidence_ids` (the id
+  `gaia evidence add` prints). A bare verdict such as `pass` is always refused.
+- A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
+  attributed: its excerpt, with `...` marking elisions, must appear in order in
+  that command's recorded output. A plain string entry is not compared.
+- An `evidence_id` on a verbatim entry must exist.
+
+A comparison the record cannot settle is skipped and named in the row's
+`content_checks.skipped`, never refused: no output kept, the command absent
+from this segment's record, or an output truncated before the excerpt (the
+record keeps its first 500 characters). A row already closed clean is not
+checked again.
+
 `verification.method` is a different, free-text field: prose naming HOW the
 check was done, stored verbatim and never read as a classifier. It does not
 substitute for `type` -- a block carrying only `method` declares no type and is
