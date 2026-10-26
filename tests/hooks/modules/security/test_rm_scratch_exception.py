@@ -117,9 +117,9 @@ def test_rm_rf_subdir_in_scratch_is_t0(scratch):
     assert result.category == "READ_ONLY"
 
 
-def test_rm_rf_scratch_root_itself_is_t0(scratch):
-    result = detect_mutative_command(f"rm -rf {scratch}")
-    assert result.is_mutative is False
+def test_rm_rf_the_shared_scratch_root_or_across_entries_stays_t3(scratch):
+    for command in (f"rm -rf {scratch}", f"rm -f {scratch}/a.token/x {scratch}/b.token/y"):
+        assert detect_mutative_command(command).is_mutative is True, command
 
 
 # ---------------------------------------------------------------------------

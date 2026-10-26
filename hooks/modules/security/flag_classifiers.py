@@ -626,6 +626,8 @@ def _tar_extracts_only_into_local_work(tokens: List[str]) -> bool:
     members = _tar_member_paths(real_archive, int(strip))
     if members is None:
         return _scratch_entry(real_archive) == root
+    if _scratch_entry(root) is not None and _scratch_entry(real_archive) not in (None, root):
+        return False
     landed = [os.path.realpath(os.path.join(target, m)) for m in members]
     return all(_local_work_root(path) is not None and _scratch_entry(path) == _scratch_entry(root) for path in landed)
 
