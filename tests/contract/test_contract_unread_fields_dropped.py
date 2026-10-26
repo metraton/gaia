@@ -120,6 +120,103 @@ def test_contract_unread_fields_dropped_both_memory_lanes_land_as_one_kind(db):
         ("memory", "atom_from_delta"), ("memory", "atom_from_memorialize")]
 
 
+def _memory_rows(db) -> list:
+    from gaia.store.proposals import list_proposals
+
+    return [p["payload"] for p in list_proposals(db_path=db)]
+
+
+def test_contract_unread_fields_dropped_a_legacy_entry_for_a_delta_row_is_dropped(db):
+    delta_entry = _create("atom_near")
+    _close(f"{AGENT}.000000000003", {
+        "agent_status": {"agent_state": "COMPLETE", "agent_id": AGENT,
+                         "pending_steps": [], "next_action": "done"},
+        "memory_delta": {"version": 1, "proposals": [{"operation": "create", "create": delta_entry}]},
+        "memorialize_suggestions": [
+            dict(delta_entry, description="Legacy wording.", **{"class": "fact", "rationale": "why"}),
+            _create("atom_near"),
+        ],
+    })
+
+    assert _memory_rows(db) == [{"operation": "create", "create": delta_entry}]
+
+
+def test_contract_unread_fields_dropped_a_free_shape_delta_name_claims_its_row(db):
+    _close(f"{AGENT}.000000000004", {
+        "agent_status": {"agent_state": "COMPLETE", "agent_id": AGENT,
+                         "pending_steps": [], "next_action": "done"},
+        "memory_delta": {"proposals": [
+            {"name": "atom_free", "type": "atom", "description": "Fact: free.", "body": "body"}]},
+        "memorialize_suggestions": [_create("atom_free"), _create("atom_other")],
+    })
+
+    assert [row["create"]["slug"] for row in _memory_rows(db)] == ["atom_free", "atom_other"]
+
+
+def _harness_paths() -> list:
+    from gaia.contract.validator import HARNESS_STAMPED_PATHS
+
+    return list(HARNESS_STAMPED_PATHS)
+
+
+def _fresh_draft(capsys) -> str:
+    rc, out = _cli(capsys, "init", "--agent-id", AGENT, "--json")
+    assert rc == 0, out
+    return json.loads(out.strip().splitlines()[-1])["draft_id"]
+
+
+def test_contract_unread_fields_dropped_harness_paths_are_the_system_keys_and_agent_id():
+    from gaia.contract.validator import SYSTEM_WRITTEN_ENVELOPE_KEYS
+
+    assert set(_harness_paths()) == set(SYSTEM_WRITTEN_ENVELOPE_KEYS) | {"agent_status.agent_id"}
+
+
+@pytest.mark.parametrize("verb", ["set", "fill"])
+def test_contract_unread_fields_dropped_an_agent_write_to_a_harness_key_is_refused(db, capsys, verb):
+    draft_id = _fresh_draft(capsys)
+    for path in _harness_paths():
+        value = "b" + "3" * 16 if path == "agent_status.agent_id" else "managed"
+        if verb == "set":
+            rc, out = _cli(capsys, "set", path, value, "--draft-id", draft_id)
+        else:
+            head, _, leaf = path.rpartition(".")
+            patch = {head: {leaf: value}} if head else {leaf: value}
+            rc, out = _cli(capsys, "fill", "--draft-id", draft_id, "--json", json.dumps(patch))
+        assert rc == 1, f"{verb} {path} was accepted: {out}"
+        assert path in out and "harness-written" in out, out
+
+    rc, out = _cli(capsys, "view", "--draft-id", draft_id, "--json")
+    assert '"worktree_scope"' not in out and AGENT in out
+
+
+def test_contract_unread_fields_dropped_rewriting_the_seeded_agent_id_is_accepted(db, capsys):
+    draft_id = _fresh_draft(capsys)
+    rc, out = _cli(capsys, "set", "agent_status.agent_id", AGENT, "--draft-id", draft_id)
+    assert rc == 0, out
+
+
+def test_contract_unread_fields_dropped_finalize_still_stamps_harness_keys(db):
+    from gaia.contract.drafts import initial_envelope
+    from gaia.contract.tool_record import stamp_harness_fields
+
+    envelope = initial_envelope(AGENT)
+    envelope["agent_status"]["agent_id"] = "b" + "3" * 16
+    stamp_harness_fields(envelope, f"{AGENT}.000000000005", worktree_scope="managed", db_path=db)
+
+    assert envelope["worktree_scope"] == "managed"
+    assert envelope["agent_status"]["agent_id"] == AGENT
+
+
+def test_contract_unread_fields_dropped_memory_suggestions_points_at_memory_delta():
+    from gaia.contract.drafts import initial_envelope
+    from gaia.contract.validator import validate_form
+
+    result = validate_form(dict(initial_envelope(AGENT), memory_suggestions=["x"]))
+    detail = result.errors[0].detail
+
+    assert "'memory_delta'" in detail and "memorialize_suggestions" not in detail
+
+
 def test_contract_unread_fields_dropped_an_old_row_still_reads(db, capsys):
     from gaia.store.proposals import list_proposals
 

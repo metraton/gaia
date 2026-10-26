@@ -192,6 +192,7 @@ bootstrap side effect -- useful for isolated testing).
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import sys
@@ -214,6 +215,7 @@ from gaia.contract.validator import (  # noqa: E402
     LEGACY_CONCLUSION_FIELD,
     canonicalize_envelope,
     envelope_as_read,
+    harness_written_changes,
     sanitize_envelope,
 )
 
@@ -1219,6 +1221,18 @@ def cmd_init(args) -> int:
     )
 
 
+def _refused_harness_write(before: dict, after: dict, as_json: bool) -> bool:
+    """Print the refusal and return True when an agent write changed a harness-stamped path."""
+    changed = harness_written_changes(before, after)
+    if changed:
+        _print_error(
+            f"Refused: {', '.join(changed)} is harness-written -- the harness stamps it "
+            "at birth, finalize or a rescue lane, never an agent. No changes were persisted.",
+            as_json,
+        )
+    return bool(changed)
+
+
 def cmd_set(args) -> int:
     """Set a scalar field by dotted path (validate-on-write)."""
     draft_id, envelope, as_json, continuation = _load_target_draft(
@@ -1227,10 +1241,13 @@ def cmd_set(args) -> int:
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
+    before = copy.deepcopy(envelope)
     try:
         _set_nested(envelope, args.field, value)
     except ValueError as exc:
         _print_error(str(exc), as_json)
+        return 1
+    if _refused_harness_write(before, envelope, as_json):
         return 1
     return _write_if_valid(
         envelope, draft_id, as_json, mirror=True, continuation=continuation
@@ -1245,10 +1262,13 @@ def cmd_add(args) -> int:
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
+    before = copy.deepcopy(envelope)
     try:
         _append_nested(envelope, args.field, value)
     except ValueError as exc:
         _print_error(str(exc), as_json)
+        return 1
+    if _refused_harness_write(before, envelope, as_json):
         return 1
     return _write_if_valid(
         envelope, draft_id, as_json, mirror=True, continuation=continuation
@@ -2210,7 +2230,10 @@ def cmd_fill(args) -> int:
     if overwrites:
         _print_error(_list_overwrite_message(overwrites), as_json)
         return 1
+    before = copy.deepcopy(envelope)
     _deep_merge(envelope, patch)
+    if _refused_harness_write(before, envelope, as_json):
+        return 1
     return _write_if_valid(
         envelope, draft_id, as_json, mirror=True, continuation=continuation
     )

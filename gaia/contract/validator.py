@@ -665,6 +665,34 @@ TOP_LEVEL_ENVELOPE_KEYS: Tuple[str, ...] = (
     AGENT_WRITABLE_TOP_LEVEL_KEYS + SYSTEM_WRITTEN_ENVELOPE_KEYS
 )
 
+# validate_form accepts these because birth, finalize and the rescue lanes put
+# them in envelopes it judges; the agent write verbs refuse to change them.
+HARNESS_STAMPED_PATHS: Tuple[str, ...] = SYSTEM_WRITTEN_ENVELOPE_KEYS + ("agent_status.agent_id",)
+
+# memory_delta is the one memory channel an UNKNOWN_FIELD message may offer.
+_SUGGESTABLE_TOP_LEVEL_KEYS: Tuple[str, ...] = tuple(
+    key for key in AGENT_WRITABLE_TOP_LEVEL_KEYS if key != "memorialize_suggestions"
+)
+_RETIRED_FIELD_SUCCESSORS = {"memory_suggestions": "memory_delta"}
+_ABSENT = object()
+
+
+def _path_value(envelope: Any, path: str) -> Any:
+    node = envelope
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _ABSENT
+        node = node[part]
+    return node
+
+
+def harness_written_changes(before: Any, after: Any) -> List[str]:
+    """The harness-stamped paths whose value differs between two envelopes."""
+    return [
+        path for path in HARNESS_STAMPED_PATHS
+        if _path_value(before, path) != _path_value(after, path)
+    ]
+
 # evidence_report additionally accepts the UPPER-CASE spelling of each required
 # key, matching the long-standing backward compatibility in
 # ``_evidence_has_key``: 20 rows in history carry the upper form, and the
@@ -1180,7 +1208,9 @@ def _unknown_key_errors(
                 ),
             ))
             continue
-        suggestion = _closest_declared_key(str(key), suggestable)
+        suggestion = _RETIRED_FIELD_SUCCESSORS.get(str(key)) or _closest_declared_key(
+            str(key), suggestable
+        )
         hint = (
             f" Did you mean {suggestion!r}?" if suggestion
             else f" Fields you can write here: {sorted(suggestable)}."
@@ -1478,7 +1508,7 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
     # Run before the per-field checks so a key at the wrong level is reported
     # as what it is (misplaced) rather than as the required field it is not.
     for level, allowed, prefix, suggestable in (
-        (envelope, TOP_LEVEL_ENVELOPE_KEYS, "", AGENT_WRITABLE_TOP_LEVEL_KEYS),
+        (envelope, TOP_LEVEL_ENVELOPE_KEYS, "", _SUGGESTABLE_TOP_LEVEL_KEYS),
         (envelope.get("agent_status"), AGENT_STATUS_KEYS, "agent_status.", None),
         (
             envelope.get("evidence_report"),

@@ -400,15 +400,27 @@ def _free_shape_create(entry: dict) -> Optional[Dict[str, Any]]:
     return {"operation": "create", "create": create}
 
 
+def _proposal_slug(proposal: Dict[str, Any]) -> Optional[str]:
+    """The memory row a proposal targets, or None when it names none."""
+    target = proposal.get(proposal.get("operation"))
+    slug = target.get("slug") if isinstance(target, dict) else None
+    return str(slug) if slug else None
+
+
 def _extract_memory_delta(contract: dict) -> MemoryDeltaBlock:
-    """Parse memory_delta, then append each legacy memorialize_suggestions entry as a create it does not already hold."""
+    """Parse memory_delta, then append each legacy memorialize_suggestions entry for a row no earlier proposal targets."""
     delta = _parse_memory_delta_field(contract.get("memory_delta"))
     legacy = _extract_memorialize_suggestions(contract)
     proposals = list(delta.proposals)
+    claimed = {_proposal_slug(proposal) for proposal in proposals} - {None}
     for suggestion in legacy.suggestions:
         proposal = {"operation": "create", "create": suggestion}
-        if proposal not in proposals:
-            proposals.append(proposal)
+        slug = _proposal_slug(proposal)
+        if slug in claimed or proposal in proposals:
+            continue
+        proposals.append(proposal)
+        if slug:
+            claimed.add(slug)
     return MemoryDeltaBlock(
         marker_present=delta.marker_present or legacy.marker_present,
         version=delta.version,
