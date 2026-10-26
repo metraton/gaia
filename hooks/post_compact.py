@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostCompact hook — logging stub; real re-injection happens elsewhere.
+"""PostCompact hook — closes the session's compaction bracket; re-injection happens elsewhere.
 
 The event input carries the ``compact_summary`` the compaction produced, which
 this hook does not read. PLATFORM LIMITATION: Claude Code's hook-output schema
@@ -51,6 +51,12 @@ def _handle_post_compact(event) -> None:
         "SessionStart(source=compact) instead -- see session_start.py"
     )
 
+    try:
+        from modules.session.compaction_bracket import close_bracket
+
+        close_bracket(event.session_id)
+    except Exception:
+        logger.warning("PostCompact: compaction bracket not closed", exc_info=True)
     # No hookSpecificOutput: PostCompact does not accept one. An empty
     # object is the schema-valid "nothing to report" response.
     print(json.dumps({}))

@@ -1039,6 +1039,16 @@ def run_subagent_stop(
             result={"success": True, "native_agent": True, "agent": _native_agent_type},
             rejected=False,
         )
+    from modules.session.compaction_bracket import is_compaction_summarizer
+
+    if is_compaction_summarizer(_native_agent_type, event_session_id):
+        logger.info(
+            "Compaction summarizer (session=%s) -- no contract to gate", event_session_id,
+        )
+        return SubagentStopOutcome(
+            result={"success": True, "compaction_summarizer": True, "agent": _native_agent_type},
+            rejected=False,
+        )
     if not _gaia_agents:
         logger.error(
             "Agent roster did not resolve on any lane; gating '%s' instead "
