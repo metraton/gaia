@@ -10116,6 +10116,19 @@ def agent_contract_handoff_finalized(
     return state is not None and state != "DISPATCHED"
 
 
+def agent_contract_handoff_closed_clean(contract_id: str, *, db_path: "Path | None" = None) -> bool:
+    """True iff the row for ``contract_id`` already holds a clean close: a verdict other than DISPATCHED and no cut mark."""
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT agent_state, cut_reason FROM agent_contract_handoffs WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    return row is not None and row[0] != "DISPATCHED" and row[1] is None
+
+
 def agent_contract_handoff_envelope(
     contract_id: str,
     *,

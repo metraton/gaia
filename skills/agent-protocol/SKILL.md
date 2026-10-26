@@ -61,7 +61,7 @@ Three doors come first: the answer is in the goal you received, in context or me
 
 ## 9. The producer does not verify its own production
 
-Evidence is the command's output, not your assertion about it: a `COMPLETE` needs a `pass` in `evidence_report.verification.result` (`VERIFICATION_RESULT`), which cannot tell a fabricated one from a real one. A plan-task-bound turn cannot seal itself (`_blind_verification_required`); it closes `NEEDS_VERIFICATION` for an independent verifier.
+Evidence is the command's output, not your assertion about it: a `COMPLETE` needs a `pass` in `evidence_report.verification.result` (`VERIFICATION_RESULT`), and finalize refuses one whose `command` this turn never ran, or last ran with an exit other than the expected one, and that cites no evidence id (`agent-contract-handoff`). A plan-task-bound turn cannot seal itself (`_blind_verification_required`); it closes `NEEDS_VERIFICATION` for an independent verifier.
 
 ## 10. Every turn closes by declaring a state
 

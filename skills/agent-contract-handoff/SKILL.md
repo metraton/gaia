@@ -149,6 +149,54 @@ folds on separators only, so `self-review` and `self_review` are one type and
 `observation` stays itself. `type` is optional: absent or blank, no evidence is
 demanded, which is what keeps every contract that never declared one valid.
 
+Finalize then checks what the contract cites against the turn's tool record
+(`gaia/contract/content_checks.py`), and refuses a refuted citation as
+`content_unverified`:
+
+- A verification carrying a `command`, whatever its `type` word, names a
+  command this turn ran, exactly as run, or cites evidence in
+  `verification.evidence_ids` (the id `gaia evidence add` prints, a positive
+  integer within SQLite's 64-bit range; anything else is refused as malformed
+  before any lookup) that proves it: the row exists, its polarity is positive, and it
+  was recorded under this turn's brief and, for a turn bound to a plan task,
+  under that task; a turn with no plan task is proven only by its brief's
+  evidence recorded with no task.
+- Verdicts are read after normalization, not by spelling: Unicode folded, check
+  and cross marks read as pass and fail, case, punctuation, emphasis, markup
+  tags, quotes, slashes and spacing dropped. A command made only of verdict
+  words, counts and numbers (`**PASS** ✅`, `<b>pass</b>`, `pass/ok`,
+  `12880 passed, 0 failed`) is a verdict, and always refused.
+- When `result` is `pass` (after the same normalization), the last recorded
+  run of that command must have exited 0, or the exit declared in
+  `verification.expect_exit` when a nonzero exit is the expected outcome
+  (`grep -q` finding nothing). Any other result is not interpreted, and the
+  unmade exit comparison is named in `content_checks.skipped`.
+- In a turn with no bound tool record, the command must be something a shell
+  could run: past leading `NAME=value` words, its first word with markup tags
+  dropped is a path (absolute, `./`, `../` or `~/`), a program on PATH, or a
+  builtin that runs one (`cd`, `source`, `export`), and not a verdict. `PASS.`,
+  `all tests pass`, `exit 0`, `<b>verified</b>`, `[PASS](/ci)` and `n/a` are
+  refused.
+- A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
+  attributed: its excerpt (an `output` key is read the same way), with `...`
+  marking elisions, must appear in order in that command's recorded output,
+  each fragment on whole-token boundaries (`5 passed` does not match
+  `15 passed`). An excerpt with nothing but whitespace or elisions is refused,
+  and so is one attributed to a command this turn never ran, unless the entry
+  cites an `evidence_id`. A plain string, or a quote with no `command` and no
+  `evidence_id`, names nothing to compare against: it is kept, uncompared, and
+  named in `content_checks.skipped`. Any other key of the entry (`stdout`,
+  `Output`) and any quote that is not a string is named there too, key and
+  reason. Write the dict form for any output you want proven.
+- An `evidence_id` on a verbatim entry must exist and belong to this turn's
+  work; it may be negative, since a quote can attest a failure.
+
+A comparison the record cannot settle is skipped and named in the row's
+`content_checks.skipped`, never refused: no output or exit kept, or an output
+truncated before the excerpt (the record keeps its first 500 characters). Every
+row these checks closed carries `content_checks`, and is checked again on a
+re-finalize; only a row closed clean before they existed is not.
+
 `verification.method` is a different, free-text field: prose naming HOW the
 check was done, stored verbatim and never read as a classifier. It does not
 substitute for `type` -- a block carrying only `method` declares no type and is

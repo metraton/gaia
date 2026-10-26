@@ -469,7 +469,7 @@ def test_finalize_writes_the_row_from_the_harness_record_and_deletes_the_spool()
     draft["agent_status"].update(pending_steps=[], next_action="pending")
     draft["evidence_report"].update(
         patterns_checked=[], key_outputs=[], verbatim_outputs=[], cross_layer_impacts=[], open_gaps=[],
-        verification={"type": "command", "command": "true", "method": "ran it", "result": "pass", "details": "ok"},
+        verification={"type": "command", "command": "git status", "method": "ran it", "result": "pass", "details": "ok"},
     )
     save_draft(contract_id, draft)
 
