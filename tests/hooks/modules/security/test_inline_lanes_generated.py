@@ -32,7 +32,6 @@ PY_READ_TAILS = [
     "sys.stdout.write(str(len(rows)))",
     "import sqlite3",
     "print(sqlite3.connect('x.db').execute('select count(*) from t').fetchall())",
-    "print(eval('1 + 1'))",
 ]
 PY_EFFECT_TAILS = {
     "rmtree": "import shutil\nshutil.rmtree('build')",

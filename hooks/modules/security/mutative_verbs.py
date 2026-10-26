@@ -70,9 +70,11 @@ except ImportError:
 try:
     from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
     from .inline_ast_analyzer import parse_finds_no_effect as _parse_finds_no_effect
+    from .inline_ast_analyzer import runs_code_string as _runs_code_string
 except ImportError:  # pragma: no cover -- defensive
     _analyze_python_inline = None
     _parse_finds_no_effect = None
+    _runs_code_string = None
     logging.getLogger(__name__).warning(
         "inline_ast_analyzer.analyze_python_inline not importable; "
         "AST-based Python inline analysis disabled (falling back to regex)"
@@ -1195,7 +1197,7 @@ _INLINE_CODE_MAP: Dict[str, FrozenSet[str]] = {
     "python3.11": frozenset({"-c"}),
     "python3.12": frozenset({"-c"}),
     "python3.13": frozenset({"-c"}),
-    "node": frozenset({"-e", "--eval"}),
+    "node": frozenset({"-e", "--eval", "-p", "--print"}),
     "ruby": frozenset({"-e"}),
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
@@ -2258,6 +2260,31 @@ _JS_UNSEEN_EFFECT_RE = _re.compile(
     r"|\bprocess\.(?:binding|dlopen|kill)\b"
     r"|\b(?:rename|copyFile|cp|mkdir|mkdtemp|symlink|link|truncate|ftruncate|utimes|chown|lchown|open|"
     r"createWriteStream|writev?)(?:Sync)?\s*\("
+)
+# JavaScript effects judged at every length and in every lane: code built at
+# runtime, a network module, a computed member of an effect module bound to a
+# name, a fetch with a body or method.
+_JS_NETWORK_MODULE_RE = _re.compile(
+    r"""(?:\brequire\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)['"](?:node:)?"""
+    r"""(?:net|https?|http2|dgram|tls|cluster|worker_threads|inspector|vm)['"]"""
+)
+_JS_HIDDEN_CALL_RE = _re.compile(
+    r"\b(?:eval|Function)\s*\(|\bnew\s+Function\b|\bimport\s*\(|\brequire\s*\(\s*[^'\"`\s)]"
+    r"|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\([^)]*\)\s*\["
+    r"|\bfetch\s*\([^)]*\b(?:body|method)\s*:"
+)
+_JS_EFFECT_BINDING_RE = _re.compile(
+    r"""\b(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]"""
+    r"""(?:node:)?(?:fs|fs/promises|net|child_process)['"]\s*\)"""
+    r"""|\bimport\s+(?:\*\s+as\s+)?(\w+)\s+from\s+['"](?:node:)?(?:fs|fs/promises|net|child_process)['"]"""
+)
+# Ruby, perl and php have no parser here, so their code asks unless every
+# statement is a print verb followed only by literals: quoted strings with no
+# interpolation (no $, @, #, { or backtick), numbers and arithmetic.
+_UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php"})
+_PRINT_ONLY_STATEMENT_RE = _re.compile(
+    r"""\s*(?:(?:print|puts|pp|p|echo|say|printf)\b"""
+    r"""(?:'(?:[^'\\]|\\['\\])*'|"(?:[^"\\$#@{`]|\\[nt"\\])*"|\d+(?:\.\d+)?|[\s+\-*/%.,()])*)?\s*"""
 )
 
 
@@ -8581,21 +8608,28 @@ def _check_script_file(
                     f"({ast_result.category})"
                 ),
             )
-        if not ast_result.parse_failed:
-            if not _parse_finds_no_effect(content, argv_is_mutative):
-                return _uncatalogued_python_effect(family, f"Python script '{script_path}'")
+        if ast_result.parse_failed:
+            return _unparsed_code(family, f"Python script '{script_path}'")
+        if _runs_code_string(content):
             return MutativeResult(
-                is_mutative=False,
-                category=CATEGORY_READ_ONLY,
-                verb="script-file",
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="dynamic-code",
                 cli_family=family,
-                confidence="medium",
-                reason=(
-                    f"Python script '{script_path}' has no mutative invocation "
-                    f"(AST analysis)"
-                ),
+                confidence="high",
+                reason=f"Python script '{script_path}' hands a string to eval/exec/compile",
+                rule="sign.foreign-code",
             )
-        # parse_failed -> fall through to the shell/regex lane below.
+        if not _parse_finds_no_effect(content, argv_is_mutative):
+            return _uncatalogued_python_effect(family, f"Python script '{script_path}'")
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="script-file",
+            cli_family=family,
+            confidence="medium",
+            reason=f"Python script '{script_path}' has no mutative invocation (AST analysis)",
+        )
 
     # JavaScript family (node / .js / .mjs / .cjs): lex the source so comments
     # (``//``, ``/* */``) and string / template-literal CONTENTS are removed
@@ -8613,8 +8647,12 @@ def _check_script_file(
                 content, script_path, family, spec, cwd=cwd, _depth=_depth + 1,
                 stripped=entry_stripped,
             )
-            if entry_result.is_mutative or spec.name != "javascript":
+            if entry_result.is_mutative:
                 return entry_result
+            if spec.name != "javascript":
+                if _prints_literals_only(entry_stripped.exec_view):
+                    return entry_result
+                return _unparsed_code(family, f"Script '{script_path}'")
             closure_result = _classify_js_import_closure(
                 script_path, entry_stripped, family, spec, cwd=cwd, _depth=_depth + 1,
             )
@@ -8790,6 +8828,8 @@ def _classify_source_with_lexer(
                     ),
                 )
 
+    if spec.name == "javascript" and _js_hidden_effect(stripped.exec_view, stripped.verb_view):
+        return _js_hidden_effect_result(family, f"Script '{script_path}'")
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
@@ -9608,6 +9648,11 @@ def _check_inline_code(
     def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
         return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
 
+    unparsed_source = ""
+    if base_cmd in _UNPARSED_CODE_INTERPRETERS and not _prints_literals_only(
+        _inline_code_text(command, base_cmd, ""),
+    ):
+        unparsed_source = f"Inline {base_cmd} code"
     if base_cmd in _PYTHON_INTERPRETERS and _analyze_python_inline is not None:
         payload = _extract_python_payload(command, base_cmd)
         if payload:
@@ -9655,7 +9700,14 @@ def _check_inline_code(
             )
 
     # ---- Layer 3: Heuristic safety classification (suspicious patterns + length) ----
-    return _layer3_full_check(command, base_cmd, family, skip_length_check)
+    heuristic = _layer3_full_check(command, base_cmd, family, skip_length_check)
+    if heuristic.is_mutative:
+        return heuristic
+    if unparsed_source:
+        return _unparsed_code(family, unparsed_source)
+    if is_js and _js_hidden_effect(_inline_code_text(command, base_cmd, command)):
+        return _js_hidden_effect_result(family, "Inline JavaScript")
+    return heuristic
 
 
 def _layer3_full_check(
@@ -9693,6 +9745,52 @@ def _uncatalogued_python_effect(family: str, source: str) -> MutativeResult:
         reason=(
             f"{source} carries an effect the call catalog does not name (a network, process or "
             "temp-file module, a write through a bound handle, a SQL write, or a name chosen at runtime)"
+        ),
+    )
+
+
+def _unparsed_code(family: str, source: str) -> MutativeResult:
+    """The verdict for code no parser here can read: its effect is unknown, so it asks."""
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_UNKNOWN,
+        verb="unparsed-code",
+        cli_family=family,
+        confidence="low",
+        reason=f"{source} is not parsed here, so what it does is unknown",
+        rule="unknown.dynamic-span",
+    )
+
+
+def _prints_literals_only(code: str) -> bool:
+    """True when every statement of ruby/perl/php *code* only prints literals (``_PRINT_ONLY_STATEMENT_RE``)."""
+    code = _re.sub(r"^\s*<\?php\b|\?>\s*$", "", code.strip())
+    return bool(code) and all(_PRINT_ONLY_STATEMENT_RE.fullmatch(part) for part in _re.split(r"[;\n]", code))
+
+
+def _js_hidden_effect(code: str, calls_view: "Optional[str]" = None) -> bool:
+    """True when JavaScript *code* reaches an effect the call-shape layers do not look for.
+
+    *calls_view* is the same code with string contents blanked, so a string
+    that only mentions a call shape is not read as one.
+    """
+    calls = code if calls_view is None else calls_view
+    if _JS_NETWORK_MODULE_RE.search(code) or _JS_HIDDEN_CALL_RE.search(calls):
+        return True
+    names = {match.group(1) or match.group(2) for match in _JS_EFFECT_BINDING_RE.finditer(code)}
+    return any(_re.search(rf"\b{_re.escape(name)}\s*\[", calls) for name in names)
+
+
+def _js_hidden_effect_result(family: str, source: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="js-hidden-effect",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"{source} builds code at runtime, opens a network module, indexes an effect "
+            "module by a computed name, or sends a request body"
         ),
     )
 

@@ -89,6 +89,17 @@ There is no fourth. Retrying the *identical* command once a grant exists is not 
 
 So the norm is primary and the mechanism is the net beneath it. Where the policy holds, the hook catches the ordinary miss -- the typo, the honest oversight, the lane nobody thought about. Where the policy is absent, the hook is the only thing standing, and then every gap in it is silently promoted into a permission the user never gave. That inversion is the real failure mode: not that a hole exists, but that the agent read the hole as consent. It is also why the residual limitations and known gaps documented in this skill are disclosures for the defender, never a map for the agent -- reading one of them as an available route is precisely the move this rule forbids.
 
+**Inline code and script files: what the parse cannot prove asks.** The rules every code lane (`-c`/`-e`/`-p`/`-r`, a heredoc program, a script file) applies, in `inline_ast_analyzer.py::uncatalogued_effect` and `mutative_verbs.py::_check_inline_code`/`_check_script_file`:
+
+- **Python that does not parse** is UNKNOWN and asks (`unparsed-code`, `unknown.dynamic-span`); it no longer falls to a regex lane that could free it.
+- **A file reached through a path the parse cannot prove asks.** `open`, `io.open`, `os.open`, `pathlib.Path`, `os.listdir`, `glob`, `shutil.*` and the archive openers are relieved only when each path argument is a literal, an f-string with no names, a name bound once to such a value, `__file__`, or those joined as path segments (`os.path.join`, `/`, `joinpath`) under `HOME`, `Path.home()` or the cwd (`_provable_path`). Concatenation, slicing, decoding, `chr`, formatting with names and runtime input are not proven, because the secret-read floor reads only literals. A literal secret path is still refused by the floor.
+- **Archive writers are writes**: `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `dbm` and `shelve` opened in any mode but a literal read mode, and `writestr`/`addfile`.
+- **A changed environment a process inherits** (`os.environ[...] =`, `update`, `setdefault`, `os.putenv`) together with a process launch asks.
+- **Interpreter internals** (`__subclasses__`, `__globals__`, `__builtins__`, any dunder outside `_INERT_DUNDERS`) ask.
+- **A Python script file that hands any string to `eval`/`exec`/`compile` asks**; inline code still judges a literal code string as its payload.
+- **JavaScript**: `node -p`/`--print` is the same lane as `-e`. In every lane and at every length, code built at runtime (`eval`, `Function`, `import()`, a non-literal `require`), a network module, a computed member of a required effect module (`require('fs')[...]`, or a name bound to `fs`/`net`/`child_process` indexed by `[`), and a `fetch` with a `body` or `method` ask (`_js_hidden_effect`). In a file, call shapes are read with comments and string contents blanked.
+- **Ruby, perl and php have no parser here**: their inline code and script files are UNKNOWN and ask, unless every statement is a print verb (`print`, `puts`, `p`, `pp`, `echo`, `say`, `printf`) followed only by literals -- quoted strings with no `$`, `@`, `#`, `{` or backtick, numbers and arithmetic (`_prints_literals_only`). A heredoc program in those languages asks.
+
 ## Classification heuristic
 
 Ask, in order -- the first "yes" wins:

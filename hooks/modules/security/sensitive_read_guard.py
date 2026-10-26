@@ -57,7 +57,6 @@ _LISTER_COMMANDS = frozenset({
     "get-childitem", "gci",
 })
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
-_NODE_PRINT_FLAGS = frozenset({"-p", "--print"})
 _QUOTED_LITERAL = re.compile(r"""(['"`])((?:\\.|(?!\1).)*)\1""", re.S)
 # A program named by an expansion is unknown until the shell runs it.
 _UNDETERMINED_PROGRAM_MARKS = ("$", "`")
@@ -354,7 +353,7 @@ def _interpreter_code(tokens: List[str], cwd: Optional[str]) -> Tuple[str, str]:
 
     base = command_name(tokens[0])
     arguments = tokens[1:]
-    inline_flags = _INLINE_CODE_MAP.get(base, frozenset()) | (_NODE_PRINT_FLAGS if base == "node" else frozenset())
+    inline_flags = _INLINE_CODE_MAP.get(base, frozenset())
     for index, argument in enumerate(arguments[:-1]):
         if argument in inline_flags:
             return base, arguments[index + 1]
