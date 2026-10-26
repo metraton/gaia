@@ -1884,6 +1884,32 @@ def _finalize_worktree_scope() -> str:
     return "managed" if root is not None else "shared"
 
 
+def _content_rejected(envelope: dict, draft_id: str, found: dict, as_json: bool) -> bool:
+    """Refuse a close whose cited commands, excerpts or evidence ids the record refutes; a row already closed clean is not checked again."""
+    from gaia.contract.content_checks import check_content
+    from gaia.evidence.store import get_evidence
+    from gaia.store.writer import agent_contract_handoff_closed_clean
+
+    envelope.pop("content_checks", None)
+    if agent_contract_handoff_closed_clean(draft_id):
+        return False
+    errors, skipped = check_content(
+        envelope, found["records"], bound=bool(found["harness_agent_id"]),
+        evidence_exists=lambda evidence_id: get_evidence(evidence_id) is not None,
+    )
+    if skipped:
+        envelope["content_checks"] = {"skipped": skipped}
+    if not errors:
+        return False
+    if as_json:
+        print(json.dumps({"status": "rejected", "reason": "content_unverified", "errors": errors}))
+    else:
+        print("Rejected: the contract cites what this turn's record does not hold:", file=sys.stderr)
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+    return True
+
+
 def cmd_finalize(args) -> int:
     """Validate the draft as final AND write it to the store (T7 -- the SOLE
     idempotent writer of the agent_contract_handoffs row).
@@ -1933,9 +1959,11 @@ def cmd_finalize(args) -> int:
     from gaia.contract.tool_record import stamp_harness_fields
 
     try:
-        stamp_harness_fields(envelope, draft_id, worktree_scope=_finalize_worktree_scope())
+        found = stamp_harness_fields(envelope, draft_id, worktree_scope=_finalize_worktree_scope())
     except Exception as exc:
         _print_error(f"finalize could not read the harness tool record: {exc}", as_json)
+        return 1
+    if _content_rejected(envelope, draft_id, found, as_json):
         return 1
     agent_status = envelope.get("agent_status") or {}
     agent_id = agent_status.get("agent_id")

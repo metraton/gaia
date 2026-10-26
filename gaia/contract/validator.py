@@ -703,6 +703,7 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "binding_rejection",
     "born_at_dispatch",
     "conclusion_alias",
+    "content_checks",
     "continues_contract_id",
     "degraded",
     "dispatch_closed_at_subagent_stop",
