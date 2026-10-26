@@ -106,7 +106,7 @@ def _check(who: tuple, command: str):
 
 def test_own_row_write_is_allowed(host):
     own = _born(host["me"], "own")
-    command = f"gaia contract set work_phase executing --draft-id {own}"
+    command = f"gaia contract set agent_status.next_action executing --draft-id {own}"
     assert _check(host["me"], command) == (True, None)
 
     _stamped, agent_id, session_id, _call = host["me"]
@@ -154,7 +154,7 @@ def test_resumed_turn_on_a_finalized_contract_can_still_close(host):
 
     env = dict(os.environ)
     opened = subprocess.run(
-        [sys.executable, str(CONTRACT_CLI), "set", "work_phase", "executing",
+        [sys.executable, str(CONTRACT_CLI), "set", "agent_status.next_action", "resuming",
          "--draft-id", closed],
         capture_output=True, text=True, env=env, timeout=30,
     )

@@ -126,20 +126,9 @@ class ConsolidationReportBlock:
     fields: Dict[str, List[str]]
 
 
-# ----------------------------------------------------------------------------
-# memorialize_suggestions -- optional top-level contract field
-#
-# A subagent may notice something worth memorializing (an atom, decision,
-# negative-space note, or a feedback entry recording a defect or correction the
-# system must remember) but is NOT authorized to persist memory itself (T3
-# enforces that only the user + orchestrator decide what enters curated
-# memory). Instead, the subagent emits a `memorialize_suggestions` array.
-# The orchestrator presents each suggestion to the user as a deliberate
-# decision before closing the turn; nothing persists without consent.
-#
-# This block is fully optional. Absence -> no suggestions. Malformed entries
-# emit warnings but never fail contract validation.
-# ----------------------------------------------------------------------------
+# memorialize_suggestions is the legacy spelling of a memory_delta create: rows
+# that carry it still read, and each well-formed entry becomes one memory
+# proposal beside the row's memory_delta ones. Malformed entries only warn.
 
 # Mirror of the `type` values the curated-memory store accepts for a proposable
 # row (`memory.type` CHECK in gaia/store/schema.sql). `project` and `user` stay
@@ -411,21 +400,39 @@ def _free_shape_create(entry: dict) -> Optional[Dict[str, Any]]:
     return {"operation": "create", "create": create}
 
 
+def _proposal_slug(proposal: Dict[str, Any]) -> Optional[str]:
+    """The memory row a proposal targets, or None when it names none."""
+    target = proposal.get(proposal.get("operation"))
+    slug = target.get("slug") if isinstance(target, dict) else None
+    return str(slug) if slug else None
+
+
 def _extract_memory_delta(contract: dict) -> MemoryDeltaBlock:
-    """Parse memory_delta, normalizing legacy memorialize entries as creates."""
-    raw = contract.get("memory_delta")
+    """Parse memory_delta, then append each legacy memorialize_suggestions entry for a row no earlier proposal targets."""
+    delta = _parse_memory_delta_field(contract.get("memory_delta"))
+    legacy = _extract_memorialize_suggestions(contract)
+    proposals = list(delta.proposals)
+    claimed = {_proposal_slug(proposal) for proposal in proposals} - {None}
+    for suggestion in legacy.suggestions:
+        proposal = {"operation": "create", "create": suggestion}
+        slug = _proposal_slug(proposal)
+        if slug in claimed or proposal in proposals:
+            continue
+        proposals.append(proposal)
+        if slug:
+            claimed.add(slug)
+    return MemoryDeltaBlock(
+        marker_present=delta.marker_present or legacy.marker_present,
+        version=delta.version,
+        proposals=proposals,
+        warnings=delta.warnings + legacy.warnings,
+    )
+
+
+def _parse_memory_delta_field(raw: Any) -> MemoryDeltaBlock:
+    """The proposals of a ``memory_delta`` value alone; absent reads as an empty version-1 block."""
     if raw is None:
-        legacy = _extract_memorialize_suggestions(contract)
-        proposals = [
-            {"operation": "create", "create": suggestion}
-            for suggestion in legacy.suggestions
-        ]
-        return MemoryDeltaBlock(
-            marker_present=legacy.marker_present,
-            version=MEMORY_DELTA_VERSION,
-            proposals=proposals,
-            warnings=legacy.warnings,
-        )
+        return MemoryDeltaBlock(False, MEMORY_DELTA_VERSION, [], [])
     if not isinstance(raw, dict):
         return MemoryDeltaBlock(True, 0, [], ["memory_delta: expected object"])
     version = raw.get("version")

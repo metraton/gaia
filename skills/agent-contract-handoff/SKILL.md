@@ -78,8 +78,7 @@ Eight fields hold the lists you write every turn: the seven `evidence_report`
 keys above -- `patterns_checked`, `files_checked`, `commands_run`,
 `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, `open_gaps` -- plus
 `agent_status.pending_steps`. They are not the only lists in the envelope:
-`update_contracts`, `memorialize_suggestions` and `memory_suggestions` are
-list-valued too (`ADVISORY_UNTYPED_FIELDS` in `gaia/contract/validator.py` --
+`update_contracts` is list-valued too (`ADVISORY_UNTYPED_FIELDS` in `gaia/contract/validator.py` --
 allowlisted, and deliberately left untyped so a malformed one never blocks a
 close). Nothing about them is unguarded, which is the next thing a reader asks
 once they know they exist: the overwrite screen is generic, firing on any
@@ -204,25 +203,6 @@ asked for no evidence. Write both. Use typed COMMAND_SET progress fields only wh
 runtime returns them; do not invent schema. The v42 store exposes ordered
 `next_index`, `consumed_indexes_json`, `failed_index`, and `failure_reason`.
 
-## work_phase -- the observable WORK cycle, orthogonal to agent_state
-
-`work_phase` is an optional top-level field naming where the producer is in
-the WORK cycle: `framing`, `investigating`, `planning`, `executing`,
-`verifying`. It is deliberately a second, separate axis from
-`agent_status.agent_state`: `agent_state` is the COMMUNICATION state machine
-(how this turn currently reports back) that feeds routing and the blind
-finalize/verification gate -- a pure function of `(agent_state,
-plan_task_id)` -- and that gate must never grow a second dimension.
-`work_phase` never widens or narrows it.
-
-Seeded `null` by `gaia contract init` (same discoverability convention as
-`consolidation_report`/`approval_request`/`failure_report`); absence or an
-explicit `null` reaches no check on any `agent_state`. Presence is validated
-in full: a value outside the five names above is a `WORK_PHASE_SHAPE`
-rejection. See `agent-protocol` for the work-cycle discipline that writes
-it at each transition, and for the trivial-turn exemption (a turn with no
-distinguishable phase never sets it).
-
 ## Conditional objects
 
 `consolidation_report` contains `ownership_assessment` (`owned_here`,
@@ -242,8 +222,9 @@ minted, `approval_id`, copied verbatim from the request's output.
 - `report_prose`: narrow narrative field -- why/discovery-order/purpose-frame/synthesis, never
   evidence, addressed to the orchestrator and the next agent, not the end user; full definition and
   the line against `conclusion` in `agent-protocol`.
-- `memory_delta`, `memorialize_suggestions`, `memory_suggestions`: proposals,
-  never write authority.
+- `memory_delta`: the one memory proposal channel, never write authority --
+  `{"version": 1, "proposals": [...]}`, each proposal an `operation` and its
+  object (`create`, `append`, `reclassify`, `link`).
 - `update_contracts`: `{contract, payload}` entries, a proposal for any
   section and never write authority: project context is written by the
   orchestrator alone. SubagentStop writes nothing for them, whatever
@@ -262,7 +243,6 @@ minted, `approval_id`, copied verbatim from the request's output.
   entry or key (`gaia/store/writer.py::record_update_contracts_outcome`), and
   the dispatch result names them to the orchestrator beside the proposal
   notice (`hooks/modules/agents/proposal_notices.py::proposal_notice`).
-- `rollback_executed`, `context_consumption`: advisory fields.
 
 ## The evidence clause of `update_contracts`
 
@@ -301,8 +281,8 @@ scratch or from a workspace/client repo path directly.
 
 `gaia/contract/validator.py` owns form codes: `MISSING_FIELD`, `PLAN_STATUS`,
 `AGENT_ID_FORMAT`, `VERIFICATION_RESULT`, `VERIFICATION_SHAPE`,
-`APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, `FAILURE_REPORT_SHAPE`, and
-`WORK_PHASE_SHAPE`. `gaia.contract.crosscheck.validate` adds DB cross-checks.
+`APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, and `FAILURE_REPORT_SHAPE`.
+`gaia.contract.crosscheck.validate` adds DB cross-checks.
 Do not reproduce those rules elsewhere.
 
 The CLI draft is the only managed copy. The turn's final message carries no

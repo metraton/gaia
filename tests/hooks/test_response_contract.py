@@ -14,9 +14,6 @@ rollback is logged/warned but never fails validation in either validator.
 
 T2.3 Clause parsers (positive + negative cases):
 - parse_update_contracts
-- parse_rollback_executed
-- parse_context_consumption
-- parse_memory_suggestions
 """
 
 import json
@@ -33,9 +30,6 @@ from modules.agents.contract_validator import (
     parse_contract,
     parse_update_contracts,
     _legacy_tokens_for_form_error,
-    parse_rollback_executed,
-    parse_context_consumption,
-    parse_memory_suggestions,
 )
 from modules.agents.response_contract import validate_response_contract
 from gaia.contract.validator import FormError, FormErrorCode
@@ -556,96 +550,6 @@ class TestParseUpdateContracts:
 
     def test_empty_array_returns_empty_list(self):
         assert parse_update_contracts({"update_contracts": []}) == []
-
-
-# ============================================================================
-# T2.3 Clause parsers: parse_rollback_executed
-# ============================================================================
-
-class TestParseRollbackExecuted:
-    def test_absent_returns_sentinel(self):
-        result = parse_rollback_executed({})
-        assert result == "ABSENT"
-
-    def test_null_value_returns_none(self):
-        result = parse_rollback_executed({"rollback_executed": None})
-        assert result is None
-
-    def test_string_value_returned(self):
-        result = parse_rollback_executed({"rollback_executed": "git revert abc"})
-        assert result == "git revert abc"
-
-    def test_non_string_coerced(self):
-        result = parse_rollback_executed({"rollback_executed": 42})
-        assert result == "42"
-
-
-# ============================================================================
-# T2.3 Clause parsers: parse_context_consumption
-# ============================================================================
-
-class TestParseContextConsumption:
-    def test_absent_returns_none(self):
-        assert parse_context_consumption({}) is None
-
-    def test_valid_full(self):
-        contract = {
-            "context_consumption": {"tokens_used": 50000, "pct_window": 0.45}
-        }
-        result = parse_context_consumption(contract)
-        assert result is not None
-        assert result["tokens_used"] == 50000
-        assert result["pct_window"] == pytest.approx(0.45)
-
-    def test_null_values_allowed(self):
-        contract = {
-            "context_consumption": {"tokens_used": None, "pct_window": None}
-        }
-        result = parse_context_consumption(contract)
-        assert result is not None
-        assert result["tokens_used"] is None
-        assert result["pct_window"] is None
-
-    def test_non_dict_returns_none(self):
-        assert parse_context_consumption({"context_consumption": "bad"}) is None
-
-    def test_non_numeric_coerces_to_none(self):
-        contract = {
-            "context_consumption": {"tokens_used": "not-a-number", "pct_window": 0.5}
-        }
-        result = parse_context_consumption(contract)
-        assert result is not None
-        assert result["tokens_used"] is None  # unparseable -> None
-
-
-# ============================================================================
-# T2.3 Clause parsers: parse_memory_suggestions
-# ============================================================================
-
-class TestParseMemorySuggestions:
-    def test_absent_returns_empty_list(self):
-        assert parse_memory_suggestions({}) == []
-
-    def test_valid_list(self):
-        contract = {
-            "memory_suggestions": ["remember X", "note Y"]
-        }
-        result = parse_memory_suggestions(contract)
-        assert result == ["remember X", "note Y"]
-
-    def test_empty_list(self):
-        assert parse_memory_suggestions({"memory_suggestions": []}) == []
-
-    def test_non_list_returns_empty(self):
-        assert parse_memory_suggestions({"memory_suggestions": "not-a-list"}) == []
-
-    def test_non_string_items_coerced(self):
-        contract = {"memory_suggestions": [42, None, "ok"]}
-        result = parse_memory_suggestions(contract)
-        # None is filtered (item is not None check), others coerced
-        assert "42" in result
-        assert "ok" in result
-        assert None not in result
 
 
 class TestLegacyTokenRelabeler:

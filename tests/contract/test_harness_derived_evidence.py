@@ -307,7 +307,7 @@ def test_the_harness_injected_prefix_is_not_part_of_the_recorded_command():
     written = ["git status", "ls /repo", "python3 -m pytest tests/x.py"]
     for command in written:
         _bash(INJECTED + command, agent)
-    _bash(INJECTED + "gaia contract set work_phase verifying", agent)
+    _bash(INJECTED + "gaia contract set agent_status.next_action verify", agent)
 
     report = _stamp(_envelope(agent, commands=written + ["terraform apply"]), contract_id)[
         "evidence_report"

@@ -47,9 +47,9 @@ A stable fact of this project that a future turn would otherwise re-derive and t
 
 Each `key_outputs` entry is one coordinate or one verifiable claim -- a symbol, an id, a count, a path, a quoted line -- never a paragraph; a paragraph belongs to `report_prose`. `conclusion` is your verdict for the orchestrator, and every clean close carries it: `finalize` refuses a row without one and names the `set` call that fills it (`agent-contract-handoff`). Write it in your own technical register -- what holds, on what evidence, what is open -- for the orchestrator, which validates it against the row and the artifacts before it answers the user; nothing you write reaches the user's screen directly. Rows cut by the reaper, backstop or salvage are exempt.
 
-## 6. The phase is declared before doing that phase's work
+## 6. Your progress is read from the record, not announced
 
-Write `framing`, `investigating`, `planning`, `executing` or `verifying` before that phase's work, not after: reading as "investigating, four files in" rather than as an opaque box decides whether the orchestrator waits or dispatches over the top of you. Write only the phases you entered.
+The orchestrator sees where an unfinished turn stands by reading its row: `gaia contract view --draft-id <contract_id>` shows the evidence lists and `pending_steps` as they stand, and the harness record shows each tool call as it happens. A row written in flight (principle 5) reads as "four files in, two findings, one step left" rather than as an opaque box, and that decides whether the orchestrator waits or dispatches over the top of you. Keep `pending_steps` naming what is left; no separate phase field exists.
 
 ## 7. Every increment closes verified, and fixing starts by going back to the sources
 
