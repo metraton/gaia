@@ -524,27 +524,124 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
 
 
 # 11. tar
-_TAR_SCRATCH_EXTRACT_LETTERS = frozenset("xvzjJfCkpm")
+_TAR_LOCAL_WORK_LETTERS = frozenset("xvzjJfCkpmoO")
+_TAR_LOCAL_WORK_SWITCHES = frozenset({
+    "--extract", "--get", "--verbose", "--gzip", "--bzip2", "--xz", "--keep-old-files",
+    "--no-same-owner", "--no-same-permissions", "--touch", "--to-stdout",
+})
+_TAR_VALUE_LETTERS = {"f": "--file", "C": "--directory"}
+_TAR_MEMBER_BUDGET = 20000
 
 
-def _tar_extracts_only_into_scratch(tokens: List[str]) -> bool:
-    """True for a short-flag extraction whose archive and -C target are in scratch.
+def _tar_extract_operands(tokens: List[str]) -> Optional[dict]:
+    """Parse an extraction into its options, or None for anything outside the modelled grammar.
 
-    Fail-closed: long options (--to-command and --use-compress-program run
-    programs), a stdin archive, a missing -C and any path the scratch check
-    cannot confine all decline. The archive's members are not inspected.
+    Short clusters follow getopt (a value letter takes the rest of its cluster
+    or the next word); a first word without a dash is the traditional cluster.
+    Member operands may follow ``-C`` only, so all of them land under it.
     """
-    from .mutative_verbs import _rm_scratch_confined_targets
+    args = list(tokens[1:])
+    if args and not args[0].startswith("-") and args[0].isalpha():
+        args[0] = "-" + args[0]
+    seen: dict = {"members_before_directory": False}
+    i = 0
+    while i < len(args):
+        token = args[i]
+        i += 1
+        if token.startswith("--"):
+            name, eq, value = token.partition("=")
+            if name in _TAR_LOCAL_WORK_SWITCHES and not eq:
+                seen[name] = True
+            elif name in ("--file", "--directory", "--one-top-level", "--strip-components") and (eq or i < len(args)):
+                if not eq:
+                    if name == "--one-top-level":
+                        return None
+                    value, i = args[i], i + 1
+                if name in seen:
+                    return None
+                seen[name] = value
+            else:
+                return None
+        elif token.startswith("-") and len(token) > 1:
+            j = 1
+            while j < len(token):
+                letter = token[j]
+                j += 1
+                if letter not in _TAR_LOCAL_WORK_LETTERS:
+                    return None
+                if letter in _TAR_VALUE_LETTERS:
+                    name = _TAR_VALUE_LETTERS[letter]
+                    if j < len(token):
+                        value, j = token[j:], len(token)
+                    elif i < len(args):
+                        value, i = args[i], i + 1
+                    else:
+                        return None
+                    if name in seen:
+                        return None
+                    seen[name] = value
+                else:
+                    seen[{"x": "--extract", "O": "--to-stdout"}.get(letter, letter)] = True
+        elif "--directory" not in seen:
+            seen["members_before_directory"] = True
+    return seen
 
-    flags = [a for a in tokens[1:] if a.startswith("-")]
-    if any(len(a) < 2 or a.startswith("--") for a in flags):
+
+def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
+    """Return the relative paths an archive's regular members extract to, or None.
+
+    None for an unreadable archive, a link member, an absolute or ``..``
+    member, or more members than the budget: each is a write the caller cannot place.
+    """
+    import tarfile
+    paths = []
+    try:
+        with tarfile.open(archive, "r:*") as handle:
+            for count, member in enumerate(handle):
+                if count >= _TAR_MEMBER_BUDGET or member.issym() or member.islnk():
+                    return None
+                parts = [p for p in member.name.split("/") if p not in ("", ".")]
+                if member.name.startswith("/") or ".." in parts:
+                    return None
+                if parts[strip:]:
+                    paths.append("/".join(parts[strip:]))
+    except Exception:
+        return None
+    return paths
+
+
+def _tar_extracts_only_into_local_work(tokens: List[str]) -> bool:
+    """True when every path an extraction writes resolves inside scratch or a managed worktree.
+
+    The members of a readable archive are each placed under the target; an
+    unreadable archive is admitted into scratch only, whose contents nothing
+    trusts, never into a worktree whose ``.git`` a member could replace.
+    ``--to-stdout`` writes no path at all.
+    """
+    import os
+    from .mutative_verbs import _gaia_scratch_root, _local_work_root, _resolve_local_work_path
+
+    seen = _tar_extract_operands(tokens)
+    if seen is None or not seen.get("--extract") and not seen.get("--get"):
         return False
-    letters = "".join(a[1:] for a in flags)
-    if "x" not in letters or "C" not in letters:
+    archive = seen.get("--file")
+    if not archive or archive == "-" or _resolve_local_work_path(archive, None) is None:
         return False
-    if not set(letters) <= _TAR_SCRATCH_EXTRACT_LETTERS:
+    if seen.get("--to-stdout"):
+        return True
+    directory, top_level = seen.get("--directory"), seen.get("--one-top-level")
+    strip = seen.get("--strip-components", "0")
+    if directory is None or seen["members_before_directory"] or not str(strip).isdigit():
         return False
-    return _rm_scratch_confined_targets(tuple(tokens)) is not None
+    target = _resolve_local_work_path(os.path.join(directory, top_level) if top_level else directory, None)
+    if target is None or _local_work_root(target, allow_top=True) is None:
+        return False
+    real_archive = _resolve_local_work_path(archive, None)
+    members = _tar_member_paths(real_archive, int(strip))
+    if members is None:
+        scratch = _gaia_scratch_root()
+        return _local_work_root(target, allow_top=True) == scratch and real_archive.startswith(f"{scratch}{os.sep}")
+    return all(_local_work_root(os.path.realpath(os.path.join(target, m))) is not None for m in members)
 
 
 def _classify_tar(tokens: List[str]) -> Optional[FlagClassifierResult]:
@@ -552,11 +649,11 @@ def _classify_tar(tokens: List[str]) -> Optional[FlagClassifierResult]:
         return None
     args = tokens[1:]
 
-    if _tar_extracts_only_into_scratch(tokens):
+    if _tar_extracts_only_into_local_work(tokens):
         return FlagClassifierResult(
             outcome=OUTCOME_READ_ONLY,
-            reason="tar extraction confined to the Gaia scratch directory",
-            matched_pattern="tar-scratch-extract",
+            reason="tar extraction writing only inside the Gaia scratch directory or a Gaia-managed worktree",
+            matched_pattern="tar-local-work-extract",
             command_family="tar",
         )
 

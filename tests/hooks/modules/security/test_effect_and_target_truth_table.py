@@ -10,6 +10,7 @@ import shlex
 import re
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,8 @@ def world(tmp_path_factory):
     ensure_layout()
     managed_root = Path(os.path.realpath(str(worktrees_dir())))
     dirs = {name: _build_context(spec, root, name, managed_root) for name, spec in HEADER["contexts"].items()}
+    with tarfile.open(os.path.join(str(scratch_dir()), "a.tar"), "w") as archive:
+        archive.addfile(tarfile.TarInfo("pkg/empty.txt"))
     yield {"root": root, "dirs": dirs, "SCRATCH": os.path.realpath(str(scratch_dir())), "WORKTREES": str(managed_root)}
     patch.undo()
 

@@ -61,6 +61,7 @@ from ..security.mutative_verbs import (
     account_path_redirect_target,
     detect_mutative_command,
     build_t3_block_response,
+    chain_withdraws_local_work_relief,
     cwd_after_component,
     git_under_injected_config,
     injects_git_config,
@@ -2053,7 +2054,12 @@ class BashValidator:
         # changes the script a later run executes, which was read before the chain ran.
         package_inputs_rewritten = False
         tripped, tripped_command = None, command
-        for comp in components:
+        for stage in chain_withdraws_local_work_relief(components):
+            flagged = classify_by_flags(stage)
+            if not stage.lstrip().startswith("tar") or (flagged is not None and flagged.matched_pattern == "tar-local-work-extract"):
+                has_t3, tripped, tripped_command = True, detect_mutative_command(stage, cwd=cwd), stage
+                break
+        for comp in ([] if has_t3 else components):
             detected = detect_mutative_command(comp, cwd=scan_cwd)
             if package_inputs_rewritten and runs_package_script(comp):
                 has_t3 = True

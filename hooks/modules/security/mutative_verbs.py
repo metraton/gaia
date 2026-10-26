@@ -22,7 +22,7 @@ import re
 import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
@@ -290,6 +290,7 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "cherry-pick", # local-only: applies commits from another branch, no remote side effects
     "grep",        # read-only search: its pattern is data, never a verb to run
                    # (except -O, see git_grep_opens_pager)
+    "merge-tree",
 })
 
 
@@ -2809,77 +2810,208 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
     return _rm_scratch_confined_targets(tokens) is not None
 
 
-# Flags of a single-file copy that cannot move where it writes.  A recursive
-# copy (``-r``/``-R``/``-a``) is left out on purpose: it writes paths nested
-# under the destination, any of which may be a symlink already sitting in
-# scratch and pointing outside it.  ``-l``/``-s`` (a link back to the source),
-# ``-t``/``-T`` (destination named elsewhere) and every unlisted option also
-# keep the alias verdict.
-_CP_SCRATCH_SHORT_FLAGS: FrozenSet[str] = frozenset("pvfniuLHP")
-_CP_SCRATCH_LONG_FLAGS: FrozenSet[str] = frozenset({
-    "--verbose", "--force", "--no-clobber", "--interactive", "--update",
-    "--dereference", "--no-dereference", "--preserve",
-})
+_LOCAL_WORK_UNRESOLVED_CHARS: FrozenSet[str] = frozenset("*?[]{}$`")
 
 
-def _cp_scratch_written_paths(tokens: tuple) -> "Tuple[str, ...] | None":
-    """Return the canonical paths a ``cp`` writes when all lie inside scratch.
+def _never_free_paths() -> "Tuple[Tuple[str, ...], Tuple[str, ...]]":
+    """Return the files and directories no local-work root may cover, realpath'd.
 
-    Separate from the rm predicate on purpose: cp has its own grammar and
-    writes only its destination, so the sources are never judged here.  A
-    destination that is an existing directory is written at
-    ``<dest>/<basename(source)>``; each such path is re-resolved so a symlink
-    already sitting in scratch cannot carry the write outside it.  Any
-    ambiguity returns None and the command keeps its T3 alias verdict.
+    The live database with its journal files, its backups and the contract
+    drafts hold state the harness trusts; they stay out even when a root is
+    configured around them.
     """
     import os
-    scratch_root = _gaia_scratch_root()
-    if not scratch_root:
-        return None
+    from pathlib import Path
+    from gaia.paths.resolver import data_dir, db_path
+    files, dirs = [], []
+    for db in {db_path(), Path.home() / ".gaia" / "gaia.db"}:
+        files += [os.path.realpath(f"{db}{suffix}") for suffix in ("", "-wal", "-shm", "-journal")]
+        dirs.append(os.path.realpath(db.parent / "backups"))
+    for base in {data_dir(), Path.home() / ".gaia"}:
+        dirs += [os.path.realpath(base / "contract_drafts"), os.path.realpath(base / "backups")]
+    return tuple(files), tuple(dirs)
 
-    positionals = []
+
+def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool = True) -> "str | None":
+    """Return the file the kernel would open for *token*, or None while the shell could still change it.
+
+    ``follow_last=False`` resolves only the parent: an ``mv`` source moves the link, not its target.
+    """
+    import os
+    if not token or any(ch in _LOCAL_WORK_UNRESOLVED_CHARS for ch in token):
+        return None
+    expanded = os.path.expanduser(token)
+    if expanded.startswith("~"):
+        return None
+    if not os.path.isabs(expanded):
+        if not cwd or not os.path.isabs(cwd):
+            return None
+        expanded = os.path.join(cwd, expanded)
+    if follow_last:
+        return os.path.realpath(expanded)
+    parent, name = os.path.split(expanded.rstrip(os.sep))
+    if name in ("", ".", ".."):
+        return None
+    return os.path.join(os.path.realpath(parent or os.sep), name)
+
+
+def _local_work_root(real: str, allow_top: bool = False) -> "str | None":
+    """Return the scratch or worktree directory strictly holding *real*, or None.
+
+    ``allow_top`` also accepts the directory itself (a ``tar -C`` target).
+    Inside a managed root only a checked-out worktree counts -- the nearest
+    ancestor holding ``.git`` -- and no path through a ``.git`` component does.
+    Any failure to resolve the roots or the exclusions declines (fail closed).
+    """
+    import os
+    try:
+        files, dirs = _never_free_paths()
+        from .protected_paths import is_protected_hook_path
+        from .sensitive_paths import is_account_path
+        if real in files or any(real == d or real.startswith(d + os.sep) for d in dirs):
+            return None
+        if is_protected_hook_path(real) or is_account_path(real):
+            return None
+    except Exception:
+        return None
+    scratch = _gaia_scratch_root()
+    if scratch and (real.startswith(scratch + os.sep) or (allow_top and real == scratch)):
+        top = scratch
+    else:
+        managed = _gaia_worktrees_root(real)
+        if managed is None:
+            return None
+        top = os.path.dirname(real) if not allow_top else real
+        while top != managed and top.startswith(managed + os.sep) and not os.path.lexists(os.path.join(top, ".git")):
+            top = os.path.dirname(top)
+        if top == managed or not top.startswith(managed + os.sep):
+            return None
+    if ".git" in os.path.relpath(real, top).split(os.sep):
+        return None
+    return top
+
+
+def _confined_to_local_work(paths: "List[str | None]") -> "Tuple[str, ...] | None":
+    """Return *paths* when each one resolved and lies strictly inside a local-work root."""
+    if not paths or any(p is None or _local_work_root(p) is None for p in paths):
+        return None
+    return tuple(paths)
+
+
+# Options that cannot move where mv or cp write; -t, -T, -l, -s, -b and any
+# unlisted option keep the alias verdict.
+_MV_LOCAL_WORK_SHORT_FLAGS: FrozenSet[str] = frozenset("fivnu")
+_MV_LOCAL_WORK_LONG_FLAGS: FrozenSet[str] = frozenset({
+    "--force", "--interactive", "--no-clobber", "--verbose", "--update",
+})
+_CP_LOCAL_WORK_SHORT_FLAGS: FrozenSet[str] = frozenset("pvfniuLHPrRad")
+_CP_LOCAL_WORK_LONG_FLAGS: FrozenSet[str] = frozenset({
+    "--verbose", "--force", "--no-clobber", "--interactive", "--update",
+    "--dereference", "--no-dereference", "--preserve", "--recursive", "--archive",
+})
+_CP_RECURSIVE_SHORT_FLAGS: FrozenSet[str] = frozenset("rRa")
+
+
+def _local_work_operands(tokens: tuple, short: FrozenSet[str], long: FrozenSet[str]) -> "Tuple[List[str], Set[str]] | None":
+    """Split mv/cp tokens into positionals and the option letters/words used, or None on an unlisted option."""
+    positionals: List[str] = []
+    used: Set[str] = set()
     end_of_options = False
     for token in tokens[1:]:
         if not end_of_options and token == "--":
             end_of_options = True
         elif not end_of_options and token.startswith("--"):
-            if token.split("=", 1)[0] not in _CP_SCRATCH_LONG_FLAGS:
+            name = token.split("=", 1)[0]
+            if name not in long:
                 return None
+            used.add(name)
         elif not end_of_options and token.startswith("-") and token != "-":
-            if not set(token[1:]) <= _CP_SCRATCH_SHORT_FLAGS:
+            if not set(token[1:]) <= short:
                 return None
+            used.update(token[1:])
         else:
             positionals.append(token)
-    if len(positionals) < 2:
-        return None
+    return (positionals, used) if len(positionals) >= 2 else None
 
-    def confined(path: str) -> "str | None":
-        real = os.path.realpath(path)
-        inside = real == scratch_root or real.startswith(scratch_root + os.sep)
-        return real if inside else None
 
-    *sources, destination = positionals
-    if any(ch in _RM_GLOB_CHARS for ch in destination) or ".." in destination:
-        return None
-    expanded = os.path.expanduser(destination)
-    if expanded.startswith("~"):
-        return None
-    real_destination = confined(expanded)
+def _local_work_destinations(sources: List[str], destination: str, cwd: "Optional[str]") -> "List[str | None] | None":
+    """Return the paths a copy or move of *sources* onto *destination* creates."""
+    import os
+    real_destination = _resolve_local_work_path(destination, cwd)
     if real_destination is None:
         return None
     if not os.path.isdir(real_destination):
-        return (real_destination,) if len(sources) == 1 else None
-
-    written = []
+        return [real_destination] if len(sources) == 1 else None
+    written: "List[str | None]" = []
     for source in sources:
-        name = os.path.basename(os.path.normpath(os.path.expanduser(source)))
-        if not name or name in (".", ".."):
+        name = os.path.basename(source.rstrip(os.sep))
+        if name in ("", ".", "..") or source.rstrip(os.sep).endswith(os.sep + "."):
             return None
-        real = confined(os.path.join(real_destination, name))
-        if real is None:
+        written.append(os.path.realpath(os.path.join(real_destination, name)))
+    return written
+
+
+def _cp_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
+    """Return the canonical paths a ``cp`` writes when all lie inside a local-work root.
+
+    Sources are the secret-read guard's to judge.  A recursive copy is admitted
+    only onto paths that do not exist yet, so none of its nested writes can
+    meet a symlink already waiting there.
+    """
+    import os
+    parsed = _local_work_operands(tokens, _CP_LOCAL_WORK_SHORT_FLAGS, _CP_LOCAL_WORK_LONG_FLAGS)
+    if parsed is None:
+        return None
+    (*sources, destination), used = parsed
+    written = _local_work_destinations(sources, destination, cwd)
+    if written is None:
+        return None
+    if used & (_CP_RECURSIVE_SHORT_FLAGS | {"--recursive", "--archive"}):
+        if any(p is None or os.path.lexists(p) for p in written):
             return None
-        written.append(real)
-    return tuple(written)
+    return _confined_to_local_work(written)
+
+
+def _mv_local_work_written_paths(tokens: tuple, cwd: "Optional[str]" = None) -> "Tuple[str, ...] | None":
+    """Return every path an ``mv`` removes or creates when all lie inside a local-work root.
+
+    A source is removed from where it is named, so it is resolved without
+    following its last component: moving a symlink moves the link.
+    """
+    parsed = _local_work_operands(tokens, _MV_LOCAL_WORK_SHORT_FLAGS, _MV_LOCAL_WORK_LONG_FLAGS)
+    if parsed is None:
+        return None
+    (*sources, destination), _ = parsed
+    written = _local_work_destinations(sources, destination, cwd)
+    if written is None:
+        return None
+    removed = [_resolve_local_work_path(source, cwd, follow_last=False) for source in sources]
+    return _confined_to_local_work(removed + written)
+
+
+# Stages that never create, move or extract a symlink; every stage of a line is
+# classified before the first runs, so any other stage could redirect a freed write.
+_PLANTS_NO_LINK: FrozenSet[str] = frozenset({
+    "cd", "pushd", "popd", "mkdir", "touch", "rm", "rmdir", "echo", "printf",
+    "true", "false", "pwd", "ls", "cat", "test", "[", "stat", "wc", "head",
+    "tail", "grep", "diff", "file", "du", "df", "realpath", "readlink",
+    "basename", "dirname", "sleep", "date", "sha256sum", "md5sum",
+})
+_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar"})
+
+
+def chain_withdraws_local_work_relief(components: List[str]) -> List[str]:
+    """Return the mv/cp/tar stages whose path-judged write another stage of the line could redirect."""
+    import os
+    bases = []
+    for component in components:
+        tokens = tokenize_command(component)
+        bases.append(os.path.basename(tokens[0]) if tokens else "")
+    return [
+        components[index] for index, base in enumerate(bases)
+        if base in _LOCAL_WORK_RELIEF_COMMANDS
+        and any(other not in _PLANTS_NO_LINK for i, other in enumerate(bases) if i != index)
+    ]
 
 
 _DURABLE_STORE_SIGNATURES: Tuple[Tuple[bytes, str], ...] = (
@@ -5367,10 +5499,12 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     ),
                 )
 
-        # cp writes only its destination; into scratch it is free unless it
-        # would overwrite a durable store already parked there.
-        if base_cmd == "cp":
-            written = _cp_scratch_written_paths(tuple(tokens))
+        # mv and cp are free when every path they create or remove stays in
+        # scratch or a managed worktree, unless one would overwrite a durable
+        # store already parked there.
+        if base_cmd in ("cp", "mv"):
+            local_work = _cp_local_work_written_paths if base_cmd == "cp" else _mv_local_work_written_paths
+            written = local_work(tuple(tokens), cwd)
             if written and _durable_store_under_scratch_targets(written) is None:
                 return MutativeResult(
                     is_mutative=False,
@@ -5379,8 +5513,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     cli_family="system",
                     confidence="high",
                     reason=(
-                        "cp writing only inside the Gaia scratch directory "
-                        "(~/.gaia/scratch) and overwriting no durable store"
+                        f"{base_cmd} writing only inside the Gaia scratch directory "
+                        f"or a Gaia-managed worktree, overwriting no durable store"
                     ),
                 )
 
