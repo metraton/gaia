@@ -585,23 +585,23 @@ def _tar_extract_operands(tokens: List[str]) -> Optional[dict]:
     return seen
 
 
-def _tar_member_paths(archive: str, strip: int) -> Optional[List[str]]:
-    """Return the relative paths of an archive's members, or None when any member is a link, absolute, ``..`` or over budget."""
+def _tar_member_paths(archive: str, strip: int) -> Optional[Tuple[bool, List[str]]]:
+    """Return (every member is a plain relative path, their stripped paths), or None when Python cannot list it within budget."""
     import tarfile
     paths = []
     try:
         with tarfile.open(archive, "r:*") as handle:
             for count, member in enumerate(handle):
-                if count >= _TAR_MEMBER_BUDGET or member.issym() or member.islnk():
+                if count >= _TAR_MEMBER_BUDGET:
                     return None
                 parts = [p for p in member.name.split("/") if p not in ("", ".")]
-                if member.name.startswith("/") or ".." in parts:
-                    return None
+                if member.issym() or member.islnk() or member.name.startswith("/") or ".." in parts:
+                    return False, []
                 if parts[strip:]:
                     paths.append("/".join(parts[strip:]))
     except Exception:
         return None
-    return paths
+    return True, paths
 
 
 def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[LocalWorkCaller]") -> bool:
@@ -628,9 +628,12 @@ def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[Loca
     if root is None:
         return False
     real_archive = _resolve_local_work_path(archive, None)
-    members = _tar_member_paths(real_archive, int(strip))
-    if members is None:
+    listing = _tar_member_paths(real_archive, int(strip))
+    if listing is None:
         return _scratch_entry(real_archive) == root and not _tree_shares_inode(target)
+    plain, members = listing
+    if not plain:
+        return False
     landed = [os.path.realpath(os.path.join(target, m)) for m in members]
     return all(_local_work_root(path, caller) is not None and not _shares_inode(path) for path in landed)
 

@@ -31,7 +31,7 @@ def _git_repo(path: Path) -> None:
                         "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
 
 
-def _archive(path: Path, members: list) -> None:
+def _archive(path: Path, members: list, link_type: bytes = tarfile.SYMTYPE) -> None:
     with tarfile.open(path, "w") as archive:
         for name, link in members:
             info = tarfile.TarInfo(name)
@@ -39,7 +39,7 @@ def _archive(path: Path, members: list) -> None:
                 info.size = 1
                 archive.addfile(info, io.BytesIO(b"x"))
             else:
-                info.type, info.linkname = tarfile.SYMTYPE, link
+                info.type, info.linkname = link_type, link
                 archive.addfile(info)
 
 
@@ -78,6 +78,10 @@ def world(tmp_path_factory):
     _archive(scratch / "dotgit.tar", [(".git", None)])
     _archive(scratch / "link.tar", [("l", str(outside)), ("l/x", None)])
     _archive(scratch / "strip.tar", [("top/.git/config", None)])
+    _archive(scratch / "relsym.tar", [("pkg/file.txt", None), ("l", "pkg")])
+    _archive(scratch / "hard.tar", [("pkg/file.txt", None), ("h", "pkg/file.txt")], tarfile.LNKTYPE)
+    _archive(scratch / "dotdot.tar", [("../real/x", None)])
+    _archive(scratch / "absolute.tar", [(str(scratch / "real" / "y"), None)])
     (scratch / "withgit" / ".git" / "hooks").mkdir(parents=True)
     (scratch / "withgit" / ".git" / "hooks" / "post-checkout").write_text("x")
     (scratch / "nested" / "pkg" / ".git").mkdir(parents=True)
@@ -181,6 +185,10 @@ TAR = [
     ("symlink-member", "tar -xf {S}/link.tar -C {W}", ASK),
     ("strip-into-git", "tar -xf {S}/strip.tar -C {W} --strip-components=1", ASK),
     ("gitdir-member-into-scratch", "tar -xf {S}/gitdir.tar -C {S}/out", ASK),
+    ("relative-symlink-member-into-scratch", "tar -xf {S}/relsym.tar -C {S}/out", ASK),
+    ("hardlink-member-into-scratch", "tar -xf {S}/hard.tar -C {S}/out", ASK),
+    ("dotdot-member-into-scratch", "tar -xf {S}/dotdot.tar -C {S}/out", ASK),
+    ("absolute-member-into-scratch", "tar -xf {S}/absolute.tar -C {S}/out", ASK),
     ("variable-directory", "tar -xf {S}/clean.tar -C $DEST", ASK),
 ]
 
