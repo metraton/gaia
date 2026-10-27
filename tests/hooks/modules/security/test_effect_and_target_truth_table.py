@@ -712,9 +712,13 @@ _OPAQUE_SETTERS = (
     "export $(cat /tmp/f); {cmd}", "export \"$(cat /tmp/f)\"; {cmd}", "n=X; export \"${{n}}_Y=v\"; {cmd}",
     "declare -x \"$n=v\"; {cmd}", "typeset -x $n=v && {cmd}", "readonly `echo n`=v; {cmd}",
     "export -- \"$n\"=v; {cmd}", "eval \"export $n=v\"; {cmd}", "eval export X=v; {cmd}",
+    "read \"$n\" < f; {cmd}", "read -r \"${{n}}\" < f; {cmd}", "read -ra \"$n\" < f; {cmd}",
+    "read -p x -- $n < f; {cmd}", "printf -v \"$n\" v; {cmd}", "printf -v$n %s v; {cmd}",
+    "mapfile -t \"$n\" < f; {cmd}", "readarray -d , $n < f; {cmd}",
 )
 _SPLIT_NAMES = ("{a}\"\"{b}", "{a}\\{b}", "\"{a}\"{b}", "{a}''{b}", "$'{a}'{b}", "'{a}'\"{b}\"")
-_LINE_READS = ("echo ${name}; {cmd}", "echo \"${{{name}}}\"; {cmd}", "echo \"${{{name}:-none}}\"; {cmd}")
+_LINE_READS = ("echo ${name}; {cmd}", "echo \"${{{name}}}\"; {cmd}", "echo \"${{{name}:-none}}\"; {cmd}",
+               "read -rp \"$p\" line < f; {cmd}", "printf '%s' \"${name}\"; {cmd}", "mapfile -C \"$c\" lines < f; {cmd}")
 
 
 @pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(_EXPORTING_CARRIERS))

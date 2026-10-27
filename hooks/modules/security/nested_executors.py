@@ -134,6 +134,7 @@ _TARGET_MENTION = re.compile(
 )
 _OPAQUE_SETTER = re.compile(r"(?:^|[\s;&|(){}!`])(?:source|\.)(?=\s)|[<>]\(|<<<")
 _NAME_SETTERS = frozenset({"export", "declare", "typeset", "readonly", "local"})
+_NAME_READERS = {"read": "dinNptu", "mapfile": "dnOsuCc", "readarray": "dnOsuCc"}
 
 
 def _flag_kind(token: str, values: FrozenSet[str], booleans: FrozenSet[str], bundled: str) -> str:
@@ -251,14 +252,41 @@ def with_target_flags(prefix: Sequence[str], words: Sequence[str]) -> Optional[L
     return [words[0], *flags, *words[1:]] if flags else None
 
 
+def _reader_names(args: Sequence[str], value_letters: str) -> List[str]:
+    names: List[str] = []
+    takes_value, options = False, True
+    for word in args:
+        if takes_value:
+            takes_value = False
+        elif options and word == "--":
+            options = False
+        elif options and word.startswith("-") and len(word) > 1:
+            takes_value = word[-1] in value_letters
+        else:
+            names.append(word)
+    return names
+
+
+def _printf_names(args: Sequence[str]) -> List[str]:
+    return [word[2:] or (args[index + 1] if index + 1 < len(args) else "")
+            for index, word in enumerate(args) if word.startswith("-v")]
+
+
 def _computes_a_name(words: Sequence[str]) -> bool:
-    computed = (index for index, word in enumerate(words) if word in _NAME_SETTERS or word == "eval")
+    computed = (index for index, word in enumerate(words)
+                if word in _NAME_SETTERS or word in _NAME_READERS or word in ("eval", "printf"))
     start = next(computed, None)
     if start is None:
         return False
-    if words[start] == "eval":
-        return any(mark in word for word in words[start + 1:] for mark in "=$`")
-    names = (word.partition("=")[0] for word in words[start + 1:] if not word.startswith(("-", "+")))
+    command, args = words[start], words[start + 1:]
+    if command == "eval":
+        return any(mark in word for word in args for mark in "=$`")
+    if command == "printf":
+        names = _printf_names(args)
+    elif command in _NAME_READERS:
+        names = _reader_names(args, _NAME_READERS[command])
+    else:
+        names = [word.partition("=")[0] for word in args if not word.startswith(("-", "+"))]
     return any("$" in name or "`" in name for name in names)
 
 
