@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import configparser
 import hashlib
+import itertools
 import json
 import os
 import re
 import shlex
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -18,6 +20,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .canonical_path import command_name
 
 UNDETERMINED = "?"
+UNREADABLE = "??"
 DECLARATION_SECTION = "targets"
 
 # Only a program no classifier table names (mutative_verbs._is_unmodelled_cli) is read with the generic row.
@@ -104,17 +107,20 @@ _PRODUCTION_WORDS = frozenset({"prod", "production", "prd"})
 _NAME_PARTS = re.compile(r"[a-z0-9]+")
 _DYNAMIC = re.compile(r"[$`]")
 _ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)", re.S)
-_CURRENT_CONTEXT = re.compile(r"""^current-context:[ \t]*["']?([^"'\s#]*)""", re.M)
-_PULUMI_NAME = re.compile(r"""^name:[ \t]*["']?([^"'\s#]+)""", re.M)
+# The hook runtime ships no YAML parser (pyyaml is a dev extra), so only these canonical spellings are read.
+_YAML_TOP_LINE = re.compile(r"[A-Za-z_][\w.-]*:(?=[ \t]|$).*|-(?=[ \t]|$).*|(?:---|\.\.\.)[ \t]*(?:#.*)?|[%#].*")
+_YAML_SCALAR = r"""(?:"(?P<double>[^"\\]*)"|'(?P<single>[^']*)'|(?P<plain>[A-Za-z0-9_./][\w.@:/+=~-]*(?<!:)))"""
+_YAML_TYPED = re.compile(r"(?i:null|true|false|yes|no|on|off|y|n|\.inf|\.nan)|\.?\d[\d_.eE+:-]*|0[xXoO][\w]+")
+_READ_LIMIT = 1024 * 1024
 _CONFIGURATION_NAME = re.compile(r"[A-Za-z0-9][\w.-]*")
-_YAML_KEY = re.compile(r"^﻿?[A-Za-z][\w-]*:", re.M)
 _SUBSCRIPTION_ID = re.compile(r"(?=[^0-9]*[0-9])[0-9A-Fa-f-]+")
 _HELP_PROGRAMS = frozenset(_OPTION_ARITY) | frozenset(_PROGRAM_TARGET_FLAGS) | _KUBE_PROGRAMS | _SWITCHER_PROGRAMS
 
 
 @dataclass(frozen=True)
 class Target:
-    """One place a command lands: *kind* says where the name came from, *name* is UNDETERMINED when nothing literal names it."""
+    """One place a command lands: *kind* says where the name came from, *name* is UNDETERMINED when nothing literal names
+    it and UNREADABLE when the configuration file that names it cannot be read with certainty."""
 
     kind: str
     name: str
@@ -169,28 +175,72 @@ def _named(value: str) -> str:
     return value and _literal(value)
 
 
-def _read_text(path: Optional[Path]) -> Optional[str]:
-    """The file's text, "" when it does not exist, None when it exists and cannot be read or *path* is unknown."""
+def _read_text(path: Path) -> Optional[str]:
+    """The text of the regular file *path* resolves to, "" when nothing is there, None when it is anything else (FIFO,
+    device, directory, over _READ_LIMIT bytes, not UTF-8): checked before opening, opened without blocking, read capped."""
     try:
-        if path is None:
+        real = os.path.realpath(path)
+        if not stat.S_ISREG(os.stat(real).st_mode):
             return None
-        if not path.exists() and not path.is_symlink():
-            return ""
-        return path.read_text(encoding="utf-8")
+        descriptor = os.open(real, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    except (FileNotFoundError, NotADirectoryError):
+        return None if os.path.lexists(path) else ""
     except (OSError, ValueError):
         return None
+    try:
+        status, data = os.fstat(descriptor), b""
+        if not stat.S_ISREG(status.st_mode) or status.st_size > _READ_LIMIT:
+            return None
+        while len(data) <= _READ_LIMIT and (chunk := os.read(descriptor, _READ_LIMIT + 1 - len(data))):
+            data += chunk
+        return None if len(data) > _READ_LIMIT else data.decode("utf-8")
+    except (OSError, ValueError):
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _unique_keys(pairs):
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ValueError("duplicate key")
+    return dict(pairs)
 
 
 def _json_value(text: str, kind: type, key: str):
-    """``key`` of the JSON object *text*, which must be of *kind* or absent; UNDETERMINED for anything else."""
+    """``key`` of the JSON object *text*, which must be of *kind* or absent; UNREADABLE for anything else."""
     try:
-        document = json.loads(text.lstrip("﻿"))
+        document = json.loads(text.lstrip("﻿"), object_pairs_hook=_unique_keys)
     except (ValueError, RecursionError):
-        return UNDETERMINED
+        return UNREADABLE
     if not isinstance(document, dict):
-        return UNDETERMINED
+        return UNREADABLE
     value = document.get(key)
-    return value if value is None or isinstance(value, kind) else UNDETERMINED
+    return value if value is None or isinstance(value, kind) else UNREADABLE
+
+
+def _yaml_value(text: str, key: str) -> str:
+    """Top-level *key* of YAML *text*, "" when absent; UNREADABLE unless every top-level line is a plain key, a sequence
+    item or a comment, and every *key* line holds one plain or unescaped quoted string with nothing folded into it."""
+    lines = text.lstrip("﻿").replace("\r\n", "\n").split("\n")
+    if any(line[:1] not in ("", " ", "\t") and not _YAML_TOP_LINE.fullmatch(line) for line in lines):
+        return UNREADABLE
+    pattern = re.compile(rf"{re.escape(key)}:(?:[ \t]+{_YAML_SCALAR})?(?:[ \t]+(?:#.*)?)?")
+    found = set()
+    for index, line in enumerate(lines):
+        if not line.startswith(f"{key}:"):
+            continue
+        match = pattern.fullmatch(line)
+        if match is None:
+            return UNREADABLE
+        nested = list(itertools.takewhile(lambda follower: follower[:1] in ("", " ", "\t"), lines[index + 1:]))
+        after = next((follower for follower in lines[index + 1:] if follower.strip()), "")
+        scalar = next((part for part in match.group("double", "single", "plain") if part is not None), None)
+        if any(follower.strip() and not follower.lstrip().startswith("#") for follower in nested) \
+                or (scalar is None and after.startswith("-")) \
+                or (match.group("plain") and _YAML_TYPED.fullmatch(scalar)):
+            return UNREADABLE
+        found.add(scalar or "")
+    return UNREADABLE if len(found) > 1 else next(iter(found), "")
 
 
 def _in_directory(path: str, cwd: Optional[str]) -> Optional[Path]:
@@ -212,17 +262,15 @@ def _kube_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
         return UNDETERMINED
     files = [_in_directory(p, cwd) for p in paths.split(os.pathsep) if p] if paths else [Path.home() / ".kube" / "config"]
     for path in files:
+        if path is None:
+            return UNDETERMINED
         text = _read_text(path)
         if text is None:
-            return UNDETERMINED
-        if not text.lstrip("﻿").lstrip().startswith("{"):
-            if text.strip() and not _YAML_KEY.search(text):
-                return UNDETERMINED
-            match = _CURRENT_CONTEXT.search(text)
-            if match and match.group(1):
-                return match.group(1)
-            continue
-        context = _json_value(text, str, "current-context")
+            return UNREADABLE
+        if text.lstrip("﻿").lstrip().startswith("{"):
+            context = _json_value(text, str, "current-context")
+        else:
+            context = _yaml_value(text, "current-context")
         if context:
             return context
     return ""
@@ -230,18 +278,21 @@ def _kube_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
 
 def _gcloud_properties(environment: Dict[str, str], cwd: Optional[str]) -> Tuple[str, str]:
     root = _config_root(environment, "CLOUDSDK_CONFIG", (".config", "gcloud"), cwd)
-    active = environment.get("CLOUDSDK_ACTIVE_CONFIG_NAME") or _read_text(None if root is None else root / "active_config")
-    active = None if active is None else active.strip() or "default"
-    if root is None or active is None or not _CONFIGURATION_NAME.fullmatch(active):
+    if root is None:
         return UNDETERMINED, UNDETERMINED
+    named = environment.get("CLOUDSDK_ACTIVE_CONFIG_NAME")
+    active = named or _read_text(root / "active_config")
+    active = None if active is None else active.strip() or "default"
+    if active is None or not _CONFIGURATION_NAME.fullmatch(active):
+        return (UNDETERMINED, UNDETERMINED) if named else (UNREADABLE, UNREADABLE)
     text = _read_text(root / "configurations" / f"config_{active}")
     if text is None:
-        return UNDETERMINED, UNDETERMINED
+        return UNREADABLE, UNREADABLE
     parser = configparser.ConfigParser(interpolation=None)
     try:
         parser.read_string(text)
     except configparser.Error:
-        return UNDETERMINED, UNDETERMINED
+        return UNREADABLE, UNREADABLE
     return parser.get("core", "project", fallback=""), parser.get("core", "account", fallback="")
 
 
@@ -249,32 +300,37 @@ def _docker_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
     if environment.get("DOCKER_CONTEXT"):
         return _literal(environment["DOCKER_CONTEXT"])
     root = _config_root(environment, "DOCKER_CONFIG", (".docker",), cwd)
-    text = _read_text(None if root is None else root / "config.json")
+    if root is None:
+        return UNDETERMINED
+    text = _read_text(root / "config.json")
     if not text:
-        return "" if text == "" else UNDETERMINED
+        return "" if text == "" else UNREADABLE
     return _json_value(text, str, "currentContext") or ""
 
 
-def _azure_profile(environment: Dict[str, str], cwd: Optional[str]) -> Optional[List[Tuple[str, str, bool]]]:
-    """(name, id, is default) of each subscription in azureProfile.json; [] when there is none, None when unreadable."""
+def _azure_profile(environment: Dict[str, str], cwd: Optional[str]):
+    """(name, id, is default) of each subscription in azureProfile.json; [] when there is none, UNDETERMINED when its
+    directory is computed, UNREADABLE when the file cannot be read."""
     root = _config_root(environment, "AZURE_CONFIG_DIR", (".azure",), cwd)
-    text = _read_text(None if root is None else root / "azureProfile.json")
+    if root is None:
+        return UNDETERMINED
+    text = _read_text(root / "azureProfile.json")
     if text == "":
         return []
-    subscriptions = UNDETERMINED if text is None else _json_value(text, list, "subscriptions")
+    subscriptions = UNREADABLE if text is None else _json_value(text, list, "subscriptions")
     if not isinstance(subscriptions, list):
-        return None
+        return UNREADABLE
     profile = []
     for entry in subscriptions:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not isinstance(entry.get("id"), str):
-            return None
+            return UNREADABLE
         profile.append((entry["name"], entry["id"], bool(entry.get("isDefault"))))
     return profile
 
 
-def _azure_subscriptions(value: str, profile: Optional[List[Tuple[str, str, bool]]], fetching: bool) -> List[str]:
+def _azure_subscriptions(value: str, profile, fetching: bool) -> List[str]:
     value = _literal(value)
-    match = next((s for s in profile or () if value.lower() in (s[0].lower(), s[1].lower())), None)
+    match = next((s for s in (profile if isinstance(profile, list) else ()) if value.lower() in (s[0].lower(), s[1].lower())), None)
     if match is not None:
         return [match[0], match[1]]
     return [UNDETERMINED if fetching and _SUBSCRIPTION_ID.fullmatch(value) else value]
@@ -291,15 +347,27 @@ def _pulumi_stack(args: Sequence[str], environment: Dict[str, str], cwd: Optiona
     if project is None:
         return ""
     text = _read_text(project)
-    name = _PULUMI_NAME.search(text or "")
-    if name is None:
-        return UNDETERMINED
+    name = UNREADABLE if text is None else _yaml_value(text, "name")
+    if name in ("", UNREADABLE):
+        return UNREADABLE
     home = _config_root(environment, "PULUMI_HOME", (".pulumi",), cwd)
-    digest = hashlib.sha1(str(project).encode()).hexdigest()
-    settings = _read_text(None if home is None else home / "workspaces" / f"{name.group(1)}-{digest}-workspace.json")
+    if home is None:
+        return UNDETERMINED
+    settings = _read_text(home / "workspaces" / f"{name}-{hashlib.sha1(str(project).encode()).hexdigest()}-workspace.json")
     if not settings:
-        return "" if settings == "" else UNDETERMINED
+        return "" if settings == "" else UNREADABLE
     return _json_value(settings, str, "stack") or ""
+
+
+def _leading_option_values(program: str, args: Sequence[str], option: str) -> List[str]:
+    """Values of *option* among the options written before *program*'s first positional, where its global options go."""
+    arity, values, index = _OPTION_ARITY.get(program, {}), [], 0
+    while index < len(args) and args[index].startswith("-") and args[index] not in ("-", "--"):
+        name, equals, value = args[index].partition("=")
+        if name == option:
+            values.append(value if equals else (args[index + 1] if index + 1 < len(args) else ""))
+        index += 1 + (0 if equals else arity.get(name, 0))
+    return values
 
 
 def _ambient(
@@ -325,11 +393,13 @@ def _ambient(
     if program in ("docker", "podman") and not _flag_values(args, _PROGRAM_TARGET_FLAGS[program]):
         if program == "podman" and environment.get("CONTAINER_CONNECTION"):
             return [Target("podman-connection", _literal(environment["CONTAINER_CONNECTION"]))]
+        for value in _leading_option_values(program, args, "--config") if program == "docker" else ():
+            environment["DOCKER_CONFIG"] = value
         return [Target("docker-context", _docker_context(environment, cwd))]
     if program == "az" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["az"]):
         profile = _azure_profile(environment, cwd)
-        if profile is None:
-            found = [Target("subscription", UNDETERMINED)]
+        if isinstance(profile, str):
+            found = [Target("subscription", profile)]
         else:
             found = [Target("subscription", part) for name, sid, default in profile if default for part in (name, sid)]
         if environment.get("AZURE_SUBSCRIPTION_ID"):
@@ -344,8 +414,10 @@ def _ambient(
         if environment.get("TF_WORKSPACE"):
             return [Target("workspace", _literal(environment["TF_WORKSPACE"]))]
         directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd)
-        text = None if directory is None else _read_text(directory / ".terraform" / "environment")
-        return [Target("workspace", UNDETERMINED if text is None else text.strip())]
+        if directory is None:
+            return [Target("workspace", UNDETERMINED)]
+        text = _read_text(directory / ".terraform" / "environment")
+        return [Target("workspace", UNREADABLE if text is None else text.strip())]
     return []
 
 
@@ -568,7 +640,7 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
         targets = command_targets(command, cwd=cwd)
     except Exception:
         return UNDETERMINED
-    if any(t.name == UNDETERMINED for t in targets):
+    if any(t.name in (UNDETERMINED, UNREADABLE) for t in targets):
         return UNDETERMINED
     return ";".join(sorted(f"{t.kind}={t.name}" for t in targets))
 
@@ -613,7 +685,7 @@ def production_target_verdict(
 
     The operation word decides a read (``_operation``), never an operand; an executor keeps the verdict of what it runs.
     A target that is not literal keeps the verdict (D178 pins ``docker --context $CTX ps`` free); only a grant refuses it.
-    A failure while reading targets is a target that could not be determined, so it asks rather than reach the validator.
+    A configuration file that cannot be read with certainty, or a failure while reading targets, asks instead.
     """
     from .mutative_verbs import CATEGORY_MUTATIVE, MutativeResult
 
@@ -626,8 +698,10 @@ def production_target_verdict(
     if landing is None:
         return None
     place, words = landing
+    verb = detected.verb if detected.verb and "/" not in detected.verb else _operation(words)[0] if words else None
+    verb = verb or (command_name(words[0]) if words else "")
     return MutativeResult(
-        is_mutative=True, category=CATEGORY_MUTATIVE, verb=detected.verb or (command_name(words[0]) if words else ""),
+        is_mutative=True, category=CATEGORY_MUTATIVE, verb=verb,
         confidence="high", reason=f"{shlex.join(words) if words else command!r} lands on {place}", rule="sign.lands",
     )
 
@@ -669,9 +743,9 @@ def _landing(
         landing = f"the declared protected branch {branch!r}"
     if switching and _CREDENTIAL_FETCHERS.get(command_name(words[0])) != operation:
         targets = [t for t in targets if t.kind == "switch"]
-    named = next((t for t in targets if t.name != UNDETERMINED and is_production(t.name, declaration)), None)
+    named = next((t for t in targets if t.name not in (UNDETERMINED, UNREADABLE) and is_production(t.name, declaration)), None)
     if named is not None:
         landing = f"the production {named.kind} {named.name!r}"
-    elif switching and any(t.name == UNDETERMINED for t in targets):
+    elif any(t.name == UNREADABLE for t in targets) or (switching and any(t.name == UNDETERMINED for t in targets)):
         landing = "a target that could not be determined"
     return (landing, list(words)) if landing else None
