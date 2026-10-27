@@ -364,14 +364,17 @@ The sets are `assets/tools/static-census.cjs::GRIDDED` (cells kept legible),
 ROW) and `assets/tools/static-census.cjs::WORDFIT` (a word too long for its
 cell fails).
 
-| Form | The properties that make it | Checks it adds |
-|------|-----------------------------|----------------|
-| `dashboard` | Peer sections side by side, each a leaf grid of boxes; `span` weights the zones. | legible, dense, word fit |
-| `timeline` | One section whose `columns` equal its number of boxes, read left to right by `order`. | none of the three: one long row is legitimate |
-| `flow` | Sections in `order` as phases, boxes in `order` as steps inside them, one chip whose members cross every phase. | legible, word fit |
-| `comparison` | One section per option, `span` 1 each, the same inner grammar in each so rows compare across. | legible, dense |
-| `mindmap` | A centre band (`span` equal to the page's columns) with sections placed symmetrically around it: the grid cannot radiate. | legible |
-| `planner` | One grid of cards whose `kicker` carries the state, with one chip per plan. | legible, dense |
+To choose a form with the person, ask what the reader has to see at a glance;
+the column "The reader sees" answers that, and the form that matches it follows.
+
+| Form | The reader sees | The properties that make it | Checks it adds |
+|------|-----------------|-----------------------------|----------------|
+| `dashboard` | the whole of something, in parts | Peer sections side by side, each a leaf grid of boxes; `span` weights the zones. | legible, dense, word fit |
+| `timeline` | what came before what | One section whose `columns` equal its number of boxes, read left to right by `order`. | none of the three: one long row is legitimate |
+| `flow` | one thing moving through stages | Sections in `order` as phases, boxes in `order` as steps inside them, one chip whose members cross every phase. | legible, word fit |
+| `comparison` | options weighed on the same points | One section per option, `span` 1 each, the same inner grammar in each so rows compare across. | legible, dense |
+| `mindmap` | one idea and what grows from it | A centre band (`span` equal to the page's columns) with sections placed symmetrically around it: the grid cannot radiate. | legible |
+| `planner` | each piece of work and where it stands | One grid of cards whose `kicker` carries the state, with one chip per plan. | legible, dense |
 
 ## Measured limits
 
