@@ -24,6 +24,7 @@ import ast
 import os
 import re
 import shlex
+from pathlib import Path
 from typing import Any, List, Mapping, Optional, Tuple
 
 from .composition_rules import _strip_transparent_prefixes
@@ -284,14 +285,29 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
 def _gaia_read_candidates(tokens: List[str]) -> List[str]:
     """Every option value of the gaia CLI, spaced or after ``=``; every argument of another program named gaia."""
     arguments = tokens[1:]
-    if not is_gaia_cli(tokens[0]):
-        return arguments
+    return _option_values(arguments) if is_gaia_cli(tokens[0]) else arguments
+
+
+def _option_values(arguments: List[str]) -> List[str]:
     values = []
     for index, argument in enumerate(arguments):
         if argument.startswith("-") and argument != "-":
             _name, equals, value = argument.partition("=")
             values.append(value if equals else "".join(arguments[index + 1:index + 2]))
     return [value for value in values if value not in ("", "-")]
+
+
+def _shipped_gaia_script_arguments(base: str, arguments: List[str], cwd: Optional[str]) -> Optional[List[str]]:
+    """The arguments after a script of the installed Gaia's ``bin/`` that an interpreter runs, or None."""
+    from .mutative_verbs import _HOOK_ROOT, _SCRIPT_FILE_INTERPRETERS, _gaia_shipped_script, script_positional
+
+    path = script_positional(base, arguments) if base in _SCRIPT_FILE_INTERPRETERS else None
+    if not path or path not in arguments:
+        return None
+    script = Path(os.path.join(cwd or os.getcwd(), os.path.expanduser(path)))
+    if not _gaia_shipped_script(script) or not Path(os.path.realpath(script)).is_relative_to(_HOOK_ROOT / "bin"):
+        return None
+    return arguments[arguments.index(path) + 1:]
 
 
 def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) -> str:
@@ -313,6 +329,9 @@ def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) ->
     arguments = tokens[1:]
     if base == "gaia":
         return first_sensitive_token(_gaia_read_candidates(tokens), cwd)
+    script_arguments = _shipped_gaia_script_arguments(base, arguments, cwd)
+    if script_arguments is not None:
+        return first_sensitive_token(_option_values(script_arguments), cwd)
     if base in _SHELLS and "-c" in arguments:
         inline = arguments[arguments.index("-c") + 1:]
         return reads_sensitive_path(inline[0], cwd) if inline else ""

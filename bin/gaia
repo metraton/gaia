@@ -427,7 +427,7 @@ def _build_parser(plugin_entries):
         if hasattr(mod, "register"):
             mod.register(subparsers)
 
-    from cli import refuse_abbreviations
+    from gaia.cli_parsing import refuse_abbreviations
 
     return refuse_abbreviations(parser)
 
