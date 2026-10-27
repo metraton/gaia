@@ -17,14 +17,11 @@ Categories retained internally for verb classification:
 """
 
 import functools
-import hashlib
-import importlib.machinery
 import json
 import logging
 import os
 import re
 import shlex
-import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
@@ -7006,87 +7003,17 @@ _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_pl
 _HOOK_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _git_common_dir(root: str) -> "Optional[str]":
-    """The shared git directory of the repository whose worktree root is exactly *root*, or None."""
-    top = _git_read(root, "rev-parse", "--show-toplevel")
-    if top is None or os.path.realpath(top) != os.path.realpath(root):
-        return None
-    common = _git_read(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    return os.path.realpath(common) if common else None
-
-
 @functools.lru_cache(maxsize=1)
-def _gaia_source_repositories() -> FrozenSet[str]:
-    """Git storage of the checkout this hook runs from (none from an install); remotes and the registry are claimable, so never trusted."""
-    return frozenset(filter(None, [_git_common_dir(str(_HOOK_ROOT))]))
-
-
-_IMPORTABLE_SUFFIXES: Tuple[str, ...] = (*importlib.machinery.all_suffixes(), ".pth")
-
-_GAIA_IMPORTABLE_PATHSPECS: Tuple[str, ...] = (
-    "bin", "gaia", "hooks", "scripts", "tools", ":(glob)__pycache__/*",
-    *(f":(glob){stem}{suffix}" for stem in ("*", "*/__init__") for suffix in _IMPORTABLE_SUFFIXES),
-)
-
-
-def _validated_cached_pyc(top: str, relative: str, tracked: FrozenSet[str]) -> bool:
-    """True when *relative* is the ``__pycache__`` pyc of a tracked ``<name>.py`` (or extensionless ``<name>``) beside it and its header makes Python re-check it against that source."""
-    cache_dir, _, filename = relative.rpartition("/")
-    parent, _, cache_name = cache_dir.rpartition("/")
-    if cache_name != "__pycache__" or not filename.endswith(".pyc"):
-        return False
-    stem = filename[: -len(".pyc")]
-    sources = {f"{stem.partition('.')[0]}.py", stem.partition(sys.implementation.cache_tag or "\0")[0]}
-    if not any(name and (f"{parent}/{name}" if parent else name) in tracked for name in sources):
-        return False
-    path = Path(top, relative)
-    try:
-        if path.is_symlink():
-            return False
-        with open(path, "rb") as handle:
-            header = handle.read(16)
-    except OSError:
-        return False
-    timestamp, checked_hash = 0b00, 0b11
-    return len(header) == 16 and int.from_bytes(header[4:8], "little") in (timestamp, checked_hash)
-
-
-def _gaia_code_paths_clean(top: str) -> bool:
-    """True when nothing bin/gaia can import or run from checkout *top* (its root is on sys.path) is modified, staged, untracked, or ignored, a validated cached pyc of a tracked module excepted."""
-    status = _git_read(
-        top, "--no-optional-locks", *_GIT_INDEX_ONLY, "status", "--porcelain", "-z",
-        "--untracked-files=all", "--ignored=traditional", "--", *_GAIA_IMPORTABLE_PATHSPECS,
-    )
-    if status is None:
-        return False
-    foreign = []
-    for entry in filter(None, status.split("\0")):
-        code, path = entry[:2], entry[3:]
-        if code not in ("??", "!!") or path.endswith("/"):
-            return False
-        if code == "??" or path.endswith(_IMPORTABLE_SUFFIXES):
-            foreign.append(path)
-    if not foreign:
-        return True
-    tracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-z", "--", *_GAIA_IMPORTABLE_PATHSPECS)
-    if tracked is None:
-        return False
-    names = frozenset(tracked.split("\0"))
-    return all(_validated_cached_pyc(top, path, names) for path in foreign)
+def _hook_root_is_install() -> bool:
+    """True when the Gaia this hook runs from is an install, not the root of a git checkout anyone can edit; an npm install nested in a project's checkout still counts."""
+    top = _git_read(str(_HOOK_ROOT), "rev-parse", "--show-toplevel")
+    return top is None or os.path.realpath(top) != os.path.realpath(_HOOK_ROOT)
 
 
 def _gaia_shipped_script(script: Path) -> bool:
-    """True when *script* is in the install this hook runs from, or committed in a checkout sharing the hook checkout's git storage whose Gaia code is all clean."""
+    """True when *script* is a file of the installed Gaia this hook runs from; a checkout's copy, Gaia's own source included, is judged by content."""
     real = Path(os.path.realpath(script))
-    if not real.is_file():
-        return False
-    if real.is_relative_to(_HOOK_ROOT) and _git_common_dir(str(_HOOK_ROOT)) is None:
-        return True
-    top = _repository_root(real)
-    if top is None or _git_common_dir(top) not in _gaia_source_repositories():
-        return False
-    relative = os.path.relpath(real, top)
-    return _gaia_code_paths_clean(top) and _committed_unmodified(top, [f":(literal){relative}"]) == {relative}
+    return real.is_file() and real.is_relative_to(_HOOK_ROOT) and _hook_root_is_install()
 
 
 def _gaia_cli_group(script: Path) -> "Optional[str]":
@@ -7128,9 +7055,10 @@ def _check_gaia_cli_dispatcher(
     subprocess.run detection for arbitrary Python scripts.
 
     A ``bin/cli/<group>.py`` script runs as ``gaia <group>`` and is
-    re-dispatched the same way.  Either script counts only where Gaia ships it
-    and every module it can load is shipped too (``_gaia_shipped_script``);
-    anywhere else it is judged by its content.
+    re-dispatched the same way.  Either script counts only inside the installed
+    Gaia this hook runs from (``_gaia_shipped_script``): a git checkout's copy,
+    Gaia's own source worktrees included, can import code anyone edited, so it
+    is judged by its content.
 
     Returns ``None`` when the script is not the gaia dispatcher, so the caller
     continues with ordinary AST/regex script analysis.
@@ -8773,47 +8701,6 @@ def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
     candidates += sorted((directory / "__pycache__").glob(f"{name}.*.pyc"))
     compiled = [candidate for candidate in candidates if candidate.suffix != ".py"]
     return (compiled or candidates or [None])[0]
-
-
-# Comparing the worktree through git would run the repository's fsmonitor or clean filter in the hook.
-_GIT_INDEX_ONLY = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
-
-
-def _repository_root(path: Path) -> "Optional[str]":
-    """The worktree root of the git repository holding the existing file *path*, or None."""
-    if not path.is_file():
-        return None
-    top = _git_read(os.path.dirname(os.path.realpath(path)), "rev-parse", "--show-toplevel")
-    return os.path.realpath(top) if top else None
-
-
-def _git_blob_id(path: Path, length: int) -> "Optional[str]":
-    """The id git gives the bytes of the regular file *path*, in the hash whose hex digest is *length* long."""
-    if path.is_symlink():
-        return None
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    digest = hashlib.sha1 if length == 40 else hashlib.sha256
-    return digest(b"blob %d\0" % len(data) + data).hexdigest()
-
-
-def _committed_unmodified(top: str, pathspecs: "List[str]") -> "Optional[FrozenSet[str]]":
-    """The tracked files under *pathspecs*, or None when one is staged, modified, a link, or untracked."""
-    untracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-z", "--others", "--", *pathspecs)
-    staged = _git_read(top, *_GIT_INDEX_ONLY, "diff-index", "--cached", "--name-only", "-z", "HEAD", "--", *pathspecs)
-    tracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-s", "-z", "--", *pathspecs)
-    if untracked is None or staged is None or tracked is None or untracked or staged:
-        return None
-    committed = set()
-    for entry in filter(None, tracked.split("\0")):
-        info, _, path = entry.partition("\t")
-        mode, blob, stage = info.split()
-        if mode in ("120000", "160000") or stage != "0" or _git_blob_id(Path(top, path), len(blob)) != blob:
-            return None
-        committed.add(path)
-    return frozenset(committed)
 
 
 def _python_local_module_run(

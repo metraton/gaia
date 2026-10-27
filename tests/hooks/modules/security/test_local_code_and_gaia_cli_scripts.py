@@ -69,13 +69,15 @@ def test_a_compiled_file_beside_a_read_module_asks(shadow, repo):
 
 
 @pytest.mark.parametrize("command, asks", [
-    ("python3 {repo}/bin/cli/contract.py proposals list --json", False),
-    ("python3 {repo}/bin/cli/contract.py proposals accept --help", False),
+    ("python3 {repo}/bin/cli/contract.py proposals list --json", True),
+    ("python3 {repo}/bin/cli/contract.py proposals accept --help", True),
     ("python3 {repo}/bin/cli/approvals.py approve P-1", True),
-    ("python3 {repo}/bin/gaia contract list", False),
+    ("python3 {repo}/bin/gaia contract list", True),
     ("python3 {repo}/bin/gaia dev", True),
+    ("gaia contract proposals list --json", False),
 ])
-def test_gaia_own_cli_scripts_classify_as_their_gaia_command(command, asks):
+def test_gaia_source_checkout_scripts_are_judged_by_content_and_the_cli_is_the_read_path(command, asks):
+    """A source checkout can import code anyone edited, so only the installed Gaia re-dispatches by path."""
     assert _asks(command, _REPO_ROOT) is asks
 
 
