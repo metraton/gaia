@@ -1,4 +1,4 @@
-"""A by-path Gaia CLI in a source checkout runs free only when nothing foreign sits on its import path, ignored files included."""
+"""A by-path Gaia CLI is judged as its gaia command only inside the installed Gaia the hook runs from; any git checkout is judged by content."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "hooks")):
 from modules.security import mutative_verbs as mv  # noqa: E402
 
 PAYLOAD = "import shutil\nshutil.rmtree('/srv/data')\n"
-COMMAND = "python3 {checkout}/bin/gaia memory list"
+COMMANDS = ("python3 {root}/bin/gaia memory list", "python3 {root}/bin/cli/memory.py list")
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -29,79 +29,90 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
-@pytest.fixture
-def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    hook = tmp_path / "hook"
-    (hook / "bin/cli").mkdir(parents=True)
+def _copy_cli(root: Path) -> Path:
+    (root / "bin/cli").mkdir(parents=True)
     for source in (_REPO_ROOT / "bin/cli").glob("*.py"):
-        (hook / "bin/cli" / source.name).write_text(source.read_text())
-    (hook / "bin/gaia").write_text((_REPO_ROOT / "bin/gaia").read_text())
-    (hook / ".gitignore").write_text("__pycache__/\n*.so\n")
+        (root / "bin/cli" / source.name).write_text(source.read_text())
+    (root / "bin/gaia").write_text((_REPO_ROOT / "bin/gaia").read_text())
+    return root
+
+
+def _redispatched(root: Path) -> list:
+    results = [mv.detect_mutative_command(command.format(root=root)) for command in COMMANDS]
+    return ["re-dispatched" in (result.reason or "") and not result.is_mutative for result in results]
+
+
+@pytest.fixture
+def hook_root(monkeypatch: pytest.MonkeyPatch):
+    def point_at(root: Path) -> None:
+        monkeypatch.setattr(mv, "_HOOK_ROOT", root)
+        mv._hook_root_is_install.cache_clear()
+
+    yield point_at
+    mv._hook_root_is_install.cache_clear()
+
+
+def test_the_installed_gaia_the_hook_runs_from_is_re_dispatched(tmp_path, hook_root):
+    install = _copy_cli(tmp_path / "install")
+    hook_root(install)
+    assert _redispatched(install) == [True, True]
+
+
+def test_an_install_nested_in_a_project_checkout_is_still_the_install(tmp_path, hook_root):
+    _git(tmp_path, "init", "-q")
+    install = _copy_cli(tmp_path / "node_modules/@jaguilar87/gaia")
+    hook_root(install)
+    assert _redispatched(install) == [True, True]
+
+
+def test_another_install_than_the_hook_one_is_judged_by_content(tmp_path, hook_root):
+    hook_root(_copy_cli(tmp_path / "install"))
+    assert _redispatched(_copy_cli(tmp_path / "elsewhere")) == [False, False]
+
+
+@pytest.fixture
+def checkout(tmp_path: Path, hook_root) -> Path:
+    hook = _copy_cli(tmp_path / "hook")
     _git(hook, "init", "-q")
     _git(hook, "add", "-A")
     _git(hook, "commit", "-q", "-m", "init")
+    hook_root(hook)
     second = tmp_path / "second"
     _git(hook, "worktree", "add", "-q", "-b", "other", str(second))
-    monkeypatch.setattr(mv, "_HOOK_ROOT", hook)
-    mv._gaia_source_repositories.cache_clear()
-    yield second
-    mv._gaia_source_repositories.cache_clear()
+    return second
 
 
-def _runs_free(checkout: Path) -> bool:
-    result = mv.detect_mutative_command(COMMAND.format(checkout=checkout))
-    return "re-dispatched" in (result.reason or "") and not result.is_mutative
+def _forge_timestamp_pyc(root: Path, payload: Path) -> None:
+    cached = Path(importlib.util.cache_from_source(str(root / "bin/cli/memory.py")))
+    py_compile.compile(str(payload), cfile=str(cached), invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
 
 
-def _compile(checkout: Path, relative: str, mode: py_compile.PycInvalidationMode, payload: Path) -> Path:
-    cached = Path(importlib.util.cache_from_source(str(checkout / relative)))
-    py_compile.compile(str(payload), cfile=str(cached), invalidation_mode=mode)
-    return cached
+def _symlink_excluded_pycache(root: Path, payload: Path) -> None:
+    elsewhere = root.parent / "cache"
+    elsewhere.mkdir()
+    (elsewhere / "memory.pyc").write_bytes(payload.read_bytes())
+    (root / "bin/cli/__pycache__").symlink_to(elsewhere)
+    exclude = Path(subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--git-path", "info/exclude"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip())
+    exclude = exclude if exclude.is_absolute() else root / exclude
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text("__pycache__\n")
 
 
-@pytest.fixture
-def payload(tmp_path: Path) -> Path:
-    source = tmp_path / "payload.py"
-    source.write_text(PAYLOAD)
-    return source
-
-
-def test_a_clean_checkout_runs_free(checkout):
-    assert _runs_free(checkout)
-
-
-@pytest.mark.parametrize("name", ["json.pyc", "json.cpython-311-x86_64-linux-gnu.so", "evil.pth"])
-def test_a_foreign_file_at_the_checkout_root_asks(name, checkout, payload):
-    (checkout / name).write_bytes(payload.read_bytes())
-    assert not _runs_free(checkout)
-
-
-def test_an_ignored_extension_module_beside_a_cli_module_asks(checkout, payload):
-    (checkout / "bin/cli/memory.cpython-311-x86_64-linux-gnu.so").write_bytes(payload.read_bytes())
-    assert not _runs_free(checkout)
-
-
-@pytest.mark.parametrize("mode, free", [
-    (py_compile.PycInvalidationMode.TIMESTAMP, True),
-    (py_compile.PycInvalidationMode.CHECKED_HASH, True),
-    (py_compile.PycInvalidationMode.UNCHECKED_HASH, False),
-])
-def test_a_cached_pyc_of_a_tracked_module_is_trusted_only_when_validated(mode, free, checkout, payload):
-    _compile(checkout, "bin/cli/memory.py", mode, payload)
-    assert _runs_free(checkout) is free
-
-
-def test_the_dispatcher_own_cached_pyc_is_trusted(checkout, payload):
-    _compile(checkout, "bin/gaia", py_compile.PycInvalidationMode.TIMESTAMP, payload)
-    assert _runs_free(checkout)
-
-
-def test_a_cached_pyc_without_its_tracked_source_asks(checkout, payload):
-    _compile(checkout, "bin/cli/json.py", py_compile.PycInvalidationMode.TIMESTAMP, payload)
-    assert not _runs_free(checkout)
-
-
-def test_a_truncated_cached_pyc_asks(checkout, payload):
-    cached = _compile(checkout, "bin/cli/memory.py", py_compile.PycInvalidationMode.TIMESTAMP, payload)
-    cached.write_bytes(cached.read_bytes()[:10])
-    assert not _runs_free(checkout)
+@pytest.mark.parametrize("tamper", [
+    None,
+    lambda root, payload: (root / "json.py").write_text(payload.read_text()),
+    _forge_timestamp_pyc,
+    _symlink_excluded_pycache,
+], ids=["clean", "foreign-root-module", "forged-timestamp-pyc", "symlinked-excluded-pycache"])
+@pytest.mark.parametrize("which", ["hook-checkout", "sibling-worktree"])
+def test_a_git_checkout_is_judged_by_content_however_clean(tamper, which, checkout, tmp_path):
+    root = checkout if which == "sibling-worktree" else mv._HOOK_ROOT
+    payload = tmp_path / "payload.py"
+    payload.write_text(PAYLOAD)
+    if tamper is not None:
+        tamper(root, payload)
+    assert _redispatched(root) == [False, False]
+    assert mv.detect_mutative_command(COMMANDS[0].format(root=root)).is_mutative is True

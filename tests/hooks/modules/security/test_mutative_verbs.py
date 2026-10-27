@@ -4094,11 +4094,27 @@ class TestGaiaCliDispatcherReDispatch:
     _check_gaia_cli_dispatcher reconstructs `gaia <args>` and re-classifies it,
     so the real effect (owned by the subcommand) drives the tier. Critically,
     the mutative subcommands (dev, install) MUST stay T3.
+
+    The re-dispatch holds only inside the installed Gaia the hook runs from, so
+    these rows run the real dispatcher from a non-git install the hook root
+    points at.
     """
+
+    @pytest.fixture(autouse=True)
+    def _installed_gaia(self, tmp_path, monkeypatch):
+        from modules.security import mutative_verbs as mv
+
+        self.install = tmp_path / "install"
+        (self.install / "bin").mkdir(parents=True)
+        (self.install / "bin" / "gaia").write_text((HOOKS_DIR.parent / "bin" / "gaia").read_text())
+        monkeypatch.setattr(mv, "_HOOK_ROOT", self.install)
+        mv._hook_root_is_install.cache_clear()
+        yield
+        mv._hook_root_is_install.cache_clear()
 
     def _dispatcher(self, tmp_path, name="gaia", body=None):
         if body is None:
-            return HOOKS_DIR.parent / "bin" / "gaia"
+            return self.install / "bin" / "gaia"
         bindir = tmp_path / "bin"
         bindir.mkdir()
         f = bindir / name
@@ -4214,11 +4230,12 @@ class TestRealGaiaDispatcherStillRecognized:
         for sig in _GAIA_DISPATCHER_SIGNATURE:
             assert sig in content, f"bin/gaia lost dispatcher signature marker: {sig!r}"
 
-    def test_real_dispatcher_doctor_is_read_only(self):
+    @pytest.mark.parametrize("sub", ["doctor", "contract view"])
+    def test_real_dispatcher_in_a_source_checkout_is_judged_by_content(self, sub):
+        """A checkout can import code anyone edited, so its bin/gaia is not re-dispatched; `gaia` is the read path."""
         gaia = self._real_bin_gaia()
-        result = detect_mutative_command(f"python3 {gaia} doctor")
-        assert result.is_mutative is False
-        assert result.category != "MUTATIVE"
+        assert detect_mutative_command(f"python3 {gaia} {sub}").is_mutative is True
+        assert detect_mutative_command(f"gaia {sub}").is_mutative is False
 
     def test_real_dispatcher_dev_stays_t3(self):
         gaia = self._real_bin_gaia()
@@ -4231,8 +4248,14 @@ class TestRealGaiaDispatcherStillRecognized:
         result = detect_mutative_command(f"python3 {gaia} install")
         assert result.is_mutative is True
 
-    def test_real_dispatcher_matches_launcher_form(self):
-        gaia = self._real_bin_gaia()
+    def test_real_dispatcher_installed_matches_launcher_form(self, tmp_path, monkeypatch):
+        from modules.security import mutative_verbs as mv
+
+        gaia = tmp_path / "bin" / "gaia"
+        gaia.parent.mkdir()
+        gaia.write_text(self._real_bin_gaia().read_text(encoding="utf-8"))
+        monkeypatch.setattr(mv, "_HOOK_ROOT", tmp_path)
+        monkeypatch.setattr(mv, "_hook_root_is_install", lambda: True)
         for sub in ("doctor", "history -n 5", "contract view", "dev", "install"):
             via_path = detect_mutative_command(f"python3 {gaia} {sub}")
             via_launcher = detect_mutative_command(f"gaia {sub}")
