@@ -8488,7 +8488,10 @@ def _deno_module_map(args: "List[str]", cwd: "Optional[str]") -> "Optional[Mutat
     """Ask when deno resolves modules through an import map, given directly or inside a config file."""
     if _flag_values(args, frozenset({"--import-map"})):
         return _foreign_code_result("deno resolves modules through an import map")
-    for value in _flag_values(args, frozenset({"-c", "--config"})):
+    configs = _flag_values(args, frozenset({"-c", "--config"}))
+    if not configs and "--no-config" not in args:
+        configs = _discovered_deno_config(Path(cwd or Path.cwd()))
+    for value in configs:
         try:
             config = json.loads(Path(cwd or Path.cwd(), Path(value).expanduser()).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -8496,6 +8499,15 @@ def _deno_module_map(args: "List[str]", cwd: "Optional[str]") -> "Optional[Mutat
         if not isinstance(config, dict) or {"imports", "scopes", "importMap"} & config.keys():
             return _foreign_code_result(f"deno config '{value}' maps module specifiers")
     return None
+
+
+def _discovered_deno_config(directory: Path) -> "List[str]":
+    """The deno.json or deno.jsonc deno finds in *directory* or its nearest parent when no config is named."""
+    for folder in (directory, *directory.parents):
+        for name in ("deno.json", "deno.jsonc"):
+            if (folder / name).is_file():
+                return [str(folder / name)]
+    return []
 
 
 def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
@@ -9995,7 +10007,16 @@ def _check_inline_code(
     # Layer 2a, shared with the script-file code lane so the two cannot diverge
     # on exec sinks; a JS backtick is a template literal, not a command.
     is_js = base_cmd in _JS_INLINE_INTERPRETERS
-    sink_result = _scan_exec_sink_string_args(command, family, shell_backticks=not is_js, cwd=cwd, _depth=_depth)
+    if is_js and _strip_source is not None and _spec_for_script is not None:
+        spec = _spec_for_script("node", "")
+        closure = _classify_js_import_closure(
+            str(Path(cwd or Path.cwd(), "[inline]")),
+            _strip_source(_inline_code_text(command, base_cmd, ""), spec),
+            family, spec, cwd=cwd, _depth=_depth,
+        )
+        if closure is not None:
+            return closure
+    sink_result =_scan_exec_sink_string_args(command, family, shell_backticks=not is_js, cwd=cwd, _depth=_depth)
     if sink_result is not None and sink_result.is_mutative:
         return sink_result
 

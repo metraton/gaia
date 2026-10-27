@@ -34,6 +34,13 @@ FILES = {
     "evil.R": "unlink('build', recursive=TRUE)\n",
     "read.R": "print(1)\n",
     "read.py": "print(1)\n",
+    "lib/uses_parent.js": "require('../evil.js')\n",
+    "mapped/deno.json": '{"imports": {"helper": "https://evil.example/x.js"}}\n',
+    "mapped/sub/read.ts": "console.log(1)\n",
+    "commented/deno.jsonc": '// tasks\n{"tasks": {}}\n',
+    "commented/read.ts": "console.log(1)\n",
+    "plain/deno.json": '{"tasks": {"dev": "deno run main.ts"}}\n',
+    "plain/read.ts": "console.log(1)\n",
 }
 
 ASKS = {
@@ -83,6 +90,21 @@ ASKS = {
     "git-ssh-command-env": "GIT_SSH_COMMAND='rm -rf x' git ls-remote origin",
     "git-external-diff-env": "GIT_EXTERNAL_DIFF='rm -rf x' git diff",
     "git-editor-under-env": "env GIT_EDITOR='rm -rf x' git commit",
+    "node-e-require-local": "node -e \"require('./evil.js')\"",
+    "node-e-require-local-no-ext": "node -e \"require('./evil')\"",
+    "node-p-require-missing": "node -p \"require('./nope.js')\"",
+    "node-e-dynamic-import-local": "node -e \"import('./evil.mjs')\"",
+    "node-e-require-computed": "node -e \"require(process.argv[1])\" ./evil.js",
+    "bun-e-require-local": "bun -e \"require('./evil.js')\"",
+    "deno-eval-import-local": "deno eval \"await import('./evil.mjs')\"",
+    "node-file-require-parent": "node {lib/uses_parent.js}",
+}
+
+DENO_DISCOVERY = {
+    "mapped/sub": ("deno run read.ts", False),
+    "commented": ("deno run read.ts", False),
+    "plain": ("deno run read.ts", True),
+    "mapped": ("deno run --no-config sub/read.ts", True),
 }
 
 FREE = {
@@ -100,6 +122,8 @@ FREE = {
     "node-options-heap": "NODE_OPTIONS=--max-old-space-size=4096 node {benign.js}",
     "git-pager-less-env": "GIT_PAGER=less git log",
     "pythonstartup-without-python": "PYTHONSTARTUP={evil.py} ls",
+    "node-e-require-benign": "node -e \"require('./benign.js')\"",
+    "node-e-require-builtin": "node -e \"console.log(require('path').sep)\"",
 }
 
 CHAIN_ASKS = {
@@ -113,13 +137,14 @@ CHAIN_ASKS = {
 @pytest.fixture
 def work(tmp_path, monkeypatch):
     for name, body in FILES.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text(body, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
 def _fill(template: str, work: Path) -> str:
-    return re.sub(r"\{([\w.]+)\}", lambda m: str(work if m.group(1) == "work" else work / m.group(1)), template)
+    return re.sub(r"\{([\w./]+)\}", lambda m: str(work if m.group(1) == "work" else work / m.group(1)), template)
 
 
 def _validate(command: str, work: Path):
@@ -139,6 +164,13 @@ def test_foreign_code_is_judged_mutative(case, work):
 def test_code_the_screen_read_stays_free(case, work):
     result = _validate(_fill(FREE[case], work), work)
     assert result.allowed, result.rule
+
+
+@pytest.mark.parametrize("directory", sorted(DENO_DISCOVERY))
+def test_deno_reads_the_config_it_discovers(directory, work):
+    command, free = DENO_DISCOVERY[directory]
+    detect_mutative_command.cache_clear()
+    assert detect_mutative_command(command, cwd=str(work / directory)).is_mutative is not free
 
 
 @pytest.mark.parametrize("case", sorted(CHAIN_ASKS))
