@@ -22,6 +22,7 @@ for entry in (str(ROOT), str(ROOT / "hooks")):
 from modules.security import tiers as tiers_module  # noqa: E402
 from modules.security.approval_grants import activate_db_pending_by_id  # noqa: E402
 from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
+from modules.security.targets import _READ_LIMIT  # noqa: E402
 from modules.tools.bash_validator import BashValidator  # noqa: E402
 
 AGENT = "aprobet1020x05"
@@ -389,23 +390,38 @@ def memory_ceiling(extra_mb):
         resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
 
 
+def _counted_reads(monkeypatch):
+    sizes, real = [], os.read
+
+    def read(descriptor, length):
+        data = real(descriptor, length)
+        sizes.append(len(data))
+        return data
+
+    monkeypatch.setattr(os, "read", read)
+    return sizes
+
+
 @pytest.mark.parametrize("junk", sorted(JUNK))
 @pytest.mark.parametrize("source", sorted(SOURCES))
-def test_junk_configuration(source, junk, env):
+def test_junk_configuration(source, junk, env, monkeypatch):
+    """Junk asks for a mutation and stays free for a read, with bounded bytes and CPU; a blocking open hits the deadline."""
     relative, mutating, read = (part.replace("{TMP}", str(env["tmp"])) for part in SOURCES[source])
     if source == "gcloud":
         gcloud(env["home"] / ".config" / "gcloud", {})
     JUNK[junk](env["tmp"] / relative)
-    with deadline(10, f"{source}/{junk}"), memory_ceiling(1536):
-        start = time.monotonic()
+    read_sizes = _counted_reads(monkeypatch)
+    with deadline(60, f"{source}/{junk}"), memory_ceiling(1536):
+        start = time.thread_time()
         got_mut, reason_mut = verdict(mutating, env["work"])
         got_read, reason_read = verdict(read, env["work"])
-        elapsed = time.monotonic() - start
+        elapsed = time.thread_time() - start
     assert got_mut != "BLOCKED" and got_read != "BLOCKED", (got_mut, reason_mut[:120], got_read, reason_read[:120])
     assert got_read == "FREE", (got_read, reason_read[:120])
     if (junk, source.split("-")[0]) not in (("subscriptions-null", "kube"), ("subscriptions-null", "kubeconfig"),
                                             ("subscriptions-null", "docker")):
         assert got_mut in NOT_FREE, (got_mut, reason_mut[:120])
+    assert sum(read_sizes) <= _READ_LIMIT, sum(read_sizes)
     assert elapsed < 3.0, elapsed
 
 
