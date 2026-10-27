@@ -312,13 +312,12 @@ def rejection_message(path: str) -> str:
             f"forge a turn's files_checked. Not approvable."
         )
     return (
-        f"[PROTECTED_PATH] Refusing to write Gaia hook code or settings via "
-        f"Bash: {path}. Every Gaia hook tree -- the source checkout and each "
-        f"installed copy -- plus the .claude settings files are a hard security "
-        f"boundary: no shell command may modify them, and this block is not "
-        f"approvable. Use the Write/Edit surface on the source tree under "
-        f"gaia/, which asks the user for consent, and let `gaia install` "
-        f"propagate the change."
+        f"[PROTECTED_PATH] Refusing to write Gaia's installed code or settings "
+        f"via Bash: {path}. Gaia's installed code, the .claude hook trees and "
+        f"the .claude settings files are a hard security boundary: no shell "
+        f"command may modify them, and this block is not approvable. Edit the "
+        f"Gaia source checkout and let `gaia install` or `gaia dev` propagate "
+        f"the change."
     )
 
 

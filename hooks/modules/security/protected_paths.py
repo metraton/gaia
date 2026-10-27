@@ -32,9 +32,8 @@ requires consent even though editing the checkout beside it no longer does.
 THE DERIVATION. Two lanes, both install-specific by construction and judged on
 a path's literal, absolute and symlink-resolved forms. ``_shape_hit`` matches a
 ``hooks`` tree under ``.claude``. ``_install_root`` protects EVERYTHING inside
-an install root -- the ``@jaguilar87/gaia`` package store, each entry of the
-dev-plugin cache, and the root this module was loaded from unless that root is
-a git checkout -- because the plain ``gaia`` CLI imports ``bin/`` and ``gaia/``
+an install root -- the ``@jaguilar87/gaia`` package store or a dev-plugin
+cache entry -- because the plain ``gaia`` CLI imports ``bin/`` and ``gaia/``
 from there, so a planted module or ``.pth`` is code the next call runs.
 
 ``declared_hook_tree_roots()`` still resolves checkout roots from the
@@ -79,9 +78,6 @@ _HARNESS_DIR = ".claude"
 _HOOKS_DIR = "hooks"
 
 _DEV_PLUGIN_DIR = "dev-plugin"
-
-# hooks/modules/security/protected_paths.py -> the root it was installed or checked out at.
-_OWN_ROOT = Path(__file__).resolve().parents[3]
 
 _SETTINGS_BASENAMES = frozenset({"settings.json", "settings.local.json"})
 # Long names an 8.3 alias may stand for (``CLAUDE~1``, ``SETTIN~1.JSO``).
@@ -190,12 +186,6 @@ def _dev_plugin_caches() -> Tuple[Path, ...]:
     return (container, container.resolve())
 
 
-def _own_install_root() -> Optional[Path]:
-    if (_OWN_ROOT / ".git").exists() or not _is_gaia_root(_OWN_ROOT):
-        return None
-    return _OWN_ROOT
-
-
 def _install_root(path: Path) -> Optional[Path]:
     """The installed Gaia root `path` is or lies inside, or None."""
     parts = path.parts
@@ -205,9 +195,6 @@ def _install_root(path: Path) -> Optional[Path]:
     for container in _dev_plugin_caches():
         if container in path.parents:
             return Path(*parts[:len(container.parts) + 1])
-    own = _own_install_root()
-    if own is not None and (path == own or own in path.parents):
-        return own
     return None
 
 

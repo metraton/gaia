@@ -1,11 +1,4 @@
-"""Every write surface refuses to plant code anywhere inside an installed Gaia root.
-
-An install root is the npm package store (``@jaguilar87/gaia``), the dev-plugin
-cache (``<data_dir>/cache/dev-plugin/<id>``), or the root the running hook was
-loaded from when that root is not a git checkout. The plain ``gaia`` CLI imports
-from these trees, so a planted ``bin/json.py`` or ``.pth`` runs on the next call.
-A development checkout is not an install root and stays writable.
-"""
+"""Every write surface asks or refuses before planting code inside an installed Gaia root."""
 
 import sys
 from pathlib import Path
@@ -38,22 +31,17 @@ def _isolated(monkeypatch, tmp_path):
     protected_paths.reset_caches()
 
 
-@pytest.fixture(params=["npm_store", "dev_plugin_cache", "own_root"])
-def install_root(request, tmp_path, monkeypatch):
+@pytest.fixture(params=["npm_store", "dev_plugin_cache"])
+def install_root(request, tmp_path):
     if request.param == "npm_store":
         return _gaia_tree(tmp_path / "proj" / "node_modules" / "@jaguilar87" / "gaia")
-    if request.param == "dev_plugin_cache":
-        return _gaia_tree(tmp_path / "data" / "cache" / "dev-plugin" / "ws")
-    root = _gaia_tree(tmp_path / "plugins" / "cache" / "gaia-1.0.0")
-    monkeypatch.setattr(protected_paths, "_OWN_ROOT", root)
-    return root
+    return _gaia_tree(tmp_path / "data" / "cache" / "dev-plugin" / "ws")
 
 
 @pytest.fixture
-def dev_checkout(tmp_path, monkeypatch):
+def dev_checkout(tmp_path):
     root = _gaia_tree(tmp_path / "work" / "gaia")
     (root / ".git").mkdir()
-    monkeypatch.setattr(protected_paths, "_OWN_ROOT", root)
     return root
 
 
