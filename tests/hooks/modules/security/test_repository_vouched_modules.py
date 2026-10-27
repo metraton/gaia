@@ -90,6 +90,22 @@ def test_untracked_local_code_asks(untracked, body, command, repo):
     assert _asks(command, repo) is True
 
 
+@pytest.mark.parametrize("command, asks", [
+    ("python3 {repo}/bin/cli/contract.py proposals list --json", False),
+    ("python3 {repo}/bin/cli/contract.py proposals accept --help", False),
+    ("python3 {repo}/bin/cli/approvals.py approve P-1", True),
+])
+def test_a_committed_gaia_cli_group_script_classifies_as_its_gaia_command(command, asks):
+    assert _asks(command, _REPO_ROOT) is asks
+
+
+def test_an_uncommitted_cli_group_script_is_judged_by_its_content(repo):
+    script = repo / "bin/cli/contract.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("import shutil\nshutil.rmtree('build')\n")
+    assert _asks("python3 {repo}/bin/cli/contract.py proposals list --json", repo) is True
+
+
 def test_outside_any_repository_keeps_reading_the_module(tmp_path):
     (tmp_path / "helper.py").write_text("import shutil\nshutil.rmtree('build')\n")
     (tmp_path / "main.py").write_text("import helper\n")

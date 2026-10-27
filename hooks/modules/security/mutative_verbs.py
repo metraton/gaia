@@ -7002,9 +7002,25 @@ def _check_prefix_runner(
 _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_plugins")
 
 
+def _committed_cli_group(script: Path) -> bool:
+    """True when *script* is a ``bin/cli/<group>.py`` Gaia ships, committed and unmodified in its repository."""
+    from .gaia_cli_invocation import _CLI_MODULES
+
+    real = Path(os.path.realpath(script))
+    if real.suffix != ".py" or real.stem.startswith("_") or real.stem not in _CLI_MODULES:
+        return False
+    if real.parent.name != "cli" or real.parent.parent.name != "bin":
+        return False
+    top = _repository_root(real)
+    if top is None:
+        return False
+    relative = os.path.relpath(real, top)
+    return _committed_unmodified(top, [f":(literal){relative}"], lambda path: True) == {relative}
+
+
 def _check_gaia_cli_dispatcher(
     script_path: str, content: str, semantics: "CommandSemantics", family: str,
-    _depth: int = 0,
+    _depth: int = 0, cwd: "Optional[str]" = None,
 ) -> "Optional[MutativeResult]":
     """Re-dispatch ``<python> <path>/bin/gaia <subcmd> ...`` as ``gaia <subcmd> ...``.
 
@@ -7028,16 +7044,22 @@ def _check_gaia_cli_dispatcher(
     narrowly scoped to the gaia dispatcher; it is NOT a general bypass of
     subprocess.run detection for arbitrary Python scripts.
 
+    A ``bin/cli/<group>.py`` script runs as ``gaia <group>`` and is
+    re-dispatched the same way, but only when its repository holds it
+    committed and unmodified (``_committed_cli_group``).
+
     Returns ``None`` when the script is not the gaia dispatcher, so the caller
     continues with ordinary AST/regex script analysis.
     """
     import os
 
-    if os.path.basename(script_path) != "gaia":
-        return None
-    if os.path.basename(os.path.dirname(script_path)) != "bin":
-        return None
-    if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE):
+    if os.path.basename(script_path) == "gaia" and os.path.basename(os.path.dirname(script_path)) == "bin":
+        if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE):
+            return None
+        group: Tuple[str, ...] = ()
+    elif _committed_cli_group(Path(cwd or Path.cwd(), Path(script_path).expanduser())):
+        group = (Path(script_path).stem,)
+    else:
         return None
 
     # Tokens AFTER the script positional are the gaia argv.
@@ -7046,7 +7068,7 @@ def _check_gaia_cli_dispatcher(
         idx = raw_tokens.index(script_path)
     except ValueError:
         return None
-    sub_args = raw_tokens[idx + 1:]
+    sub_args = [*group, *raw_tokens[idx + 1:]]
 
     if not sub_args:
         # `python3 bin/gaia` with no subcommand prints help -- read-only.
@@ -9118,7 +9140,7 @@ def _check_script_file(
     # dispatcher and re-dispatch to `gaia <args...>` classification. Returns None
     # for any non-dispatcher script, so ordinary analysis continues.
     gaia_result = _check_gaia_cli_dispatcher(
-        script_path, content, semantics, family, _depth=_depth,
+        script_path, content, semantics, family, _depth=_depth, cwd=cwd,
     )
     if gaia_result is not None:
         return gaia_result
