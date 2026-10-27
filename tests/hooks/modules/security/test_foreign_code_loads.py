@@ -134,6 +134,75 @@ CHAIN_ASKS = {
 }
 
 
+EVIL_JS = FILES["evil.js"]
+EVIL_PY = FILES["evil.py"]
+BUNFIG = {"bunfig.toml": 'preload = ["./evil.js"]\n', "evil.js": EVIL_JS, "benign.js": "console.log(1)\n"}
+NODE_IMPORTS = {"package.json": '{"name": "p", "imports": {"#x": "./evil.js"}}\n', "evil.js": EVIL_JS,
+                "main.js": "require('#x')\n"}
+NODE_SELF = {"package.json": '{"name": "selfpkg", "exports": "./evil.js"}\n', "evil.js": EVIL_JS,
+             "main.js": "require('selfpkg')\n"}
+ENV_FILE = {"vars.env": "NODE_OPTIONS=--require ./evil.js\n", "quiet.env": "PORT=3000\n", "evil.js": EVIL_JS,
+            "benign.js": "console.log(1)\n"}
+SITE_DIR = {"evil.pth": "import shutil; shutil.rmtree('build')\n", "json.py": EVIL_PY}
+
+# An interpreter's auto-load files, keyed by case: (files in the cwd, command, asks).
+AUTO_LOADS = {
+    "bun-bunfig-script": (BUNFIG, "bun benign.js", True),
+    "bun-bunfig-run": (BUNFIG, "bun run benign.js", True),
+    "bun-bunfig-e": (BUNFIG, "bun -e 'console.log(1)'", True),
+    "bun-bunfig-unparsable": ({"bunfig.toml": "preload = [\n", "benign.js": "console.log(1)\n"}, "bun benign.js", True),
+    "bun-bunfig-benign-preload": ({"bunfig.toml": 'preload = ["./benign.js"]\n', "benign.js": "console.log(1)\n"},
+                                  "bun benign.js", False),
+    "bun-bunfig-no-preload": ({"bunfig.toml": "[install]\nexact = true\n", "benign.js": "console.log(1)\n"},
+                              "bun benign.js", False),
+    "node-imports-hash-e": (NODE_IMPORTS, "node -e \"require('#x')\"", True),
+    "node-imports-hash-file": (NODE_IMPORTS, "node main.js", True),
+    "node-exports-self-e": (NODE_SELF, "node -e \"require('selfpkg')\"", True),
+    "node-exports-self-file": (NODE_SELF, "node main.js", True),
+    "node-other-bare-name": (NODE_SELF, "node -e \"require('path')\"", False),
+    "node-env-file-eq": (ENV_FILE, "node --env-file=vars.env benign.js", True),
+    "node-env-file-spaced": (ENV_FILE, "node --env-file vars.env benign.js", True),
+    "node-env-file-missing": (ENV_FILE, "node --env-file=nope.env benign.js", True),
+    "node-env-file-if-exists-missing": (ENV_FILE, "node --env-file-if-exists=nope.env benign.js", False),
+    "node-env-file-quiet": (ENV_FILE, "node --env-file=quiet.env benign.js", False),
+    "r-rprofile-e": ({".Rprofile": "unlink('build', recursive=TRUE)\n"}, "Rscript -e 'print(1)'", True),
+    "r-rprofile-file": ({".Rprofile": "unlink('b')\n", "read.R": "print(1)\n"}, "Rscript read.R", True),
+    "r-rprofile-R": ({".Rprofile": "unlink('b')\n"}, "R -e 'print(1)'", True),
+    "r-renviron-profile": ({".Renviron": "R_PROFILE_USER=evil.R\n", "evil.R": "unlink('b')\n"},
+                           "Rscript -e 'print(1)'", True),
+    "r-renviron-plain": ({".Renviron": "TZ=UTC\n"}, "Rscript -e 'print(1)'", False),
+    "r-rprofile-vanilla": ({".Rprofile": "unlink('b')\n"}, "Rscript --vanilla -e 'print(1)'", False),
+    "r-rprofile-no-init-file": ({".Rprofile": "unlink('b')\n"}, "R --no-init-file -e 'print(1)'", False),
+    "py-addsitedir": (SITE_DIR, "python3 -c \"import site; site.addsitedir('.')\"", True),
+    "py-addsitedir-from": (SITE_DIR, "python3 -c \"from site import addsitedir; addsitedir('/opt')\"", True),
+    "py-site-main": (SITE_DIR, "python3 -c \"import site; site.main()\"", True),
+    "py-sys-path-then-import": ({"lib/evil.py": EVIL_PY},
+                                "python3 -c \"import sys; sys.path.insert(0, 'lib'); import evil\"", True),
+    "py-sys-path-assign-then-import": ({}, "python3 -c \"import sys; sys.path[:0] = ['lib']; import os\"", True),
+    "py-sys-path-read": ({}, "python3 -c \"import sys; print(sys.path)\"", False),
+    "py-isolated-local-stdlib-name": (SITE_DIR, "python3 -I -c 'import json; print(json.dumps(1))'", False),
+    "py-safe-path-local-stdlib-name": (SITE_DIR, "python3 -P -c 'import json; print(json.dumps(1))'", False),
+    "py-env-flags-keep-local-dir": (SITE_DIR, "python3 -E -s -c 'import json; print(json.dumps(1))'", True),
+    "ruby-I-r-bare": ({"evil.rb": "require 'fileutils'; FileUtils.rm_rf('build')\n"}, "ruby -I. -revil -e 'p 1'", True),
+    "ruby-r-attached-path": ({"evil.rb": "File.delete('a')\n"}, "ruby -r./evil -e 'p 1'", True),
+    "ruby-require-eq": ({"evil.rb": "File.delete('a')\n"}, "ruby --require=./evil.rb -e 'p 1'", True),
+    "ruby-r-stdlib": ({}, "ruby -rjson -e 'p 1'", False),
+}
+
+
+@pytest.mark.parametrize("case", sorted(AUTO_LOADS))
+def test_interpreter_auto_load_files_are_judged(case, tmp_path, monkeypatch):
+    files, command, asks = AUTO_LOADS[case]
+    for name, body in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(body, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    result = _validate(command, tmp_path)
+    assert result.allowed is not asks, result.rule
+
+
 @pytest.fixture
 def work(tmp_path, monkeypatch):
     for name, body in FILES.items():

@@ -26,6 +26,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
 
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
+
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
 from .cli_aliases import as_wrapped_cli, declared_wrapper
@@ -8481,7 +8486,144 @@ def _check_interpreter_loads(
                 break
     if base_cmd in ("r", "rscript") and _flag_values(args, frozenset({"-f", "--file"})):
         return _foreign_code_result(f"{base_cmd} --file runs another file")
+    auto_loaded = _AUTO_LOAD_CHECKS.get(base_cmd)
+    if auto_loaded is not None:
+        result = auto_loaded(args, cwd, _depth)
+        if result is not None:
+            return result
     return _python_local_module_run(base_cmd, args, cwd, _depth)
+
+
+def _bunfig_loads(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Judge the preloads of the bunfig.toml bun reads: the one named, else the cwd's, and the user's global one."""
+    base = Path(cwd or Path.cwd())
+    named = [base / Path(value).expanduser() for value in _flag_values(args, frozenset({"-c", "--config"}))]
+    user_dir = os.environ.get("XDG_CONFIG_HOME") or os.environ.get("HOME") or str(Path.home())
+    for config in (*(named or [base / "bunfig.toml"]), Path(user_dir, ".bunfig.toml")):
+        if not config.is_file():
+            continue
+        if tomllib is None:
+            return _foreign_code_result(f"bun config '{config}' needs a TOML reader this Python lacks")
+        try:
+            table = tomllib.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _foreign_code_result(f"bun config '{config}' cannot be read")
+        if _config_values(table, "plugins"):
+            return _foreign_code_result(f"bun config '{config}' loads plugins")
+        for preload in _config_values(table, "preload"):
+            if not isinstance(preload, str):
+                return _foreign_code_result(f"bun config '{config}' preloads {preload!r}")
+            result = detect_mutative_command(f"node {shlex.quote(preload)}", cwd=str(config.parent), _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+    return None
+
+
+def _config_values(table: object, key: str) -> list:
+    """Every value *key* holds at any depth of a parsed config table, a list flattened to its items."""
+    if not isinstance(table, dict):
+        return []
+    found: list = []
+    for name, value in table.items():
+        if name == key:
+            found.extend(value if isinstance(value, list) else [value])
+        else:
+            found.extend(_config_values(value, key))
+    return found
+
+
+def _node_env_files(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Ask when a ``--env-file`` node reads sets a NODE_OPTIONS that loads code, or cannot be read."""
+    base = Path(cwd or Path.cwd())
+    for flag in ("--env-file", "--env-file-if-exists"):
+        for value in _flag_values(args, frozenset({flag})):
+            path = base / Path(value).expanduser()
+            if flag == "--env-file-if-exists" and not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                return _foreign_code_result(f"node {flag} '{value}' cannot be read")
+            for line in lines:
+                name, assigned, option = line.strip().removeprefix("export ").partition("=")
+                if assigned and name.strip() == "NODE_OPTIONS" and _node_options_load_code(option.strip().strip("'\"")):
+                    return _foreign_code_result(f"node {flag} '{value}' sets NODE_OPTIONS={option.strip()}")
+    return None
+
+
+def _r_startup_files(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Ask when R starts from a ./.Rprofile, or a ./.Renviron that names startup code or cannot be read."""
+    base = Path(cwd or Path.cwd())
+    if not {"--vanilla", "--no-init-file"} & set(args) and (base / ".Rprofile").exists():
+        return _foreign_code_result("R runs ./.Rprofile before the code")
+    environ = base / ".Renviron"
+    if {"--vanilla", "--no-environ"} & set(args) or not environ.exists():
+        return None
+    try:
+        lines = environ.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return _foreign_code_result("R reads ./.Renviron, which cannot be read")
+    names = _CODE_INJECTING_ENVIRONMENT["r"][1]
+    if any(names.fullmatch(line.partition("=")[0].strip()) for line in lines if "=" in line):
+        return _foreign_code_result("./.Renviron points R at a startup file")
+    return None
+
+
+def _ruby_requires(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Judge each ``-r`` feature ruby loads from a path or a ``-I`` directory like the script it is."""
+    base = Path(cwd or Path.cwd())
+    load_dirs = [base / Path(value).expanduser() for value in _flag_values(args, frozenset({"-I"}))]
+    for feature in _flag_values(args, frozenset({"-r", "--require"})):
+        is_path = feature.startswith((".", "/", "~"))
+        for directory in [base] if is_path else load_dirs:
+            stem = directory / Path(feature).expanduser()
+            found = next((p for p in (stem, Path(f"{stem}.rb"), Path(f"{stem}.so")) if p.is_file()), None)
+            if found is None and not is_path:
+                continue
+            if found is not None and found.suffix == ".so":
+                return _foreign_code_result(f"ruby -r {feature} loads a compiled extension")
+            result = detect_mutative_command(f"ruby {shlex.quote(str(found or stem))}", cwd=cwd, _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+            break
+    return None
+
+
+# The configuration each interpreter loads without being asked to on the
+# command line, judged before any inline code or script it is given.
+_AUTO_LOAD_CHECKS: "Dict[str, Callable[[List[str], Optional[str], int], Optional[MutativeResult]]]" = {
+    "bun": _bunfig_loads,
+    "node": _node_env_files,
+    "r": _r_startup_files,
+    "rscript": _r_startup_files,
+    "ruby": _ruby_requires,
+}
+
+
+def _python_skips_local_directory(command: str) -> bool:
+    """True when ``-I`` or ``-P`` keeps the cwd and the script's directory off Python's ``sys.path``."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    start = next((i for i, word in enumerate(words) if program_identity(word).lower() in _PYTHON_INTERPRETERS), None)
+    if start is None:
+        return False
+    tokens = iter(words[start + 1:])
+    for token in tokens:
+        if token in _PYTHON_OPTION_VALUE_FLAGS:
+            next(tokens, None)
+            continue
+        if token.startswith("--"):
+            continue
+        if not token.startswith("-") or token == "-":
+            return False
+        switches, value_letter = re.match(r"-([^cmWX]*)([cmWX]?)", token).groups()
+        if {"I", "P"} & set(switches):
+            return True
+        if value_letter in ("c", "m"):
+            return False
+    return False
 
 
 def _deno_module_map(args: "List[str]", cwd: "Optional[str]") -> "Optional[MutativeResult]":
@@ -8547,14 +8689,18 @@ def _python_local_module_run(
 
 
 def _python_foreign_module(
-    code: str, directory: Path, family: str, cwd: "Optional[str]", _depth: int,
+    code: str, directory: "Optional[Path]", family: str, cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
-    """Judge the modules *code* loads from *directory*: a module file is read like a script, anything else asks."""
+    """Judge the modules *code* loads from *directory* (None: off ``sys.path``): a module file is read like a script."""
     if _loaded_modules is None:
         return None
     names, unnamed = _loaded_modules(code)
     if unnamed:
-        return _foreign_code_result("Python runs a file by relative import or runpy.run_path")
+        return _foreign_code_result(
+            "Python loads a file by relative import, runpy.run_path, a site directory or a changed sys.path",
+        )
+    if directory is None:
+        return None
     for name in sorted(names):
         local = _local_python_module(name, directory)
         if local is None:
@@ -8927,6 +9073,8 @@ def _check_script_file(
         if ast_result.parse_failed:
             return _unparsed_code(family, f"Python script '{script_path}'")
         script_dir = Path(cwd or Path.cwd(), Path(script_path).expanduser()).parent
+        if _python_skips_local_directory(command):
+            script_dir = None
         foreign = _python_foreign_module(content, script_dir, family, cwd, _depth)
         if foreign is not None:
             return foreign
@@ -9191,13 +9339,41 @@ def _js_relative_specifiers(stripped) -> "List[str]":
     so its text is read back from the same span of the ``exec_view``.  A
     template literal with ``${}`` is not a literal path and is not followed.
     """
+    return [text for text in _js_literal_specifiers(stripped) if _JS_RELATIVE_SPECIFIER_RE.fullmatch(text)]
+
+
+def _js_literal_specifiers(stripped) -> "List[str]":
     found: List[str] = []
     for pattern in _JS_IMPORT_SYNTAX_RES:
         for match in pattern.finditer(stripped.verb_view):
             text = stripped.exec_view[match.start("spec"):match.end("spec")]
-            if "${" not in text and _JS_RELATIVE_SPECIFIER_RE.fullmatch(text):
+            if "${" not in text:
                 found.append(text)
     return found
+
+
+def _js_package_mapped_specifier(stripped, importer_dir: str) -> "Optional[str]":
+    """A ``#`` import or self-reference the nearest package.json maps, or any bare specifier when it is unreadable."""
+    bare = [text for text in _js_literal_specifiers(stripped) if not _JS_RELATIVE_SPECIFIER_RE.fullmatch(text)]
+    if not bare:
+        return None
+    directory = Path(importer_dir)
+    manifest = next((d / "package.json" for d in (directory, *directory.parents) if (d / "package.json").is_file()), None)
+    if manifest is None:
+        return None
+    try:
+        package = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return bare[0]
+    if not isinstance(package, dict):
+        return bare[0]
+    name = package.get("name")
+    for specifier in bare:
+        if specifier.startswith("#") and "imports" in package:
+            return specifier
+        if "exports" in package and isinstance(name, str) and specifier.split("/")[: name.count("/") + 1] == name.split("/"):
+            return specifier
+    return None
 
 
 def _first_js_file(path: str) -> "Optional[str]":
@@ -9345,6 +9521,9 @@ def _classify_js_import_closure(
     queue = [(entry_abs, entry_stripped, 0)]
     while queue:
         module, stripped, depth = queue.pop(0)
+        mapped = _js_package_mapped_specifier(stripped, os.path.dirname(module))
+        if mapped is not None:
+            return _foreign_code_result(f"'{module}' imports '{mapped}', which package.json maps to code")
         for specifier in _js_relative_specifiers(stripped):
             targets = _resolve_js_relative_import(specifier, os.path.dirname(module))
             if targets is None and specifier.endswith(".json"):
@@ -9997,7 +10176,8 @@ def _check_inline_code(
                 )
             if ast_result.parse_failed:
                 return _unparsed_code(family, "Inline Python that does not parse")
-            foreign = _python_foreign_module(payload, Path(cwd or Path.cwd()), family, cwd, _depth)
+            directory = None if _python_skips_local_directory(command) else Path(cwd or Path.cwd())
+            foreign = _python_foreign_module(payload, directory, family, cwd, _depth)
             if foreign is not None:
                 return foreign
             if not _parse_finds_no_effect(payload, argv_is_mutative):

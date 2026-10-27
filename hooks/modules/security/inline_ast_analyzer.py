@@ -620,7 +620,9 @@ def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
     """Return the top-level modules *code* loads by literal name, and whether it also loads code no name proves.
 
     A relative import and ``runpy.run_path`` run a file rather than a named
-    module, so they are the second value; code that does not parse names none.
+    module, and a site directory's ``.pth`` files run as it is added, so those
+    are the second value, as is a ``sys.path`` change in code that imports;
+    code that does not parse names none.
     """
     try:
         tree = ast.parse(code, mode="exec")
@@ -628,7 +630,7 @@ def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
         return frozenset(), False
     alias_map = _AliasResolver()
     alias_map.collect(tree)
-    names, unnamed = set(), False
+    names, unnamed, path_changed = set(), False, False
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name.split(".")[0] for alias in node.names)
@@ -640,11 +642,27 @@ def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
             module = _imported_module(node, dotted)
             if dotted == "runpy.run_module" and node.args and _is_str_literal(node.args[0]):
                 module = node.args[0].value
-            unnamed = unnamed or dotted == "runpy.run_path"
+            unnamed = unnamed or dotted == "runpy.run_path" or dotted in _SITE_DIRECTORY_CALLS
+            path_changed = path_changed or dotted in _SYS_PATH_CHANGES
             if module:
                 names.add(module.split(".")[0])
+        elif isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            path_changed = path_changed or any(_names_sys_path(alias_map, target) for target in targets)
     names.discard("")
-    return frozenset(names), unnamed
+    return frozenset(names), unnamed or (path_changed and bool(names - {"sys"}))
+
+
+_SITE_DIRECTORY_CALLS = frozenset({
+    "site.addsitedir", "site.addpackage", "site.main", "site.addsitepackages", "site.addusersitepackages",
+})
+_SYS_PATH_CHANGES = frozenset({"sys.path.insert", "sys.path.append", "sys.path.extend"})
+
+
+def _names_sys_path(alias_map: "_AliasResolver", target: ast.AST) -> bool:
+    while isinstance(target, ast.Subscript):
+        target = target.value
+    return alias_map.resolve_call(target) == "sys.path"
 
 
 def _dynamic_code_result(
