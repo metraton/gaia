@@ -89,10 +89,20 @@ def test_curl_post_matches_own_grant():
     assert matches_approval_signature(sig, _CURL_POST) is True
 
 
-def test_terraform_still_matches_own_grant():
+def test_terraform_still_matches_own_grant(monkeypatch):
     """Regression guard: terraform (which always matched) keeps matching."""
+    monkeypatch.setenv("TF_WORKSPACE", "default")
     sig = _build(_TERRAFORM, danger_verb="apply")
     assert matches_approval_signature(sig, _TERRAFORM) is True
+
+
+def test_terraform_grant_without_cwd_matches_nothing(tmp_path, monkeypatch):
+    """A terraform grant built with no cwd binds to an undetermined workspace, never to the process's directory."""
+    monkeypatch.delenv("TF_WORKSPACE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    sig = _build(_TERRAFORM, danger_verb="apply")
+    assert matches_approval_signature(sig, _TERRAFORM) is False
+    assert matches_approval_signature(sig, _TERRAFORM, cwd=str(tmp_path)) is False
 
 
 # ---------------------------------------------------------------------------

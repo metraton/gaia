@@ -177,6 +177,8 @@ def _arrange(setup: dict, env: dict, monkeypatch) -> None:
         kube(home / ".kube" / "config", setup["home_kube"])
     if "kube_file" in setup:
         kube(tmp / "prod.yaml", setup["kube_file"])
+    if "kube_work" in setup:
+        kube(work / "prod.yaml", setup["kube_work"])
     if "gcloud" in setup:
         gcloud(home, setup["gcloud"])
     if "docker" in setup:
@@ -288,3 +290,129 @@ def test_grant_target_scope_a6_unknown_verdict_is_not_a_family_grant(env, monkey
     assert not validate("kubectl delete pod x", env["work"]).allowed
     used, again = validate(command, env["work"]), validate(command, env["work"])
     assert not (used.allowed and again.allowed)
+
+
+FREE = ("FREE",)
+
+FRESH_OPERATION_WORD = [
+    ("helm-ns-read-word-unknown-verb", "helm --kube-context prod-a --namespace logs frobnicate rel", {}, NOT_FREE),
+    ("helm-n-read-word-unknown-verb", "helm --kube-context prod-a -n status frobnicate rel", {}, NOT_FREE),
+    ("flux-ns-read-word-unknown-verb", "flux --context prod-a -n logs frobnicate ks", {}, NOT_FREE),
+    ("kubectl-as-read-word-unknown-verb", "kubectl --context prod-a --as view-bot frobnicate thing", {}, NOT_FREE),
+    ("kubectl-token-read-word", "kubectl --context prod-a --token describe frobnicate thing", {}, REFUSED),
+    ("gcloud-trace-token-read-word", "gcloud --project acme-prod --trace-token list compute instances frobnicate vm-1", {}, NOT_FREE),
+    ("gcloud-flags-file-read-word", "gcloud --project acme-prod --flags-file get.yaml compute instances frobnicate vm-1", {}, NOT_FREE),
+    ("aws-unlisted-global-value-read-word", "aws --profile prod --cli-read-timeout describe ec2 frobnicate-x", {}, NOT_FREE),
+    ("aws-unknown-verb", "aws --profile prod ec2 frobnicate-list", {}, NOT_FREE),
+    ("aws-s3-presign", "aws --profile prod s3 presign s3://b/k", {}, NOT_FREE),
+    ("az-unknown-verb", "az vm frobnicate --subscription prod-sub -n x", {}, NOT_FREE),
+    ("tf-unknown-verb-ws-var", "TF_WORKSPACE=prod terraform frobnicate", {}, NOT_FREE),
+    ("tf-state-unknown-verb", "TF_WORKSPACE=prod terraform state frobnicate a", {}, NOT_FREE),
+    ("kubectl-port-forward", "kubectl --context prod-a port-forward svc/db 5432", {}, NOT_FREE),
+    ("unknown-option-before-read", "kubectl --context prod-a --frobnicate get pods", {}, NOT_FREE),
+    ("unknown-option-before-read-gcloud", "gcloud --project acme-prod --frobnicate compute instances list", {}, NOT_FREE),
+    ("unknown-option-dev-twin", "kubectl --context dev-a --frobnicate get pods", {}, FREE),
+    ("known-option-before-read", "kubectl --context prod-a --as view-bot get pods", {}, FREE),
+    ("known-boolean-before-read", "kubectl --context prod-a --insecure-skip-tls-verify get pods", {}, FREE),
+    ("unknown-option-after-read", "kubectl --context prod-a get pods --frobnicate", {}, FREE),
+    ("control-helm-list", "helm --kube-context prod-a list", {}, FREE),
+    ("control-helm-namespace-list", "helm --kube-context prod-a -n app list", {}, FREE),
+    ("control-kubectl-logs", "kubectl --context prod-a -n app logs pod-1", {}, FREE),
+    ("control-tf-show", "TF_WORKSPACE=prod terraform show", {}, FREE),
+    ("control-aws-describe", "aws --profile prod --region us-east-1 ec2 describe-instances", {}, FREE),
+    ("control-gcloud-describe", "gcloud --project acme-prod compute instances describe vm-1", {}, FREE),
+    ("fp-az-read", "az vm list --subscription prod-sub", {}, FREE),
+]
+
+FRESH_SWITCHES = [
+    ("kube-use-context-double-dash", "kubectl config use-context -- prod-a", {"kube": "dev-a"}, NOT_FREE),
+    ("kube-use-context-kubeconfig-before", "kubectl config use-context --kubeconfig {TMP}/kubeconfig prod-a", {"kube": "dev-a"}, NOT_FREE),
+    ("kube-global-kubeconfig-before", "kubectl --kubeconfig={TMP}/kubeconfig config use-context prod-a", {"kube": "dev-a"}, NOT_FREE),
+    ("kube-use-alias", "kubectl config use prod-a", {"kube": "dev-a"}, NOT_FREE),
+    ("kube-set-current-context", "kubectl config set current-context prod-a", {"kube": "dev-a"}, NOT_FREE),
+    ("kube-unknown-option-dev-switch-on-prod", "kubectl --frobnicate config use-context dev-a", {"kube": "prod-a"}, NOT_FREE),
+    ("docker-use-double-dash", "docker context use -- prod-eu", {"docker": "dev-eu"}, NOT_FREE),
+    ("docker-use-after-host-flag", "docker -H unix:///x.sock context use prod-eu", {"docker": "dev-eu"}, NOT_FREE),
+    ("docker-use-dev-context-flag", "docker --context dev-eu context use prod-eu", {"docker": "dev-eu"}, NOT_FREE),
+    ("tf-select-or-create", "terraform workspace select -or-create prod", {"tf_cwd": "dev"}, NOT_FREE),
+    ("tf-select-or-create-eq", "terraform workspace select -or-create=true prod", {"tf_cwd": "dev"}, NOT_FREE),
+    ("tf-select-chdir", "terraform -chdir={TMP}/stack workspace select prod", {"tf_dir": "dev"}, NOT_FREE),
+    ("tf-select-double-dash", "terraform workspace select -- prod", {"tf_cwd": "dev"}, NOT_FREE),
+    ("tf-new-prod", "terraform workspace new prod", {"tf_cwd": "dev"}, NOT_FREE),
+    ("pulumi-stack-select-prod", "pulumi stack select prod", {}, NOT_FREE),
+    ("gcloud-activate-quiet", "gcloud config configurations activate --quiet prodcfg",
+     {"gcloud": {"default": "acme-dev", "prodcfg": "acme-prod"}}, NOT_FREE),
+    ("gcloud-activate-verbosity-before", "gcloud --verbosity debug config configurations activate prodcfg",
+     {"gcloud": {"default": "acme-dev", "prodcfg": "acme-prod"}}, NOT_FREE),
+    ("gcloud-activate-plain-name-prod-project", "gcloud config configurations activate main",
+     {"gcloud": {"default": "acme-dev", "main": "acme-prod"}}, NOT_FREE),
+    ("gcloud-activate-double-dash", "gcloud config configurations activate -- prodcfg",
+     {"gcloud": {"default": "acme-dev", "prodcfg": "acme-prod"}}, NOT_FREE),
+    ("gcloud-config-set-project", "gcloud config set project acme-prod", {"gcloud": {"default": "acme-dev"}}, NOT_FREE),
+    ("dev-kube-switch-from-prod-flag", "kubectl --context prod-a config use-context dev-a", {"kube": "prod-a"}, FREE),
+    ("dev-docker-switch", "docker context use dev-eu", {"docker": "prod-eu"}, FREE),
+    ("dev-tf-select", "terraform workspace select dev", {"tf_cwd": "prod"}, FREE),
+    ("dev-tf-new", "terraform workspace new dev", {"tf_cwd": "prod"}, FREE),
+    ("local-git-switch-prod-branch", "git switch prod-hotfix", {}, FREE),
+    ("local-conda-activate", "conda activate prod-env", {}, FREE),
+    ("local-nvm-use", "nvm use production", {}, FREE),
+]
+
+FRESH_EXTRACTION = [
+    ("helm-kubeconfig", "helm --kubeconfig {TMP}/prod.yaml frobnicate rel", {"kube_file": "prod-a"}, NOT_FREE),
+    ("kubectl-kubeconfig-relative", "kubectl --kubeconfig prod.yaml frobnicate thing", {"kube_work": "prod-a"}, NOT_FREE),
+    ("gcloud-configuration-eq", "gcloud --configuration=prodcfg compute instances frobnicate vm-1",
+     {"gcloud": {"default": "acme-dev", "prodcfg": "acme-prod"}}, NOT_FREE),
+    ("dev-kubeconfig-file", "kubectl --kubeconfig {TMP}/prod.yaml frobnicate thing", {"kube_file": "dev-a"}, FREE),
+]
+
+FRESH = FRESH_OPERATION_WORD + FRESH_SWITCHES + FRESH_EXTRACTION
+
+
+@pytest.mark.parametrize("case", FRESH, ids=[c[0] for c in FRESH])
+def test_prod_target_fresh_probe(case, env, monkeypatch):
+    _, command, setup, accepted = case
+    _arrange(setup, env, monkeypatch)
+    got, reason = verdict(command.replace("{TMP}", str(env["tmp"])), env["work"])
+    assert got in accepted, (got, reason[:200])
+
+
+@pytest.mark.parametrize("form", ["terraform -chdir={STACK} apply -auto-approve", "terraform -chdir=stack apply -auto-approve"])
+def test_grant_target_scope_chdir_workspace_switch(form, env):
+    stack = env["tmp"] / "stack"
+    stack.mkdir()
+    tf_workspace(stack, "dev")
+    command = form.replace("{STACK}", str(stack))
+    _mint(command, env["tmp"])
+    tf_workspace(stack, "prod")
+    retry = validate(command, env["tmp"])
+    assert not retry.allowed, retry.reason[:200]
+
+
+def test_grant_target_scope_chdir_same_workspace_matches(env):
+    stack = env["tmp"] / "stack"
+    stack.mkdir()
+    tf_workspace(stack, "dev")
+    command = f"terraform -chdir={stack} apply -auto-approve"
+    _mint(command, env["tmp"])
+    assert validate(command, env["tmp"]).allowed
+
+
+def test_grant_target_scope_kubeconfig_file_switch(env):
+    path = kube(env["tmp"] / "k.yaml", "dev-a")
+    command = f"kubectl --kubeconfig {path} delete pod x"
+    _mint(command, env["work"])
+    kube(path, "prod-a")
+    assert not validate(command, env["work"]).allowed
+
+
+def test_grant_target_scope_item_without_cwd_is_undetermined(env):
+    from modules.security.approval_scopes import SCOPE_SEMANTIC_SIGNATURE, build_approval_signature, matches_approval_signature
+    from modules.security.targets import UNDETERMINED, declaration_for
+
+    tf_workspace(env["work"], "dev")
+    declare(env["work"], {"development": ["prod"]})
+    signature = build_approval_signature("terraform apply -auto-approve", scope_type=SCOPE_SEMANTIC_SIGNATURE, cwd=None)
+    assert signature.target == UNDETERMINED
+    assert not matches_approval_signature(signature, "terraform apply -auto-approve", cwd=str(env["work"]))
+    assert declaration_for(None) == {} and declaration_for(str(env["work"])) == {"development": ["prod"]}

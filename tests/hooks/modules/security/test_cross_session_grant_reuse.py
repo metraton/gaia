@@ -199,6 +199,8 @@ def iso_grants_dir(tmp_path, monkeypatch):
     """Isolate filesystem grants dir and pin a session id (mirror bridge test)."""
     import modules.security.approval_grants as ag
 
+    monkeypatch.setenv("TF_WORKSPACE", "default")
+
     grants_dir = tmp_path / ".claude" / "cache" / "approvals"
     grants_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(

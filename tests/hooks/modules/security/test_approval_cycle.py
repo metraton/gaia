@@ -86,6 +86,8 @@ def clean_grants_dir(tmp_path, monkeypatch):
     """Use a temporary directory for grants and clean up after each test."""
     import modules.security.approval_grants as ag
 
+    monkeypatch.setenv("TF_WORKSPACE", "default")
+
     grants_dir = tmp_path / ".claude" / "cache" / "approvals"
     grants_dir.mkdir(parents=True, exist_ok=True)
 
