@@ -546,17 +546,18 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
     if hit is not None:
         return hit
 
-    running_cwd = cwd
     seen_cwds = [cwd]
-    for component in _OPERATOR_SPLIT.split(command):
-        component = component.strip()
-        if not component:
-            continue
-        hit = _component_writes_protected_path(component, running_cwd)
-        if hit is not None:
-            return hit
-        running_cwd = _fold_cwd(component, running_cwd)
-        seen_cwds.append(running_cwd)
+    for line in _substituted_lines(command):
+        running_cwd = cwd
+        for component in _OPERATOR_SPLIT.split(line):
+            component = component.strip()
+            if not component:
+                continue
+            hit = _component_writes_protected_path(component, running_cwd)
+            if hit is not None:
+                return hit
+            running_cwd = _fold_cwd(component, running_cwd)
+            seen_cwds.append(running_cwd)
 
     # A command substitution runs BEFORE the command that contains it, so
     # ``echo $(cp payload.py .claude/hooks/pre_tool_use.py)`` overwrites the

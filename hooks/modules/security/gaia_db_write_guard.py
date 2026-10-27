@@ -147,10 +147,13 @@ def _component_writes_db(component: str) -> bool:
 
 
 def writes_db_file(command: str) -> bool:
-    """Return True iff some component of *command* writes the Gaia DB file through the shell."""
+    """Return True iff some component of *command*, with the variables the line assigns read in, writes the Gaia DB file through the shell."""
+    from .protected_path_guard import _substituted_lines
+
     return any(
         _component_writes_db(component.strip())
-        for component in _split_components(command or "")
+        for line in _substituted_lines(command or "")
+        for component in _split_components(line)
         if component.strip()
     )
 

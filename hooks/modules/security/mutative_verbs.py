@@ -5280,7 +5280,8 @@ def _component_verdict(component: str, *, cwd: "Optional[str]", _depth: int) -> 
     result = detect_mutative_command(component, cwd=cwd, _depth=_depth)
     if result.is_mutative:
         return result
-    flagged = classify_by_flags(_peel_wrapper_readings(component)[0][0])
+    readings, peeled = _peel_wrapper_readings(component)
+    flagged = classify_by_flags(readings[0], wrapped=peeled)
     if flagged is None or flagged.command_family.startswith("git_"):
         return result
     if flagged.outcome == OUTCOME_READ_ONLY:

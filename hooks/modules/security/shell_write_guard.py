@@ -202,28 +202,49 @@ def _writes_default_name(base: str, tokens: List[str]) -> bool:
     return any("d" in b for b in bundles) or "--download" in longs
 
 
-_RUN_WRAPPERS = frozenset({"sudo", "env", "nice", "timeout", "command", "exec", "nohup", "stdbuf"})
-_WRAPPER_VALUE_OPTIONS = frozenset({"-u", "-g", "-n", "-k", "-s", "-C", "-p", "-h", "-D", "-U", "-r", "-t", "-i", "-o", "-e"})
+_URL_GLOB = re.compile(r"\{([^{}]*)\}|\[([^\[\]]*)\]")
+_GLOB_REFERENCE = re.compile(r"#(\d)")
 
 
-def _unwrapped(tokens: List[str]) -> List[str]:
-    """The command a run wrapper (sudo, env, nice, timeout, command, exec) starts, with the wrapper's options and assignments left out."""
-    while tokens and command_name(tokens[0]) in _RUN_WRAPPERS:
-        wrapper, tokens = command_name(tokens[0]), tokens[1:]
-        while tokens and (tokens[0].startswith("-") or re.match(r"[A-Za-z_]\w*=", tokens[0])):
-            tokens = tokens[2:] if tokens[0] in _WRAPPER_VALUE_OPTIONS else tokens[1:]
-        if wrapper == "timeout" and tokens:
-            tokens = tokens[1:]
-    return tokens
+def _unwrapped(tokens: List[str]) -> Tuple[List[str], List[str]]:
+    """The command the line's run wrappers start, read as the verb classifier reads them, and every directory env -C moves it to."""
+    from .mutative_verbs import _peel_wrapper_readings
+
+    remainder = _tokenize(_peel_wrapper_readings(shlex.join(tokens))[0][0])
+    prefix = tokens[:max(len(tokens) - len(remainder), 0)]
+    chdirs: List[str] = []
+    if any(command_name(t) == "env" for t in prefix):
+        for option, value in zip(prefix, prefix[1:] + [""]):
+            if option in ("-C", "--chdir"):
+                chdirs.append(value)
+            elif option.startswith("--chdir="):
+                chdirs.append(option.split("=", 1)[1])
+            elif re.fullmatch(r"-[a-zA-Z]*C.+", option):
+                chdirs.append(option[option.index("C") + 1:])
+    return remainder, chdirs
+
+
+def _glob_names(words: List[str], urls: List[str]) -> List[str]:
+    """Each output name curl makes by putting a URL glob's values in place of #N."""
+    values = [
+        (braces.split(",") if braces is not None else [ranged.split("-", 1)[0]])
+        for url in urls for braces, ranged in _URL_GLOB.findall(url)
+    ]
+    names = []
+    for word in words:
+        for n in {int(m) for m in _GLOB_REFERENCE.findall(word)}:
+            for value in values[n - 1] if 0 < n <= len(values) else []:
+                names.append(word.replace(f"#{n}", value))
+    return names
 
 
 def downloader_paths(tokens: List[str]) -> List[str]:
     """Every path a downloader line names, each joined under every named directory: the line, not its options, says where it can write."""
-    tokens = _unwrapped(tokens)
+    tokens, chdirs = _unwrapped(tokens)
     base = command_name(tokens[0]) if tokens else ""
     if base not in _DOWNLOADERS:
         return []
-    words: List[str] = []
+    words: List[str] = list(chdirs)
     urls: List[str] = []
     for token in tokens[1:]:
         if _URL.match(token):
@@ -235,6 +256,7 @@ def downloader_paths(tokens: List[str]) -> List[str]:
         elif not token.startswith("--"):
             words += _attached_paths(token)
     words = [w for w in words if w and w != "-"]
+    words += _glob_names(words, urls)
     names = []
     if _writes_default_name(base, tokens):
         locations = [u.split("://", 1)[1].split("?", 1)[0].split("#", 1)[0] for u in urls]
