@@ -29,14 +29,13 @@ materialize or refresh one (``install``, ``update``, ``uninstall``, ``cleanup``,
 ``dev``, ``release``) are T3-gated in code, so replacing a live install still
 requires consent even though editing the checkout beside it no longer does.
 
-THE DERIVATION. ``_shape_hit`` is the only lane that is install-specific BY
-CONSTRUCTION: it matches the literal path components a live install is
-required to have -- a ``hooks`` directory anchored under a harness root (a
-``.claude`` component) or under the scoped package directory
-(``@jaguilar87/gaia``) -- never a marker file or a registry row a checkout
-carries identically. It is therefore the sole lane this predicate consults for
-protection, evaluated against a path's literal, absolute, and symlink-resolved
-forms alike so a symlinked install cannot dodge it by spelling.
+THE DERIVATION. Two lanes, both install-specific by construction and judged on
+a path's literal, absolute and symlink-resolved forms. ``_shape_hit`` matches a
+``hooks`` tree under ``.claude``. ``_install_root`` protects EVERYTHING inside
+an install root -- the ``@jaguilar87/gaia`` package store, each entry of the
+dev-plugin cache, and the root this module was loaded from unless that root is
+a git checkout -- because the plain ``gaia`` CLI imports ``bin/`` and ``gaia/``
+from there, so a planted module or ``.pth`` is code the next call runs.
 
 ``declared_hook_tree_roots()`` still resolves checkout roots from the
 workspace registry, for a DIFFERENT caller: ``_get_gaia_agent_names`` in
@@ -78,6 +77,11 @@ _PACKAGE_DIR = "gaia"
 _HARNESS_DIR = ".claude"
 
 _HOOKS_DIR = "hooks"
+
+_DEV_PLUGIN_DIR = "dev-plugin"
+
+# hooks/modules/security/protected_paths.py -> the root it was installed or checked out at.
+_OWN_ROOT = Path(__file__).resolve().parents[3]
 
 _SETTINGS_BASENAMES = frozenset({"settings.json", "settings.local.json"})
 # Long names an 8.3 alias may stand for (``CLAUDE~1``, ``SETTIN~1.JSO``).
@@ -170,18 +174,49 @@ def declared_hook_tree_roots() -> Tuple[str, ...]:
 
 
 def _shape_hit(parts: Tuple[str, ...]) -> bool:
-    """True iff the path shape places it inside an anchored ``hooks`` tree."""
-    for index, part in enumerate(parts):
-        remainder = parts[index + 1:]
-        if part == _HARNESS_DIR and _HOOKS_DIR in remainder:
-            return True
-        if (
-            part == _PACKAGE_SCOPE_DIR
-            and remainder[:1] == (_PACKAGE_DIR,)
-            and _HOOKS_DIR in remainder[1:]
-        ):
-            return True
-    return False
+    """True iff the path shape places it inside a ``.claude`` ``hooks`` tree."""
+    return any(
+        part == _HARNESS_DIR and _HOOKS_DIR in parts[index + 1:]
+        for index, part in enumerate(parts)
+    )
+
+
+def _dev_plugin_caches() -> Tuple[Path, ...]:
+    try:
+        from gaia.paths import cache_dir
+    except Exception:
+        return ()
+    container = Path(os.path.abspath(cache_dir() / _DEV_PLUGIN_DIR))
+    return (container, container.resolve())
+
+
+def _own_install_root() -> Optional[Path]:
+    if (_OWN_ROOT / ".git").exists() or not _is_gaia_root(_OWN_ROOT):
+        return None
+    return _OWN_ROOT
+
+
+def _install_root(path: Path) -> Optional[Path]:
+    """The installed Gaia root `path` is or lies inside, or None."""
+    parts = path.parts
+    for index in range(len(parts) - 1):
+        if parts[index] == _PACKAGE_SCOPE_DIR and parts[index + 1] == _PACKAGE_DIR:
+            return Path(*parts[:index + 2])
+    for container in _dev_plugin_caches():
+        if container in path.parents:
+            return Path(*parts[:len(container.parts) + 1])
+    own = _own_install_root()
+    if own is not None and (path == own or own in path.parents):
+        return own
+    return None
+
+
+def _install_root_hit(path: Path) -> bool:
+    root = _install_root(path)
+    if root is None:
+        return False
+    inside = path.relative_to(root).parts
+    return not (inside[:1] == (_HOOKS_DIR,) and path.suffix == ".md")
 
 
 def _candidates(path_str: str) -> Tuple[Path, ...]:
@@ -260,9 +295,9 @@ def is_protected_hook_path(path_str: str) -> bool:
             out of a Bash command string.
 
     Returns:
-        True when the path is inside a live-install hook tree (``.claude`` or
-        the ``@jaguilar87/gaia`` package store, any deployment shape) and is
-        not documentation, or when it is a ``.claude`` settings file. A Gaia
+        True when the path is inside an installed Gaia root (other than a
+        ``hooks/`` ``.md``) or a ``.claude`` hook tree (other than a ``.md``),
+        or when it is a ``.claude`` settings file. A Gaia
         source checkout is never matched by this predicate -- see the module
         docstring.
     """
@@ -279,6 +314,9 @@ def is_protected_hook_path(path_str: str) -> bool:
         if _shape_hit(candidate.parts):
             # Documentation does not execute code and is exempt.
             return candidate.suffix != ".md"
+
+    if any(_install_root_hit(candidate) for candidate in candidates):
+        return True
 
     for candidate in candidates:
         if candidate.name in _SETTINGS_BASENAMES and _HARNESS_DIR in candidate.parts:

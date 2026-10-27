@@ -62,7 +62,7 @@ import shlex
 from typing import List, Optional, Tuple
 
 from .canonical_path import command_name
-from .mutative_verbs import UNKNOWN_CWD, cwd_after_component
+from .mutative_verbs import UNKNOWN_CWD, cwd_after_component, detect_mutative_command
 from .protected_paths import is_protected_hook_path, is_read_spool_path
 from .sensitive_paths import expand_home
 from .shell_grouping import strip_grouping_wrappers
@@ -90,7 +90,7 @@ _GIT_WRITE_SUBCOMMANDS = frozenset({
 # blocked".
 _FILESYSTEM_WRITE_COMMANDS = frozenset({
     "mv", "cp", "install", "dd", "tee", "ln", "rsync", "touch", "truncate",
-    "mkdir", "sed", "chmod", "chown", "chgrp", "shred", "unlink", "rm",
+    "mkdir", "sed", "chmod", "chown", "chgrp", "shred", "unlink", "rm", "tar",
     # cmd.exe builtins and PowerShell cmdlets with their aliases.
     "copy", "xcopy", "robocopy", "copy-item", "cpi", "move", "move-item", "mi",
     "ren", "rename", "rename-item", "rni", "del", "erase", "rd", "rmdir",
@@ -175,7 +175,37 @@ def _write_targets(tokens: List[str], base: str) -> Tuple[List[str], List[str]]:
         redirects += [name for script in scripts for name in _SED_WRITE_COMMAND.findall(script)]
     if base == "dd":
         operands = [op[3:] for op in operands if op.startswith("of=")]
+    if base == "tar":
+        directories = [tok.split("=", 1)[1] for tok in tokens if tok.startswith("--directory=")]
+        operands += directories
+        if _tar_extracts(tokens) and not directories and "-C" not in tokens:
+            operands.append(".")
     return redirects, operands
+
+
+def _tar_extracts(tokens: List[str]) -> bool:
+    bundles = [tok for tok in tokens[1:] if tok.startswith("-") and not tok.startswith("--")]
+    if len(tokens) > 1 and not tokens[1].startswith("-"):
+        bundles.append(tokens[1])
+    return any(tok in ("--extract", "--get") for tok in tokens) or any("x" in b for b in bundles)
+
+
+_INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php", "deno", "bun"})
+_CODE_WORD = re.compile(r"[^\s'\"(),;=`]+")
+
+
+def _interpreter_writes_protected_path(command: str, cwd: Optional[str]) -> Optional[str]:
+    """The protected path a mutating interpreter run names in its code, or None."""
+    if not any(command_name(word).rstrip("0123456789.") in _INTERPRETERS for word in command.split()):
+        return None
+    named = [
+        hit for word in _CODE_WORD.findall(command)
+        if (os.path.isabs(expand_home(word)) or "/" in word or "." in word)
+        and (hit := _protected_spelling(word, cwd))
+    ]
+    if named and detect_mutative_command(command).is_mutative:
+        return named[0]
+    return None
 
 
 def _component_writes_protected_path(component: str, cwd: Optional[str] = None) -> Optional[str]:
@@ -230,6 +260,10 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
     """
     if not command:
         return None
+
+    hit = _interpreter_writes_protected_path(command, cwd)
+    if hit is not None:
+        return hit
 
     running_cwd = cwd
     seen_cwds = [cwd]
