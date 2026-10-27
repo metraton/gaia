@@ -104,10 +104,15 @@ _GRAMMARS = {
     "aws-vault": (_AWS_VAULT_EXEC,),
 }
 
-_TARGET_VARIABLES = {
+TARGET_VARIABLES = {
     "kubectl": {"KUBECONFIG": "--kubeconfig"},
     "oc": {"KUBECONFIG": "--kubeconfig"},
     "docker": {"DOCKER_HOST": "--host", "DOCKER_CONFIG": "--config"},
+    "podman": {"CONTAINER_HOST": "--url", "CONTAINER_CONNECTION": "--connection", "DOCKER_HOST": "--url"},
+    "gcloud": {
+        "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT": "--impersonate-service-account",
+        "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE": "--access-token-file",
+    },
 }
 
 _SHELL_PROGRAMS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "busybox"})
@@ -234,7 +239,7 @@ def nested_run(tokens: Sequence[str]) -> Optional[NestedRun]:
 
 def with_target_flags(prefix: Sequence[str], words: Sequence[str]) -> Optional[List[str]]:
     """*words* with each variable *prefix* assigns to choose the program's target or identity spelled as its flag, else None."""
-    names = _TARGET_VARIABLES.get(command_name(words[0]), {}) if words else {}
+    names = TARGET_VARIABLES.get(command_name(words[0]), {}) if words else {}
     assigned = (word.partition("=") for word in prefix)
     flags = [f"{names[name]}={value}" for name, equals, value in assigned if equals and name in names]
     return [words[0], *flags, *words[1:]] if flags else None

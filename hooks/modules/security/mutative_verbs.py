@@ -4655,18 +4655,27 @@ def flag_floor_block(command: str) -> "Optional[FlagClassifierResult]":
 def _check_target_environment(
     command: str, remainder: str, *, cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
-    """Judge *remainder* run under a variable that picks its target or identity as the flag that variable stands for."""
+    """Escalate *remainder* when a variable assigned anywhere down its chain of local executors picks the target or identity of the innermost program as one of its flags would."""
     from ..tools.shell_parser import shell_split
 
     try:
         written, words = shell_split(command), shell_split(remainder)
     except ValueError:
         return None
-    flagged = with_target_flags(written[: len(written) - len(words)], words)
+    assigned = written[: len(written) - len(words)]
+    run = nested_run(words)
+    while run is not None and not run.remote and run.unparsed is None and run.inner:
+        try:
+            inner_words, words = shell_split(run.inner), shell_split(_peel_wrapper_readings(run.inner)[0][0])
+        except ValueError:
+            return None
+        assigned += inner_words[: len(inner_words) - len(words)]
+        run = nested_run(words)
+    flagged = with_target_flags(assigned, words)
     if flagged is None:
         return None
-    result = detect_mutative_command(shlex.join(flagged), cwd=cwd, _depth=_depth)
-    return replace(result, reason=f"run as {shlex.join(flagged)!r}: {result.reason}")
+    result = detect_mutative_command(shlex.join(flagged), cwd=cwd, _depth=_depth + 1)
+    return replace(result, reason=f"run as {shlex.join(flagged)!r}: {result.reason}") if result.is_mutative else None
 
 
 def _component_verdict(component: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:

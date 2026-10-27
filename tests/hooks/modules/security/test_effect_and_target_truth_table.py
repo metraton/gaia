@@ -647,3 +647,54 @@ def test_a_nested_executor_pin(command, context, verdicts, rule, world, monkeypa
     verdict, reason = observe(command, context, world)
     assert verdict in verdicts, (verdict, reason)
     assert f"Rule: {rule}." in reason if rule else True, reason
+
+
+_TARGET_TEMPLATES = {
+    "kubectl": "kubectl {flag}exec pod-1 -- ls",
+    "oc": "oc {flag}exec pod-1 -- ls",
+    "docker": "docker {flag}exec c1 ls",
+    "podman": "podman {flag}exec c1 ls",
+    "gcloud": "gcloud {flag}compute ssh vm-1 --command ls",
+}
+_TARGET_CARRIERS = (
+    "{var} {cmd}", "env {var} {cmd}", "{var} op run -- {cmd}", "env {var} op run -- {cmd}",
+    "{var} aws-vault exec prof -- {cmd}", "op run -- env {var} {cmd}", "{var} op run -- env FOO=1 {cmd}",
+    "{var} op run -- aws-vault exec prof -- {cmd}",
+)
+
+
+def _target_variable_cases():
+    from modules.security.nested_executors import TARGET_VARIABLES
+
+    assert set(TARGET_VARIABLES) == set(_TARGET_TEMPLATES)
+    return [
+        pytest.param(program, variable, flag, carrier, id=f"{program}:{variable}:{carrier}")
+        for program, variables in TARGET_VARIABLES.items()
+        for variable, flag in variables.items()
+        for carrier in _TARGET_CARRIERS
+    ]
+
+
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases())
+def test_a_target_variable_asks_wherever_in_the_chain_its_flag_asks(program, variable, flag, carrier, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    template = _TARGET_TEMPLATES[program]
+    flag_verdict, flag_reason = observe(template.format(flag=f"{flag}=v "), "none", world)
+    assert flag_verdict == "UNKNOWN", (flag_verdict, flag_reason)
+    assert observe(template.format(flag=""), "none", world)[0] == "FREE"
+    command = carrier.format(var=f"{variable}=v", cmd=template.format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict == flag_verdict, (command, verdict, reason)
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("gcloud compute ssh vm-1 --access-token-file=/x --command ls", "UNKNOWN"),
+    ("podman --url ssh://h/run/podman.sock exec c1 ls", "UNKNOWN"),
+    ("KUBECONFIG=/x op run -- kubectl get pods", "FREE"),
+    ("FOO=1 op run -- kubectl exec pod-1 -- ls", "FREE"),
+    ("KUBECONFIG=/x kubectl exec pod-1 -- kubectl get pods", "UNKNOWN"),
+])
+def test_a_credential_flag_asks_and_an_unrelated_or_read_carrier_stays_as_it_was(command, expected, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    verdict, reason = observe(command, "none", world)
+    assert verdict == expected, (verdict, reason)
