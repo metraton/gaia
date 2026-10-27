@@ -6,6 +6,7 @@ Everything here reads files or the database, so it runs outside the classifier's
 from __future__ import annotations
 
 import configparser
+import hashlib
 import json
 import os
 import re
@@ -74,7 +75,7 @@ _OPTION_ARITY: Dict[str, Dict[str, int]] = {
                          "--impersonate-service-account", "--filter", "--limit", "--trace-token"), 1),
         "--quiet": 0, "-q": 0, "--log-http": 0,
     },
-    "terraform": {"-chdir": 1},
+    "terraform": {"-chdir": 1, "-or-create": 0},
     "pulumi": {"-C": 1, "--cwd": 1, "--color": 1, "-v": 1, "--non-interactive": 0},
 }
 _KUBE_GROUPS = frozenset({"config", "rollout", "auth", "certificate"})
@@ -104,6 +105,7 @@ _NAME_PARTS = re.compile(r"[a-z0-9]+")
 _DYNAMIC = re.compile(r"[$`]")
 _ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)", re.S)
 _CURRENT_CONTEXT = re.compile(r"""^current-context:[ \t]*["']?([^"'\s#]*)""", re.M)
+_PULUMI_NAME = re.compile(r"""^name:[ \t]*["']?([^"'\s#]+)""", re.M)
 
 
 @dataclass(frozen=True)
@@ -223,6 +225,31 @@ def _in_directory(path: str, cwd: Optional[str]) -> Optional[Path]:
     return expanded if expanded.is_absolute() else (Path(cwd) / expanded if cwd else None)
 
 
+def _pulumi_stack(args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> str:
+    """The stack selected for the nearest Pulumi.yaml, read from the workspace file pulumi names after project and path SHA-1."""
+    chosen = _flag_values(args, frozenset({"-C", "--cwd"}))
+    start = _in_directory(chosen[-1] if chosen else ".", cwd)
+    if start is None or (chosen and _DYNAMIC.search(chosen[-1])):
+        return UNDETERMINED
+    start = start.absolute()
+    project = next((d / "Pulumi.yaml" for d in (start, *start.parents) if (d / "Pulumi.yaml").exists()), None)
+    if project is None:
+        return ""
+    text = _read_text(project)
+    name = _PULUMI_NAME.search(text or "")
+    if name is None:
+        return UNDETERMINED
+    home = Path(environment.get("PULUMI_HOME") or Path.home() / ".pulumi").expanduser()
+    digest = hashlib.sha1(str(project).encode()).hexdigest()
+    settings = _read_text(home / "workspaces" / f"{name.group(1)}-{digest}-workspace.json")
+    if not settings:
+        return "" if settings == "" else UNDETERMINED
+    try:
+        return str(json.loads(settings).get("stack") or "")
+    except (ValueError, AttributeError):
+        return UNDETERMINED
+
+
 def _ambient(program: str, args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> List[Target]:
     if program in _KUBE_PROGRAMS and not _flag_values(args, _KUBE_CONTEXT_FLAGS):
         for value in _flag_values(args, frozenset({"--kubeconfig"})):
@@ -243,8 +270,10 @@ def _ambient(program: str, args: Sequence[str], environment: Dict[str, str], cwd
         return found
     if program in ("docker", "podman") and not _flag_values(args, _PROGRAM_TARGET_FLAGS[program]):
         if program == "podman" and environment.get("CONTAINER_CONNECTION"):
-            return []
+            return [Target("podman-connection", environment["CONTAINER_CONNECTION"])]
         return [Target("docker-context", _docker_context(environment))]
+    if program == "pulumi" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["pulumi"]):
+        return [Target("stack", _pulumi_stack(args, environment, cwd))]
     if program == "aws" and not _flag_values(args, frozenset({"--profile"})):
         return [Target("profile", environment.get("AWS_PROFILE", ""))]
     if program == "terraform":
@@ -299,7 +328,11 @@ def command_targets(
     found += [Target("variable", _literal(environment[name])) for name in sorted(_naming_variables(program))
               if name in environment and (name in (inherited or {}) or any(w.startswith(f"{name}=") for w in assignments))]
     if operation in _SWITCH_WORDS.get(program, ()):
-        destinations = operands[-1:] or _flag_values(args, _SWITCH_DESTINATION_FLAGS.get(program, frozenset()))[-1:]
+        destinations = _flag_values(args, _SWITCH_DESTINATION_FLAGS.get(program, frozenset()))[-1:]
+        if not destinations and operands:
+            last, known, _ = _positionals(words)[-1]
+            known = known or "--" in words[1:-1]
+            destinations = [last if known and last != "-" else UNDETERMINED]
         for destination in map(_literal, destinations):
             found.append(Target("switch", destination))
             if program == "gcloud" and operation == "activate" and destination != UNDETERMINED:
@@ -325,9 +358,8 @@ def _positionals(words: Sequence[str]) -> List[Tuple[str, bool, bool]]:
             ended = True
         else:
             leading = leading and not found
-            name, equals, _ = word.partition("=")
-            if not equals and name not in arity and arity.get(_attached_short(word, arity) or "") == 1:
-                name, equals = word[:2], "="
+            short = _attached_short(word, arity)
+            name, equals, _ = (short, "=", "") if short and arity[short] == 1 else word.partition("=")
             known = known and name in arity
             index += 0 if equals else arity.get(name, 0)
     return found
@@ -426,10 +458,11 @@ def declaration_for(cwd: Optional[str]) -> Dict:
         rows = con.execute(
             "SELECT workspace, name, path, project_identity FROM projects WHERE status = 'active' AND path IS NOT NULL",
         ).fetchall()
-        holding = [r for r in rows if here == Path(r[2]) or Path(r[2]) in here.parents]
+        stored = [(Path(r[2]).resolve(), r) for r in rows]
+        holding = [(root, r) for root, r in stored if here == root or root in here.parents]
         if not holding:
             return {}
-        workspace, name, path, identity = max(holding, key=lambda r: len(r[2]))
+        workspace, name, path, identity = max(holding, key=lambda pair: len(pair[0].parts))[1]
         section = project_sections(con, {"identity": identity or path, "workspace": workspace, "name": name})
         payload = section.get(DECLARATION_SECTION, {}).get("payload")
         return payload if isinstance(payload, dict) else {}
@@ -467,8 +500,17 @@ def _pushed_branch(words: Sequence[str], cwd: Optional[str]) -> Tuple[Optional[s
     if index >= len(args) or args[index] != "push":
         return None, None
     operands = [w for w in args[index + 1:] if not w.startswith("-")]
-    branch = operands[-1].rpartition(":")[2] if len(operands) == 2 else None
+    branch = _branch_name(operands[-1]) if len(operands) == 2 else None
     return branch, tree or repo
+
+
+def _branch_name(ref: str) -> str:
+    """The branch a push refspec or a declared name lands on: the destination of ``src:dst``, without ``+`` or ``refs/heads/``."""
+    ref = ref.removeprefix("+").rpartition(":")[2]
+    for prefix in ("refs/heads/", "heads/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix):]
+    return ref
 
 
 def production_target_verdict(
@@ -498,13 +540,15 @@ def production_target_verdict(
         return None
     declaration = declaration_for(repo if branch else cwd)
     landing = None
-    if branch and branch in {str(b) for b in declaration.get("protected_branches", ())}:
+    if branch and branch in {_branch_name(str(b)) for b in declaration.get("protected_branches", ())}:
         landing = f"the declared protected branch {branch!r}"
-    if switching:
+    if switching and _CREDENTIAL_FETCHERS.get(command_name(words[0])) != operation:
         targets = [t for t in targets if t.kind == "switch"]
     named = next((t for t in targets if t.name != UNDETERMINED and is_production(t.name, declaration)), None)
     if named is not None:
         landing = f"the production {named.kind} {named.name!r}"
+    elif switching and any(t.name == UNDETERMINED for t in targets):
+        landing = "a target that could not be determined"
     if not landing:
         return None
     return MutativeResult(
