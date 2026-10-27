@@ -19,14 +19,25 @@ from .canonical_path import command_name
 UNDETERMINED = "?"
 DECLARATION_SECTION = "targets"
 
-_TARGET_FLAGS = frozenset({
+# Only a program no classifier table names (mutative_verbs._is_unmodelled_cli) is read with the generic row.
+_GENERIC_TARGET_FLAGS = frozenset({
     "--context", "--kube-context", "--cluster", "--project", "--account", "--profile",
     "--workspace", "--stack", "--env", "--environment", "--subscription",
 })
-_PROGRAM_TARGET_FLAGS = {"docker": frozenset({"-c"}), "pulumi": frozenset({"-s"})}
-_NAMING_VARIABLES = frozenset({
-    "DOCKER_CONTEXT", "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT", "AWS_PROFILE", "TF_WORKSPACE",
-})
+_KUBE_TARGET_FLAGS = frozenset({"--context", "--cluster"})
+_PROGRAM_TARGET_FLAGS: Dict[str, frozenset] = {
+    "kubectl": _KUBE_TARGET_FLAGS, "oc": _KUBE_TARGET_FLAGS, "k9s": _KUBE_TARGET_FLAGS,
+    "helm": frozenset({"--kube-context"}), "flux": frozenset({"--context"}),
+    "docker": frozenset({"--context", "-c"}), "podman": frozenset({"--connection", "-c"}),
+    "gcloud": frozenset({"--project", "--account"}), "aws": frozenset({"--profile"}),
+    "az": frozenset({"--subscription"}), "pulumi": frozenset({"--stack", "-s"}),
+}
+_PROGRAM_NAMING_VARIABLES: Dict[str, frozenset] = {
+    "docker": frozenset({"DOCKER_CONTEXT"}), "podman": frozenset({"CONTAINER_CONNECTION"}),
+    "gcloud": frozenset({"CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT"}), "aws": frozenset({"AWS_PROFILE"}),
+    "terraform": frozenset({"TF_WORKSPACE"}),
+}
+_NAMING_VARIABLES = frozenset().union(*_PROGRAM_NAMING_VARIABLES.values())
 _KUBE_PROGRAMS = frozenset({"kubectl", "oc", "helm", "flux", "kustomize", "k9s"})
 _KUBE_OPTIONS = {
     **dict.fromkeys((
@@ -74,10 +85,17 @@ _GROUP_WORDS = {
     "pulumi": frozenset({"stack"}),
 }
 _VERB_PATH_PROGRAMS = frozenset({"gcloud", "az"})
+_SWITCHER_PROGRAMS = frozenset({"kubectx", "kubens"})
 _KUBE_SWITCHES = frozenset({"use-context", "use"})
+_CREDENTIAL_FETCHERS = {"gcloud": "get-credentials", "az": "get-credentials", "aws": "update-kubeconfig"}
 _SWITCH_WORDS: Dict[str, frozenset] = {
     "kubectl": _KUBE_SWITCHES, "oc": _KUBE_SWITCHES, "docker": frozenset({"use"}), "podman": frozenset({"use"}),
-    "terraform": frozenset({"select", "new"}), "gcloud": frozenset({"activate"}), "pulumi": frozenset({"select"}),
+    "terraform": frozenset({"select", "new"}), "gcloud": frozenset({"activate", "get-credentials"}),
+    "pulumi": frozenset({"select"}), "az": frozenset({"get-credentials"}), "aws": frozenset({"update-kubeconfig"}),
+    "kubectx": frozenset({"kubectx"}), "kubens": frozenset({"kubens"}),
+}
+_SWITCH_DESTINATION_FLAGS: Dict[str, frozenset] = {
+    "pulumi": frozenset({"--stack", "-s"}), "az": frozenset({"-n", "--name"}), "aws": frozenset({"--name"}),
 }
 _EXTRA_READ_WORDS = frozenset({"access", "ps"})
 _KUBE_CONTEXT_FLAGS = frozenset({"--context", "--kube-context"})
@@ -96,6 +114,13 @@ class Target:
     name: str
 
 
+def _attached_short(word: str, options) -> Optional[str]:
+    """The known short option *word* starts with when its value is written attached (``-napp``), else None."""
+    if len(word) > 2 and word[0] == "-" and word[1] != "-" and word[:2] in options:
+        return word[:2]
+    return None
+
+
 def _flag_values(args: Sequence[str], flags: frozenset) -> List[str]:
     values: List[str] = []
     for index, word in enumerate(args):
@@ -103,11 +128,30 @@ def _flag_values(args: Sequence[str], flags: frozenset) -> List[str]:
             break
         name, equals, attached = word.partition("=")
         if name not in flags:
-            continue
+            short = _attached_short(word, flags)
+            if short is None:
+                continue
+            name, equals, attached = short, "=", word[2:]
         value = attached if equals else (args[index + 1] if index + 1 < len(args) else UNDETERMINED)
         if not (name in ("--env", "--environment") and "=" in value):
             values.append(value)
     return values
+
+
+def _target_flags(program: str) -> frozenset:
+    from .mutative_verbs import _is_unmodelled_cli
+
+    if program in _PROGRAM_TARGET_FLAGS:
+        return _PROGRAM_TARGET_FLAGS[program]
+    return _GENERIC_TARGET_FLAGS if _is_unmodelled_cli(program) else frozenset()
+
+
+def _naming_variables(program: str) -> frozenset:
+    from .mutative_verbs import _is_unmodelled_cli
+
+    if program in _PROGRAM_NAMING_VARIABLES:
+        return _PROGRAM_NAMING_VARIABLES[program]
+    return _NAMING_VARIABLES if program not in _PROGRAM_TARGET_FLAGS and _is_unmodelled_cli(program) else frozenset()
 
 
 def _literal(value: str) -> str:
@@ -197,7 +241,9 @@ def _ambient(program: str, args: Sequence[str], environment: Dict[str, str], cwd
         if not _flag_values(args, frozenset({"--account"})):
             found.append(Target("account", environment.get("CLOUDSDK_CORE_ACCOUNT") or account))
         return found
-    if program in ("docker", "podman") and not _flag_values(args, frozenset({"--context", "-c"})):
+    if program in ("docker", "podman") and not _flag_values(args, _PROGRAM_TARGET_FLAGS[program]):
+        if program == "podman" and environment.get("CONTAINER_CONNECTION"):
+            return []
         return [Target("docker-context", _docker_context(environment))]
     if program == "aws" and not _flag_values(args, frozenset({"--profile"})):
         return [Target("profile", environment.get("AWS_PROFILE", ""))]
@@ -246,36 +292,42 @@ def command_targets(
     for word in assignments:
         name, value = _ASSIGNMENT.fullmatch(word).groups()
         environment[name] = value
-    flags = _TARGET_FLAGS | _PROGRAM_TARGET_FLAGS.get(program, frozenset())
-    found = [Target("flag", _literal(value)) for value in _flag_values(args, flags)]
-    found += [Target("variable", _literal(environment[name])) for name in sorted(_NAMING_VARIABLES)
-              if name in environment and (name in (inherited or {}) or any(w.startswith(f"{name}=") for w in assignments))]
     operation, operands, _ = _operation(words)
-    if operation in _SWITCH_WORDS.get(program, ()) and operands:
-        destination = _literal(operands[-1])
-        found.append(Target("switch", destination))
-        if program == "gcloud" and destination != UNDETERMINED:
-            found += _gcloud_configuration_targets(destination, environment)
+    fetching = operation is not None and _CREDENTIAL_FETCHERS.get(program) == operation
+    found = [Target("switch" if fetching else "flag", _literal(value))
+             for value in _flag_values(args, _target_flags(program))]
+    found += [Target("variable", _literal(environment[name])) for name in sorted(_naming_variables(program))
+              if name in environment and (name in (inherited or {}) or any(w.startswith(f"{name}=") for w in assignments))]
+    if operation in _SWITCH_WORDS.get(program, ()):
+        destinations = operands[-1:] or _flag_values(args, _SWITCH_DESTINATION_FLAGS.get(program, frozenset()))[-1:]
+        for destination in map(_literal, destinations):
+            found.append(Target("switch", destination))
+            if program == "gcloud" and operation == "activate" and destination != UNDETERMINED:
+                found += _gcloud_configuration_targets(destination, environment)
+        if program == "kubens" and destinations:
+            found.append(Target("switch", _kube_context(environment)))
     if ambient:
         found += _ambient(program, args, environment, cwd)
     return [target for target in found if target.name]
 
 
-def _positionals(words: Sequence[str]) -> List[Tuple[str, bool]]:
-    """Each positional of *words*, paired with whether every option before it is one ``_OPTION_ARITY`` knows."""
+def _positionals(words: Sequence[str]) -> List[Tuple[str, bool, bool]]:
+    """Each positional of *words*, whether every option before it is known, and whether it is in the leading run."""
     program = command_name(words[0])
-    arity = {**dict.fromkeys(_TARGET_FLAGS | _PROGRAM_TARGET_FLAGS.get(program, frozenset()), 1),
-             **_OPTION_ARITY.get(program, {})}
-    found: List[Tuple[str, bool]] = []
-    known, ended, index = True, False, 1
+    arity = {**dict.fromkeys(_target_flags(program), 1), **_OPTION_ARITY.get(program, {})}
+    found: List[Tuple[str, bool, bool]] = []
+    known, ended, leading, index = True, False, True, 1
     while index < len(words):
         word, index = words[index], index + 1
         if ended or word == "-" or not word.startswith("-"):
-            found.append((word, known))
+            found.append((word, known, leading))
         elif word == "--":
             ended = True
         else:
+            leading = leading and not found
             name, equals, _ = word.partition("=")
+            if not equals and name not in arity and arity.get(_attached_short(word, arity) or "") == 1:
+                name, equals = word[:2], "="
             known = known and name in arity
             index += 0 if equals else arity.get(name, 0)
     return found
@@ -291,22 +343,34 @@ def _is_verb_word(word: str, program: str) -> bool:
 def _operation(words: Sequence[str]) -> Tuple[Optional[str], List[str], bool]:
     """The word naming what *words* does, the operands after it, and whether every option before it is known.
 
-    aws names it second; gcloud and az name it after their groups, as the first word that is a verb; others name it
-    first. Words after ``--`` are positionals.
+    aws: second word; kubectx/kubens: the program; gcloud/az: ``_path_operation``; others: first non-group positional.
     """
     if not words:
         return None, [], False
-    program, positionals = command_name(words[0]), [(w.lower(), known) for w, known in _positionals(words)]
+    program, positionals = command_name(words[0]), [(w.lower(), known, lead) for w, known, lead in _positionals(words)]
     groups = _GROUP_WORDS.get(program, frozenset())
-    operands = [w for w, _ in positionals]
+    operands = [w for w, _, _ in positionals]
+    if program in _SWITCHER_PROGRAMS:
+        return program, operands, all(known for _, known, _ in positionals)
     if program == "aws":
         return (operands[1], operands[2:], positionals[1][1]) if len(positionals) > 1 else (None, [], False)
-    for index, (word, known) in enumerate(positionals):
-        if word in groups:
-            continue
-        if program not in _VERB_PATH_PROGRAMS or _is_verb_word(word, program):
+    if program in _VERB_PATH_PROGRAMS:
+        index = _path_operation([w for w, _, lead in positionals if lead], program)
+        return (operands[index], operands[index + 1:], positionals[index][1]) if index is not None else (None, [], False)
+    for index, (word, known, _) in enumerate(positionals):
+        if word not in groups:
             return word, operands[index + 1:], known
     return None, [], False
+
+
+def _path_operation(run: Sequence[str], program: str) -> Optional[int]:
+    """Index in the leading *run* of its verb: the last word, or the verb before it when the last is an operand."""
+    if not run:
+        return None
+    last = len(run) - 1
+    if last and not _is_verb_word(run[last], program) and _is_verb_word(run[last - 1], program):
+        return last - 1
+    return last
 
 
 def _is_read(operation: Optional[str]) -> bool:
@@ -383,14 +447,28 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
     return ";".join(sorted(f"{t.kind}={t.name}" for t in targets))
 
 
-def _pushed_branch(words: Sequence[str]) -> Optional[str]:
-    from .mutative_verbs import _git_subcommand_split
-
-    split = _git_subcommand_split(tuple(words))
-    if split is None or split[1] != "push":
-        return None
-    operands = [w for w in split[2] if not w.startswith("-")]
-    return operands[-1].rpartition(":")[2] if len(operands) == 2 else None
+def _pushed_branch(words: Sequence[str], cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """The branch a ``git push`` names and the repository ``-C``/``--git-dir``/``--work-tree`` make it act on."""
+    repo, tree, args, index = cwd, None, list(words[1:]), 0
+    while index < len(args) and args[index].startswith("-"):
+        name, equals, value = args[index].partition("=")
+        valued = name in ("-C", "--git-dir", "--work-tree", "-c")
+        if valued and not equals:
+            value, index = (args[index + 1] if index + 1 < len(args) else ""), index + 1
+        index += 1
+        if name == "-C":
+            repo = _in_directory(value, repo) if value else None
+            repo = str(repo) if repo else None
+        elif name in ("--git-dir", "--work-tree"):
+            located = _in_directory(value, repo) if value else None
+            tree = str(located) if located else None
+            if tree is None:
+                return None, None
+    if index >= len(args) or args[index] != "push":
+        return None, None
+    operands = [w for w in args[index + 1:] if not w.startswith("-")]
+    branch = operands[-1].rpartition(":")[2] if len(operands) == 2 else None
+    return branch, tree or repo
 
 
 def production_target_verdict(
@@ -408,7 +486,7 @@ def production_target_verdict(
         return None
     split = _split(command)
     words = split[1] if split else []
-    branch = _pushed_branch(words) if words and command_name(words[0]) == "git" else None
+    branch, repo = _pushed_branch(words, cwd) if words and command_name(words[0]) == "git" else (None, None)
     if detected.category in _READING_CATEGORIES and words and nested_run(words) is not None:
         return None
     operation, _, known = _operation(words)
@@ -418,7 +496,7 @@ def production_target_verdict(
     targets = [] if branch else command_targets(command, cwd=cwd, inherited=inherited)
     if not branch and not targets:
         return None
-    declaration = declaration_for(cwd)
+    declaration = declaration_for(repo if branch else cwd)
     landing = None
     if branch and branch in {str(b) for b in declaration.get("protected_branches", ())}:
         landing = f"the declared protected branch {branch!r}"
