@@ -181,6 +181,24 @@ def _tokenize(component: str) -> List[str]:
         return component.split()
 
 
+_DOWNLOAD_OUTPUT_OPTIONS = {"curl": ("-o", "--output"), "wget": ("-O", "--output-document")}
+
+
+def download_output_targets(tokens: List[str]) -> List[str]:
+    """Return the files a downloader's output option writes."""
+    options = _DOWNLOAD_OUTPUT_OPTIONS.get(command_name(tokens[0]) if tokens else "", ())
+    targets = []
+    for index, token in enumerate(tokens[1:], start=1):
+        for option in options:
+            if token == option and index + 1 < len(tokens):
+                targets.append(tokens[index + 1])
+            elif option.startswith("--") and token.startswith(option + "="):
+                targets.append(token[len(option) + 1:])
+            elif not option.startswith("--") and token.startswith(option) and len(token) > len(option):
+                targets.append(token[len(option):])
+    return targets
+
+
 def _writer_targets(component: str) -> List[str]:
     """Return every destination this component writes, shell-authored only."""
     targets = _redirect_targets(component)

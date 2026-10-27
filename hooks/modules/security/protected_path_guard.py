@@ -76,6 +76,7 @@ from .protected_paths import (
 from .sensitive_paths import expand_home
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
+from .shell_write_guard import download_output_targets
 
 # ---------------------------------------------------------------------------
 # Write-capability sets
@@ -182,6 +183,7 @@ def _write_targets(tokens: List[str], base: str) -> Tuple[List[str], List[str]]:
         if operands and not script_given:
             scripts.append(operands.pop(0))
         redirects += [name for script in scripts for name in _SED_WRITE_COMMAND.findall(script)]
+    redirects += download_output_targets(tokens)
     if base == "dd":
         operands = [op[3:] for op in operands if op.startswith("of=")]
     if base == "tar":

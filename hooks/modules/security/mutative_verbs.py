@@ -304,12 +304,37 @@ def _head_token_mutates(token: str) -> bool:
     return compound_change or token in MUTATIVE_VERBS or candidate in MUTATIVE_VERBS
 
 
-def _later_head_mutates(head_tokens: Tuple[str, ...], index: int, hyphen_depth: int) -> bool:
-    """Return True when a head token after *index* names a change: any whole verb, or a compound within the path depth."""
+def _later_head_mutates(
+    head_tokens: Tuple[str, ...], index: int, hyphen_depth: int, values: FrozenSet[int] = frozenset(),
+) -> bool:
+    """Return True when a command word after *index* names a change: any whole verb, or a compound within the path depth."""
     return any(
-        token in MUTATIVE_VERBS or (position <= hyphen_depth and _head_token_mutates(token))
+        position not in values
+        and (token in MUTATIVE_VERBS or (position <= hyphen_depth and _head_token_mutates(token)))
         for position, token in enumerate(head_tokens[index + 1:], start=index + 1)
     )
+
+
+def _option_value_positions(semantics: "CommandSemantics") -> FrozenSet[int]:
+    """Return the semantic head positions that hold an option's value, never a command word."""
+    positions, index, previous = set(), 0, ""
+    for token in semantics.args:
+        expected = semantics.non_flag_tokens_raw
+        if index < len(expected) and token == expected[index]:
+            index += 1
+            if previous.startswith("-") and "=" not in previous and (previous.startswith("--") or len(previous) == 2):
+                positions.add(index)
+        previous = token
+    return frozenset(positions)
+
+
+def _configure_position(head_tokens: Tuple[str, ...], values: FrozenSet[int]) -> int:
+    """Return where a group-path command ends on the verb ``config`` (az webapp log config), or 0."""
+    for position, token in enumerate(head_tokens[2:], start=2):
+        if token == "config" and position not in values:
+            later = [t for p, t in enumerate(head_tokens[position + 1:], start=position + 1) if p not in values]
+            return 0 if any(_names_operation(t) for t in later) else position
+    return 0
 
 
 def _local_cache_refresh(base_cmd: str, semantics: "CommandSemantics") -> str:
@@ -5279,7 +5304,7 @@ def _check_nested_executor(
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
 # CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
-_GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil"})
+_GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil", "oci"})
 _SHARED_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS | {"ls", "ps", "rm", "cp", "mv"}
 
 
@@ -6734,6 +6759,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             reason=f"'{base_cmd} {local_cache_path}' only refreshes a local cache",
         )
     hyphen_depth = GROUP_PATH_HYPHEN_DEPTH if base_cmd in _GROUP_PATH_CLIS else 2
+    option_values = _option_value_positions(semantics)
+    configure_at = (
+        _configure_position(semantics.semantic_head_tokens, option_values) if base_cmd in _GROUP_PATH_CLIS else 0
+    )
     path_anchored = any(
         semantics.non_flag_tokens[:len(anchor.path)] == anchor.path
         for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ())
@@ -6792,7 +6821,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         if semantic_index <= hyphen_depth and "-" in stripped_token and is_subcmd_shape:
             is_group = any(
                 _names_operation(t)
-                for t in semantics.semantic_head_tokens[semantic_index + 1:hyphen_depth + 1]
+                for p, t in enumerate(semantics.semantic_head_tokens[:hyphen_depth + 1])
+                if p > semantic_index and p not in option_values
             )
             candidate, compound_change = _hyphen_candidate(stripped_token, is_group)
         else:
@@ -6800,6 +6830,17 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
         full_lower = stripped_token
         confidence = "high" if semantic_index <= 2 else "medium"
+
+        if configure_at and semantic_index == configure_at:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="config",
+                dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+                cli_family=family,
+                confidence=confidence,
+                reason=f"'{base_cmd} {' '.join(semantics.non_flag_tokens[:configure_at])}' configures the group it ends",
+            )
 
         destroying_flags = VERB_DESTROYING_FLAGS.get(full_lower, frozenset()) & frozenset(semantics.flag_tokens)
         if destroying_flags:
@@ -7002,8 +7043,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 and next_head
                 and _head_token_mutates(next_head[0])
             )
-            group_path_defers = base_cmd in _GROUP_PATH_CLIS and _later_head_mutates(
-                semantics.semantic_head_tokens, semantic_index, hyphen_depth
+            group_path_defers = base_cmd in _GROUP_PATH_CLIS and (
+                configure_at > semantic_index
+                or _later_head_mutates(semantics.semantic_head_tokens, semantic_index, hyphen_depth, option_values)
             )
             if not path_anchored and (group_word_defers or group_path_defers):
                 continue

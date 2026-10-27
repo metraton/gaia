@@ -753,7 +753,7 @@ _CURL_GET_SAFE_SWITCHES = frozenset({
 })
 _CURL_GET_SAFE_VALUE_FLAGS = frozenset({
     "-o", "--output", "-H", "--header", "-A", "--user-agent", "-e", "--referer", "-m", "--max-time",
-    "--connect-timeout", "-u", "--user", "-w", "--write-out", "--retry",
+    "--connect-timeout", "-u", "--user", "-w", "--write-out", "--retry", "-x", "--proxy",
 })
 
 
@@ -768,7 +768,7 @@ def _curl_get_sends_only_literals(args: List[str]) -> bool:
             value = args[i + 1]
             if a in _CURL_QUERY_DATA_FLAGS and _curl_data_reads_file(a, value):
                 return False
-            if a in ("-H", "--header") and "method" in value.lower():
+            if a in ("-H", "--header") and ("method" in value.lower() or value.startswith("@")):
                 return False
             i += 2
             continue
