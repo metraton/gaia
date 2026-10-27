@@ -89,11 +89,11 @@ def test_curl_post_matches_own_grant():
     assert matches_approval_signature(sig, _CURL_POST) is True
 
 
-def test_terraform_still_matches_own_grant(monkeypatch):
-    """Regression guard: terraform (which always matched) keeps matching."""
-    monkeypatch.setenv("TF_WORKSPACE", "default")
-    sig = _build(_TERRAFORM, danger_verb="apply")
-    assert matches_approval_signature(sig, _TERRAFORM) is True
+def test_terraform_still_matches_own_grant(tmp_path, monkeypatch):
+    """Regression guard: terraform (which always matched) keeps matching in the directory it was approved in."""
+    monkeypatch.delenv("TF_WORKSPACE", raising=False)
+    sig = build_approval_signature(_TERRAFORM, scope_type=SCOPE_SEMANTIC_SIGNATURE, danger_verb="apply", cwd=str(tmp_path))
+    assert matches_approval_signature(sig, _TERRAFORM, cwd=str(tmp_path)) is True
 
 
 def test_terraform_grant_without_cwd_matches_nothing(tmp_path, monkeypatch):
