@@ -66,7 +66,7 @@ import shlex
 from typing import List, Optional, Tuple
 
 from .canonical_path import command_name
-from .data_heredoc import _literal_words
+from .data_heredoc import _literal_words, is_gaia_cli
 from .mutative_verbs import UNKNOWN_CWD, cwd_after_component, detect_mutative_command
 from .protected_paths import (
     is_install_root_container,
@@ -532,10 +532,8 @@ _DATA_STORE_GROUPS = frozenset({"contract", "memory"})
 
 def _stores_its_words(command: str) -> bool:
     """True when the line is one plain ``gaia contract|memory`` call: its words go to gaia.db, never to a path."""
-    from .gaia_cli_only_guard import is_trusted_gaia_binary
-
     words = None if "\n" in command or "\r" in command else _literal_words(command.strip())
-    if not words or words[0][1] or (words[0][0] != "gaia" and not is_trusted_gaia_binary(words[0][0])):
+    if not words or words[0][1] or not is_gaia_cli(words[0][0]):
         return False
     group = next(((word, quoted) for word, quoted in words[1:] if not word.startswith("-")), ("", True))
     return not group[1] and group[0] in _DATA_STORE_GROUPS
