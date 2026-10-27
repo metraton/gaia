@@ -315,7 +315,7 @@ _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]
 _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _GLOB = re.compile(r"[*?\[]")
 _MAX_SPELLINGS = 64
-_UNRESOLVED_START = re.compile(r"\$\{?[A-Za-z_]")
+_UNRESOLVED = re.compile(r"\$\{?[A-Za-z_]")
 _COMPUTED = re.compile(r"\$\(|`|\$\{(?![A-Za-z_][A-Za-z0-9_]*\})")
 _BACKTICK = re.compile(r"`([^`]*)`")
 _WELL_KNOWN_VARIABLE = re.compile(
@@ -324,7 +324,7 @@ _WELL_KNOWN_VARIABLE = re.compile(
 
 
 def unprovable_write_target(command: str, cwd: Optional[str] = None) -> Optional[str]:
-    """A write target that starts with a variable neither the line nor a well-known environment variable resolves."""
+    """A write target holding a variable neither the line nor a well-known environment variable resolves, or a substitution."""
     for line in _substituted_lines(command):
         for component in _OPERATOR_SPLIT.split(line):
             tokens = _tokenize(strip_grouping_wrappers(component.strip())) if component.strip() else []
@@ -341,18 +341,19 @@ def unprovable_write_target(command: str, cwd: Optional[str] = None) -> Optional
                 writes = base in _FILESYSTEM_WRITE_COMMANDS
             for target in redirects + (operands if writes else []):
                 spelled = target.strip("'\"")
-                if _UNRESOLVED_START.match(spelled) or _COMPUTED.search(spelled):
+                if _UNRESOLVED.search(spelled) or _COMPUTED.search(spelled):
                     return target
     return None
 
 
 def _computed_target_names_root(command: str, cwd: Optional[str]) -> Optional[str]:
-    """The install root a substitution names when the line writes to a computed target."""
+    """The install root any word or substitution names when the line writes to an unprovable target."""
     if unprovable_write_target(command, cwd) is None:
         return None
-    for inner in extract_substitutions(command) + _BACKTICK.findall(command):
-        for word in _tokenize(inner):
-            hit = _install_root_spelling(word, cwd)
+    pieces = extract_substitutions(command) + _BACKTICK.findall(command) + _OPERATOR_SPLIT.split(command)
+    for piece in pieces:
+        for word in _tokenize(piece.strip()) if piece.strip() else []:
+            hit = _install_root_spelling(word.split("=", 1)[-1].strip("()"), cwd)
             if hit is not None:
                 return hit + _NOT_READ_ONLY
     return None

@@ -307,6 +307,8 @@ class TestVariableWriteTargets:
     @pytest.mark.parametrize("form", [
         "echo x > $(mktemp -d)/x", "cp /tmp/f \"$(date +%s)/x\"", "touch `pwd`/x",
         "echo x > ${OUT:-/tmp}/x", "touch /tmp/$(whoami)/x", "echo x > ${#OUT}/x",
+        "echo x > /tmp/$GAIA_UNSET_Q/f", "touch /tmp/${GAIA_UNSET_Q}/f", "echo x | tee /tmp/$UNSET_Q/f",
+        "echo x > /tmp/$UNSET_Q/../f", "echo x > $HOME/$UNSET_Q", "echo x > ~/$UNSET_Q/f",
     ])
     def test_a_computed_write_target_is_unprovable(self, tmp_path, form):
         assert protected_path_guard.unprovable_write_target(form, str(tmp_path)) is not None
@@ -316,6 +318,7 @@ class TestVariableWriteTargets:
         "echo x > $(echo {I})/bin/x",
         "cp /tmp/f \"$(dirname {I}/bin/gaia)/x\"",
         "touch `echo {I}`/bin/x",
+        "A=({I}/bin/e.py); echo x > ${{A[0]}}",
     ])
     def test_a_computed_target_whose_substitution_names_a_root_is_refused(self, install_root, form):
         assert protected_path_guard.check(form.format(I=install_root))[0] is False
@@ -332,7 +335,8 @@ class TestVariableWriteTargets:
 
     @pytest.mark.parametrize("form", [
         "echo x > $HOME/x", "touch $TMPDIR/x", "cat $UNSET_Q/x", "X=/tmp; touch $X/a",
-        "cat $(echo /tmp/x)",
+        "cat $(echo /tmp/x)", "echo x > /tmp/out.log", "echo x | tee /tmp/out.log",
+        "cp /tmp/a ./build/x",
     ])
     def test_a_resolvable_or_read_target_is_not_unprovable(self, monkeypatch, tmp_path, form):
         monkeypatch.setenv("HOME", str(tmp_path))
