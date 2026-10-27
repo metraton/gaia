@@ -17,7 +17,9 @@ Categories retained internally for verb classification:
 """
 
 import functools
+import json
 import logging
+import os
 import re
 import shlex
 from dataclasses import dataclass, replace
@@ -71,8 +73,10 @@ try:
     from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
     from .inline_ast_analyzer import parse_finds_no_effect as _parse_finds_no_effect
     from .inline_ast_analyzer import runs_code_string as _runs_code_string
+    from .inline_ast_analyzer import loaded_modules as _loaded_modules
 except ImportError:  # pragma: no cover -- defensive
     _analyze_python_inline = None
+    _loaded_modules = None
     _parse_finds_no_effect = None
     _runs_code_string = None
     logging.getLogger(__name__).warning(
@@ -5264,6 +5268,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     git_config_result = _check_git_code_config(command)
     if git_config_result is not None:
         return git_config_result
+    environment_result = runs_under_injected_environment(
+        command, code_injecting_assignments(command), cwd=cwd, _depth=_depth,
+    )
+    if environment_result is not None:
+        return environment_result
 
     assignment_result = _classify_leading_shell_assignments(
         command, cwd=cwd, _depth=_depth,
@@ -5611,6 +5620,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # list/download -> read-only).  Returns None when the command is not a
     # package-manager module invocation, so detection continues unchanged --
     # ``python3 -m pytest`` and ``python3 -m http.server`` are NOT rerouted.
+    load_result = _check_interpreter_loads(base_cmd, semantics, cwd, _depth)
+    if load_result is not None:
+        return load_result
+
     py_module_result = _check_python_module_runner(base_cmd, semantics)
     if py_module_result is not None:
         return py_module_result
@@ -7798,8 +7811,10 @@ def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
 
 
 _JS_RUNTIME_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
-    "deno": frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed"}),
-    "bun": frozenset({"--cwd", "--env-file", "--config", "-c", "--tsconfig-override", "--port"}),
+    "deno": frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--preload"}),
+    "bun": frozenset({
+        "--cwd", "--env-file", "--config", "-c", "--tsconfig-override", "--port", "-r", "--preload", "--require",
+    }),
 }
 _JS_RUNTIME_SCRIPT_RE = _re.compile(r"[^\s]*(?:/|://)[^\s]*|[^\s]+\.(?:[mc]?[jt]s|[jt]sx)")
 
@@ -8403,21 +8418,222 @@ def _script_honored_simulation_flag(
     return None
 
 
-_NODE_PRELOAD_FLAGS: FrozenSet[str] = frozenset({"-r", "--require", "--import"})
+_PRELOAD_FLAGS: Dict[str, FrozenSet[str]] = {
+    "node": frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"}),
+    "bun": frozenset({"-r", "--preload", "--require"}),
+    "deno": frozenset({"--preload"}),
+}
+_NODE_PRELOAD_FLAGS = _PRELOAD_FLAGS["node"]
 
 
-def _node_preload_values(args: "List[str]") -> "List[str]":
-    """The modules node loads before its entry point (``-r x``, ``--require=x``, ``--import x``)."""
+def _flag_values(args: "List[str]", flags: "FrozenSet[str]") -> "List[str]":
+    """The values *flags* take in *args*, spaced (``-r x``), with ``=`` or attached to a short flag (``-rx``)."""
     values = []
     for index, token in enumerate(args):
         flag, attached, value = token.partition("=")
-        if flag not in _NODE_PRELOAD_FLAGS:
-            continue
-        if attached:
-            values.append(value)
-        elif index + 1 < len(args):
-            values.append(args[index + 1])
+        if flag in flags:
+            values.append(value if attached else (args[index + 1] if index + 1 < len(args) else ""))
+        elif token[:2] in flags and not token.startswith("--") and len(token) > 2:
+            values.append(token[2:])
     return values
+
+
+def _node_preload_values(args: "List[str]") -> "List[str]":
+    """The modules node loads before its entry point, in every spelling of its preload flags."""
+    return _flag_values(args, _NODE_PRELOAD_FLAGS)
+
+
+def _foreign_code_result(reason: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="foreign-code",
+        cli_family="interpreter",
+        confidence="high",
+        reason=f"{reason} -- code the screen did not read, requiring approval",
+        rule="sign.foreign-code",
+    )
+
+
+_LUA_PROGRAM_RE = re.compile(r"lua(?:jit)?[\d.]*")
+_PYTHON_MODULE_SUFFIXES: FrozenSet[str] = frozenset({".py", ".pyc", ".pyw", ".so", ".pyd"})
+
+
+def _check_interpreter_loads(
+    base_cmd: str, semantics: "CommandSemantics", cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge the code an interpreter's own flags load before the code it is given; what it cannot read asks."""
+    args = semantics.tokens[1:]
+    for preload in _flag_values(args, _PRELOAD_FLAGS.get(base_cmd, frozenset())):
+        result = detect_mutative_command(f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1)
+        if result.is_mutative:
+            return result
+    if base_cmd == "deno":
+        return _deno_module_map(args, cwd)
+    if _LUA_PROGRAM_RE.fullmatch(base_cmd):
+        tokens = iter(args)
+        for token in tokens:
+            if token.startswith("-l"):
+                return _foreign_code_result(f"{base_cmd} {token} requires a module before the code")
+            if token == "-e":
+                next(tokens, None)
+            elif not token.startswith("-"):
+                break
+    if base_cmd in ("r", "rscript") and _flag_values(args, frozenset({"-f", "--file"})):
+        return _foreign_code_result(f"{base_cmd} --file runs another file")
+    return _python_local_module_run(base_cmd, args, cwd, _depth)
+
+
+def _deno_module_map(args: "List[str]", cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    """Ask when deno resolves modules through an import map, given directly or inside a config file."""
+    if _flag_values(args, frozenset({"--import-map"})):
+        return _foreign_code_result("deno resolves modules through an import map")
+    for value in _flag_values(args, frozenset({"-c", "--config"})):
+        try:
+            config = json.loads(Path(cwd or Path.cwd(), Path(value).expanduser()).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _foreign_code_result(f"deno config '{value}' cannot be read as JSON")
+        if not isinstance(config, dict) or {"imports", "scopes", "importMap"} & config.keys():
+            return _foreign_code_result(f"deno config '{value}' maps module specifiers")
+    return None
+
+
+def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
+    """The file or package *name* resolves to in *directory*, which Python searches before the stdlib."""
+    package = directory / name
+    if package.is_dir():
+        return package
+    for candidate in sorted(directory.glob(f"{name}.*")):
+        if candidate.suffix in _PYTHON_MODULE_SUFFIXES and candidate.name.split(".")[0] == name:
+            return candidate
+    return None
+
+
+def _python_local_module_run(
+    base_cmd: str, args: "List[str]", cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge ``python -m <module>`` when the module is a file in the working directory, which Python runs first."""
+    if base_cmd not in _PYTHON_INTERPRETERS:
+        return None
+    tokens = iter(args)
+    for token in tokens:
+        if token.startswith("-m"):
+            module = token[2:] or next(tokens, "")
+            break
+        if token in _PYTHON_OPTION_VALUE_FLAGS:
+            next(tokens, None)
+        elif token == "-c" or not token.startswith("-"):
+            return None
+    else:
+        return None
+    local = _local_python_module(module.split(".")[0], Path(cwd or Path.cwd()))
+    if local is None:
+        return None
+    if local.suffix == ".py" and "." not in module:
+        return detect_mutative_command(f"python3 {shlex.quote(str(local))}", cwd=cwd, _depth=_depth + 1)
+    return _foreign_code_result(f"python -m {module} runs {local}")
+
+
+def _python_foreign_module(
+    code: str, directory: Path, family: str, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge the modules *code* loads from *directory*: a module file is read like a script, anything else asks."""
+    if _loaded_modules is None:
+        return None
+    names, unnamed = _loaded_modules(code)
+    if unnamed:
+        return _foreign_code_result("Python runs a file by relative import or runpy.run_path")
+    for name in sorted(names):
+        local = _local_python_module(name, directory)
+        if local is None:
+            continue
+        if local.suffix != ".py":
+            return _foreign_code_result(f"Python imports '{name}' from {local}")
+        result = detect_mutative_command(f"python3 {shlex.quote(str(local))}", cwd=cwd, _depth=_depth + 1)
+        if result.is_mutative:
+            return result
+    return None
+
+
+# Environment variables that make a program load code before or instead of
+# what its command line shows, keyed by the program they reach.
+_CODE_INJECTING_ENVIRONMENT: "Dict[str, Tuple[re.Pattern[str], re.Pattern[str]]]" = {
+    "node": (re.compile(r"node"), re.compile(r"NODE_OPTIONS")),
+    "python": (re.compile(r"python[\d.]*"), re.compile(r"PYTHONSTARTUP|PYTHONPATH")),
+    "lua": (_LUA_PROGRAM_RE, re.compile(r"LUA_INIT(?:_\d+_\d+)?")),
+    "r": (re.compile(r"r|rscript"), re.compile(r"R_(?:PROFILE|ENVIRON)(?:_USER)?")),
+    "git": (
+        re.compile(r"git"),
+        re.compile(r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|EXTERNAL_DIFF|ASKPASS|PROXY_COMMAND)"),
+    ),
+}
+_ASSIGNMENT_WORD_RE = re.compile(r"([A-Za-z_]\w*)=(.*)", re.DOTALL)
+
+
+def code_injecting_assignments(command: str) -> "Tuple[Tuple[str, str, str], ...]":
+    """Every ``(program, name, value)`` assignment in *command* that injects code into a program, wherever it is set."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ()
+    found = []
+    for word in words:
+        match = _ASSIGNMENT_WORD_RE.fullmatch(word)
+        if match is None:
+            continue
+        for program, (_, names) in _CODE_INJECTING_ENVIRONMENT.items():
+            if names.fullmatch(match.group(1)):
+                found.append((program, match.group(1), match.group(2)))
+    return tuple(found)
+
+
+def runs_under_injected_environment(
+    command: str, assignments: "Tuple[Tuple[str, str, str], ...]", cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """The verdict for *command* when it runs a program one of *assignments* injects code into, or None."""
+    if not assignments:
+        return None
+    programs = set()
+    for reading in _peel_wrapper_readings(command)[0]:
+        try:
+            words = shlex.split(reading)
+        except ValueError:
+            continue
+        if words:
+            programs.add(program_identity(words[0]).lower())
+    for program, name, value in assignments:
+        pattern = _CODE_INJECTING_ENVIRONMENT[program][0]
+        if not value or not any(pattern.fullmatch(candidate) for candidate in programs):
+            continue
+        if program == "git":
+            if value.lower() in _GIT_HARMLESS_CODE_VALUES:
+                continue
+            result = detect_mutative_command(value, cwd=cwd, _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+        elif name == "NODE_OPTIONS":
+            if _node_options_load_code(value):
+                return _foreign_code_result(f"NODE_OPTIONS={value} preloads code into node")
+        elif name != "PYTHONPATH" or _pythonpath_is_writable(value, cwd):
+            return _foreign_code_result(f"{name} makes {program} load {value}")
+    return None
+
+
+def _node_options_load_code(value: str) -> bool:
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return True
+    return "$" in value or "`" in value or bool(_node_preload_values(words))
+
+
+def _pythonpath_is_writable(value: str, cwd: "Optional[str]") -> bool:
+    """True unless every PYTHONPATH entry is an existing directory this process cannot write."""
+    for entry in value.split(os.pathsep):
+        path = Path(cwd or Path.cwd(), Path(entry).expanduser())
+        if not entry or not path.is_dir() or os.access(path, os.W_OK):
+            return True
+    return False
 
 
 # Test-runner options that load no code, checked against the Node CLI and
@@ -8570,13 +8786,6 @@ def _check_script_file(
     """
     if heredoc_program(command) is not None:
         return None
-    if base_cmd == "node":
-        for preload in _node_preload_values(semantics.tokens[1:]):
-            result = detect_mutative_command(
-                f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1,
-            )
-            if result.is_mutative:
-                return result
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
@@ -8705,6 +8914,10 @@ def _check_script_file(
             )
         if ast_result.parse_failed:
             return _unparsed_code(family, f"Python script '{script_path}'")
+        script_dir = Path(cwd or Path.cwd(), Path(script_path).expanduser()).parent
+        foreign = _python_foreign_module(content, script_dir, family, cwd, _depth)
+        if foreign is not None:
+            return foreign
         if _runs_code_string(content):
             return MutativeResult(
                 is_mutative=True,
@@ -9770,6 +9983,9 @@ def _check_inline_code(
                 )
             if ast_result.parse_failed:
                 return _unparsed_code(family, "Inline Python that does not parse")
+            foreign = _python_foreign_module(payload, Path(cwd or Path.cwd()), family, cwd, _depth)
+            if foreign is not None:
+                return foreign
             if not _parse_finds_no_effect(payload, argv_is_mutative):
                 return _uncatalogued_python_effect(family, "Inline Python")
             return _layer3_length_check(

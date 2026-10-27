@@ -65,6 +65,8 @@ from ..security.mutative_verbs import (
     git_under_injected_config,
     injects_git_config,
     node_test_under_node_options,
+    code_injecting_assignments,
+    runs_under_injected_environment,
     rewrites_package_inputs,
     runs_package_script,
     sets_node_options,
@@ -2048,6 +2050,8 @@ class BashValidator:
         scan_cwd: Optional[str] = cwd
         # A NODE_OPTIONS set by an earlier component reaches every later node.
         node_options_set = False
+        # Code-injecting variables an earlier component set (export, assignment) reach every later program.
+        injected_environment: tuple = ()
         git_config_injected = False
         # A package.json or node_modules path rewritten by an earlier component
         # changes the script a later run executes, which was read before the chain ran.
@@ -2062,6 +2066,9 @@ class BashValidator:
             if node_options_set and not detected.is_mutative:
                 detected = node_test_under_node_options(comp, scan_cwd) or detected
             node_options_set = node_options_set or sets_node_options(comp)
+            if injected_environment and not detected.is_mutative:
+                detected = runs_under_injected_environment(comp, injected_environment, scan_cwd) or detected
+            injected_environment += code_injecting_assignments(comp)
             if git_config_injected and not detected.is_mutative:
                 detected = git_under_injected_config(comp) or detected
             git_config_injected = git_config_injected or injects_git_config(comp)

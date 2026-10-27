@@ -616,6 +616,37 @@ def analyze_python_inline(
     return InlineAstResult()
 
 
+def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
+    """Return the top-level modules *code* loads by literal name, and whether it also loads code no name proves.
+
+    A relative import and ``runpy.run_path`` run a file rather than a named
+    module, so they are the second value; code that does not parse names none.
+    """
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return frozenset(), False
+    alias_map = _AliasResolver()
+    alias_map.collect(tree)
+    names, unnamed = set(), False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            unnamed = unnamed or bool(node.level)
+            names.add((node.module or "").split(".")[0])
+        elif isinstance(node, ast.Call):
+            dotted = alias_map.resolve_call(node.func)
+            module = _imported_module(node, dotted)
+            if dotted == "runpy.run_module" and node.args and _is_str_literal(node.args[0]):
+                module = node.args[0].value
+            unnamed = unnamed or dotted == "runpy.run_path"
+            if module:
+                names.add(module.split(".")[0])
+    names.discard("")
+    return frozenset(names), unnamed
+
+
 def _dynamic_code_result(
     node: ast.Call, dotted: str,
     argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]],
