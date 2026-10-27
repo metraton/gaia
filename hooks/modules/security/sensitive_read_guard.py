@@ -36,6 +36,7 @@ from .sensitive_paths import (
     sensitive_read_denial,
 )
 from .canonical_path import command_name
+from .data_heredoc import data_heredoc_header
 from .nested_executors import nested_run
 from .program_heredoc import heredoc_program
 from .publish_attribution_guard import publishing_body_files
@@ -406,6 +407,9 @@ def check(command: str, cwd: Optional[str] = None, program: Optional[str] = None
     *program* is the command as written, heredoc bodies included, when
     *command* had them removed; the code an interpreter runs is read from it.
     """
+    header = data_heredoc_header(program or command)
+    if header is not None:
+        command = program = header
     hit = reads_sensitive_path(command, cwd) or code_reads_sensitive(program or command, cwd)
     if not hit:
         return True, None
