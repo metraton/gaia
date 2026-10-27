@@ -296,6 +296,38 @@ SHELL_PROBES = {
 }
 
 
+class TestVariableWriteTargets:
+    @pytest.mark.parametrize("form", [
+        "echo x > $GAIA_UNSET_Q/bin/x.py", "touch ${GAIA_UNSET_Q}/x", "cp /tmp/a $UNSET_Q/x",
+    ])
+    def test_an_unresolvable_write_target_is_unprovable(self, tmp_path, form):
+        assert protected_path_guard.unprovable_write_target(form, str(tmp_path)) is not None
+        assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
+
+    @pytest.mark.parametrize("form", [
+        "echo x > $HOME/x", "touch $TMPDIR/x", "cat $UNSET_Q/x", "X=/tmp; touch $X/a",
+    ])
+    def test_a_resolvable_or_read_target_is_not_unprovable(self, monkeypatch, tmp_path, form):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
+        assert protected_path_guard.unprovable_write_target(form, str(tmp_path)) is None
+
+    def test_a_well_known_variable_reaching_an_install_root_is_refused(self, tmp_path):
+        _gaia_tree(tmp_path / "data" / "cache" / "dev-plugin" / "ws")
+        command = "touch $GAIA_DATA_DIR/cache/dev-plugin/ws/bin/e.py"
+        assert protected_path_guard.check(command, cwd=str(tmp_path))[0] is False
+
+    def test_an_unprovable_target_asks_instead_of_refusing(self, subagent, tmp_path):
+        from modules.tools.bash_validator import BashValidator
+
+        result = BashValidator().validate(
+            "echo x > $GAIA_UNSET_Q/bin/x.py", is_subagent=True, session_id=SESSION,
+            agent_type="developer", cwd=str(tmp_path),
+            hook_payload={"cwd": str(tmp_path), "agent_id": SUBAGENT_ID, "agent_type": "developer"},
+        )
+        assert not result.allowed and result.approval_id and "PROTECTED_PATH" not in result.reason
+
+
 class TestShellAsSubagent:
     """The verifier's probes, run through BashValidator with a subagent's identity."""
 

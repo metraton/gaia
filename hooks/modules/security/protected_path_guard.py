@@ -315,6 +315,31 @@ _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]
 _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _GLOB = re.compile(r"[*?\[]")
 _MAX_SPELLINGS = 64
+_WELL_KNOWN_VARIABLE = re.compile(
+    r"HOME|TMPDIR|TMP|TEMP|PWD|OLDPWD|XDG_\w+|GAIA_\w+|npm_config_prefix|NPM_CONFIG_PREFIX|PREFIX"
+)
+
+
+def unprovable_write_target(command: str, cwd: Optional[str] = None) -> Optional[str]:
+    """A write target that starts with a variable neither the line nor a well-known environment variable resolves."""
+    for line in _substituted_lines(command):
+        for component in _OPERATOR_SPLIT.split(line):
+            tokens = _tokenize(strip_grouping_wrappers(component.strip())) if component.strip() else []
+            while tokens and _ASSIGNMENT.fullmatch(tokens[0]):
+                tokens = tokens[1:]
+            if not tokens:
+                continue
+            base = command_name(tokens[0])
+            redirects, operands = _write_targets(tokens, base)
+            if base == "git":
+                writes = bool(operands) and operands[0] in _GIT_WRITE_SUBCOMMANDS
+                operands = operands[1:]
+            else:
+                writes = base in _FILESYSTEM_WRITE_COMMANDS
+            for target in redirects + (operands if writes else []):
+                if re.match(r"\$\{?[A-Za-z_]", target.strip("'\"")):
+                    return target
+    return None
 
 
 def _line_assignments(command: str) -> dict:
@@ -330,13 +355,16 @@ def _line_assignments(command: str) -> dict:
 def _substituted_lines(command: str) -> List[str]:
     """The line with $NAME and ${NAME} replaced by each value the line assigns NAME."""
     values = _line_assignments(command)
-    if not values:
-        return [command]
     lines = []
-    for index in range(min(max(len(v) for v in values.values()), 4)):
+    for index in range(min(max([len(v) for v in values.values()] + [1]), 4)):
         def value(match, index=index):
-            assigned = values.get(match.group(1) or match.group(2))
-            return assigned[min(index, len(assigned) - 1)] if assigned else match.group(0)
+            name = match.group(1) or match.group(2)
+            assigned = values.get(name)
+            if assigned:
+                return assigned[min(index, len(assigned) - 1)]
+            if _WELL_KNOWN_VARIABLE.fullmatch(name) and os.environ.get(name):
+                return os.environ[name]
+            return match.group(0)
 
         line = command
         for _ in range(3):
