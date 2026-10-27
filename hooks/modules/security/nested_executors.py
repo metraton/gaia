@@ -133,6 +133,7 @@ _TARGET_MENTION = re.compile(
     rf"(?<![\w$])(?P<name>{'|'.join(sorted(_TARGET_NAMES))})(?!\w)(?:\[[^\]]*\])?(?:\+?=(?P<value>[^\s;&|()<>]*))?"
 )
 _OPAQUE_SETTER = re.compile(r"(?:^|[\s;&|(){}!`])(?:source|\.)(?=\s)|[<>]\(|<<<")
+_NAME_SETTERS = frozenset({"export", "declare", "typeset", "readonly", "local"})
 
 
 def _flag_kind(token: str, values: FrozenSet[str], booleans: FrozenSet[str], bundled: str) -> str:
@@ -250,17 +251,40 @@ def with_target_flags(prefix: Sequence[str], words: Sequence[str]) -> Optional[L
     return [words[0], *flags, *words[1:]] if flags else None
 
 
+def _computes_a_name(words: Sequence[str]) -> bool:
+    computed = (index for index, word in enumerate(words) if word in _NAME_SETTERS or word == "eval")
+    start = next(computed, None)
+    if start is None:
+        return False
+    if words[start] == "eval":
+        return any(mark in word for word in words[start + 1:] for mark in "=$`")
+    names = (word.partition("=")[0] for word in words[start + 1:] if not word.startswith(("-", "+")))
+    return any("$" in name or "`" in name for name in names)
+
+
 def targets_set_on_line(line: str) -> Dict[str, str]:
-    """Each target variable *line* names outside a ``$`` read, or every one when it sources a file, substitutes a process or feeds a here-string; no scope, unset or unexport on the line ends one."""
+    """Each target variable *line* names outside a ``$`` read, as written or after quote removal, or every one when it sources a file, substitutes a process, feeds a here-string, evals an assignment or sets a computed name; no scope, unset or unexport on the line ends one."""
+    from ..tools.shell_parser import parse_command, shell_split
+
+    unquoted: List[str] = []
+    for component in parse_command(line):
+        try:
+            words = shell_split(component)
+        except ValueError:
+            continue
+        if _computes_a_name(words):
+            return {name: f"${name}" for name in _TARGET_NAMES}
+        unquoted.append(" ".join(words))
     if _OPAQUE_SETTER.search(line):
         return {name: f"${name}" for name in _TARGET_NAMES}
     found: Dict[str, str] = {}
-    for match in _TARGET_MENTION.finditer(line):
-        name, value = match.group("name"), match.group("value")
-        if line[:match.start()].endswith(("${", "${!", "${#")) and not line[match.end("name"):].startswith(("=", ":=")):
-            continue
-        if value or name not in found:
-            found[name] = value.strip("'\"") if value else f"${name}"
+    for text in (line, *unquoted):
+        for match in _TARGET_MENTION.finditer(text):
+            name, value = match.group("name"), match.group("value")
+            if text[:match.start()].endswith(("${", "${!", "${#")) and not text[match.end("name"):].startswith(("=", ":=")):
+                continue
+            if value or name not in found:
+                found[name] = value.strip("'\"") if value else f"${name}"
     return found
 
 

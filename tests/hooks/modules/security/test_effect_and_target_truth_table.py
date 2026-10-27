@@ -709,7 +709,12 @@ _EXPORTING_CARRIERS = (
 _OPAQUE_SETTERS = (
     "source ./env.sh; {cmd}", ". ./env.sh && {cmd}", "source ~/.kube/env && {cmd}", "builtin . ./env.sh; {cmd}",
     "diff <(true) <(true); {cmd}", "cat <<< x; {cmd}", "(source ./env.sh; {cmd})",
+    "export $(cat /tmp/f); {cmd}", "export \"$(cat /tmp/f)\"; {cmd}", "n=X; export \"${{n}}_Y=v\"; {cmd}",
+    "declare -x \"$n=v\"; {cmd}", "typeset -x $n=v && {cmd}", "readonly `echo n`=v; {cmd}",
+    "export -- \"$n\"=v; {cmd}", "eval \"export $n=v\"; {cmd}", "eval export X=v; {cmd}",
 )
+_SPLIT_NAMES = ("{a}\"\"{b}", "{a}\\{b}", "\"{a}\"{b}", "{a}''{b}", "$'{a}'{b}", "'{a}'\"{b}\"")
+_LINE_READS = ("echo ${name}; {cmd}", "echo \"${{{name}}}\"; {cmd}", "echo \"${{{name}:-none}}\"; {cmd}")
 
 
 @pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(_EXPORTING_CARRIERS))
@@ -729,6 +734,32 @@ def test_a_nested_executor_after_a_source_or_substitution_asks(program, setter, 
     command = setter.format(cmd=_TARGET_TEMPLATES[program].format(flag=""))
     verdict, reason = observe(command, "none", world)
     assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("setter", ("export {name}=v; {cmd}", "declare -x {name}=v && {cmd}"))
+@pytest.mark.parametrize("split", _SPLIT_NAMES)
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(("",)))
+def test_a_nested_target_variable_spelled_through_quotes_asks(
+    program, variable, flag, carrier, split, setter, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    middle = len(variable) // 2
+    name = split.format(a=variable[:middle], b=variable[middle:])
+    command = setter.format(name=name, cmd=_TARGET_TEMPLATES[program].format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("read", _LINE_READS)
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(("",)))
+def test_a_nested_target_variable_only_read_on_the_line_changes_nothing(
+    program, variable, flag, carrier, read, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    cmd = _TARGET_TEMPLATES[program].format(flag="")
+    verdict, reason = observe(read.format(name=variable, cmd=cmd), "none", world)
+    plain, _ = observe(f"echo hi; {cmd}", "none", world)
+    assert verdict == plain, (read, verdict, reason)
 
 
 @pytest.mark.parametrize("command,expected", [
