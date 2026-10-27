@@ -38,6 +38,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .nested_executors import nested_run, opens_session, reads_local_state, with_target_flags, writes_or_sends
 from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
@@ -104,6 +105,7 @@ CATEGORY_MUTATIVE = "MUTATIVE"
 CATEGORY_SIMULATION = "SIMULATION"
 CATEGORY_READ_ONLY = "READ_ONLY"
 CATEGORY_UNKNOWN = "UNKNOWN"
+_READING_CATEGORIES = frozenset({CATEGORY_READ_ONLY, CATEGORY_SIMULATION})
 
 
 # ============================================================================
@@ -4907,8 +4909,157 @@ def _executor_floor_payloads(command: str) -> "Tuple[str, ...]":
     semantics = analyze_command(command)
     if semantics.base_cmd == "find":
         return _find_exec_payloads(list(semantics.tokens))
-    payload = _resolve_executor_payload(semantics.base_cmd, semantics)
-    return (payload,) if payload else ()
+    nested = nested_run(semantics.tokens)
+    handed = (nested.inner, *nested.alternatives) if nested else ()
+    payloads = (_resolve_executor_payload(semantics.base_cmd, semantics), *handed)
+    return tuple(payload for payload in payloads if payload)
+
+
+def flag_floor_block(command: str) -> "Optional[FlagClassifierResult]":
+    """The flag classifier's permanent block on *command* as ``bash_validator`` reaches it bare: after a verb that signs."""
+    from .flag_classifiers import OUTCOME_BLOCKED, classify_by_flags
+
+    flagged = classify_by_flags(command)
+    if flagged is None or flagged.outcome != OUTCOME_BLOCKED:
+        return None
+    return None if detect_mutative_command(command).is_mutative else flagged
+
+
+def _check_target_environment(
+    command: str, remainder: str, *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Escalate *remainder* when a variable assigned anywhere down its chain of local executors picks the target or identity of the innermost program as one of its flags would."""
+    from ..tools.shell_parser import shell_split
+
+    dropped, expanded, _, _ = _expand_split_strings(command)
+    try:
+        written, words = shell_split(dropped) + shell_split(expanded), shell_split(remainder)
+    except ValueError:
+        return None
+    return _target_verdict(written[: len(written) - len(words)], words, cwd=cwd, _depth=_depth)
+
+
+def target_under_line(
+    command: str, assigned: "Dict[str, str]", *, cwd: "Optional[str]",
+) -> "Optional[MutativeResult]":
+    """Escalate *command* when a variable its line may set (*assigned*, name to value) picks its innermost program's target or identity."""
+    from ..tools.shell_parser import shell_split
+
+    if not assigned:
+        return None
+    readings, _ = _peel_wrapper_readings(command)
+    dropped, expanded, _, _ = _expand_split_strings(command)
+    try:
+        written, words = shell_split(dropped) + shell_split(expanded), shell_split(readings[0])
+    except ValueError:
+        return None
+    inherited = [f"{name}={value}" for name, value in assigned.items()]
+    return _target_verdict(inherited + written[: len(written) - len(words)], words, cwd=cwd, _depth=0)
+
+
+def _target_verdict(
+    assigned: "List[str]", words: "List[str]", *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    from ..tools.shell_parser import shell_split
+
+    run = nested_run(words)
+    while run is not None and not run.remote and run.unparsed is None and run.inner:
+        dropped, expanded, _, _ = _expand_split_strings(run.inner)
+        try:
+            inner_words = shell_split(dropped) + shell_split(expanded)
+            words = shell_split(_peel_wrapper_readings(run.inner)[0][0])
+        except ValueError:
+            return None
+        assigned += inner_words[: len(inner_words) - len(words)]
+        run = nested_run(words)
+    flagged = with_target_flags(assigned, words)
+    if flagged is None:
+        return None
+    result = detect_mutative_command(shlex.join(flagged), cwd=cwd, _depth=_depth + 1)
+    return replace(result, reason=f"run as {shlex.join(flagged)!r}: {result.reason}") if result.is_mutative else None
+
+
+def _component_verdict(component: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
+    """Classify one component with the flag-dependent effects (``sed -i``, ``curl -X POST``) the verb ladder leaves to the validator."""
+    from .flag_classifiers import OUTCOME_READ_ONLY, classify_by_flags
+
+    result = detect_mutative_command(component, cwd=cwd, _depth=_depth)
+    if result.is_mutative:
+        return result
+    flagged = classify_by_flags(_peel_wrapper_readings(component)[0][0])
+    if flagged is None or flagged.command_family.startswith("git_"):
+        return result
+    if flagged.outcome == OUTCOME_READ_ONLY:
+        return replace(result, category=CATEGORY_READ_ONLY)
+    return replace(
+        result, is_mutative=True, category=CATEGORY_MUTATIVE, verb=flagged.matched_pattern or result.verb,
+        reason=f"Flag classifier: {flagged.reason}",
+    )
+
+
+def _strictest_component(command: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
+    """Classify each component of the chain or pipeline *command*; the first mutative one wins."""
+    from ..tools.shell_parser import parse_command
+
+    for component in parse_command(command) or [command]:
+        result = _component_verdict(component, cwd=cwd, _depth=_depth)
+        if result.is_mutative:
+            break
+    return result
+
+
+def _unproven_writer_or_sender(command: str, *, cwd: "Optional[str]", _depth: int) -> str:
+    """The first component of *command* whose program writes files or sends data and that no lane showed to only read."""
+    from ..tools.shell_parser import parse_command
+    from .shell_unwrapper import shell_command_string
+
+    for component in parse_command(command) or [command]:
+        payload = shell_command_string(component)
+        if payload is not None:
+            found = _unproven_writer_or_sender(payload, cwd=cwd, _depth=_depth + 1)
+        else:
+            program = analyze_command(_peel_wrapper_readings(component)[0][0]).base_cmd
+            reads = _component_verdict(component, cwd=cwd, _depth=_depth).category in _READING_CATEGORIES
+            found = "" if reads or not writes_or_sends(program) else component
+        if found:
+            return found
+    return ""
+
+
+def _check_nested_executor(
+    semantics: "CommandSemantics", *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge an executor that runs a command elsewhere (``nested_executors``) by that command; only a full parse relieves."""
+    run = nested_run(semantics.tokens)
+    if run is None:
+        return None
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("nested executor")
+    if run.unparsed is None and (run.inner is None or opens_session(run.inner)):
+        return MutativeResult(
+            is_mutative=True, category=CATEGORY_MUTATIVE, verb="exec", cli_family=semantics.base_cmd,
+            reason=f"'{run.executor}' opens an interactive session", rule="sign.speaks",
+        )
+    inner = _strictest_component(run.inner, cwd=cwd, _depth=_depth + 1) if run.inner else None
+    if inner is not None and inner.is_mutative:
+        return replace(inner, reason=f"'{run.executor}' runs {run.inner!r}: {inner.reason}")
+    if run.unparsed is not None:
+        if run.generic:
+            return None
+        undetermined = f"'{run.executor}' word {run.unparsed!r} is outside its grammar"
+    elif run.remote and reads_local_state(run.inner):
+        undetermined = f"'{run.executor}' runs {run.inner!r} on another host, whose files decide its effect"
+    elif _unproven_writer_or_sender(run.inner, cwd=cwd, _depth=_depth + 1):
+        undetermined = f"'{run.executor}' runs {run.inner!r}, which may write files or send data"
+    else:
+        return MutativeResult(
+            is_mutative=False, category=CATEGORY_READ_ONLY, verb=inner.verb, cli_family=semantics.base_cmd,
+            confidence=inner.confidence, reason=f"'{run.executor}' runs {run.inner!r}: {inner.reason}",
+        )
+    return MutativeResult(
+        is_mutative=True, category=CATEGORY_UNKNOWN, verb="executor-unparsed-flag", cli_family=semantics.base_cmd,
+        reason=f"{undetermined}, so the command it runs could not be determined", rule="unknown.dynamic-span",
+    )
 
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
@@ -5078,7 +5229,7 @@ def _check_executor_payload(
         return _budget_exhausted_result("executor payload")
 
     for payload in payloads:
-        inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
+        inner = _strictest_component(payload, cwd=cwd, _depth=_depth + 1)
         if inner.is_mutative:
             break
     else:
@@ -5461,6 +5612,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         config_result = _check_package_config_environment(command, env_remainder)
         if config_result is not None:
             return config_result
+        target_result = _check_target_environment(command, env_remainder, cwd=cwd, _depth=_depth)
+        if target_result is not None:
+            return target_result
         if sets_node_options(command):
             node_options_result = node_test_under_node_options(env_remainder, cwd)
             if node_options_result is not None:
@@ -5671,6 +5825,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             confidence="high",
             reason=f"Command alias '{base_cmd}' is {alias_category.lower()}",
         )
+
+    nested_result = _check_nested_executor(semantics, cwd=cwd, _depth=_depth)
+    if nested_result is not None:
+        return nested_result
 
     # --- Step 1a-exec: a command handed to an executor as a STRING ---
     # Runs ahead of the read-only fast path because one of the executors that
@@ -7633,15 +7791,8 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
     as a title to anyone expecting ``start "title"``; the words after it are
     a reading too, so either spelling classifies at the stricter verdict.
     """
-    s = command.strip() if command else ""
-    expanded = False
-    while True:
-        i, innermost = _peel_prefix(s)
-        split = _expand_split_string(s[i:], innermost)
-        if split is None:
-            break
-        s, expanded = split, True
-
+    dropped, s, i, innermost = _expand_split_strings(command)
+    expanded = bool(dropped)
     remainder = s[i:].strip()
     readings = [remainder]
     if innermost is not None and innermost.terminators and _STRING_PAYLOAD_SWITCH_RE.search(s[:i]):
@@ -7663,6 +7814,19 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
         tuple(named_readings + config_programs),
         i > 0 or expanded or renamed or bool(config_programs),
     )
+
+
+def _expand_split_strings(command: str) -> "Tuple[str, str, int, Optional[_WrapperGrammar]]":
+    """``(dropped, s, i, innermost)``: *command* as ``s`` with every ``env -S`` string split into its words, the prefixes that rewrite replaced, and where ``s``'s peeled remainder starts."""
+    s = command.strip() if command else ""
+    dropped: List[str] = []
+    while True:
+        i, innermost = _peel_prefix(s)
+        split = _expand_split_string(s[i:], innermost)
+        if split is None:
+            return " ".join(dropped), s, i, innermost
+        dropped.append(s[:i])
+        s = split
 
 
 def _peel_prefix(s: str) -> "Tuple[int, Optional[_WrapperGrammar]]":

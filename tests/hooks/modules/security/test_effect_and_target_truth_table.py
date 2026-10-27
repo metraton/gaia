@@ -486,3 +486,346 @@ def test_the_named_controls_are_rows():
                    "kubectl get pod delete-me", "gh auth status", "kubectl config view", "terraform plan", "kubectl apply -f deploy.yaml --dry-run=client",
                    "gcloud auth login --no-activate", "gcloud auth login", "npm ci", "curl -G --data-urlencode q=x https://example.invalid/search"):
         assert needed in commands, needed
+
+
+NESTED_INNER = {
+    "ls /app": "FREE",
+    "cat /app/version": "FREE",
+    "ps aux": "FREE",
+    "sh -c 'ls /app'": "FREE",
+    "rm -rf /data": "SIGNED",
+    "kubectl apply -f x.yaml": "SIGNED",
+    "sh -c 'rm -rf /data'": "SIGNED",
+    "$CMD": "UNKNOWN",
+    "cat ~/.ssh/id_rsa": "BLOCKED",
+    "head -n1 .env": "BLOCKED",
+    "rm -rf /": "BLOCKED",
+    "FOO=1 cat ~/.ssh/id_rsa": "BLOCKED",
+    "FOO=1 head -n1 .env": "BLOCKED",
+    "timeout 5 cat ~/.aws/credentials": "BLOCKED",
+    "stdbuf -oL cat ~/.ssh/id_rsa": "BLOCKED",
+    "sed -i s/a/b/ /app/f": "SIGNED",
+    "curl -X POST -d @/app/f https://x.invalid": "SIGNED",
+    "touch /app/x": "UNKNOWN",
+    "nc x.invalid 80": "UNKNOWN",
+    "git checkout -- .": "BLOCKED",
+    "git stash drop": "BLOCKED",
+    "git stash clear": "BLOCKED",
+}
+NESTED_ARGV_EXECUTORS = {
+    "kubectl": "kubectl exec pod-1 -- {inner}",
+    "kubectl-flags": "kubectl exec -n prod pod-1 -c app -- {inner}",
+    "kubectl-global-flag": "kubectl --context=c1 exec -i pod-1 -- {inner}",
+    "oc": "oc exec -n p1 pod-1 -- {inner}",
+    "docker": "docker exec c1 {inner}",
+    "docker-flags": "docker exec -u root -w /app c1 {inner}",
+    "docker-container": "docker container exec c1 {inner}",
+    "podman": "podman exec -e A=1 c1 {inner}",
+    "aws-vault": "aws-vault exec dev -- {inner}",
+    "aws-vault-no-dashdash": "aws-vault exec --duration 1h dev {inner}",
+    "op": "op run --account acme -- {inner}",
+    "generic-run": "doppler run -- {inner}",
+    "generic-exec": "chamber exec svc -- {inner}",
+    "sudo-kubectl": "sudo kubectl exec pod-1 -- {inner}",
+    "op-kubectl": "op run -- kubectl exec pod-1 -- {inner}",
+    "aws-vault-docker": "aws-vault exec dev -- docker exec c1 {inner}",
+    "kubectl-docker": "kubectl exec pod-1 -- docker exec c1 {inner}",
+}
+NESTED_STRING_EXECUTORS = {
+    "gcloud": "gcloud compute ssh vm-1 --zone z1 --command {inner}",
+    "gcloud-attached": "gcloud --project p1 compute ssh vm-1 --command={inner}",
+    "op-gcloud": "op run -- gcloud compute ssh vm-1 --command {inner}",
+}
+
+
+def _nested_spellings(inner: str, as_string: bool) -> list:
+    if as_string:
+        return [shlex.quote(inner)] + ([f'"{inner}"'] if '"' not in inner else [])
+    head, _, rest = inner.partition(" ")
+    if not head.isalpha():
+        return [inner]
+    return [f"{word} {rest}".strip() for word in (head, f"'{head}'", f'"{head}"', "\\" + head)]
+
+
+def _nested_batch(templates: dict, as_string: bool) -> list:
+    return [pytest.param(name, template, as_string, id=name) for name, template in templates.items()]
+
+
+@pytest.mark.parametrize("name,template,as_string", _nested_batch(NESTED_ARGV_EXECUTORS, False) + _nested_batch(NESTED_STRING_EXECUTORS, True))
+def test_a_nested_executor_takes_the_verdict_of_its_inner_command(name, template, as_string, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    wrong = {}
+    for inner, expected in NESTED_INNER.items():
+        for spelling in _nested_spellings(inner, as_string):
+            command = template.format(inner=spelling)
+            verdict = observe(command, "none", world)[0]
+            if verdict != expected:
+                wrong[command] = (verdict, expected)
+    assert not wrong, wrong
+
+
+NESTED_PINS = [
+    ("kubectl exec -it pod-1 -- sh", "repo", {"SIGNED"}, "sign.speaks"),
+    ("kubectl exec -it pod-1 -- /bin/bash -l", "none", {"SIGNED"}, "sign.speaks"),
+    ("oc exec -ti pod-1 -- bash", "none", {"SIGNED"}, "sign.speaks"),
+    ("docker exec -it c1 sh", "none", {"SIGNED"}, "sign.speaks"),
+    ("docker container exec -i c1 python3", "none", {"SIGNED"}, "sign.speaks"),
+    ("gcloud compute ssh vm-1 --zone z1", "none", {"SIGNED"}, "sign.speaks"),
+    ("aws-vault exec dev", "none", {"SIGNED"}, "sign.speaks"),
+    ("aws-vault exec dev --", "none", {"SIGNED"}, "sign.speaks"),
+    ("op run -- bash", "none", {"SIGNED"}, "sign.speaks"),
+    ("doppler run -- zsh", "none", {"SIGNED"}, "sign.speaks"),
+    ("op run -- kubectl exec -it pod-1 -- sh", "none", {"SIGNED"}, "sign.speaks"),
+    ("sudo docker exec -it c1 bash", "none", {"SIGNED"}, "sign.speaks"),
+    ("kubectl exec -it pod-1 -- ls /app", "none", {"FREE"}, ""),
+    ("kubectl exec --bogus pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 extra -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 ls", "none", {"FREE"}, ""),
+    ("kubectl exec pod-1 -c app ls /app", "none", {"FREE"}, ""),
+    ("kubectl exec pod-1 cat ~/.ssh/id_rsa", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 FOO=1 head -n1 .env", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 rm -rf ~", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 touch /app/x", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 -c -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("FOO=1 cat ~/.ssh/id_rsa", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("op run -- FOO=1 cat ~/.aws/credentials", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("op run --env-file=.env -- ls", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("docker exec -e A=1 --env-file .env c1 ls", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 -- ssh host cat ~/.ssh/id_rsa", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 -- xargs cat ~/.ssh/id_rsa", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 -- -- cat ~/.ssh/id_rsa", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 --kubeconfig=/x -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("docker exec --privileged c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("docker -H tcp://h:2375 exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("docker exec --bogus c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("docker exec c1 -it ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud compute ssh vm-1 --ssh-flag=-oProxyCommand=x --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud compute ssh vm-1 --command ls -- -L 80:h:80", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud compute ssh vm-1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("op run --no-masking -- printenv", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("aws-vault exec --server dev -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("aws-vault exec --stdout dev", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 -- git push origin feature-x", "repo", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("docker exec c1 ./run.sh", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("kubectl exec pod-1 -- sh setup", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("op run -- git push origin feature-x", "repo", {"FREE"}, ""),
+    ("chamber exec --region r1 svc -- ls", "none", {"SIGNED"}, ""),
+    ("doppler exec deploy -- ls", "none", {"SIGNED"}, ""),
+    ("doppler run --config prd -- rm -rf /data", "none", {"SIGNED"}, "sign.destroys"),
+    ("kubectl exec pod-1 -- kubectl delete ns prod", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 -- sh -c 'ls; rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("kubectl exec pod-1 -- sh -c 'ls && kubectl apply -f x.yaml'", "none", {"SIGNED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'ls && rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'ls | xargs rm'", "none", {"SIGNED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'ls\nrm -rf /data'", "none", {"SIGNED"}, ""),
+    ("docker exec c1 sh -c 'ls || rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("op run -- sh -c 'ls; rm -rf /data'", "none", {"SIGNED"}, ""),
+    ("ssh host1 'ls && kubectl apply -f x.yaml'", "none", {"SIGNED"}, ""),
+    ("kubectl exec pod-1 -- bash -c 'cat ~/.ssh/id_rsa'", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("gcloud compute ssh vm-1 --command 'ls; cat ~/.aws/credentials'", "none", {"BLOCKED"}, "floor.secret-read"),
+    ("kubectl exec pod-1 -- sh -c 'rm -rf /'", "none", {"BLOCKED"}, ""),
+    ("gcloud compute ssh vm-1 --command 'echo hi; rm -rf /'", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 git checkout -- .", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 git stash drop", "none", {"BLOCKED"}, ""),
+    ("frobctl exec -- git stash clear", "none", {"BLOCKED"}, ""),
+    ("ssh host1 git checkout -- .", "none", {"BLOCKED"}, ""),
+    ("kubectl exec pod-1 -- git push --force origin main", "none", {"SIGNED"}, ""),
+    ("KUBECONFIG=/x kubectl exec pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("env KUBECONFIG=/x kubectl exec pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("KUBECONFIG=/x oc exec pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("DOCKER_HOST=tcp://h:2375 docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("env DOCKER_HOST=tcp://h:2375 docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("DOCKER_CONFIG=/x docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("FOO=1 kubectl exec pod-1 -- ls", "none", {"FREE"}, ""),
+    ("gcloud compute ssh vm-1 --command 'l\\s /app'", "none", {"FREE"}, ""),
+    ("gcloud compute ssh vm-1 --command 'e\\nv'", "none", {"FREE"}, ""),
+    ("KUBECONFIG=/x kubectl exec pod-1 -- l\\s /app", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud compute ssh vm-1 --impersonate-service-account=sa@x --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+    ("gcloud --impersonate-service-account sa@x compute ssh vm-1 --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
+]
+
+
+@pytest.mark.parametrize("command,context,verdicts,rule", NESTED_PINS, ids=[p[0] for p in NESTED_PINS])
+def test_a_nested_executor_pin(command, context, verdicts, rule, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    verdict, reason = observe(command, context, world)
+    assert verdict in verdicts, (verdict, reason)
+    assert f"Rule: {rule}." in reason if rule else True, reason
+
+
+_TARGET_TEMPLATES = {
+    "kubectl": "kubectl {flag}exec pod-1 -- ls",
+    "oc": "oc {flag}exec pod-1 -- ls",
+    "docker": "docker {flag}exec c1 ls",
+    "podman": "podman {flag}exec c1 ls",
+    "gcloud": "gcloud {flag}compute ssh vm-1 --command ls",
+}
+_TARGET_CARRIERS = (
+    "{var} {cmd}", "env {var} {cmd}", "{var} op run -- {cmd}", "env {var} op run -- {cmd}",
+    "{var} aws-vault exec prof -- {cmd}", "op run -- env {var} {cmd}", "{var} op run -- env FOO=1 {cmd}",
+    "{var} op run -- aws-vault exec prof -- {cmd}",
+)
+
+
+def _target_variable_cases(carriers=_TARGET_CARRIERS):
+    from modules.security.nested_executors import TARGET_VARIABLES
+
+    assert set(TARGET_VARIABLES) == set(_TARGET_TEMPLATES)
+    return [
+        pytest.param(program, variable, flag, carrier, id=f"{program}:{variable}:{carrier}")
+        for program, variables in TARGET_VARIABLES.items()
+        for variable, flag in variables.items()
+        for carrier in carriers
+    ]
+
+
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases())
+def test_a_target_variable_asks_wherever_in_the_chain_its_flag_asks(program, variable, flag, carrier, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    template = _TARGET_TEMPLATES[program]
+    flag_verdict, flag_reason = observe(template.format(flag=f"{flag}=v "), "none", world)
+    assert flag_verdict == "UNKNOWN", (flag_verdict, flag_reason)
+    assert observe(template.format(flag=""), "none", world)[0] == "FREE"
+    command = carrier.format(var=f"{variable}=v", cmd=template.format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict == flag_verdict, (command, verdict, reason)
+
+
+_EXPORTING_CARRIERS = (
+    "export {var} && {cmd}", "export {var}; {cmd}", "export {var}\n{cmd}", "export {var} || {cmd}",
+    "export {var} && true | {cmd}", "declare -x {var} && {cmd}", "typeset -x {var} && {cmd}",
+    "readonly -x {var} && {cmd}", "set -a; {var}; {cmd}", "{var}; export {name} && {cmd}",
+    "export {var} && op run -- {cmd}", "export {var} && echo ok && aws-vault exec prof -- env FOO=1 {cmd}",
+    "env -S '{var} {cmd}'", "env -S '{var} op run -- {cmd}'", "{var} env -S '{cmd}'",
+    "export {var} && unset {name} && {cmd}", "export {var}; export -n {name}; {cmd}",
+    "declare -x {var} && declare +x {name} && {cmd}", "export {var}; unset -v {name}; {cmd}",
+    "export {var}; unset {name} | true; {cmd}", "export {var}; true | unset {name}; {cmd}",
+    "export {var}; true && unset {name} | cat && {cmd}", "export {var}; false && unset {name}; {cmd}",
+    "export {var}; declare +x {name}; export {name}; {cmd}", "builtin export {var}; {cmd}",
+    "command export {var}; {cmd}", "f() {{ local -x {var}; {cmd}; }}; f", "f() {{ declare -gx {var}; }}; f; {cmd}",
+    "f() {{ declare -x {var}; }}; f; {cmd}", "read {name} <<< v; export {name}; {cmd}",
+    "export {name}; read {name} < f; {cmd}", "printf -v {name} v; export {name}; {cmd}",
+    "export {name}; printf -v {name} %s v; {cmd}", "set -a; read {name} < f; {cmd}", "read -r {name} < f; {cmd}",
+    "set -a; printf -v {name} v; {cmd}", "export {name}; mapfile -t {name} < f; {cmd}",
+    "export {name}; readarray -t {name} < f; {cmd}", "(export {var}; {cmd})", "{{ export {var}; }}; {cmd}",
+    "for {name} in v; do :; done; {cmd}", ": \"${{{name}:=v}}\"; {cmd}", "getopts a {name}; {cmd}",
+    "( export {var}; ) && {cmd}", "( export {var} ); {cmd}", ". /dev/stdin <<< 'export {var}'; {cmd}",
+)
+_OPAQUE_SETTERS = (
+    "source ./env.sh; {cmd}", ". ./env.sh && {cmd}", "source ~/.kube/env && {cmd}", "builtin . ./env.sh; {cmd}",
+    "diff <(true) <(true); {cmd}", "cat <<< x; {cmd}", "(source ./env.sh; {cmd})",
+    "export $(cat /tmp/f); {cmd}", "export \"$(cat /tmp/f)\"; {cmd}", "n=X; export \"${{n}}_Y=v\"; {cmd}",
+    "declare -x \"$n=v\"; {cmd}", "typeset -x $n=v && {cmd}", "readonly `echo n`=v; {cmd}",
+    "export -- \"$n\"=v; {cmd}", "eval \"export $n=v\"; {cmd}", "eval export X=v; {cmd}",
+    "read \"$n\" < f; {cmd}", "read -r \"${{n}}\" < f; {cmd}", "read -ra \"$n\" < f; {cmd}",
+    "read -p x -- $n < f; {cmd}", "printf -v \"$n\" v; {cmd}", "printf -v$n %s v; {cmd}",
+    "mapfile -t \"$n\" < f; {cmd}", "readarray -d , $n < f; {cmd}",
+    "n=X; declare -n r=${{n}}_Y; r=v; export r; {cmd}", "n=X; declare -n r=\"${{n}}_Y\"; export r=v; {cmd}",
+    "declare -n r=$(echo X)_Y; export r=v; {cmd}", "declare -n r={{X,Z}}_Y; export r=v; {cmd}",
+    "n=X; typeset -n r=${{n}}Y; export r=v; {cmd}", "f() {{ local -n r=$1; export r=v; }}; f Y; {cmd}",
+    "declare -gn r=Y; {cmd}", "export X{{,}}_Y=v; {cmd}", "declare -x {{X,Z}}_Y=v; {cmd}", "export {{A,B}}=1; {cmd}",
+    "read -r {{X,Z}}_Y <<< 'v w'; {cmd}", "printf -v X{{,}}_Y v; {cmd}", "export X_Y?=v; {cmd}", "eval ls; {cmd}",
+)
+_SPLIT_NAMES = ("{a}\"\"{b}", "{a}\\{b}", "\"{a}\"{b}", "{a}''{b}", "$'{a}'{b}", "'{a}'\"{b}\"")
+_COMPUTED_NAMES = ("$'\\x{hex}'{rest}", "$'\\u00{hex}'{rest}", "{init}?", "{init}[{last}]", "{init}*",
+                   "{{{name},X}}", "{a}{{,}}{b}", "{init}{{{last},}}", "{a}{{{b},X}}")
+_LINE_READS = ("echo ${name}; {cmd}", "echo \"${{{name}}}\"; {cmd}", "echo \"${{{name}:-none}}\"; {cmd}",
+               "read -rp \"$p\" line < f; {cmd}", "printf '%s' \"${name}\"; {cmd}", "mapfile -C \"$c\" lines < f; {cmd}",
+               "grep -c {name} f; {cmd}", "export -- FOO=1; {cmd}", "typeset -gx FOO=1; read -r line < f; {cmd}",
+               "for f in a b; do :; done; {cmd}")
+_VERIFIER_ROWS = (
+    "n=DOCKER; declare -n r=${n}_HOST; r=tcp://h:2375; export r; docker exec ctr ls",
+    "n=DOCKER; declare -n r=\"${n}_HOST\"; export r=tcp://h:2375; docker exec ctr ls",
+    "declare -n r=$(echo DOCKER)_HOST; export r=tcp://h:2375; docker exec ctr ls",
+    "declare -n r={DOCKER,X}_HOST; export r=tcp://h:2375; docker exec ctr ls",
+    "n=DOCKER; local -n r=${n}_HOST; r=tcp://h:2375; export r; docker exec ctr ls",
+    "export DOCKER{,}_HOST=tcp://h:2375; docker exec ctr ls",
+    "declare -x {DOCKER,X}_HOST=tcp://h:2375; docker exec ctr ls",
+    "export $'\\u0044OCKER_HOST'=tcp://h:2375; docker exec ctr ls",
+    "export $'\\x44OCKER_HOST'=tcp://h:2375; docker exec ctr ls",
+    "export {DOCKER,X}_HOST=tcp://h:2375; docker exec ctr ls",
+    "export DOCKER_HO{ST,}=tcp://h:2375; docker exec ctr ls",
+    "export DOCKER_{HOST,X}=tcp://h:2375; docker exec ctr ls",
+    "export {A,B}=1; docker exec ctr ls",
+)
+
+
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(_EXPORTING_CARRIERS))
+def test_a_nested_target_variable_assigned_anywhere_in_the_line_asks(
+    program, variable, flag, carrier, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    cmd = _TARGET_TEMPLATES[program].format(flag="")
+    verdict, reason = observe(carrier.format(var=f"{variable}=v", name=variable, cmd=cmd), "none", world)
+    assert verdict != "FREE", (carrier, verdict, reason)
+
+
+@pytest.mark.parametrize("program", list(_TARGET_TEMPLATES))
+@pytest.mark.parametrize("setter", _OPAQUE_SETTERS)
+def test_a_nested_executor_after_a_source_or_substitution_asks(program, setter, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    command = setter.format(cmd=_TARGET_TEMPLATES[program].format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("setter", ("export {name}=v; {cmd}", "declare -x {name}=v && {cmd}"))
+@pytest.mark.parametrize("split", _SPLIT_NAMES)
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(("",)))
+def test_a_nested_target_variable_spelled_through_quotes_asks(
+    program, variable, flag, carrier, split, setter, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    middle = len(variable) // 2
+    name = split.format(a=variable[:middle], b=variable[middle:])
+    command = setter.format(name=name, cmd=_TARGET_TEMPLATES[program].format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("setter", ("export {name}=v; {cmd}", "declare -x {name}=v && {cmd}", "read -r {name} < f; {cmd}"))
+@pytest.mark.parametrize("spelling", _COMPUTED_NAMES)
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(("",)))
+def test_a_nested_target_variable_set_through_an_escape_glob_or_brace_asks(
+    program, variable, flag, carrier, spelling, setter, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    middle = len(variable) // 2
+    name = spelling.format(hex=f"{ord(variable[0]):02x}", rest=variable[1:], init=variable[:-1], last=variable[-1],
+                           name=variable, a=variable[:middle], b=variable[middle:])
+    command = setter.format(name=name, cmd=_TARGET_TEMPLATES[program].format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("command", _VERIFIER_ROWS)
+def test_a_computed_or_nameref_docker_host_asks(command, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("read", _LINE_READS)
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(("",)))
+def test_a_nested_target_variable_only_read_on_the_line_changes_nothing(
+    program, variable, flag, carrier, read, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    cmd = _TARGET_TEMPLATES[program].format(flag="")
+    verdict, reason = observe(read.format(name=variable, cmd=cmd), "none", world)
+    plain, _ = observe(f"echo hi; {cmd}", "none", world)
+    assert verdict == plain, (read, verdict, reason)
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("gcloud compute ssh vm-1 --access-token-file=/x --command ls", "UNKNOWN"),
+    ("podman --url ssh://h/run/podman.sock exec c1 ls", "UNKNOWN"),
+    ("KUBECONFIG=/x op run -- kubectl get pods", "FREE"),
+    ("FOO=1 op run -- kubectl exec pod-1 -- ls", "FREE"),
+    ("KUBECONFIG=/x kubectl exec pod-1 -- kubectl get pods", "UNKNOWN"),
+])
+def test_a_credential_flag_asks_and_an_unrelated_or_read_carrier_stays_as_it_was(command, expected, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    verdict, reason = observe(command, "none", world)
+    assert verdict == expected, (verdict, reason)

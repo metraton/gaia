@@ -33,6 +33,7 @@ from .sensitive_paths import (
     sensitive_read_denial,
 )
 from .canonical_path import command_name
+from .nested_executors import nested_run
 from .publish_attribution_guard import publishing_body_files
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -254,7 +255,27 @@ def http_client_written_paths(command: str) -> List[str]:
 
 
 def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
-    """The sensitive path a single command component reads or lists, or ""."""
+    """The sensitive path a component reads or lists as written, under its assignments and wrappers, or through what it executes."""
+    from .mutative_verbs import _executor_floor_payloads, _peel_wrapper_readings
+
+    hit = _component_reads_sensitive_as_written(component, cwd)
+    if hit:
+        return hit
+    readings, peeled = _peel_wrapper_readings(component)
+    for reading in readings if peeled else ():
+        hit = reading.strip() != component.strip() and _component_reads_sensitive(reading, cwd)
+        if hit:
+            return hit
+    nested = nested_run(_tokenize(component))
+    hit = first_sensitive_token(nested.reads, cwd) if nested is not None else ""
+    for payload in () if hit else _executor_floor_payloads(component):
+        hit = reads_sensitive_path(payload, cwd)
+        if hit:
+            break
+    return hit
+
+
+def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) -> str:
     words, inputs = _split_redirects(strip_grouping_wrappers(component))
     fed = first_sensitive_token(inputs, cwd)
     if fed:
@@ -262,6 +283,8 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     if component.lstrip().startswith(_UNDETERMINED_PROGRAM_MARKS):
         return first_sensitive_token(words, cwd)
     tokens = _strip_transparent_prefixes(words)
+    while tokens[:1] == ["--"]:
+        tokens = tokens[1:]
     if not tokens:
         return ""
     published = first_sensitive_token(publishing_body_files(words, cwd or os.getcwd()) or [], cwd)
