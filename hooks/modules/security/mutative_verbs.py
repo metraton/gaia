@@ -7836,7 +7836,8 @@ def _resolve_script_argument(
 
     * ``<interpreter> <script-file>`` -- the first positional argument after a
       known interpreter, whose lane (``"python"`` or ``"shell"``) is decided by
-      the interpreter, not the filename.
+      the interpreter, not the filename; ``deno``/``bun`` count only a
+      file-shaped positional (``_js_runtime_script``), and ``R`` only ``CMD BATCH``.
     * ``./script`` / ``path/to/script`` -- a direct executable invocation whose
       lane is inferred from the file extension via ``_SHEBANG_EXT_LANES``.
 
