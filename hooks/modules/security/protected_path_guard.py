@@ -48,6 +48,13 @@ path reconstructed by variable interpolation or read from a file
 literal token and is not caught here. The literal-token slice is the bounded,
 low-false-positive portion that is closed.
 
+An installed Gaia root is held more strictly than the ``.claude`` tree: a line
+that names one in any word (attached option values and paths joined in inline
+code included) or runs with its cwd inside one is refused unless every
+component is a known reader (``_names_install_root_unread``). A file reached
+through a hardlink made before the line runs carries no install-root path, so
+no path-based guard sees it -- a known limit.
+
 Public API:
     targets_protected_path(command: str, cwd: str | None = None) -> str | None
     rejection_message(path: str) -> str
@@ -63,7 +70,7 @@ from typing import List, Optional, Tuple
 
 from .canonical_path import command_name
 from .mutative_verbs import UNKNOWN_CWD, cwd_after_component, detect_mutative_command
-from .protected_paths import is_protected_hook_path, is_read_spool_path
+from .protected_paths import is_install_root_path, is_protected_hook_path, is_read_spool_path
 from .sensitive_paths import expand_home
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -192,19 +199,159 @@ def _tar_extracts(tokens: List[str]) -> bool:
 
 _INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php", "deno", "bun"})
 _CODE_WORD = re.compile(r"[^\s'\"(),;=`]+")
+_LITERAL_CONCATENATION = re.compile(r"""(['"])\s*\+\s*(['"])""")
+_NON_LITERAL_DIR = re.compile(r"[$`*?\[{]")
+
+
+def _fold_cwd(component: str, cwd: Optional[str]) -> Optional[str]:
+    """The cwd after `component`, UNKNOWN_CWD when a cd moved it to a directory only the shell can name."""
+    folded = cwd_after_component(component, cwd)
+    if folded not in (cwd, UNKNOWN_CWD) and folded and _NON_LITERAL_DIR.search(folded):
+        return UNKNOWN_CWD
+    return folded
+
+
+def _proven_cwd(command: str, cwd: Optional[str]) -> Optional[str]:
+    """The cwd in effect after the command's leading cd clauses."""
+    for component in _OPERATOR_SPLIT.split(command):
+        component = component.strip()
+        if not component or not re.match(r"(?:cd|pushd|popd)(?:\s|$)", component):
+            break
+        cwd = _fold_cwd(component, cwd)
+    return cwd
+
+
+def _has_interpreter(command: str) -> bool:
+    return any(command_name(word).rstrip("0123456789.") in _INTERPRETERS for word in command.split())
+
+
+def _code_words(command: str) -> List[str]:
+    """Every path-like word of inline code, with adjacent string literals joined."""
+    joined = _LITERAL_CONCATENATION.sub("", command)
+    return [word.lstrip("<>&|+") for word in _CODE_WORD.findall(joined)]
 
 
 def _interpreter_writes_protected_path(command: str, cwd: Optional[str]) -> Optional[str]:
     """The protected path a mutating interpreter run names in its code, or None."""
-    if not any(command_name(word).rstrip("0123456789.") in _INTERPRETERS for word in command.split()):
+    if not _has_interpreter(command):
         return None
+    cwd = _proven_cwd(command, cwd)
     named = [
-        hit for word in _CODE_WORD.findall(command)
+        hit for word in _code_words(command)
         if (os.path.isabs(expand_home(word)) or "/" in word or "." in word)
         and (hit := _protected_spelling(word, cwd))
     ]
     if named and detect_mutative_command(command).is_mutative:
         return named[0]
+    return None
+
+
+# A shell line that names an installed Gaia root, or runs inside one, must be
+# provably read-only: enumerating every writer (unzip, patch, py_compile, git
+# --work-tree, xargs, ...) left each unlisted one open, so the rule inverts to
+# an allow-list of readers.
+_READ_ONLY_COMMANDS = frozenset({
+    "cat", "head", "tail", "less", "more", "ls", "stat", "file", "wc", "grep", "egrep",
+    "fgrep", "rg", "diff", "cmp", "du", "df", "readlink", "realpath", "tree", "jq",
+    "echo", "printf", "pwd", "test", "[", "true", "md5sum", "sha1sum", "sha256sum",
+    "basename", "dirname", "which", "type", "cd", "pushd", "popd", "find",
+})
+_GIT_READ_SUBCOMMANDS = frozenset({
+    "status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse",
+    "cat-file", "describe", "shortlog", "grep",
+})
+_GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
+_FIND_RUNS_OR_WRITES = frozenset({
+    "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
+})
+_NOT_READ_ONLY = " (an installed Gaia root, named by a command that is not provably read-only)"
+
+
+def _git_subcommand(tokens: List[str]) -> str:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _GIT_VALUE_OPTIONS:
+            index += 2
+        elif token.startswith("-"):
+            index += 1
+        else:
+            return token
+    return ""
+
+
+def _is_read_only(tokens: List[str]) -> bool:
+    base = command_name(tokens[0])
+    if base == "git":
+        return _git_subcommand(tokens) in _GIT_READ_SUBCOMMANDS
+    if base == "find":
+        return not any(token in _FIND_RUNS_OR_WRITES for token in tokens)
+    return base in _READ_ONLY_COMMANDS
+
+
+def _program_words(tokens: List[str]) -> List[str]:
+    """The program a component runs, and an interpreter's script: running installed code is not writing it."""
+    interpreted = command_name(tokens[0]).rstrip("0123456789.") in _INTERPRETERS
+    if interpreted and len(tokens) > 1 and not tokens[1].startswith("-"):
+        return tokens[:2]
+    return tokens[:1]
+
+
+def _named_words(tokens: List[str]) -> List[str]:
+    """Every argument word, plus the value of an attached option (-C<dir>, --directory=<dir>, of=<file>)."""
+    words = []
+    for token in tokens[len(_program_words(tokens)):]:
+        if not token.startswith("-"):
+            words.append(token)
+        if "=" in token:
+            words.append(token.split("=", 1)[1])
+        elif token.startswith("-") and not token.startswith("--") and len(token) > 2:
+            words.append(token[2:])
+    return words
+
+
+def _install_root_spelling(word: str, cwd: Optional[str]) -> Optional[str]:
+    word = word.lstrip("<>&|+").strip("'\"")
+    if not word:
+        return None
+    if not os.path.isabs(expand_home(word)) and cwd:
+        if cwd == UNKNOWN_CWD:
+            return None
+        word = os.path.join(cwd, word)
+    # Judged at the deepest directory that exists, so a package name such as
+    # `@jaguilar87/gaia` handed to npm is not mistaken for an install root.
+    existing = os.path.abspath(os.path.expanduser(expand_home(word)))
+    while not os.path.lexists(existing) and existing != os.path.dirname(existing):
+        existing = os.path.dirname(existing)
+    return word if is_install_root_path(existing) else None
+
+
+def _names_install_root_unread(command: str, cwd: Optional[str]) -> Optional[str]:
+    """The install-root path a line names or runs in when the line is not provably read-only."""
+    named: List[str] = []
+    read_only = True
+    programs: List[str] = []
+    running_cwd = cwd
+    for component in _OPERATOR_SPLIT.split(command):
+        component = component.strip()
+        tokens = _tokenize(strip_grouping_wrappers(component)) if component else []
+        if not tokens:
+            continue
+        read_only = read_only and _is_read_only(tokens)
+        programs += _program_words(tokens)
+        if command_name(tokens[0]) not in ("cd", "pushd", "popd") and running_cwd \
+                and running_cwd != UNKNOWN_CWD and is_install_root_path(running_cwd):
+            named.append(running_cwd)
+        named += [hit for word in _named_words(tokens) if (hit := _install_root_spelling(word, running_cwd))]
+        running_cwd = _fold_cwd(component, running_cwd)
+    if _has_interpreter(command):
+        code_cwd = _proven_cwd(command, cwd)
+        named += [
+            hit for word in _code_words(command)
+            if word not in programs and (hit := _install_root_spelling(word, code_cwd))
+        ]
+    if named and not read_only:
+        return named[0] + _NOT_READ_ONLY
     return None
 
 
@@ -274,7 +421,7 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
         hit = _component_writes_protected_path(component, running_cwd)
         if hit is not None:
             return hit
-        running_cwd = cwd_after_component(component, running_cwd)
+        running_cwd = _fold_cwd(component, running_cwd)
         seen_cwds.append(running_cwd)
 
     # A command substitution runs BEFORE the command that contains it, so
@@ -295,7 +442,7 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
                 if hit is not None:
                     return hit
 
-    return None
+    return _names_install_root_unread(command, cwd)
 
 
 def rejection_message(path: str) -> str:
@@ -304,6 +451,14 @@ def rejection_message(path: str) -> str:
         return (
             f"[PROTECTED_PATH] Refusing a relative write the guard cannot place: {path}. "
             f"Name the file by its absolute path. Not approvable."
+        )
+    if path.endswith(_NOT_READ_ONLY):
+        return (
+            f"[PROTECTED_PATH] Refusing a command that names or runs inside an installed "
+            f"Gaia root without being provably read-only: {path}. Only reads (cat, ls, "
+            f"grep, find without -exec, git status/log/diff/show, ...) may touch it. Edit "
+            f"the Gaia source checkout and let `gaia install` or `gaia dev` propagate the "
+            f"change. Not approvable."
         )
     if is_read_spool_path(path):
         return (

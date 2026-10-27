@@ -206,6 +206,13 @@ def _install_root_hit(path: Path) -> bool:
     return not (inside[:1] == (_HOOKS_DIR,) and path.suffix == ".md")
 
 
+def is_install_root_path(path_str: str) -> bool:
+    """True iff `path_str` is an installed Gaia root or lies inside one, hook docs excepted."""
+    if not path_str:
+        return False
+    return any(_install_root_hit(candidate) for candidate in _candidates(path_str))
+
+
 def _candidates(path_str: str) -> Tuple[Path, ...]:
     """The forms a single path argument must be judged in.
 

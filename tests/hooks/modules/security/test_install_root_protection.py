@@ -1,5 +1,6 @@
 """Every write surface asks or refuses before planting code inside an installed Gaia root."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -103,8 +104,39 @@ class TestShellSurface:
         refused = [form for form in _shell_forms(target) if not protected_path_guard.check(form)[0]]
         assert refused == []
 
-    def test_reading_install_code_from_an_interpreter_is_not_a_write(self, install_root):
-        assert protected_path_guard.check(f"python3 -c \"print(open('{install_root / 'bin' / 'json.py'}').read())\"")[0] is True
+    def test_an_interpreter_naming_install_code_is_not_provably_read_only(self, install_root):
+        assert protected_path_guard.check(f"python3 -c \"print(open('{install_root / 'bin' / 'json.py'}').read())\"")[0] is False
+
+    @pytest.mark.parametrize("form", [
+        "cat {I}/bin/json.py",
+        "ls -la {I}/bin | wc -l",
+        "grep -rn x {I}",
+        "find {I} -name '*.py'",
+        "git -C {I} status",
+        "cd {I} && ls",
+        "{I}/bin/gaia doctor",
+    ])
+    def test_provable_reads_and_running_installed_code_pass(self, install_root, form):
+        assert protected_path_guard.check(form.format(I=install_root))[0] is True
+
+    @pytest.mark.parametrize("form", ["npm install -g @jaguilar87/gaia", "npm install @jaguilar87/gaia@5.7.0"])
+    def test_a_package_name_is_not_an_install_root(self, tmp_path, form):
+        assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
+
+    @pytest.mark.parametrize("form", [
+        "cd {I} && python3 -c \"open('bin/x.py','w').write('x')\"",
+        "cd {I}/gaia && python3 -c \"open('../bin/x.py','w').write('x')\"",
+        "cd {I} ; node -e \"require('fs').writeFileSync('bin/x.js','x')\"",
+    ])
+    def test_interpreter_relative_writes_anchor_at_the_cwd_after_cd(self, install_root, form):
+        assert protected_path_guard.targets_protected_path(form.format(I=install_root), str(install_root.parent)) is not None
+
+    def test_a_relative_interpreter_write_after_a_computed_cd_is_refused(self, tmp_path):
+        reason = protected_path_guard.check("cd \"$X\" && python3 -c \"open('bin/x.py','w')\"", cwd=str(tmp_path))[1]
+        assert reason is not None and "cannot place" in reason
+
+    def test_development_checkout_interpreter_write_after_cd_passes(self, dev_checkout):
+        assert protected_path_guard.check(f"cd {dev_checkout} && python3 -c \"open('bin/x.py','w')\"")[0] is True
 
 
 class TestFileToolSurface:
@@ -149,3 +181,112 @@ class TestFileToolSurface:
             "Write", {"file_path": str(dev_checkout / "bin" / "json.py")}, is_subagent=False,
         )
         assert verdict.consent is None and verdict.decision != "deny"
+
+
+SESSION = "ses-install-root"
+SUBAGENT_ID = "a" + "7" * 16
+
+
+@pytest.fixture
+def subagent(monkeypatch, tmp_path):
+    monkeypatch.setenv("GAIA_DISPATCH_AGENT", "developer")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir(exist_ok=True)
+    monkeypatch.setattr("gaia.store.writer.is_harness_session_bound", lambda _s: True)
+    from modules.security import mutative_verbs, tiers
+
+    mutative_verbs.detect_mutative_command.cache_clear()
+    mutative_verbs._detect_mutative_command.cache_clear()
+    tiers._classify_command_tier_cached.cache_clear()
+
+
+def _claude_decision(tool, tool_input):
+    payload = {"hook_event_name": "PreToolUse", "session_id": SESSION, "tool_name": tool,
+               "tool_input": tool_input, "cwd": "/", "agent_id": SUBAGENT_ID, "agent_type": "developer"}
+    adapter = ClaudeCodeAdapter()
+    response = adapter.adapt_pre_tool_use(adapter.parse_event(json.dumps(payload)))
+    if isinstance(response.output, str):
+        return "deny"
+    return response.output.get("hookSpecificOutput", {}).get(
+        "permissionDecision", "allow" if response.exit_code == 0 else "deny",
+    )
+
+
+def _opencode_decision(tool, args):
+    from adapters.opencode import OpenCodeAdapter
+
+    adapter = OpenCodeAdapter()
+    event = adapter.parse_event(json.dumps({
+        "event": "tool.execute.before", "sessionID": SESSION, "callID": "c1", "agentID": SUBAGENT_ID,
+        "roleContext": {"role": "developer", "issuer": "opencode-runtime",
+                        "attestation": f"{SESSION}:developer", "verified": True},
+        "tool": tool, "args": args,
+    }))
+    return adapter.adapt_pre_tool_use(event).output.get("action")
+
+
+class TestHostEntryPoints:
+    @pytest.mark.parametrize("relative", PLANTED + ("agents/x.md", "hooks/x.py"))
+    @pytest.mark.parametrize("tool", ["Write", "Edit", "MultiEdit", "NotebookEdit"])
+    def test_claude_code_file_tools_do_not_allow_install_writes(self, subagent, install_root, tool, relative):
+        target = str(install_root / relative)
+        tool_input = {"notebook_path": target, "new_source": "x"} if tool == "NotebookEdit" else {
+            "file_path": target, "content": "x", "old_string": "x", "new_string": "y",
+            "edits": [{"old_string": "x", "new_string": "y"}],
+        }
+        assert _claude_decision(tool, tool_input) != "allow"
+
+    @pytest.mark.parametrize("relative", PLANTED)
+    @pytest.mark.parametrize("tool", ["write", "edit", "Write", "Edit"])
+    @pytest.mark.parametrize("plugin_shape", [False, True])
+    def test_opencode_file_tools_do_not_allow_install_writes(self, subagent, install_root, tool, relative, plugin_shape):
+        target = str(install_root / relative)
+        args = {"filePath": target, "content": "x", "oldString": "x", "newString": "y"}
+        if plugin_shape:
+            args["file_path"] = target
+        assert _opencode_decision(tool, args) not in ("allow", None, "")
+
+
+SHELL_PROBES = {
+    "cd_redirect": "cd {I} && echo x > bin/evil.py",
+    "cd_python_inline": "cd {I}/bin && python3 -c \"open('evil.py','w').write('x')\"",
+    "cd_python_heredoc": "cd {I} && python3 - <<'PY'\nopen('bin/evil.py','w').write('x')\nPY",
+    "dotdot_abs": "echo x > {I}/../gaia/bin/evil.py",
+    "hardlink_from_install": "ln {I}/bin/json.py {S}/h.py",
+    "pyc_compileall": "python3 -m compileall {I}/bin",
+    "pyc_py_compile": "python3 -m py_compile {I}/bin/json.py",
+    "tar_attached_C": "tar -xf /tmp/a.tar -C{I}",
+    "tar_directory": "tar -xf /tmp/a.tar --directory {I}",
+    "unzip_d": "unzip -o /tmp/a.zip -d {I}",
+    "cd_unzip": "cd {I} && unzip -o /tmp/a.zip",
+    "git_apply_directory": "git apply --directory={I} /tmp/p.diff",
+    "cd_git_apply": "cd {I} && git apply /tmp/p.diff",
+    "git_checkout_worktree": "git --work-tree={I} checkout HEAD -- .",
+    "patch_d": "patch -p1 -d {I} -i /tmp/p.diff",
+    "patch_file": "patch {I}/bin/json.py /tmp/p.diff",
+    "py_concat": "python3 -c \"import shutil; shutil.copy('/tmp/a', '{P}' + '/gaia/bin/evil.py')\"",
+    "dd_of": "dd if=/tmp/a of={I}/bin/evil.py",
+    "truncate": "truncate -s 0 {I}/bin/json.py",
+    "mkdir_abs": "mkdir -p {I}/gaia/evilpkg",
+    "perl_inline": "perl -e 'open(F, \">{I}/bin/evil.py\")'",
+    "find_exec_cp": "find /tmp/a -exec cp {{}} {I}/bin/evil.py ;",
+    "xargs_touch": "echo {I}/bin/evil.py | xargs touch",
+}
+
+
+class TestShellAsSubagent:
+    """The verifier's probes, run through BashValidator with a subagent's identity."""
+
+    @pytest.mark.parametrize("name", sorted(SHELL_PROBES))
+    def test_install_root_shell_writes_are_refused_categorically(self, subagent, install_root, tmp_path, name):
+        from modules.tools.bash_validator import BashValidator
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir(exist_ok=True)
+        command = SHELL_PROBES[name].format(I=install_root, S=scratch, P=install_root.parent)
+        result = BashValidator().validate(
+            command, is_subagent=True, session_id=SESSION, agent_type="developer",
+            hook_payload={"cwd": str(tmp_path), "agent_id": SUBAGENT_ID, "agent_type": "developer"},
+            cwd=str(tmp_path),
+        )
+        assert not result.allowed and "PROTECTED_PATH" in result.reason
