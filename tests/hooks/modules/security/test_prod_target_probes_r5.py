@@ -467,9 +467,10 @@ GRANTS = [
 def test_r5_grant_does_not_follow(case, env, monkeypatch):
     _, command, switch, where = case
     switch(env, monkeypatch, "dev")
-    minted = _mint(command, env[where])
+    used = _mint(command, env[where])
     again = validate(command, env[where], session="s-grant-r5")
     assert again.allowed, (again.reason or "")[:160]
+    unused = _mint(command, env[where])
     switch(env, monkeypatch, "prod")
     after = validate(command, env[where], session="s-grant-r5")
-    assert not after.allowed and after.approval_id and after.approval_id != minted, (after.reason or "")[:160]
+    assert not after.allowed and after.approval_id and after.approval_id not in (used, unused), (after.reason or "")[:160]

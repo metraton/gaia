@@ -112,6 +112,7 @@ _YAML_TOP_LINE = re.compile(r"[A-Za-z_][\w.-]*:(?=[ \t]|$).*|-(?=[ \t]|$).*|(?:-
 _YAML_SCALAR = r"""(?:"(?P<double>[^"\\]*)"|'(?P<single>[^']*)'|(?P<plain>[A-Za-z0-9_./][\w.@:/+=~-]*(?<!:)))"""
 _YAML_TYPED = re.compile(r"(?i:null|true|false|yes|no|on|off|y|n|\.inf|\.nan)|\.?\d[\d_.eE+:-]*|0[xXoO][\w]+")
 _READ_LIMIT = 1024 * 1024
+_PULUMI_PROJECT_FILES = ("Pulumi.yaml", "Pulumi.yml")
 _CONFIGURATION_NAME = re.compile(r"[A-Za-z0-9][\w.-]*")
 _SUBSCRIPTION_ID = re.compile(r"(?=[^0-9]*[0-9])[0-9A-Fa-f-]+")
 _HELP_PROGRAMS = frozenset(_OPTION_ARITY) | frozenset(_PROGRAM_TARGET_FLAGS) | _KUBE_PROGRAMS | _SWITCHER_PROGRAMS
@@ -206,20 +207,49 @@ def _unique_keys(pairs):
     return dict(pairs)
 
 
-def _json_value(text: str, kind: type, key: str):
-    """``key`` of the JSON object *text*, which must be of *kind* or absent; UNREADABLE for anything else."""
+class _JsonObject(list):
+    """The (key, value) pairs of one JSON object in document order, duplicates kept."""
+
+
+def _go_fold(name: str) -> str:
+    """*name* folded as Go's encoding/json folds a key before matching it to a field."""
+    folded = (c.upper() if c.isascii() else c.lower().upper() for c in name)
+    return "".join(f if len(f) == 1 else c for c, f in zip(name, folded))
+
+
+def _json_value(text: str, kind: type, key: str, *, fold: bool = False):
+    """``key`` of the JSON object *text*: None when absent, "" when null, UNREADABLE when not of *kind* or not an object.
+    *fold* matches keys as Go's encoding/json does, case-insensitively with the last non-null one winning; otherwise a
+    duplicated key is UNREADABLE."""
     try:
-        document = json.loads(text.lstrip("﻿"), object_pairs_hook=_unique_keys)
+        document = json.loads(text.lstrip("﻿"), object_pairs_hook=_JsonObject if fold else _unique_keys)
     except (ValueError, RecursionError):
         return UNREADABLE
-    if not isinstance(document, dict):
+    if not isinstance(document, _JsonObject if fold else dict):
         return UNREADABLE
-    value = document.get(key)
-    return value if value is None or isinstance(value, kind) else UNREADABLE
+    if fold:
+        values = [value for name, value in document if _go_fold(name) == _go_fold(key)]
+    else:
+        values = [document[key]] if key in document else []
+    if not values:
+        return None
+    present = [value for value in values if value is not None]
+    if any(not isinstance(value, kind) for value in present):
+        return UNREADABLE
+    return present[-1] if present else ""
 
 
-def _yaml_value(text: str, key: str) -> str:
-    """Top-level *key* of YAML *text*, "" when absent; UNREADABLE unless every top-level line is a plain key, a sequence
+def _certified(value, text: str, key: str):
+    """*value* when the strict reader found *key*; otherwise "" (no target), or UNREADABLE when *text* still mentions
+    *key* loosely: case-insensitive, every Unicode line break read as one, leading whitespace ignored."""
+    if value is not None:
+        return value
+    loose = "\n".join(line.lstrip() for line in text.splitlines()).casefold()
+    return UNREADABLE if key.casefold() in loose else ""
+
+
+def _yaml_value(text: str, key: str) -> Optional[str]:
+    """Top-level *key* of YAML *text*, None when absent; UNREADABLE unless every top-level line is a plain key, a sequence
     item or a comment, and every *key* line holds one plain or unescaped quoted string with nothing folded into it."""
     lines = text.lstrip("﻿").replace("\r\n", "\n").split("\n")
     if any(line[:1] not in ("", " ", "\t") and not _YAML_TOP_LINE.fullmatch(line) for line in lines):
@@ -240,7 +270,7 @@ def _yaml_value(text: str, key: str) -> str:
                 or (match.group("plain") and _YAML_TYPED.fullmatch(scalar)):
             return UNREADABLE
         found.add(scalar or "")
-    return UNREADABLE if len(found) > 1 else next(iter(found), "")
+    return UNREADABLE if len(found) > 1 else next(iter(found), None)
 
 
 def _in_directory(path: str, cwd: Optional[str]) -> Optional[Path]:
@@ -271,6 +301,7 @@ def _kube_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
             context = _json_value(text, str, "current-context")
         else:
             context = _yaml_value(text, "current-context")
+        context = _certified(context, text, "current-context")
         if context:
             return context
     return ""
@@ -305,7 +336,7 @@ def _docker_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
     text = _read_text(root / "config.json")
     if not text:
         return "" if text == "" else UNREADABLE
-    return _json_value(text, str, "currentContext") or ""
+    return _certified(_json_value(text, str, "currentContext", fold=True), text, "currentContext")
 
 
 def _azure_profile(environment: Dict[str, str], cwd: Optional[str]):
@@ -337,18 +368,26 @@ def _azure_subscriptions(value: str, profile, fetching: bool) -> List[str]:
 
 
 def _pulumi_stack(args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> str:
-    """The stack selected for the nearest Pulumi.yaml, read from the workspace file pulumi names after project and path SHA-1."""
+    """The stack selected for the nearest directory holding a pulumi project file; UNREADABLE when it holds both and
+    their stacks differ."""
     chosen = _flag_values(args, frozenset({"-C", "--cwd"}))
     start = _in_directory(chosen[-1] if chosen else ".", cwd)
     if start is None or (chosen and _DYNAMIC.search(chosen[-1])):
         return UNDETERMINED
     start = start.absolute()
-    project = next((d / "Pulumi.yaml" for d in (start, *start.parents) if (d / "Pulumi.yaml").exists()), None)
-    if project is None:
-        return ""
+    for directory in (start, *start.parents):
+        projects = [directory / name for name in _PULUMI_PROJECT_FILES if (directory / name).exists()]
+        if projects:
+            stacks = {_pulumi_project_stack(project, environment, cwd) for project in projects}
+            return stacks.pop() if len(stacks) == 1 else UNREADABLE
+    return ""
+
+
+def _pulumi_project_stack(project: Path, environment: Dict[str, str], cwd: Optional[str]) -> str:
+    """The stack selected for *project*, read from the workspace file pulumi names after project and path SHA-1."""
     text = _read_text(project)
     name = UNREADABLE if text is None else _yaml_value(text, "name")
-    if name in ("", UNREADABLE):
+    if name in (None, "", UNREADABLE):
         return UNREADABLE
     home = _config_root(environment, "PULUMI_HOME", (".pulumi",), cwd)
     if home is None:
@@ -356,7 +395,7 @@ def _pulumi_stack(args: Sequence[str], environment: Dict[str, str], cwd: Optiona
     settings = _read_text(home / "workspaces" / f"{name}-{hashlib.sha1(str(project).encode()).hexdigest()}-workspace.json")
     if not settings:
         return "" if settings == "" else UNREADABLE
-    return _json_value(settings, str, "stack") or ""
+    return _certified(_json_value(settings, str, "stack", fold=True), settings, "stack")
 
 
 def _leading_option_values(program: str, args: Sequence[str], option: str) -> List[str]:
