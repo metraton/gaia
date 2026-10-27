@@ -365,7 +365,7 @@ ROW) and `assets/tools/static-census.cjs::WORDFIT` (a word too long for its
 cell fails).
 
 To choose a form with the person, ask what the reader has to see at a glance;
-the first column answers that, and the form that matches it follows.
+the column "The reader sees" answers that, and the form that matches it follows.
 
 | Form | The reader sees | The properties that make it | Checks it adds |
 |------|-----------------|-----------------------------|----------------|
