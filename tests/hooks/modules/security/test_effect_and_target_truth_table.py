@@ -693,25 +693,42 @@ _EXPORTING_CARRIERS = (
     "readonly -x {var} && {cmd}", "set -a; {var}; {cmd}", "{var}; export {name} && {cmd}",
     "export {var} && op run -- {cmd}", "export {var} && echo ok && aws-vault exec prof -- env FOO=1 {cmd}",
     "env -S '{var} {cmd}'", "env -S '{var} op run -- {cmd}'", "{var} env -S '{cmd}'",
-)
-_ENDING_CARRIERS = (
     "export {var} && unset {name} && {cmd}", "export {var}; export -n {name}; {cmd}",
-    "declare -x {var} && declare +x {name} && {cmd}",
+    "declare -x {var} && declare +x {name} && {cmd}", "export {var}; unset -v {name}; {cmd}",
+    "export {var}; unset {name} | true; {cmd}", "export {var}; true | unset {name}; {cmd}",
+    "export {var}; true && unset {name} | cat && {cmd}", "export {var}; false && unset {name}; {cmd}",
+    "export {var}; declare +x {name}; export {name}; {cmd}", "builtin export {var}; {cmd}",
+    "command export {var}; {cmd}", "f() {{ local -x {var}; {cmd}; }}; f", "f() {{ declare -gx {var}; }}; f; {cmd}",
+    "f() {{ declare -x {var}; }}; f; {cmd}", "read {name} <<< v; export {name}; {cmd}",
+    "export {name}; read {name} < f; {cmd}", "printf -v {name} v; export {name}; {cmd}",
+    "export {name}; printf -v {name} %s v; {cmd}", "set -a; read {name} < f; {cmd}", "read -r {name} < f; {cmd}",
+    "set -a; printf -v {name} v; {cmd}", "export {name}; mapfile -t {name} < f; {cmd}",
+    "export {name}; readarray -t {name} < f; {cmd}", "(export {var}; {cmd})", "{{ export {var}; }}; {cmd}",
+    "( export {var}; ) && {cmd}", "( export {var} ); {cmd}", ". /dev/stdin <<< 'export {var}'; {cmd}",
+)
+_OPAQUE_SETTERS = (
+    "source ./env.sh; {cmd}", ". ./env.sh && {cmd}", "source ~/.kube/env && {cmd}", "builtin . ./env.sh; {cmd}",
+    "diff <(true) <(true); {cmd}", "cat <<< x; {cmd}", "(source ./env.sh; {cmd})",
 )
 
 
-@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(_EXPORTING_CARRIERS + _ENDING_CARRIERS))
-def test_a_nested_target_variable_exported_earlier_in_the_line_asks_until_it_ends(
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(_EXPORTING_CARRIERS))
+def test_a_nested_target_variable_assigned_anywhere_in_the_line_asks(
     program, variable, flag, carrier, world, monkeypatch,
 ):
     monkeypatch.chdir(world["root"])
     cmd = _TARGET_TEMPLATES[program].format(flag="")
     verdict, reason = observe(carrier.format(var=f"{variable}=v", name=variable, cmd=cmd), "none", world)
-    unrelated, _ = observe(carrier.format(var="FOO=v", name="FOO", cmd=cmd), "none", world)
-    if carrier in _ENDING_CARRIERS:
-        assert verdict == unrelated, (carrier, verdict, reason)
-    else:
-        assert verdict != "FREE", (carrier, verdict, reason)
+    assert verdict != "FREE", (carrier, verdict, reason)
+
+
+@pytest.mark.parametrize("program", list(_TARGET_TEMPLATES))
+@pytest.mark.parametrize("setter", _OPAQUE_SETTERS)
+def test_a_nested_executor_after_a_source_or_substitution_asks(program, setter, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    command = setter.format(cmd=_TARGET_TEMPLATES[program].format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
 
 
 @pytest.mark.parametrize("command,expected", [

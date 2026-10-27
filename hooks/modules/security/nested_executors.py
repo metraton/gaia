@@ -128,8 +128,11 @@ _LOCAL_STATE_PROGRAMS = frozenset({
 _COPIERS_TO_HOSTS = frozenset({"scp", "sftp", "rsync"})
 _SCRIPT_WORD = re.compile(r"(^|/)[\w.-]+\.(sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|pm|php|ps1)$")
 _WORD = re.compile(r"[^\s'\"`;&|()<>]+")
-_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.S)
-_DECLARERS = frozenset({"export", "declare", "typeset", "readonly", "local"})
+_TARGET_NAMES = frozenset(name for variables in TARGET_VARIABLES.values() for name in variables)
+_TARGET_MENTION = re.compile(
+    rf"(?<![\w$])(?P<name>{'|'.join(sorted(_TARGET_NAMES))})(?!\w)(?:\[[^\]]*\])?(?:\+?=(?P<value>[^\s;&|()<>]*))?"
+)
+_OPAQUE_SETTER = re.compile(r"(?:^|[\s;&|(){}!`])(?:source|\.)(?=\s)|[<>]\(|<<<")
 
 
 def _flag_kind(token: str, values: FrozenSet[str], booleans: FrozenSet[str], bundled: str) -> str:
@@ -247,18 +250,18 @@ def with_target_flags(prefix: Sequence[str], words: Sequence[str]) -> Optional[L
     return [words[0], *flags, *words[1:]] if flags else None
 
 
-def exported_after(words: Sequence[str], exported: Dict[str, str]) -> Dict[str, str]:
-    """The variables *exported* before the command made of *words* plus those it leaves in effect for later commands of its line."""
-    after = dict(exported)
-    head, options = (command_name(words[0]), [w for w in words[1:] if w[:1] in "-+"]) if words else ("", [])
-    unexports = (head == "unset" and "-f" not in options) or (head == "export" and "-n" in options) or (
-        head in _DECLARERS and any(o.startswith("+") and "x" in o for o in options))
-    if unexports:
-        for word in words[1:]:
-            after.pop(word.partition("=")[0], None)
-    elif words and (head in _DECLARERS or all(_ASSIGNMENT.fullmatch(word) for word in words)):
-        after.update(match.groups() for match in map(_ASSIGNMENT.fullmatch, words) if match)
-    return after
+def targets_set_on_line(line: str) -> Dict[str, str]:
+    """Each target variable *line* names outside a ``$`` read, or every one when it sources a file, substitutes a process or feeds a here-string; no scope, unset or unexport on the line ends one."""
+    if _OPAQUE_SETTER.search(line):
+        return {name: f"${name}" for name in _TARGET_NAMES}
+    found: Dict[str, str] = {}
+    for match in _TARGET_MENTION.finditer(line):
+        name, value = match.group("name"), match.group("value")
+        if line[:match.start()].endswith(("${", "${!", "${#")) and not line[match.end("name"):].startswith(("=", ":=")):
+            continue
+        if value or name not in found:
+            found[name] = value.strip("'\"") if value else f"${name}"
+    return found
 
 
 def opens_session(inner: str) -> bool:

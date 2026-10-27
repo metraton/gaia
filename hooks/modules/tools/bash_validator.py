@@ -68,10 +68,9 @@ from ..security.mutative_verbs import (
     rewrites_package_inputs,
     runs_package_script,
     sets_node_options,
-    target_under_exported,
+    target_under_line,
 )
-from ..security.nested_executors import exported_after
-from .shell_parser import shell_split
+from ..security.nested_executors import targets_set_on_line
 from ..security.flag_classifiers import (
     classify_by_flags,
     OUTCOME_BLOCKED as FLAG_BLOCKED,
@@ -2055,7 +2054,7 @@ class BashValidator:
         # A package.json or node_modules path rewritten by an earlier component
         # changes the script a later run executes, which was read before the chain ran.
         package_inputs_rewritten = False
-        exported: Dict[str, str] = {}
+        line_targets = targets_set_on_line(command or "\n".join(components))
         tripped, tripped_command = None, command
         for comp in components:
             detected = detect_mutative_command(comp, cwd=scan_cwd)
@@ -2070,11 +2069,7 @@ class BashValidator:
                 detected = git_under_injected_config(comp) or detected
             git_config_injected = git_config_injected or injects_git_config(comp)
             if not detected.is_mutative:
-                detected = target_under_exported(comp, exported, cwd=scan_cwd) or detected
-            try:
-                exported = exported_after(shell_split(comp), exported)
-            except ValueError:
-                pass
+                detected = target_under_line(comp, line_targets, cwd=scan_cwd) or detected
             flagged = classify_by_flags(comp)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (

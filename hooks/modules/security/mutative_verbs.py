@@ -4666,13 +4666,13 @@ def _check_target_environment(
     return _target_verdict(written[: len(written) - len(words)], words, cwd=cwd, _depth=_depth)
 
 
-def target_under_exported(
-    command: str, exported: "Dict[str, str]", *, cwd: "Optional[str]",
+def target_under_line(
+    command: str, assigned: "Dict[str, str]", *, cwd: "Optional[str]",
 ) -> "Optional[MutativeResult]":
-    """Escalate *command* when a variable *exported* by an earlier command of its line picks its innermost program's target or identity."""
+    """Escalate *command* when a variable its line may set (*assigned*, name to value) picks its innermost program's target or identity."""
     from ..tools.shell_parser import shell_split
 
-    if not exported:
+    if not assigned:
         return None
     readings, _ = _peel_wrapper_readings(command)
     dropped, expanded, _, _ = _expand_split_strings(command)
@@ -4680,7 +4680,7 @@ def target_under_exported(
         written, words = shell_split(dropped) + shell_split(expanded), shell_split(readings[0])
     except ValueError:
         return None
-    inherited = [f"{name}={value}" for name, value in exported.items()]
+    inherited = [f"{name}={value}" for name, value in assigned.items()]
     return _target_verdict(inherited + written[: len(written) - len(words)], words, cwd=cwd, _depth=0)
 
 
