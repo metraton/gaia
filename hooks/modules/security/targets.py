@@ -220,6 +220,19 @@ def _docker_context(environment: Dict[str, str]) -> str:
         return UNDETERMINED
 
 
+def _azure_subscription(environment: Dict[str, str]) -> Tuple[str, ...]:
+    """Name and id of the default subscription in azureProfile.json; () when none is set, UNDETERMINED when unreadable."""
+    root = Path(environment.get("AZURE_CONFIG_DIR") or Path.home() / ".azure").expanduser()
+    text = _read_text(root / "azureProfile.json")
+    if not text:
+        return () if text == "" else (UNDETERMINED,)
+    try:
+        default = next((s for s in json.loads(text.lstrip("﻿")).get("subscriptions") or () if s.get("isDefault")), None)
+    except (ValueError, AttributeError):
+        return (UNDETERMINED,)
+    return () if default is None else (str(default.get("name") or ""), str(default.get("id") or ""))
+
+
 def _in_directory(path: str, cwd: Optional[str]) -> Optional[Path]:
     expanded = Path(path).expanduser()
     return expanded if expanded.is_absolute() else (Path(cwd) / expanded if cwd else None)
@@ -272,6 +285,11 @@ def _ambient(program: str, args: Sequence[str], environment: Dict[str, str], cwd
         if program == "podman" and environment.get("CONTAINER_CONNECTION"):
             return [Target("podman-connection", environment["CONTAINER_CONNECTION"])]
         return [Target("docker-context", _docker_context(environment))]
+    if program == "az" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["az"]):
+        found = [Target("subscription", name) for name in _azure_subscription(environment)]
+        if environment.get("AZURE_SUBSCRIPTION_ID"):
+            found.append(Target("subscription", environment["AZURE_SUBSCRIPTION_ID"]))
+        return found
     if program == "pulumi" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["pulumi"]):
         return [Target("stack", _pulumi_stack(args, environment, cwd))]
     if program == "aws" and not _flag_values(args, frozenset({"--profile"})):

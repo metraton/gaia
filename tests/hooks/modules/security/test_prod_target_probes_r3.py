@@ -33,7 +33,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("GAIA_DB", str(tmp_path / "gaia-data" / "gaia.db"))
     for name in ("GAIA_CLI_ALIASES", "KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_HOST",
                  "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME", "AWS_PROFILE", "TF_WORKSPACE",
-                 "CONTAINER_HOST", "CONTAINER_CONNECTION", "PULUMI_HOME", "GIT_DIR", "GIT_WORK_TREE"):
+                 "CONTAINER_HOST", "CONTAINER_CONNECTION", "PULUMI_HOME", "GIT_DIR", "GIT_WORK_TREE",
+                 "AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID"):
         monkeypatch.delenv(name, raising=False)
     from gaia.paths import ensure_layout
 
@@ -163,7 +164,33 @@ OVERREACH = [
     ("o-helm-get-values-prod", "helm --kube-context prod-a get values rel", {}, FREE),
 ]
 
-CASES = ATTACHED + SWITCH + OPERATION + PODMAN + OVERREACH
+AZ_FETCH_DEV = "az aks get-credentials -n dev-aks -g rg"
+AZURE = [
+    ("az-fetch-subscription-flag-prod", f"{AZ_FETCH_DEV} --subscription prod-sub", {"azure": "dev-sub"}, NOT_FREE),
+    ("az-fetch-subscription-flag-dev", f"{AZ_FETCH_DEV} --subscription dev-sub", {"azure": "prod-sub"}, FREE),
+    ("az-fetch-ambient-prod", AZ_FETCH_DEV, {"azure": "prod-sub"}, NOT_FREE),
+    ("az-fetch-ambient-dev", AZ_FETCH_DEV, {"azure": "dev-sub"}, FREE),
+    ("az-fetch-ambient-none", AZ_FETCH_DEV, {}, FREE),
+    ("az-fetch-ambient-unreadable", AZ_FETCH_DEV, {"azure": "{broken"}, NOT_FREE),
+    ("az-fetch-config-dir-prod", AZ_FETCH_DEV, {"azure_dir": "prod-sub", "azure": "dev-sub"}, NOT_FREE),
+    ("az-fetch-variable-prod", f"AZURE_SUBSCRIPTION_ID=prod-sub {AZ_FETCH_DEV}", {"azure": "dev-sub"}, NOT_FREE),
+    ("az-fetch-variable-dev-keeps-ambient-prod", f"AZURE_SUBSCRIPTION_ID=dev-sub {AZ_FETCH_DEV}", {"azure": "prod-sub"}, NOT_FREE),
+    ("az-unknown-ambient-prod", "az frobnicate thing", {"azure": "prod-sub"}, NOT_FREE),
+    ("az-unknown-ambient-dev", "az frobnicate thing", {"azure": "dev-sub"}, FREE),
+    ("az-read-ambient-prod", "az vm show -g rg -n vm", {"azure": "prod-sub"}, FREE),
+]
+
+CASES = ATTACHED + SWITCH + OPERATION + PODMAN + OVERREACH + AZURE
+
+
+def azure(directory: Path, default: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    if default.startswith("{"):
+        body = default
+    else:
+        subscriptions = [{"id": f"id-{name}", "name": name, "isDefault": name == default} for name in ("dev-sub", "prod-sub")]
+        body = json.dumps({"installationId": "x", "subscriptions": subscriptions})
+    (directory / "azureProfile.json").write_text("﻿" + body, encoding="utf-8")
 
 
 def _arrange(setup: dict, env: dict, monkeypatch) -> None:
@@ -174,6 +201,11 @@ def _arrange(setup: dict, env: dict, monkeypatch) -> None:
         kube(tmp / "prodkube", setup["kube2"])
     if "gcloud" in setup:
         gcloud(home, setup["gcloud"])
+    if "azure" in setup:
+        azure(home / ".azure", setup["azure"])
+    if "azure_dir" in setup:
+        azure(tmp / "azcfg", setup["azure_dir"])
+        monkeypatch.setenv("AZURE_CONFIG_DIR", str(tmp / "azcfg"))
     for name, value in setup.get("setenv", {}).items():
         monkeypatch.setenv(name, value)
 
@@ -291,6 +323,10 @@ def _podman_variable(e, monkeypatch, name):
     monkeypatch.setenv("CONTAINER_CONNECTION", "prod-a" if name == "prodcfg" else "dev-a")
 
 
+def _azure_switch(e, monkeypatch, name):
+    azure(e["home"] / ".azure", "prod-sub" if name == "prodcfg" else "dev-sub")
+
+
 def _kube_home_switch(e, monkeypatch, name):
     (e["home"] / ".kube").mkdir(exist_ok=True)
     context = "prod-a" if name == "prodcfg" else "dev-a"
@@ -325,6 +361,7 @@ SWITCHES = [
     ("grant-terraform-workspace", "terraform apply", _tf_switch),
     ("grant-aws-profile-variable", "aws s3 rm s3://b/x", _aws_variable),
     ("grant-pulumi-current-stack", "pulumi destroy", _pulumi_switch),
+    ("grant-azure-default-subscription", "az vm restart -g rg -n vm", _azure_switch),
 ]
 
 
