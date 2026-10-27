@@ -255,6 +255,7 @@ COMPOUND_READ_ONLY_SUBCOMMANDS: FrozenSet[str] = frozenset({
 })
 
 COMPOUND_HEAD_MUTATIVE_VERBS: FrozenSet[str] = frozenset({"run", "add"})
+GROUP_PATH_HYPHEN_DEPTH = 3
 GROUP_READ_WORDS: FrozenSet[str] = frozenset({"auth", "config"})
 LIVE_SIMULATION_VERBS: Dict[str, FrozenSet[str]] = {"test": frozenset({"iac", "k8s"})}
 VERB_DESTROYING_FLAGS: Dict[str, FrozenSet[str]] = {"down": frozenset({"-v", "--volumes", "--rmi"})}
@@ -6668,7 +6669,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             confidence="high",
             reason=f"'{base_cmd} {local_cache_path}' only refreshes a local cache",
         )
-    hyphen_depth = 3 if base_cmd in _GROUP_PATH_CLIS else 2
+    hyphen_depth = GROUP_PATH_HYPHEN_DEPTH if base_cmd in _GROUP_PATH_CLIS else 2
     path_anchored = any(
         semantics.non_flag_tokens[:len(anchor.path)] == anchor.path
         for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ())
