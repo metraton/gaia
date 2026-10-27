@@ -617,12 +617,7 @@ def analyze_python_inline(
 
 
 def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool, bool]:
-    """Return the top-level modules *code* loads by literal name, whether it loads a file no name proves, and whether it moves ``sys.path`` before importing.
-
-    A relative import and ``runpy.run_path`` run a file rather than a named
-    module, and a site directory's ``.pth`` files run as it is added, so those
-    are the second value; code that does not parse names none.
-    """
+    """Return the modules *code* loads by literal name, whether it runs a file no name proves (relative import, ``runpy.run_path``, a site directory), and whether it moves ``sys.path``."""
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError:
@@ -850,8 +845,7 @@ def _reaches_interpreter_internals(node: ast.AST) -> bool:
     return attr.startswith("__") and attr.endswith("__") and attr not in _INERT_DUNDERS
 
 
-# File calls by their count of leading path arguments; the secret-read floor reads
-# only literals, so each must be one ``_provable_path`` proves.
+# The secret-read floor reads only literals, so every path argument here must be one ``_provable_path`` proves.
 _PATH_CALLS: Dict[str, int] = {name: 1 for name in (
     "open", "builtins.open", "io.open", "io.FileIO", "codecs.open", "os.open", "pathlib.Path",
     "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath", "os.listdir", "os.scandir",
@@ -872,8 +866,7 @@ _PATH_METHODS: FrozenSet[str] = frozenset({
     "joinpath", "expanduser", "resolve", "absolute", "with_name", "with_suffix",
 })
 _HOME_VARIABLES: FrozenSet[str] = frozenset({"HOME", "USERPROFILE"})
-# A listing hands back names no literal shows the secret floor, so its directory
-# may not come from the environment, which the command line can set.
+# A listing returns names the secret floor never sees, so its directory may not come from the environment.
 _LISTING_CALLS: FrozenSet[str] = frozenset({"os.listdir", "os.scandir", "os.walk", "glob.glob", "glob.iglob"})
 _LISTING_METHODS: FrozenSet[str] = frozenset({"iterdir", "glob", "rglob", "walk"})
 _ENVIRONMENT_PATHS: FrozenSet[str] = frozenset({"pathlib.Path.home", "os.path.expanduser"})
@@ -1346,10 +1339,6 @@ class _AliasResolver:
     ``pathlib`` and every cloud SDK -- so a resolver that stopped at the first
     Call reported ``None`` for all of them, silently making the entire
     ``pathlib.Path.*`` block unmatchable.
-
-    A computed name (``getattr(m, "r" + "un")``, ``sys.modules[n]``), any other
-    subscript and an element of a list still return ``None`` from
-    :meth:`resolve_call`.
     """
 
     def __init__(self) -> None:
@@ -1406,15 +1395,7 @@ class _AliasResolver:
         return call.args[1].value
 
     def _chain(self, node: ast.AST) -> Optional[Tuple[list, bool]]:
-        """The canonical dotted parts of an expression, and whether its head is a known binding.
-
-        Intermediate calls are transparent: ``Path("/x").open`` yields
-        ``pathlib.Path.open``, because the receiver's IDENTITY is what selects
-        the API.  A call or subscript that evaluates to a module or attribute
-        named by a literal -- ``__import__('os')``, ``sys.modules['os']``,
-        ``getattr(m, 'run')`` -- stands for that name, as ``import`` binds it.
-        Returns None for anything else that is not a static chain.
-        """
+        """The canonical dotted parts of *node* through calls and literal lookups, and whether its head is a known binding."""
         tail: list = []
         cur = node
         while True:

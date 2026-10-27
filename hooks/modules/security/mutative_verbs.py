@@ -8687,9 +8687,7 @@ def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
     return None
 
 
-# Git is asked only what its index and object store record, never to compare
-# the worktree itself: that comparison would run any fsmonitor or clean filter
-# the repository configures inside the hook. The worktree bytes are hashed here.
+# Comparing the worktree through git would run the repository's fsmonitor or clean filter in the hook.
 _GIT_INDEX_ONLY = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
 
 
