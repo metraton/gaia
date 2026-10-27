@@ -743,14 +743,29 @@ def _classify_find(tokens: List[str]) -> Optional[FlagClassifierResult]:
 # 13. curl
 # HTTP methods that write data to a remote server
 _CURL_WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+_CURL_QUERY_DATA_FLAGS = frozenset({"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode"})
+
+
+def _curl_data_reads_file(flag: str, value: str) -> bool:
+    """Return True when a curl data value names a file or stdin whose contents curl sends."""
+    if flag == "--data-raw":
+        return False
+    if flag == "--data-urlencode":
+        name, at, _ = value.partition("@")
+        return bool(at) and "=" not in name
+    return value.startswith("@")
 
 def _classify_curl(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] != "curl":
         return None
     args = tokens[1:]
+    get_query = "-G" in args or "--get" in args
     i = 0
     while i < len(args):
         a = args[i]
+        if get_query and a in _CURL_QUERY_DATA_FLAGS and i + 1 < len(args) and not _curl_data_reads_file(a, args[i + 1]):
+            i += 2
+            continue
         # -X / --request METHOD
         if a in ("-X", "--request"):
             if i + 1 < len(args) and args[i + 1].upper() in _CURL_WRITE_METHODS:

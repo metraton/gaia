@@ -172,7 +172,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Lifecycle
     "start", "restart", "reboot", "reload", "refresh", "resume",
     "uncordon", "unsuspend", "enable", "disable", "suspend", "pause",
-    "stop", "shutdown", "halt", "abort",
+    "stop", "shutdown", "halt", "abort", "up", "seal", "unseal",
     # Movement / transfer
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
@@ -202,7 +202,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "push", "merge", "rebase",
     "rollback",
     # Access control
-    "grant", "assign", "revoke",
+    "grant", "assign", "revoke", "login", "use", "select", "get-credentials",
     # Reconciliation
     "reconcile", "rsync",
     # Deletion / removal (approvable via nonce -- blocked_commands.py catches
@@ -253,6 +253,45 @@ READ_ONLY_VERBS: FrozenSet[str] = frozenset({
 COMPOUND_READ_ONLY_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "merge-base",
 })
+
+COMPOUND_HEAD_MUTATIVE_VERBS: FrozenSet[str] = frozenset({"run", "add"})
+GROUP_READ_WORDS: FrozenSet[str] = frozenset({"auth", "config"})
+LIVE_SIMULATION_VERBS: Dict[str, FrozenSet[str]] = {"test": frozenset({"iac", "k8s"})}
+VERB_DESTROYING_FLAGS: Dict[str, FrozenSet[str]] = {"down": frozenset({"-v", "--volumes", "--rmi"})}
+LOCAL_CACHE_PATHS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+    "helm": (("repo", "update"),),
+    "apt": (("update",),),
+    "apt-get": (("update",),),
+    "act": (("push",),),
+}
+
+
+def _hyphen_candidate(token: str) -> Tuple[str, bool]:
+    """Return the fragment that names a hyphenated subcommand's effect, and whether it is a compound-only change verb."""
+    head, *rest = token.split("-")
+    if not rest or head in SIMULATION_VERBS or head in MUTATIVE_VERBS or head in READ_ONLY_VERBS:
+        return head, False
+    if head in COMPOUND_HEAD_MUTATIVE_VERBS and rest != ["all"]:
+        return head, True
+    for table in (MUTATIVE_VERBS, SIMULATION_VERBS, READ_ONLY_VERBS):
+        for fragment in rest:
+            if fragment in table:
+                return fragment, False
+    return head, False
+
+
+def _head_token_mutates(token: str) -> bool:
+    """Return True when a head token, whole or by its effect fragment, names a change."""
+    candidate, compound_change = _hyphen_candidate(token) if _is_subcommand_identifier(token) else (token, False)
+    return compound_change or token in MUTATIVE_VERBS or candidate in MUTATIVE_VERBS
+
+
+def _local_cache_refresh(base_cmd: str, non_flag_tokens: Tuple[str, ...]) -> str:
+    """Return the head path of a command that only refreshes a local cache, or ""."""
+    for path in LOCAL_CACHE_PATHS.get(base_cmd, ()):
+        if tuple(non_flag_tokens[:len(path)]) == path:
+            return " ".join(path)
+    return ""
 
 
 # ============================================================================
@@ -483,6 +522,7 @@ CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # alter message content, send mail, or delete anything.  Safe as T0 unless
     # it may remove INBOX (archive), which _may_archive_gmail carves back out.
     ("workspace", "modify"): CATEGORY_READ_ONLY,
+    ("docker", "up"): CATEGORY_READ_ONLY,
 }
 
 
@@ -4163,6 +4203,10 @@ DANGEROUS_FLAGS: Dict[str, str] = {
     "--cascade": "ALWAYS",
     "--grace-period=0": "ALWAYS",
     "--now": "ALWAYS",
+    "--push": "ALWAYS",
+    "--auto-approve": "ALWAYS",
+    "-auto-approve": "ALWAYS",
+    "--admin": "ALWAYS",
     "-f": "CONTEXT",
     "-r": "CONTEXT",
     "-R": "CONTEXT",
@@ -6614,6 +6658,22 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     ),
                 )
 
+    local_cache_path = _local_cache_refresh(base_cmd, semantics.non_flag_tokens)
+    if local_cache_path and not _scan_dangerous_flags(tokens, base_cmd):
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb=local_cache_path.split()[-1],
+            cli_family=family,
+            confidence="high",
+            reason=f"'{base_cmd} {local_cache_path}' only refreshes a local cache",
+        )
+    hyphen_depth = 3 if base_cmd in _GROUP_PATH_CLIS else 2
+    path_anchored = any(
+        semantics.non_flag_tokens[:len(anchor.path)] == anchor.path
+        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ())
+    )
+
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
@@ -6662,28 +6722,41 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # or camelCase-split and the inner fragments match mutative verbs.
         is_subcmd_shape = _is_subcommand_identifier(stripped_token)
 
-        # Split hyphenated tokens: "delete-stack" -> check "delete"
-        # IMPORTANT: only apply hyphen-split at subcommand positions
-        # (semantic_index <= 2).  At deeper positions (index >= 3), tokens are
-        # typically argument values or slugs like "remove-live-state-from-context"
-        # or "some-name-with-delete-in-it".  Splitting those produces false
-        # positives -- the first fragment matches a mutative verb even though
-        # the token is not a CLI subcommand.  The camelCase guard already applies
-        # the same constraint (semantic_index == 1).
-        if semantic_index <= 2 and "-" in stripped_token and is_subcmd_shape:
-            candidate = stripped_token.split("-", 1)[0]
+        # Deeper than the subcommand path, a hyphenated token is an argument
+        # slug ("some-name-with-delete-in-it"), never split.
+        if semantic_index <= hyphen_depth and "-" in stripped_token and is_subcmd_shape:
+            candidate, compound_change = _hyphen_candidate(stripped_token)
         else:
-            candidate = stripped_token
+            candidate, compound_change = stripped_token, False
 
-        # Also check full token for exact matches (e.g., "force-delete")
         full_lower = stripped_token
-
-        # Determine confidence from position
         confidence = "high" if semantic_index <= 2 else "medium"
 
-        # Check verb taxonomy in priority order
+        destroying_flags = VERB_DESTROYING_FLAGS.get(full_lower, frozenset()) & frozenset(semantics.flag_tokens)
+        if destroying_flags:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=full_lower,
+                dangerous_flags=tuple(sorted(destroying_flags)),
+                cli_family=family,
+                confidence="high",
+                reason=f"'{full_lower}' with {', '.join(sorted(destroying_flags))} destroys what it held",
+                rule="sign.destroys",
+            )
+
         if candidate in SIMULATION_VERBS or full_lower in SIMULATION_VERBS:
             verb = candidate if candidate in SIMULATION_VERBS else full_lower
+            if family in LIVE_SIMULATION_VERBS.get(verb, frozenset()):
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=verb,
+                    dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+                    cli_family=family,
+                    confidence=confidence,
+                    reason=f"'{verb}' runs against live state on a {family} CLI",
+                )
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_SIMULATION,
@@ -6693,8 +6766,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 reason=f"Simulation verb '{verb}'",
             )
 
-        if candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
-            verb = candidate if candidate in MUTATIVE_VERBS else full_lower
+        if compound_change or candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
+            verb = candidate if compound_change or candidate in MUTATIVE_VERBS else full_lower
 
             # git tag is dual-mode: a listing form (`git tag`, `-l`,
             # `--points-at`, `--contains`, ...) is read-only (T0), while a
@@ -6853,6 +6926,15 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
         if candidate in READ_ONLY_VERBS or full_lower in READ_ONLY_VERBS:
             verb = candidate if candidate in READ_ONLY_VERBS else full_lower
+            next_head = semantics.semantic_head_tokens[semantic_index + 1:semantic_index + 2]
+            if (
+                verb in GROUP_READ_WORDS
+                and not path_anchored
+                and semantic_index < hyphen_depth
+                and next_head
+                and _head_token_mutates(next_head[0])
+            ):
+                continue
             # An ALWAYS-dangerous flag escalates even a read-only verb: the
             # Step 5 flag scan below never runs for a read-only verb because
             # this early-return fires first, so `terraform state list --prune`

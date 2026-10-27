@@ -10,11 +10,8 @@ resolves to. Neither ``switch`` nor ``logout`` carries a verb in
 to READ_ONLY "by elimination" -- the audit log shows ``gh auth switch``
 running with no friction at all.
 
-The read surface of the same subcommand group must keep costing nothing, and
-``gh auth login`` stays free with it for now, although it makes the new account
-the active one (gh's multiple-accounts doc). Keeping the active account in
-place while adding one belongs to an isolated gh config directory, not to a
-signature on login.
+The read surface of the same subcommand group must keep costing nothing;
+``gh auth login`` activates the account it adds, so it is the user's call.
 
 Every closed form carries its counterfactual: withdraw the anchor, drop the
 memoized verdicts, and the form must return to exactly what it classified
@@ -54,8 +51,8 @@ CLOSED = [
 FREE = [
     ("gh-auth-status", "gh auth status"),
     ("gh-auth-token-named", "gh auth token --user metraton"),
-    ("gh-auth-login", "gh auth login --hostname github.com"),
 ]
+USERS_CALL = "gh auth login"
 
 
 def _clear_classifier_caches():
@@ -173,7 +170,8 @@ def test_every_command_the_denial_suggests_classifies_free(case_id, command):
     """
     suggested = _suggested_commands(detect_mutative_command(command).guidance)
     assert len(suggested) == 3, f"{case_id}: expected status, login and the per-process form: {suggested}"
-    for suggestion in suggested:
+    assert USERS_CALL in suggested and detect_mutative_command(USERS_CALL).is_mutative
+    for suggestion in (s for s in suggested if s != USERS_CALL):
         result = detect_mutative_command(suggestion)
         assert result.is_mutative is False, (
             f"{case_id}: suggested {suggestion!r} is itself gated -- "
