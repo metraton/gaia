@@ -18,8 +18,7 @@ _GENERIC_VERBS = frozenset({"run", "exec"})
 class NestedRun:
     """What an executor runs: *inner* is None for a session; *unparsed* names the word that stopped the parse.
 
-    *reads* are the local files the executor itself loads, such as an ``--env-file``; *alternatives* are
-    other commands an ambiguous parse may hand over.
+    *reads* are local files the executor loads (``--env-file``); *alternatives* are commands an ambiguous parse may run.
     """
 
     executor: str

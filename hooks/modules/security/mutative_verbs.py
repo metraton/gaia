@@ -4658,9 +4658,11 @@ def _check_target_environment(
     """Judge *remainder* run under a variable that picks its target or identity as the flag that variable stands for."""
     from ..tools.shell_parser import shell_split
 
-    stripped = command.strip()
-    words = shell_split(remainder)
-    flagged = with_target_flags(shell_split(stripped[: len(stripped) - len(remainder)]), words)
+    try:
+        written, words = shell_split(command), shell_split(remainder)
+    except ValueError:
+        return None
+    flagged = with_target_flags(written[: len(written) - len(words)], words)
     if flagged is None:
         return None
     result = detect_mutative_command(shlex.join(flagged), cwd=cwd, _depth=_depth)

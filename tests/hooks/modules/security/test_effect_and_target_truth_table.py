@@ -633,6 +633,9 @@ NESTED_PINS = [
     ("env DOCKER_HOST=tcp://h:2375 docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
     ("DOCKER_CONFIG=/x docker exec c1 ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
     ("FOO=1 kubectl exec pod-1 -- ls", "none", {"FREE"}, ""),
+    ("gcloud compute ssh vm-1 --command 'l\\s /app'", "none", {"FREE"}, ""),
+    ("gcloud compute ssh vm-1 --command 'e\\nv'", "none", {"FREE"}, ""),
+    ("KUBECONFIG=/x kubectl exec pod-1 -- l\\s /app", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
     ("gcloud compute ssh vm-1 --impersonate-service-account=sa@x --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
     ("gcloud --impersonate-service-account sa@x compute ssh vm-1 --command ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
 ]
