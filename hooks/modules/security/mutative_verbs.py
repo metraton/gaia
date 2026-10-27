@@ -17,11 +17,13 @@ Categories retained internally for verb classification:
 """
 
 import functools
+import hashlib
 import json
 import logging
 import os
 import re
 import shlex
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
@@ -8663,6 +8665,94 @@ def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
     return None
 
 
+# Git is asked only what its index and object store record, never to compare
+# the worktree itself: that comparison would run any fsmonitor or clean filter
+# the repository configures inside the hook. The worktree bytes are hashed here.
+_GIT_INDEX_ONLY = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
+
+
+def _repository_root(path: Path) -> "Optional[str]":
+    """The worktree root of the git repository holding the existing file *path*, or None."""
+    if not path.is_file():
+        return None
+    top = _git_read(os.path.dirname(os.path.realpath(path)), "rev-parse", "--show-toplevel")
+    return os.path.realpath(top) if top else None
+
+
+def _git_blob_id(path: Path, length: int) -> "Optional[str]":
+    """The id git gives the bytes of the regular file *path*, in the hash whose hex digest is *length* long."""
+    if path.is_symlink():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    digest = hashlib.sha1 if length == 40 else hashlib.sha256
+    return digest(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _committed_unmodified(
+    top: str, pathspecs: "List[str]", counts: "Callable[[str], bool]",
+) -> "Optional[FrozenSet[str]]":
+    """The tracked files *counts* keeps under *pathspecs*, or None when one is staged, modified, a link, or untracked."""
+    untracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-z", "--others", "--", *pathspecs)
+    staged = _git_read(top, *_GIT_INDEX_ONLY, "diff-index", "--cached", "--name-only", "-z", "HEAD", "--", *pathspecs)
+    tracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-s", "-z", "--", *pathspecs)
+    if untracked is None or staged is None or tracked is None:
+        return None
+    for path in filter(None, untracked.split("\0")):
+        if "__pycache__" not in Path(path).parts and (counts(path) or os.path.islink(os.path.join(top, path))):
+            return None
+    if any(counts(path) for path in filter(None, staged.split("\0"))):
+        return None
+    committed = set()
+    for entry in filter(None, tracked.split("\0")):
+        info, _, path = entry.partition("\t")
+        mode, blob, stage = info.split()
+        if mode in ("120000", "160000"):
+            return None
+        if not counts(path):
+            continue
+        if stage != "0" or _git_blob_id(Path(top, path), len(blob)) != blob:
+            return None
+        committed.add(path)
+    return frozenset(committed)
+
+
+def _python_repository_vouches(
+    script: "Optional[Path]", directory: "Optional[Path]", moved_names: "FrozenSet[str]",
+) -> bool:
+    """True when *script* and every Python module its repository could serve it are committed and unmodified.
+
+    The modules are the script's directory, Python's first import root, and,
+    for code that moves ``sys.path``, every file or package in the repository
+    named like one of *moved_names*; a name outside the standard library must
+    resolve to at least one of them, since anything else lies off the repository.
+    """
+    top = _repository_root(script) if script is not None else None
+    if top is None:
+        return False
+    script_rel = os.path.relpath(os.path.realpath(script), top)
+    pathspecs = [f":(literal){script_rel}"]
+    if directory is not None:
+        directory_rel = os.path.relpath(os.path.realpath(directory), top)
+        if directory_rel.startswith(".."):
+            return False
+        pathspecs.append(f":(literal){directory_rel}")
+    for name in moved_names:
+        pathspecs.extend((f":(glob)**/{name}", f":(glob)**/{name}.*", f":(glob)**/{name}/**"))
+    committed = _committed_unmodified(
+        top, pathspecs, lambda path: path == script_rel or Path(path).suffix in _PYTHON_MODULE_SUFFIXES,
+    )
+    if committed is None or script_rel not in committed:
+        return False
+    standard = frozenset(getattr(sys, "stdlib_module_names", ())) | frozenset(sys.builtin_module_names)
+    return all(
+        any(name in Path(path).parts[:-1] or Path(path).name.split(".")[0] == name for path in committed)
+        for name in moved_names - standard
+    )
+
+
 def _python_local_module_run(
     base_cmd: str, args: "List[str]", cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
@@ -8690,16 +8780,22 @@ def _python_local_module_run(
 
 def _python_foreign_module(
     code: str, directory: "Optional[Path]", family: str, cwd: "Optional[str]", _depth: int,
+    script: "Optional[Path]" = None,
 ) -> "Optional[MutativeResult]":
-    """Judge the modules *code* loads from *directory* (None: off ``sys.path``): a module file is read like a script."""
+    """Judge the modules *code* loads from *directory* (None: off ``sys.path``): a module file is read like a script.
+
+    Modules the repository of *script* holds committed and unmodified are
+    vouched for and not read (``_python_repository_vouches``).
+    """
     if _loaded_modules is None:
         return None
-    names, unnamed = _loaded_modules(code)
-    if unnamed:
+    names, unnamed, path_changed = _loaded_modules(code)
+    vouched = _python_repository_vouches(script, directory, names - {"sys"} if path_changed else frozenset())
+    if unnamed or (path_changed and not vouched):
         return _foreign_code_result(
             "Python loads a file by relative import, runpy.run_path, a site directory or a changed sys.path",
         )
-    if directory is None:
+    if directory is None or vouched:
         return None
     for name in sorted(names):
         local = _local_python_module(name, directory)
@@ -9072,10 +9168,9 @@ def _check_script_file(
             )
         if ast_result.parse_failed:
             return _unparsed_code(family, f"Python script '{script_path}'")
-        script_dir = Path(cwd or Path.cwd(), Path(script_path).expanduser()).parent
-        if _python_skips_local_directory(command):
-            script_dir = None
-        foreign = _python_foreign_module(content, script_dir, family, cwd, _depth)
+        script_file = Path(cwd or Path.cwd(), Path(script_path).expanduser())
+        script_dir = None if _python_skips_local_directory(command) else script_file.parent
+        foreign = _python_foreign_module(content, script_dir, family, cwd, _depth, script=script_file)
         if foreign is not None:
             return foreign
         if _runs_code_string(content):
@@ -9508,7 +9603,9 @@ def _classify_js_import_closure(
     screen), so a write in an imported module classifies as if inlined in the
     entry.  A relative import that cannot be resolved or read, or a closure past
     either bound, returns a mutative result naming the cause.  Cycles end on the
-    visited set.
+    visited set.  A module the repository holds committed and unmodified, like
+    a committed unmodified entry, is vouched for and not read, though its own
+    imports still are.
     """
     import os
 
@@ -9516,6 +9613,15 @@ def _classify_js_import_closure(
     if not os.path.isabs(entry_abs):
         entry_abs = os.path.join(cwd if cwd is not None else os.getcwd(), entry_abs)
     entry_abs = os.path.realpath(entry_abs)
+    top = _repository_root(Path(entry_abs))
+    entry_rel = os.path.relpath(entry_abs, top) if top else ""
+
+    def vouched(target: str) -> bool:
+        target_rel = os.path.relpath(target, top) if top else ".."
+        if target_rel.startswith(".."):
+            return False
+        pathspecs = [f":(literal){entry_rel}", f":(literal){target_rel}"]
+        return _committed_unmodified(top, pathspecs, lambda path: True) == {entry_rel, target_rel}
 
     seen = {entry_abs}
     queue = [(entry_abs, entry_stripped, 0)]
@@ -9558,6 +9664,9 @@ def _classify_js_import_closure(
                         f"{_MAX_SCRIPT_READ_BYTES}-byte read limit",
                     )
                 imported_stripped = _strip_source(imported, spec)
+                if vouched(target):
+                    queue.append((target, imported_stripped, depth + 1))
+                    continue
                 verdict = _classify_source_with_lexer(
                     imported, target, family, spec, cwd=cwd, _depth=_depth,
                     stripped=imported_stripped, screen_blocked=False,

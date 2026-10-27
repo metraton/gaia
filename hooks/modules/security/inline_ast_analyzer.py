@@ -616,18 +616,17 @@ def analyze_python_inline(
     return InlineAstResult()
 
 
-def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
-    """Return the top-level modules *code* loads by literal name, and whether it also loads code no name proves.
+def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool, bool]:
+    """Return the top-level modules *code* loads by literal name, whether it loads a file no name proves, and whether it moves ``sys.path`` before importing.
 
     A relative import and ``runpy.run_path`` run a file rather than a named
     module, and a site directory's ``.pth`` files run as it is added, so those
-    are the second value, as is a ``sys.path`` change in code that imports;
-    code that does not parse names none.
+    are the second value; code that does not parse names none.
     """
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError:
-        return frozenset(), False
+        return frozenset(), False, False
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     names, unnamed, path_changed = set(), False, False
@@ -650,7 +649,7 @@ def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             path_changed = path_changed or any(_names_sys_path(alias_map, target) for target in targets)
     names.discard("")
-    return frozenset(names), unnamed or (path_changed and bool(names - {"sys"}))
+    return frozenset(names), unnamed, path_changed and bool(names - {"sys"})
 
 
 _SITE_DIRECTORY_CALLS = frozenset({
