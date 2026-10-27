@@ -1136,9 +1136,8 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
 
 // ── 13. PALETTE OVERRIDES — built, emitted, audited from the generated data ──
 // A legible override passes the contrast audit and reaches the generated CSS; a
-// muted token washed out to near-white fails it even on `neutral`, which gates
-// nothing of its own; a misspelled key, a non-colour value and an unknown theme
-// are refused by the build.
+// muted token washed out to near-white fails it; a misspelled key, a non-colour
+// value and an unknown theme are refused by the build.
 {
   const dir = mkDeck();
   fs.copyFileSync(path.join(ROOT, 'tools', 'contrast-audit.cjs'), path.join(dir, 'tools', 'contrast-audit.cjs'));
@@ -1168,6 +1167,25 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
   }
   report('PALETTE/overrides: a legible override ships and passes, a contrast miss fails, bad keys are refused',
     misses.length === 0, misses.join('\n'));
+  rmDeck(dir);
+}
+
+// ── 13b. PALETTE/neutral — the default palette gates its own text ────────────
+// The shipped stylesheet passes; putting back the secondary grey neutral had
+// before 2026-10-26 (3.65:1 on a box) fails the run.
+{
+  const dir = mkDeck();
+  fs.copyFileSync(path.join(ROOT, 'tools', 'contrast-audit.cjs'), path.join(dir, 'tools', 'contrast-audit.cjs'));
+  const audit = () => runNode([path.join(dir, 'tools', 'contrast-audit.cjs')]);
+  const shipped = audit();
+  const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  const reverted = html.replace(/(:root \{[^}]*--muted:)#[0-9A-Fa-f]{6}/, '$1#87867F');
+  fs.writeFileSync(path.join(dir, 'index.html'), reverted, 'utf8');
+  const old = audit();
+  report('PALETTE/neutral: shipped text pairs pass, the old 3.65:1 grey fails as gated',
+    shipped.code === 0 && reverted !== html && old.code !== 0
+      && old.out.includes('neutral/light muted-on-surface 3.65:1 < 4.5'),
+    `shipped=${shipped.code} reverted=${reverted !== html} old=${old.code} ${old.out.slice(-400)}`);
   rmDeck(dir);
 }
 

@@ -33,13 +33,13 @@
 //                           structure. If a border falls below this the layout
 //                           itself stops being legible, independent of any text.
 //
-// WHAT `gates` MEANS, AND WHY neutral GATES NOTHING.
-// `neutral` is the palette every already-published deck renders with. Reaching AA
-// there would mean changing those tokens — which changes how every existing deck
-// LOOKS, a harder constraint than the contrast target. So neutral's shortfalls are
-// MEASURED AND REPORTED, never silently "fixed": it gates no load, the run prints
-// its real numbers, and `contrast` exists as the palette that does guarantee AA.
-// Reporting the gap is the honest outcome; hiding it behind a green would not be.
+// WHAT `gates` MEANS, AND WHY neutral GATES ITS TEXT BUT NOT ITS BORDERS.
+// `neutral` is the default palette, so its secondary text (box kickers and
+// descriptions, the subtitle, chips) is what most readers read. It used to gate
+// nothing, to keep published decks looking as they did, and that text sat at 3.5:1.
+// On 2026-10-26 the user accepted the cost: neutral's text tokens were darkened
+// just enough to clear 4.5:1, so a published deck takes a slightly darker grey on
+// its next re-seed. Its hairline borders stay reported only, as Rosé Pine's do.
 // ─────────────────────────────────────────────────────────────────────────
 const fs = require('fs');
 const path = require('path');
@@ -135,8 +135,8 @@ function ratio(a, b) {
 //            descriptions, section headings) — text a viewer reads continuously
 //   accent   a semantic accent used AS TEXT on its own tint (a coloured kicker)
 //   nontext  a UI boundary (cell / zone / control border), WCAG 1.4.11
-// A palette declares which loads it GATES (see PALETTES), so the audit can hold a
-// palette to the bar it promises without pretending the frozen one meets it.
+// A palette declares which loads it GATES (see PALETTES), so the audit holds each
+// palette to the bar it promises.
 //
 // Every pair below is a place the stylesheet really puts that foreground on that
 // background — see the cited selector. Nothing hypothetical is audited.
@@ -184,16 +184,15 @@ const PAIRS = [
 
 // Palettes to audit, each declaring which LOADS it gates. A gated load that falls
 // below threshold FAILS the run; an ungated one is measured and reported only.
-//   neutral         gates nothing — frozen so published decks keep their look.
-//   rose-pine(-moon) gates primary + accent: it is offered as a usable skin, so
-//                   the text a viewer reads must clear AA. `nontext` is NOT gated
-//                   because Rosé Pine's highlight-* border roles are deliberately
-//                   low-contrast hairlines (that restraint IS the palette's
-//                   identity); forcing them to 3:1 would stop it being Rosé Pine.
+//   neutral,
+//   rose-pine(-moon) gate primary + accent: the text a viewer reads must clear AA.
+//                   `nontext` is NOT gated because their border roles are
+//                   deliberately low-contrast hairlines (that restraint IS the
+//                   look); forcing them to 3:1 would change the palette.
 //                   Reported, so the number is never hidden.
 //   contrast        gates EVERYTHING — it exists precisely to guarantee AA.
 const PALETTES = [
-  { name: 'neutral',        gates: [] },
+  { name: 'neutral',        gates: ['primary', 'accent'] },
   { name: 'rose-pine',      gates: ['primary', 'accent'] },
   { name: 'rose-pine-moon', gates: ['primary', 'accent'] },
   { name: 'contrast',       gates: ['primary', 'accent', 'nontext'] },
@@ -237,10 +236,9 @@ for (const pal of PALETTES) {
 
 // ── the deck's own palette_overrides ─────────────────────────────────────
 // Read from the GENERATED data, so the audit measures what the deck ships, not
-// what the YAML says. Only the pairs an override touches are re-measured, and
-// they gate primary + accent even on `neutral`: an override is the author's new
-// colour, so it cannot inherit neutral's frozen exemption. `nontext` gates only
-// where the palette itself gates it (Rosé Pine hairlines stay its identity).
+// what the YAML says. Only the pairs an override touches are re-measured; they
+// gate primary + accent on every palette, and `nontext` only where the palette
+// itself gates it (hairline borders stay the palette's look).
 const { loadGenerated } = require('./static-census.cjs');
 const gen = loadGenerated(ROOT);
 const overrides = gen.ok ? gen.doc.palette_overrides : undefined;
@@ -274,7 +272,7 @@ console.log('══════════════════════�
 console.log(`${checked} pairs measured across ${PALETTES.length} palettes × ${THEMES.length} themes` +
   (overridePairs ? `, ${overridePairs} of them re-measured under the deck's palette_overrides.` : '.'));
 if (failures === 0) {
-  console.log(`ALL GATED PAIRS PASS${shortfalls ? ` — ${shortfalls} ungated shortfall(s) reported above (frozen neutral + Rosé Pine hairline borders).` : '.'}\n`);
+  console.log(`ALL GATED PAIRS PASS${shortfalls ? ` — ${shortfalls} ungated shortfall(s) reported above (neutral + Rosé Pine hairline borders).` : '.'}\n`);
   process.exit(0);
 }
 console.log(`FAIL — ${failures} GATED pair(s) below threshold:`);

@@ -98,8 +98,15 @@ Approved: the conventions.
 component, whether it opens a detail and what that detail defines, in a few
 words. You propose the chips and their members; the person confirms or changes
 them. The detail text is not discussed here: it is a fact, written at build
-time from the source, and the person reads it in the built deck. Approved: the
-tables.
+time from the source, and the person reads it in the built deck.
+
+Before the yes, ask of each table what can go. Can a box leave without the
+page losing what it says? Can two boxes that always appear together become
+one? This is a question, not a limit: a page may need sixty boxes. Structure
+is the claim, so a box that is a real part of the thing stays, and two boxes
+merge only when the source says they are one thing. On a page that shows
+everything there is, nothing leaves; ask instead whether each box is really
+a separate part. Approved: the tables.
 
 **E. Build.** Ask where the deck lives. Hand the subagent the approved tables
 and conventions ([build.md](build.md)). It returns the YAML, the check results
