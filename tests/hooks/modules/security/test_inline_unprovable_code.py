@@ -42,6 +42,15 @@ PY_ASKS = {
     "os-open-computed": "import os\nos.read(os.open('.e' + 'nv', os.O_RDONLY), 99)",
     "shutil-computed": "import shutil\nshutil.copy('a' + 'b', 'c')",
     "listdir-computed": "import os\nprint(os.listdir('~/.s' + 'sh'))",
+    "listdir-environ": "import os\nprint(os.listdir(os.environ['HOME']))",
+    "scandir-getenv": "import os\nprint(list(os.scandir(os.getenv('HOME'))))",
+    "walk-home": "import os\nfrom pathlib import Path\nprint(next(os.walk(Path.home())))",
+    "iterdir-home": "from pathlib import Path\nprint(list(Path.home().iterdir()))",
+    "git-c-pager": "import subprocess\nsubprocess.run(['git', '-c', 'core.pager=sh -c x', 'log'])",
+    "git-c-pager-read": "import subprocess\nsubprocess.run(['git', '-c', 'core.pager=less', 'log'])",
+    "git-c-alias": "import subprocess\nsubprocess.run(['git', '-c', 'alias.x=!id', 'x'])",
+    "git-c-credential": "import subprocess\nsubprocess.run(['git', '-c', 'credential.helper=store', 'fetch'])",
+    "git-exec-path": "import subprocess\nsubprocess.run(['git', '--exec-path=/tmp/x', 'status'])",
 }
 PY_FREE = {
     "json": "import json\nd = json.loads('{\"a\": 1}')\nprint(d['a'])",
@@ -56,6 +65,9 @@ PY_FREE = {
     "joined-literals": "import os\nprint(open(os.path.join('docs', 'README.md')).read())",
     "zip-read": "import zipfile\nprint(zipfile.ZipFile('z.zip').namelist())",
     "tar-read": "import tarfile\nprint(tarfile.open('x.tar.gz', 'r:gz').getnames())",
+    "listdir-literal": "import os\nprint(os.listdir('docs'))",
+    "listdir-cwd": "import os\nprint(sorted(os.listdir(os.getcwd())))",
+    "git-c-data-key": "import subprocess\nsubprocess.run(['git', '-c', 'color.ui=never', 'status'])",
 }
 PY_SECRETS = {
     "ssh": "print(open('/home/u/.ssh/id_rsa').read())",
@@ -156,11 +168,22 @@ JS_ASKS = {
     "net-import": "import('node:net').then(n => n.connect(80))",
     "fetch-post": "fetch('https://example.com', {method: 'POST', body: 'x'})",
     "buffer-eval": "eval(Buffer.from('cmVxdWlyZSgiZnMiKS51bmxpbmtTeW5jKCJhIik=', 'base64').toString())",
+    "destructured": "const { writeFileSync } = require('fs'); writeFileSync('o.txt', 'x')",
+    "destructured-rename": "const { rmSync: z } = require('fs'); z('build', {recursive: true})",
+    "destructured-promises": "const { rm } = require('fs/promises'); rm('build', {recursive: true})",
+    "promises-member": "require('fs/promises').rm('build', {recursive: true})",
+    "fs-alias": "const f = require('fs'); f.writeFileSync('o', 'x')",
+    "fs-passed": "const f = require('node:fs'); helper(f)",
+    "import-named": "import { unlinkSync } from 'fs'; unlinkSync('a')",
+    "cp-renamed": "const { execSync: run } = require('child_process'); run('rm -rf x')",
+    "env-spawn": "process.env.GIT_DIR = '/x'; require('child_process').execFileSync('git', ['status'])",
 }
 JS_FREE = {
     "json": "console.log(JSON.parse('{\"a\":1}').a)",
     "hostname": "console.log(require('os').hostname())",
     "fs-literal-member": "const fs = require('fs'); console.log(fs.readFileSync('package.json', 'utf8'))",
+    "fs-destructured-read": "const { readFileSync, existsSync: has } = require('fs'); console.log(has('a') && readFileSync('a', 'utf8'))",
+    "promises-read": "require('fs/promises').readFile('package.json', 'utf8').then(console.log)",
 }
 JS_FILE_FREE = {
     "fetch-get": "fetch('https://example.com').then(r => r.text()).then(console.log)",
@@ -209,6 +232,14 @@ UNPARSED = {
     "php": ("-r", "php", {
         "asks": ["file_put_contents('o.txt', 'x');", "shell_exec('rm -rf build');", "echo \"$x\";"],
         "free": ["echo 1+1;", "echo 'hi', \"\\n\";", "print('x');"],
+    }),
+    "lua": ("-e", "lua", {
+        "asks": ["os.remove('a')", "os.execute('rm -rf x')", "io.open('o.txt', 'w'):write('x')", "io.popen('ls')"],
+        "free": ["print(1)", "print('hello')"],
+    }),
+    "Rscript": ("-e", "R", {
+        "asks": ["file.remove('a')", "system('rm -rf x')", "unlink('b', recursive=TRUE)", "writeLines('x', 'o.txt')"],
+        "free": ["print(1)", "print('hello')"],
     }),
 }
 

@@ -1228,7 +1228,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
     "python", "python3",
     "python3.10", "python3.11", "python3.12", "python3.13",
     "bash", "sh", "zsh", "dash", "ksh",
-    "node", "ruby", "perl", "php",
+    "node", "ruby", "perl", "php", "lua", "rscript",
 })
 
 # Non-shell, non-Python interpreters: their script files are SOURCE CODE in a
@@ -1241,7 +1241,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
 # camelCase multi-word tokens embedded inside a quoted string argument were
 # never matched anyway (the quote makes the whole string a single token).
 _NON_SHELL_SCRIPT_INTERPRETERS: FrozenSet[str] = frozenset({
-    "node", "ruby", "perl", "php",
+    "node", "ruby", "perl", "php", "lua", "rscript",
 })
 
 # File extensions whose interpreter is implied by ``./script`` (no explicit
@@ -1384,6 +1384,8 @@ _INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "ruby": frozenset({"-e"}),
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
+    "lua": frozenset({"-e", "-l"}),
+    "rscript": frozenset({"-e"}),
 }
 
 _PYTHON_OPTION_VALUE_FLAGS: FrozenSet[str] = frozenset({"-W", "-X", "--check-hash-based-pycs"})
@@ -2276,9 +2278,9 @@ _JS_EFFECT_BINDING_RE = _re.compile(
     r"""(?:node:)?(?:fs|fs/promises|net|child_process)['"]\s*\)"""
     r"""|\bimport\s+(?:\*\s+as\s+)?(\w+)\s+from\s+['"](?:node:)?(?:fs|fs/promises|net|child_process)['"]"""
 )
-# Ruby, perl and php have no parser here: their code asks unless every statement
-# prints only literals (no interpolation), numbers and arithmetic.
-_UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php"})
+# Ruby, perl, php, lua and R have no parser here: their code asks unless every
+# statement prints only literals (no interpolation), numbers and arithmetic.
+_UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php", "lua", "rscript"})
 _PRINT_ONLY_STATEMENT_RE = _re.compile(
     r"""\s*(?:(?:print|puts|pp|p|echo|say|printf)\b"""
     r"""(?:'(?:[^'\\]|\\['\\])*'|"(?:[^"\\$#@{`]|\\[nt"\\])*"|\d+(?:\.\d+)?|[\s+\-*/%.,()])*)?\s*"""
@@ -8658,10 +8660,13 @@ def _check_script_file(
     # relative script/npm-run resolves against the SAME directory the outer
     # script was read from, not the hook's own cwd (see _classify_script_
     # content_by_regex's docstring).
-    return _classify_script_content_by_regex(
+    regex_result = _classify_script_content_by_regex(
         content, script_path, family, from_source_code=(lane == "code"),
         cwd=cwd, _depth=_depth + 1,
     )
+    if regex_result.is_mutative or base_cmd not in _UNPARSED_CODE_INTERPRETERS or _prints_literals_only(content):
+        return regex_result
+    return _unparsed_code(family, f"Script '{script_path}'")
 
 
 # A process inherits the script's stdin, so an interpreter started without a
@@ -8697,9 +8702,9 @@ def _argv_command_is_mutative(
     argv: Tuple[str, ...], cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> bool:
     """Judge what a script's literal argv runs, as the exec-sink lane does."""
-    if _argv_runs_unnamed_program(argv):
-        return True
     command = shlex.join(argv)
+    if _argv_runs_unnamed_program(argv) or _git_config_programs(command):
+        return True
     if _is_blocked_command is not None and _is_blocked_command(command).is_blocked:
         return True
     return detect_mutative_command(command, cwd=cwd, _depth=_depth).is_mutative
@@ -9766,7 +9771,85 @@ def _js_hidden_effect(code: str, calls_view: "Optional[str]" = None) -> bool:
     if _JS_NETWORK_MODULE_RE.search(code) or _JS_HIDDEN_CALL_RE.search(calls):
         return True
     names = {match.group(1) or match.group(2) for match in _JS_EFFECT_BINDING_RE.finditer(code)}
-    return any(_re.search(rf"\b{_re.escape(name)}\s*\[", calls) for name in names)
+    if any(_re.search(rf"\b{_re.escape(name)}\s*\[", calls) for name in names):
+        return True
+    if calls_view is None and _strip_source is not None and _spec_for_script is not None:
+        stripped = _strip_source(code, _spec_for_script("node", ""))
+        code, calls = stripped.exec_view, stripped.verb_view
+    return _js_effect_module_unproven(code, calls)
+
+
+# fs, fs/promises and child_process run free only through members named here: an fs read
+# or mkdir (free as shell mkdir is), or a sink whose literal command the exec-sink scan judges.
+_JS_FS_READ_MEMBERS: FrozenSet[str] = frozenset({
+    "mkdirSync", "mkdir", "readFileSync", "readFile", "readdirSync", "readdir", "existsSync", "exists", "statSync", "stat",
+    "lstatSync", "lstat", "accessSync", "access", "realpathSync", "realpath", "readlinkSync", "readlink",
+    "createReadStream", "opendirSync", "opendir", "constants",
+})
+_JS_CHILD_PROCESS_SINKS: FrozenSet[str] = frozenset({
+    "execSync", "execFileSync", "execFile", "spawnSync", "spawn", "exec",
+})
+_JS_EFFECT_SPECIFIER = r"""(?P<q>['"`])(?:node:)?(?P<module>fs|fs/promises|child_process)(?P=q)"""
+_JS_REQUIRE_RE = _re.compile(r"\brequire\s*\(\s*" + _JS_EFFECT_SPECIFIER + r"\s*\)")
+_JS_STATIC_IMPORT_RE = _re.compile(r"\bimport\s+([^'\"`;]+?)\s+from\s*" + _JS_EFFECT_SPECIFIER)
+_JS_ALIAS_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?$")
+_JS_DESTRUCTURE_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?$")
+_JS_MEMBER_RE = _re.compile(r"\s*\.\s*(?:promises\s*\.\s*)?([A-Za-z_$][\w$]*)")
+_JS_ENV_WRITE_RE = _re.compile(
+    r"\bprocess\s*\.\s*env\s*(?:\.\s*[\w$]+|\[[^\]]*\])\s*(?:=(?!=)|\+=)"
+    r"|\bObject\s*\.\s*assign\s*\(\s*process\s*\.\s*env\b|\bdelete\s+process\s*\.\s*env\b"
+)
+
+
+def _js_effect_module_unproven(code: str, calls: str) -> bool:
+    """True when *code* binds fs, fs/promises or child_process to anything but known members, or sets ``process.env`` before a child process."""
+    if _JS_ENV_WRITE_RE.search(calls) and _re.search(r"child_process", code):
+        return True
+    aliases: "List[Tuple[str, str]]" = []
+    for match in _JS_REQUIRE_RE.finditer(code):
+        module, before = match.group("module"), code[max(0, match.start() - 400):match.start()]
+        alias = _JS_ALIAS_DECLARATION_RE.search(before)
+        destructured = _JS_DESTRUCTURE_DECLARATION_RE.search(before)
+        member = _JS_MEMBER_RE.match(code, match.end())
+        if member:
+            if not _js_member_known(member.group(1), module):
+                return True
+        elif alias:
+            aliases.append((alias.group(1), module))
+        elif destructured:
+            if not _js_destructured_members_known(destructured.group(1), module, ":"):
+                return True
+        else:
+            return True
+    for match in _JS_STATIC_IMPORT_RE.finditer(code):
+        clause, module = match.group(1), match.group("module")
+        braces = _re.search(r"\{([^{}]*)\}", clause)
+        if braces and not _js_destructured_members_known(braces.group(1), module, " as "):
+            return True
+        bare = _re.sub(r"\{[^{}]*\}|\*\s*as\b|,", " ", clause).split()
+        aliases.extend((name, module) for name in bare)
+    for name, module in aliases:
+        for use in _re.finditer(rf"(?<![\w$.]){_re.escape(name)}(?![\w$])", calls):
+            if _re.search(r"\b(?:const|let|var|import|as)\s+$", calls[max(0, use.start() - 16):use.start()]):
+                continue
+            member = _JS_MEMBER_RE.match(calls, use.end())
+            if not (member and _js_member_known(member.group(1), module)):
+                return True
+    return False
+
+
+def _js_member_known(member: str, module: str) -> bool:
+    return member in (_JS_CHILD_PROCESS_SINKS if module == "child_process" else _JS_FS_READ_MEMBERS)
+
+
+def _js_destructured_members_known(entries: str, module: str, rename: str) -> bool:
+    """True when every destructured entry is a known member; a child_process sink must keep its name for the sink scan."""
+    for entry in filter(None, (part.strip() for part in entries.split(","))):
+        key, renamed, _ = entry.partition(rename)
+        key = key.strip()
+        if key.startswith("...") or not _js_member_known(key, module) or (renamed and module == "child_process"):
+            return False
+    return True
 
 
 def _js_hidden_effect_result(family: str, source: str) -> MutativeResult:

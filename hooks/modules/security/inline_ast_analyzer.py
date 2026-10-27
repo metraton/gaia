@@ -714,8 +714,13 @@ def uncatalogued_effect(tree: ast.AST) -> str:
         dotted = alias_map.resolve_call(node.func) or ""
         if dotted in _ARCHIVE_OPENERS and _opens_archive_to_write(node, dotted):
             return "write"
-        if not all(_provable_path(arg, alias_map, bindings) for arg in _path_arguments(node, dotted)):
+        from_environment = dotted not in _LISTING_CALLS
+        if not all(_provable_path(arg, alias_map, bindings, from_environment) for arg in _path_arguments(node, dotted)):
             return "path"
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _LISTING_METHODS:
+            receiver = node.func.value
+            if _is_path_value(receiver, alias_map) and not _provable_path(receiver, alias_map, bindings, False):
+                return "path"
         leaf = node.func.attr if isinstance(node.func, ast.Attribute) else dotted.rpartition(".")[2]
         if alias_map.getattr_name(node) is not None and alias_map.resolve_call(node.args[0]) is not None:
             continue
@@ -819,6 +824,11 @@ _PATH_METHODS: FrozenSet[str] = frozenset({
     "joinpath", "expanduser", "resolve", "absolute", "with_name", "with_suffix",
 })
 _HOME_VARIABLES: FrozenSet[str] = frozenset({"HOME", "USERPROFILE"})
+# A listing hands back names no literal shows the secret floor, so its directory
+# may not come from the environment, which the command line can set.
+_LISTING_CALLS: FrozenSet[str] = frozenset({"os.listdir", "os.scandir", "os.walk", "glob.glob", "glob.iglob"})
+_LISTING_METHODS: FrozenSet[str] = frozenset({"iterdir", "glob", "rglob", "walk"})
+_ENVIRONMENT_PATHS: FrozenSet[str] = frozenset({"pathlib.Path.home", "os.path.expanduser"})
 
 
 def _path_arguments(call: ast.Call, dotted: str) -> list:
@@ -847,8 +857,17 @@ def _single_bindings(tree: ast.AST) -> Dict[str, ast.AST]:
     }
 
 
-def _provable_path(node: ast.AST, alias_map: "_AliasResolver", bindings: Dict[str, ast.AST], depth: int = 0) -> bool:
-    """True when *node* is a path the parse proves: literals joined as path segments under a known root."""
+def _provable_path(
+    node: ast.AST, alias_map: "_AliasResolver", bindings: Dict[str, ast.AST],
+    from_environment: bool = True, depth: int = 0,
+) -> bool:
+    """True when *node* is a path the parse proves: literals joined as path segments under a known root.
+
+    *from_environment* False refuses a root read from the environment (``HOME``, ``Path.home``, ``~``).
+    """
+    def proven(child: ast.AST) -> bool:
+        return _provable_path(child, alias_map, bindings, from_environment, depth + 1)
+
     if depth > 8 or isinstance(node, ast.Starred):
         return False
     if isinstance(node, ast.Constant):
@@ -857,27 +876,30 @@ def _provable_path(node: ast.AST, alias_map: "_AliasResolver", bindings: Dict[st
         return all(isinstance(value, ast.Constant) for value in node.values)
     if isinstance(node, ast.Name):
         bound = bindings.get(node.id)
-        return node.id == "__file__" or (bound is not None and _provable_path(bound, alias_map, bindings, depth + 1))
+        return node.id == "__file__" or (bound is not None and proven(bound))
     if isinstance(node, ast.Attribute) and node.attr == "parent":
-        return _provable_path(node.value, alias_map, bindings, depth + 1)
+        return proven(node.value)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        return all(_provable_path(side, alias_map, bindings, depth + 1) for side in (node.left, node.right))
+        return proven(node.left) and proven(node.right)
     if isinstance(node, ast.Subscript):
-        return alias_map.resolve_call(node.value) == "os.environ" and _names_home(node.slice)
+        return from_environment and alias_map.resolve_call(node.value) == "os.environ" and _names_home(node.slice)
     if not isinstance(node, ast.Call) or node.keywords and any(k.arg is None for k in node.keywords):
         return False
     dotted = alias_map.resolve_call(node.func)
+    expands_user = isinstance(node.func, ast.Attribute) and node.func.attr == "expanduser"
+    if not from_environment and (dotted in _ENVIRONMENT_PATHS or expands_user):
+        return False
     if dotted in _PATH_ROOTS:
         return not node.args
     if dotted in ("os.getenv", "os.environ.get"):
-        return bool(node.args) and _names_home(node.args[0])
+        return from_environment and bool(node.args) and _names_home(node.args[0])
     if dotted in _PATH_BUILDERS:
         receiver_proven = True
     elif isinstance(node.func, ast.Attribute) and node.func.attr in _PATH_METHODS:
-        receiver_proven = _provable_path(node.func.value, alias_map, bindings, depth + 1)
+        receiver_proven = proven(node.func.value)
     else:
         return False
-    return receiver_proven and all(_provable_path(arg, alias_map, bindings, depth + 1) for arg in node.args)
+    return receiver_proven and all(proven(arg) for arg in node.args)
 
 
 def _is_path_value(node: ast.AST, alias_map: "_AliasResolver") -> bool:
