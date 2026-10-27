@@ -9347,6 +9347,8 @@ def _classify_js_import_closure(
         module, stripped, depth = queue.pop(0)
         for specifier in _js_relative_specifiers(stripped):
             targets = _resolve_js_relative_import(specifier, os.path.dirname(module))
+            if targets is None and specifier.endswith(".json"):
+                continue
             if targets is None:
                 return _import_closure_unproven(
                     "js-import-unresolved", entry_path, family,
