@@ -663,7 +663,7 @@ _TARGET_CARRIERS = (
 )
 
 
-def _target_variable_cases():
+def _target_variable_cases(carriers=_TARGET_CARRIERS):
     from modules.security.nested_executors import TARGET_VARIABLES
 
     assert set(TARGET_VARIABLES) == set(_TARGET_TEMPLATES)
@@ -671,7 +671,7 @@ def _target_variable_cases():
         pytest.param(program, variable, flag, carrier, id=f"{program}:{variable}:{carrier}")
         for program, variables in TARGET_VARIABLES.items()
         for variable, flag in variables.items()
-        for carrier in _TARGET_CARRIERS
+        for carrier in carriers
     ]
 
 
@@ -685,6 +685,33 @@ def test_a_target_variable_asks_wherever_in_the_chain_its_flag_asks(program, var
     command = carrier.format(var=f"{variable}=v", cmd=template.format(flag=""))
     verdict, reason = observe(command, "none", world)
     assert verdict == flag_verdict, (command, verdict, reason)
+
+
+_EXPORTING_CARRIERS = (
+    "export {var} && {cmd}", "export {var}; {cmd}", "export {var}\n{cmd}", "export {var} || {cmd}",
+    "export {var} && true | {cmd}", "declare -x {var} && {cmd}", "typeset -x {var} && {cmd}",
+    "readonly -x {var} && {cmd}", "set -a; {var}; {cmd}", "{var}; export {name} && {cmd}",
+    "export {var} && op run -- {cmd}", "export {var} && echo ok && aws-vault exec prof -- env FOO=1 {cmd}",
+    "env -S '{var} {cmd}'", "env -S '{var} op run -- {cmd}'", "{var} env -S '{cmd}'",
+)
+_ENDING_CARRIERS = (
+    "export {var} && unset {name} && {cmd}", "export {var}; export -n {name}; {cmd}",
+    "declare -x {var} && declare +x {name} && {cmd}",
+)
+
+
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(_EXPORTING_CARRIERS + _ENDING_CARRIERS))
+def test_a_nested_target_variable_exported_earlier_in_the_line_asks_until_it_ends(
+    program, variable, flag, carrier, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    cmd = _TARGET_TEMPLATES[program].format(flag="")
+    verdict, reason = observe(carrier.format(var=f"{variable}=v", name=variable, cmd=cmd), "none", world)
+    unrelated, _ = observe(carrier.format(var="FOO=v", name="FOO", cmd=cmd), "none", world)
+    if carrier in _ENDING_CARRIERS:
+        assert verdict == unrelated, (carrier, verdict, reason)
+    else:
+        assert verdict != "FREE", (carrier, verdict, reason)
 
 
 @pytest.mark.parametrize("command,expected", [
