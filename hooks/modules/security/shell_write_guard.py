@@ -202,8 +202,24 @@ def _writes_default_name(base: str, tokens: List[str]) -> bool:
     return any("d" in b for b in bundles) or "--download" in longs
 
 
+_RUN_WRAPPERS = frozenset({"sudo", "env", "nice", "timeout", "command", "exec", "nohup", "stdbuf"})
+_WRAPPER_VALUE_OPTIONS = frozenset({"-u", "-g", "-n", "-k", "-s", "-C", "-p", "-h", "-D", "-U", "-r", "-t", "-i", "-o", "-e"})
+
+
+def _unwrapped(tokens: List[str]) -> List[str]:
+    """The command a run wrapper (sudo, env, nice, timeout, command, exec) starts, with the wrapper's options and assignments left out."""
+    while tokens and command_name(tokens[0]) in _RUN_WRAPPERS:
+        wrapper, tokens = command_name(tokens[0]), tokens[1:]
+        while tokens and (tokens[0].startswith("-") or re.match(r"[A-Za-z_]\w*=", tokens[0])):
+            tokens = tokens[2:] if tokens[0] in _WRAPPER_VALUE_OPTIONS else tokens[1:]
+        if wrapper == "timeout" and tokens:
+            tokens = tokens[1:]
+    return tokens
+
+
 def downloader_paths(tokens: List[str]) -> List[str]:
     """Every path a downloader line names, each joined under every named directory: the line, not its options, says where it can write."""
+    tokens = _unwrapped(tokens)
     base = command_name(tokens[0]) if tokens else ""
     if base not in _DOWNLOADERS:
         return []

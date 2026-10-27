@@ -87,11 +87,6 @@ GATED_FORMS = [
      "--member=allUsers --role=roles/storage.objectViewer"),
     ("gcloud-project-iam-grant",
      "gcloud projects add-iam-policy-binding p --member=user:a@b.c --role=roles/owner"),
-    # The one gate here that still matches a PATH from position 0, so a shifted
-    # head drops it and the floor is the only thing left standing. The IAM forms
-    # above stopped serving that role once a form rule began deciding them
-    # wherever the token sits; the monotonicity suite needs a position-sensitive
-    # gate in this shared corpus to keep measuring the floor at all.
     ("gcloud-sql-set-password",
      "gcloud sql users set-password postgres --instance=prod "
      "--prompt-for-password"),
@@ -106,6 +101,9 @@ GATED_FORMS = [
     ("gsutil-cp", "gsutil cp local.txt gs://b/o.txt"),
     # git: `-p` is --paginate. A push behind it was free.
     ("git-push", "git push origin main"),
+    # A PATH matched from position 0, on a CLI whose unknown options are not read both ways (aws/az/gcloud's
+    # are): a shifted head drops it and the floor is the only gate left, which the monotonicity suite measures.
+    ("git-remote-add", "git remote add origin https://example.invalid/r.git"),
     ("git-worktree-remove", "git worktree remove /tmp/wt"),
     ("kubectl-delete", "kubectl delete pod my-pod"),
     ("kubectl-apply", "kubectl apply -f manifest.yaml"),

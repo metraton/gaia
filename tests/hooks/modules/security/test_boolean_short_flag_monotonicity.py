@@ -164,31 +164,26 @@ def test_the_floor_is_the_only_gate_on_at_least_one_form():
 def test_a_wrong_entry_cannot_open_a_gate():
     """The adversarial case: declare a value-taking flag valueless, on purpose.
 
-    ``gcloud`` has no single-letter flag that takes a value, so the failure has
-    to be built rather than found. ``-x`` is injected into the table as if
-    someone had audited it wrongly, and the command written the way that flag
-    would really be used. Without the floor the injected entry leaves
-    ``my-project`` standing at the head, the ``sql users set-password`` anchor
-    misses, and a credential mutation classifies T0. With it, the corrupted
-    reading is still consulted and the gate holds.
+    ``-x`` is injected into helm's table as if someone had audited it wrongly,
+    and the command written the way that flag would really be used. Without the
+    floor the injected entry leaves ``my-namespace`` standing at the head, the
+    ``repo add`` anchor misses, and the command classifies T0. With it, the
+    corrupted reading is still consulted and the gate holds.
 
-    The adversarial command is an ANCHORED path rather than an IAM binding: a
-    binding is decided by the form of its token now, at any position, so a
-    shifted head no longer breaks it and it can no longer demonstrate the
-    damage this test exists to measure.
+    The CLI is not aws, az or gcloud: their unknown options are read both ways
+    by the primary reading, so a wrong entry there no longer reaches the floor.
     """
     command = (
-        "gcloud -x my-project sql users set-password postgres "
-        "--instance=prod --prompt-for-password"
+        "helm -x my-namespace repo add bitnami https://charts.example.invalid"
     )
 
-    original = BOOLEAN_SHORT_FLAGS["gcloud"]
-    BOOLEAN_SHORT_FLAGS["gcloud"] = original | {"-x"}
+    original = BOOLEAN_SHORT_FLAGS["helm"]
+    BOOLEAN_SHORT_FLAGS["helm"] = original | {"-x"}
     analyze_command.cache_clear()
     detect_mutative_command.cache_clear()
     try:
         # The head really is shifted: this is the damage, not a hypothetical.
-        assert analyze_command(command).non_flag_tokens[0] == "my-project"
+        assert analyze_command(command).non_flag_tokens[0] == "my-namespace"
 
         floored = detect_mutative_command(command)
         naive = _detect_mutative_command(command)
@@ -202,7 +197,7 @@ def test_a_wrong_entry_cannot_open_a_gate():
             f"is_mutative=False. The floor did not hold."
         )
     finally:
-        BOOLEAN_SHORT_FLAGS["gcloud"] = original
+        BOOLEAN_SHORT_FLAGS["helm"] = original
         analyze_command.cache_clear()
         detect_mutative_command.cache_clear()
 

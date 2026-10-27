@@ -345,12 +345,12 @@ _CLOUD_GLOBAL_OPTIONS: Dict[str, Dict[str, int]] = {
 
 
 def _cloud_command_readings(base_cmd: str, tokens: List[str]) -> Tuple[List[str], bool]:
-    """Return the command without its global options and whether that reading is exact; an unknown leading option is read both ways."""
+    """Return the command without its global options and whether that reading is exact; an unknown option before the operation word is read both ways."""
     arity = _CLOUD_GLOBAL_OPTIONS.get(base_cmd)
     start = next((i for i, t in enumerate(tokens) if program_identity(t) == base_cmd), None) if arity else None
     if start is None:
         return [], True
-    kept, rest, index = tokens[:start + 1], tokens[start + 1:], 0
+    kept, rest, index, operation_seen = tokens[:start + 1], tokens[start + 1:], 0, False
     while index < len(rest):
         token = rest[index]
         name = token.split("=", 1)[0]
@@ -360,10 +360,10 @@ def _cloud_command_readings(base_cmd: str, tokens: List[str]) -> Tuple[List[str]
         if name in arity:
             index += 1 + (0 if "=" in token else arity[name])
             continue
-        if token.startswith("-") and len(kept) == start + 1:
+        if token.startswith("-") and "=" not in token and not operation_seen:
             after = rest[index + 1:]
-            spellings = [kept + after] if "=" in token else [kept + after, kept + after[1:]]
-            return [shlex.join(spelling) for spelling in spellings], False
+            return [shlex.join(kept + after), shlex.join(kept + after[1:])], False
+        operation_seen = operation_seen or (not token.startswith("-") and _names_operation(token))
         kept.append(token)
         index += 1
     return ([shlex.join(kept)] if len(kept) < len(tokens) else []), True

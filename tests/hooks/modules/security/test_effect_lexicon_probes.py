@@ -307,6 +307,17 @@ PROBES += [
     ("az-group-delete-n-show", "az group delete -n show", "BLOCKED"),
     ("az-subscription-list-vm-delete", "az --subscription list vm delete -n v -g r", "BLOCKED"),
     ("aws-ec2-terminate-plain", "aws ec2 terminate-instances --instance-ids i-123", "BLOCKED"),
+    ("gcloud-mid-short-unknown-set-password", "gcloud sql -x my-project users set-password postgres --instance=prod", "SIGNED"),
+    ("gcloud-mid-long-unknown-instances-delete", "gcloud compute --frob list instances delete vm1", "SIGNED"),
+    ("gcloud-mid-unknown-between-groups-deploy", "gcloud run -z get services delete svc", "SIGNED"),
+    ("aws-mid-unknown-before-op", "aws s3api --frob get put-bucket-tagging --bucket b --tagging file://t.json", "SIGNED"),
+    ("az-mid-unknown-between-groups", "az monitor --frob show activity-log alert delete -n x -g r", "SIGNED"),
+    ("gcloud-mid-unknown-read-stays-free", "gcloud compute --frob x instances list", "FREE"),
+    ("sudo-curl-o-claude", f"sudo curl -o {CS} {U}", "BLOCKED"),
+    ("env-curl-o-claude", f"env FOO=1 curl -o {CS} {U}", "BLOCKED"),
+    ("timeout-curl-o-gaia-db", f"timeout -k 5 10 curl -so {DB} {U}", "BLOCKED"),
+    ("nice-wget-O-claude", f"nice -n 5 wget -qO {CS} {U}", "BLOCKED"),
+    ("command-curl-o-hooks", f"command curl -o {CH}/x.py {U}", "BLOCKED"),
 ]
 
 
