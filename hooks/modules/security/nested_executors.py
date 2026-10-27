@@ -129,12 +129,15 @@ _COPIERS_TO_HOSTS = frozenset({"scp", "sftp", "rsync"})
 _SCRIPT_WORD = re.compile(r"(^|/)[\w.-]+\.(sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|pm|php|ps1)$")
 _WORD = re.compile(r"[^\s'\"`;&|()<>]+")
 _TARGET_NAMES = frozenset(name for variables in TARGET_VARIABLES.values() for name in variables)
-_TARGET_MENTION = re.compile(
-    rf"(?<![\w$])(?P<name>{'|'.join(sorted(_TARGET_NAMES))})(?!\w)(?:\[[^\]]*\])?(?:\+?=(?P<value>[^\s;&|()<>]*))?"
-)
 _OPAQUE_SETTER = re.compile(r"(?:^|[\s;&|(){}!`])(?:source|\.)(?=\s)|[<>]\(|<<<")
-_NAME_SETTERS = frozenset({"export", "declare", "typeset", "readonly", "local"})
+_DECLARERS = frozenset({"export", "declare", "typeset", "readonly", "local"})
 _NAME_READERS = {"read": "dinNptu", "mapfile": "dnOsuCc", "readarray": "dnOsuCc"}
+_SETTERS = _DECLARERS | set(_NAME_READERS) | {"eval", "printf", "for", "select", "getopts"}
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+_ASSIGNMENT = re.compile(r"(?P<name>[A-Za-z_]\w*)(?:\[[^\]]*\])?\+?=(?P<value>.*)", re.S)
+_DEFAULTING = re.compile(r"\$\{(?P<name>[^}:=+?#%/^,@\[-]*)(?:\[[^\]]*\])?:?=")
+_REDIRECTION = re.compile(r"\d*(?:[<>]|&>)")
+_REDIRECTION_OPERATOR = re.compile(r"\d*(?:<<<|<<-?|<>|>>|>\||[<>]&|&>>?|<|>)")
 
 
 def _flag_kind(token: str, values: FrozenSet[str], booleans: FrozenSet[str], bundled: str) -> str:
@@ -272,48 +275,82 @@ def _printf_names(args: Sequence[str]) -> List[str]:
             for index, word in enumerate(args) if word.startswith("-v")]
 
 
-def _computes_a_name(words: Sequence[str]) -> bool:
-    computed = (index for index, word in enumerate(words)
-                if word in _NAME_SETTERS or word in _NAME_READERS or word in ("eval", "printf"))
-    start = next(computed, None)
-    if start is None:
-        return False
-    command, args = words[start], words[start + 1:]
+def _without_redirections(words: Sequence[str]) -> List[str]:
+    kept: List[str] = []
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+        elif _REDIRECTION.match(word):
+            skip = bool(_REDIRECTION_OPERATOR.fullmatch(word))
+        else:
+            kept.append(word)
+    return kept
+
+
+def _declared_names(args: Sequence[str]) -> Optional[List[str]]:
+    names: List[str] = []
+    options = True
+    for word in args:
+        if options and word == "--":
+            options = False
+        elif options and word[:1] in "-+" and len(word) > 1:
+            if "n" in word[1:]:
+                return None
+        else:
+            names.append(word.partition("=")[0].removesuffix("+"))
+    return names
+
+
+def _set_names(command: str, args: Sequence[str]) -> Optional[List[str]]:
+    args = _without_redirections(args)
     if command == "eval":
-        return any(mark in word for word in args for mark in "=$`")
+        return None
     if command == "printf":
-        names = _printf_names(args)
-    elif command in _NAME_READERS:
-        names = _reader_names(args, _NAME_READERS[command])
-    else:
-        names = [word.partition("=")[0] for word in args if not word.startswith(("-", "+"))]
-    return any("$" in name or "`" in name for name in names)
+        return _printf_names(args)
+    if command in _NAME_READERS:
+        return _reader_names(args, _NAME_READERS[command])
+    if command in ("for", "select"):
+        return list(args[:1])
+    if command == "getopts":
+        return list(args[1:2])
+    return _declared_names(args)
+
+
+def _sets_only_other_names(words: Sequence[str]) -> bool:
+    for index, word in enumerate(words):
+        if word in _SETTERS:
+            names = _set_names(word, words[index + 1:])
+            if names is None or not all(_is_other_name(name) for name in names):
+                return False
+    return True
+
+
+def _is_other_name(name: str) -> bool:
+    return bool(_IDENTIFIER.fullmatch(name)) and name not in _TARGET_NAMES
 
 
 def targets_set_on_line(line: str) -> Dict[str, str]:
-    """Each target variable *line* names outside a ``$`` read, as written or after quote removal, or every one when it sources a file, substitutes a process, feeds a here-string, evals an assignment or sets a computed name; no scope, unset or unexport on the line ends one."""
+    """Every target variable, with the value a literal assignment gives it, once *line* may set one: any setter whose names are not all plain identifiers outside the table, a nameref, eval, source, a process substitution or a here-string; else none. No scope, unset or unexport on the line ends one."""
     from ..tools.shell_parser import parse_command, shell_split
 
-    unquoted: List[str] = []
+    escalates = bool(_OPAQUE_SETTER.search(line))
+    escalates = escalates or any(not _is_other_name(match["name"]) for match in _DEFAULTING.finditer(line))
+    literal: Dict[str, str] = {}
     for component in parse_command(line):
         try:
             words = shell_split(component)
         except ValueError:
+            escalates = True
             continue
-        if _computes_a_name(words):
-            return {name: f"${name}" for name in _TARGET_NAMES}
-        unquoted.append(" ".join(words))
-    if _OPAQUE_SETTER.search(line):
-        return {name: f"${name}" for name in _TARGET_NAMES}
-    found: Dict[str, str] = {}
-    for text in (line, *unquoted):
-        for match in _TARGET_MENTION.finditer(text):
-            name, value = match.group("name"), match.group("value")
-            if text[:match.start()].endswith(("${", "${!", "${#")) and not text[match.end("name"):].startswith(("=", ":=")):
-                continue
-            if value or name not in found:
-                found[name] = value.strip("'\"") if value else f"${name}"
-    return found
+        escalates = escalates or not _sets_only_other_names(words)
+        for word in words:
+            assignment = _ASSIGNMENT.match(word)
+            if assignment and assignment["name"] in _TARGET_NAMES:
+                literal[assignment["name"]] = assignment["value"]
+    if not escalates and not literal:
+        return {}
+    return {**{name: f"${name}" for name in _TARGET_NAMES}, **literal}
 
 
 def opens_session(inner: str) -> bool:

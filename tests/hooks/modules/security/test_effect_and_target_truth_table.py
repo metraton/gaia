@@ -704,6 +704,7 @@ _EXPORTING_CARRIERS = (
     "export {name}; printf -v {name} %s v; {cmd}", "set -a; read {name} < f; {cmd}", "read -r {name} < f; {cmd}",
     "set -a; printf -v {name} v; {cmd}", "export {name}; mapfile -t {name} < f; {cmd}",
     "export {name}; readarray -t {name} < f; {cmd}", "(export {var}; {cmd})", "{{ export {var}; }}; {cmd}",
+    "for {name} in v; do :; done; {cmd}", ": \"${{{name}:=v}}\"; {cmd}", "getopts a {name}; {cmd}",
     "( export {var}; ) && {cmd}", "( export {var} ); {cmd}", ". /dev/stdin <<< 'export {var}'; {cmd}",
 )
 _OPAQUE_SETTERS = (
@@ -715,10 +716,34 @@ _OPAQUE_SETTERS = (
     "read \"$n\" < f; {cmd}", "read -r \"${{n}}\" < f; {cmd}", "read -ra \"$n\" < f; {cmd}",
     "read -p x -- $n < f; {cmd}", "printf -v \"$n\" v; {cmd}", "printf -v$n %s v; {cmd}",
     "mapfile -t \"$n\" < f; {cmd}", "readarray -d , $n < f; {cmd}",
+    "n=X; declare -n r=${{n}}_Y; r=v; export r; {cmd}", "n=X; declare -n r=\"${{n}}_Y\"; export r=v; {cmd}",
+    "declare -n r=$(echo X)_Y; export r=v; {cmd}", "declare -n r={{X,Z}}_Y; export r=v; {cmd}",
+    "n=X; typeset -n r=${{n}}Y; export r=v; {cmd}", "f() {{ local -n r=$1; export r=v; }}; f Y; {cmd}",
+    "declare -gn r=Y; {cmd}", "export X{{,}}_Y=v; {cmd}", "declare -x {{X,Z}}_Y=v; {cmd}", "export {{A,B}}=1; {cmd}",
+    "read -r {{X,Z}}_Y <<< 'v w'; {cmd}", "printf -v X{{,}}_Y v; {cmd}", "export X_Y?=v; {cmd}", "eval ls; {cmd}",
 )
 _SPLIT_NAMES = ("{a}\"\"{b}", "{a}\\{b}", "\"{a}\"{b}", "{a}''{b}", "$'{a}'{b}", "'{a}'\"{b}\"")
+_COMPUTED_NAMES = ("$'\\x{hex}'{rest}", "$'\\u00{hex}'{rest}", "{init}?", "{init}[{last}]", "{init}*",
+                   "{{{name},X}}", "{a}{{,}}{b}", "{init}{{{last},}}", "{a}{{{b},X}}")
 _LINE_READS = ("echo ${name}; {cmd}", "echo \"${{{name}}}\"; {cmd}", "echo \"${{{name}:-none}}\"; {cmd}",
-               "read -rp \"$p\" line < f; {cmd}", "printf '%s' \"${name}\"; {cmd}", "mapfile -C \"$c\" lines < f; {cmd}")
+               "read -rp \"$p\" line < f; {cmd}", "printf '%s' \"${name}\"; {cmd}", "mapfile -C \"$c\" lines < f; {cmd}",
+               "grep -c {name} f; {cmd}", "export -- FOO=1; {cmd}", "typeset -gx FOO=1; read -r line < f; {cmd}",
+               "for f in a b; do :; done; {cmd}")
+_VERIFIER_ROWS = (
+    "n=DOCKER; declare -n r=${n}_HOST; r=tcp://h:2375; export r; docker exec ctr ls",
+    "n=DOCKER; declare -n r=\"${n}_HOST\"; export r=tcp://h:2375; docker exec ctr ls",
+    "declare -n r=$(echo DOCKER)_HOST; export r=tcp://h:2375; docker exec ctr ls",
+    "declare -n r={DOCKER,X}_HOST; export r=tcp://h:2375; docker exec ctr ls",
+    "n=DOCKER; local -n r=${n}_HOST; r=tcp://h:2375; export r; docker exec ctr ls",
+    "export DOCKER{,}_HOST=tcp://h:2375; docker exec ctr ls",
+    "declare -x {DOCKER,X}_HOST=tcp://h:2375; docker exec ctr ls",
+    "export $'\\u0044OCKER_HOST'=tcp://h:2375; docker exec ctr ls",
+    "export $'\\x44OCKER_HOST'=tcp://h:2375; docker exec ctr ls",
+    "export {DOCKER,X}_HOST=tcp://h:2375; docker exec ctr ls",
+    "export DOCKER_HO{ST,}=tcp://h:2375; docker exec ctr ls",
+    "export DOCKER_{HOST,X}=tcp://h:2375; docker exec ctr ls",
+    "export {A,B}=1; docker exec ctr ls",
+)
 
 
 @pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(_EXPORTING_CARRIERS))
@@ -750,6 +775,28 @@ def test_a_nested_target_variable_spelled_through_quotes_asks(
     middle = len(variable) // 2
     name = split.format(a=variable[:middle], b=variable[middle:])
     command = setter.format(name=name, cmd=_TARGET_TEMPLATES[program].format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("setter", ("export {name}=v; {cmd}", "declare -x {name}=v && {cmd}", "read -r {name} < f; {cmd}"))
+@pytest.mark.parametrize("spelling", _COMPUTED_NAMES)
+@pytest.mark.parametrize("program,variable,flag,carrier", _target_variable_cases(("",)))
+def test_a_nested_target_variable_set_through_an_escape_glob_or_brace_asks(
+    program, variable, flag, carrier, spelling, setter, world, monkeypatch,
+):
+    monkeypatch.chdir(world["root"])
+    middle = len(variable) // 2
+    name = spelling.format(hex=f"{ord(variable[0]):02x}", rest=variable[1:], init=variable[:-1], last=variable[-1],
+                           name=variable, a=variable[:middle], b=variable[middle:])
+    command = setter.format(name=name, cmd=_TARGET_TEMPLATES[program].format(flag=""))
+    verdict, reason = observe(command, "none", world)
+    assert verdict != "FREE", (command, verdict, reason)
+
+
+@pytest.mark.parametrize("command", _VERIFIER_ROWS)
+def test_a_computed_or_nameref_docker_host_asks(command, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
     verdict, reason = observe(command, "none", world)
     assert verdict != "FREE", (command, verdict, reason)
 
