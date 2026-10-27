@@ -759,12 +759,13 @@ _SHELL_RESOLVED = re.compile(r"[$`*?\[\]{}]")
 
 
 def _curl_get_sends_only_literals(args: List[str]) -> bool:
-    """Return True when every option is a known read option or literal query data, so -G cannot be undone.
+    """Return True when curl's own option walk meets -G as an option and every option is a known read option or literal query data.
 
     Nothing that writes a file and nothing the shell or curl's URL globbing resolves may appear.
     """
     if any(_SHELL_RESOLVED.search(a) for a in args):
         return False
+    get_seen = False
     i = 0
     while i < len(args):
         a = args[i]
@@ -780,8 +781,25 @@ def _curl_get_sends_only_literals(args: List[str]) -> bool:
             continue
         if a.startswith("-") and a not in _CURL_GET_SAFE_SWITCHES:
             return False
+        get_seen = get_seen or a in ("-G", "--get")
         i += 1
-    return True
+    return get_seen
+
+
+_CURL_SHORT_DATA_LETTERS = frozenset("dFT")
+_CURL_SHORT_VALUE_LETTERS = frozenset("AbcCDeEHKmoPQrtuUwxXyYz")
+
+
+def _curl_bundle_sends_data(option: str) -> bool:
+    """Return True when a short-option bundle (-Gd) reaches a data letter before a letter that takes the rest as its value."""
+    if option.startswith("--") or len(option) < 3 or not option[1:].isalpha():
+        return False
+    for letter in option[1:]:
+        if letter in _CURL_SHORT_DATA_LETTERS:
+            return True
+        if letter in _CURL_SHORT_VALUE_LETTERS:
+            return False
+    return False
 
 
 def _curl_data_reads_file(flag: str, value: str) -> bool:
@@ -798,13 +816,20 @@ def _classify_curl(tokens: List[str], wrapped: bool = False) -> Optional[FlagCla
     if not tokens or tokens[0] != "curl":
         return None
     args = tokens[1:]
-    get_query = not wrapped and ("-G" in args or "--get" in args) and _curl_get_sends_only_literals(args)
+    get_query = not wrapped and _curl_get_sends_only_literals(args)
     i = 0
     while i < len(args):
         a = args[i]
         if get_query and a in _CURL_QUERY_DATA_FLAGS:
             i += 2
             continue
+        if _curl_bundle_sends_data(a):
+            return FlagClassifierResult(
+                outcome=OUTCOME_MUTATIVE,
+                reason=f"curl {a} bundles an option that sends data to the server",
+                matched_pattern=a,
+                command_family="curl",
+            )
         if a[:2] in ("-d", "-F", "-T") and len(a) > 2:
             return FlagClassifierResult(
                 outcome=OUTCOME_MUTATIVE,
