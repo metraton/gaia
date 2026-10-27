@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
 
 SHELL_TOOLS = frozenset({"bash", "powershell", "monitor"})
+FILE_WRITE_TOOLS = frozenset({"write", "edit", "multiedit", "notebookedit"})
 
 # Dotted event category written to harness_events when a nascent-row birth is
 # rejected for an ANOMALOUS reason (see _is_anomalous_dispatch_binding_rejection).
@@ -418,7 +419,7 @@ class ToolPolicy:
                     session_id=event.session_id,
                     hook_data=hook_data,
                 )
-            if lowered in ("write", "edit"):
+            if lowered in FILE_WRITE_TOOLS:
                 agent_id = hook_data.get("agent_id", "")
                 return self._write_edit_verdict(
                     tool_name, tool_input,
@@ -927,7 +928,7 @@ class ToolPolicy:
         )
         from modules.security.sensitive_paths import is_account_path
 
-        file_path = parameters.get("file_path", "")
+        file_path = parameters.get("file_path") or parameters.get("notebook_path") or ""
         if not file_path:
             return PolicyVerdict()
 
@@ -968,8 +969,8 @@ class ToolPolicy:
             f"[T3_APPROVAL_REQUIRED] This {tool_name} writes '{file_path}', which "
             f"grants access to your own account."
             if account_path else
-            "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
-            "require approval."
+            "[PROTECTED_PATH] Modifications to installed Gaia code, hooks and "
+            "security config require approval."
         )
 
         if not is_subagent:

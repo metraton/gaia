@@ -1196,14 +1196,11 @@ class OpenCodeAdapter(HookAdapter):
 
     @staticmethod
     def _policy_tool_input(tool_name: object, tool_input: object) -> object:
-        """Rename OpenCode's read and grep arguments to the names Gaia's policy reads.
-
-        OpenCode's read takes ``filePath`` and its grep ``include``; the shared
-        policy reads ``file_path`` and ``glob``, as Claude Code sends them.
-        """
+        """Rename OpenCode's ``filePath`` and grep ``include`` to the ``file_path`` and ``glob`` the policy reads."""
         if not isinstance(tool_input, dict):
             return tool_input
-        renames = {"read": {"filePath": "file_path"}, "grep": {"include": "glob"}}
+        file_path = {"filePath": "file_path"}
+        renames = {"read": file_path, "write": file_path, "edit": file_path, "grep": {"include": "glob"}}
         mapping = renames.get(str(tool_name).lower(), {})
         normalized = dict(tool_input)
         for source, target in mapping.items():

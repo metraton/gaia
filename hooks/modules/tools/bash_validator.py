@@ -120,6 +120,7 @@ _MEMORY_GUARD_RULES = {
 from ..security.contract_ownership_guard import check as check_contract_ownership
 from ..security.protected_path_guard import (
     check as check_protected_path_write,
+    unprovable_write_target,
 )
 from ..security.shell_write_guard import check as check_shell_write
 from ..security.sensitive_read_guard import check as check_sensitive_read, remote_copy_destination
@@ -1260,6 +1261,21 @@ class BashValidator:
                     f"[T3_APPROVAL_REQUIRED] This command writes "
                     f"'{account_write_target}', which grants access to your "
                     f"own account."
+                ),
+                session_id=session_id,
+                agent_type=agent_type,
+            )
+
+        unprovable_target = unprovable_write_target(write_guard_scope, cwd)
+        if unprovable_target:
+            return decide_t3_outcome(
+                command,
+                verb="unprovable-write-target",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                native_ask_reason=(
+                    f"[T3_APPROVAL_REQUIRED] This command writes '{unprovable_target[:80]}', "
+                    f"a path only the shell can resolve, so Gaia cannot tell where it lands."
                 ),
                 session_id=session_id,
                 agent_type=agent_type,

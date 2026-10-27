@@ -107,7 +107,7 @@ _HOOK_SPECIFIC_OUTPUT = "hookSpecificOutput"
 # policy (delegate mode, call ceiling). No hook ran for the others before, so they keep the verdict they had.
 _POLICY_TOOLS = frozenset({
     "bash", "powershell", "monitor", "task", "agent", "sendmessage", "askuserquestion",
-    "read", "edit", "write", "glob", "grep", "websearch", "webfetch", "notebookedit",
+    "read", "edit", "multiedit", "write", "glob", "grep", "websearch", "webfetch", "notebookedit",
 })
 
 # Claude Code's two distribution channels and the env var that distinguishes
