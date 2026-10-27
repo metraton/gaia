@@ -357,6 +357,26 @@ SOURCES = {
 }
 
 
+AMBIENT = {
+    "az": ("home/.azure/azureProfile.json", "az frobnicate thing"),
+    "gcloud": ("home/.config/gcloud/configurations/config_default", "gcloud frobnicate thing"),
+    "kubeconfig": ("home/.kube/config", "kubectl frobnicate x"),
+    "docker-config": ("home/.docker/config.json", "docker frobnicate x"),
+}
+
+
+@pytest.mark.parametrize("state", ["absent", "unreadable"])
+@pytest.mark.parametrize("source", sorted(AMBIENT))
+def test_absent_configuration_is_no_target(source, state, env):
+    relative, command = AMBIENT[source]
+    if state == "unreadable":
+        _unreadable(env["tmp"] / relative)
+    else:
+        assert not (env["home"] / relative.split("/")[1]).exists()
+    got, reason = verdict(command, env["work"])
+    assert got in (FREE if state == "absent" else NOT_FREE), (got, reason[:160])
+
+
 @contextlib.contextmanager
 def memory_ceiling(extra_mb):
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)

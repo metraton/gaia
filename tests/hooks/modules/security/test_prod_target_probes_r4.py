@@ -145,7 +145,7 @@ CASES = [
     ("pulumi-up-ambient-prod", "pulumi up", {"pulumi": "prod"}, NOT_FREE, "work"),
     ("pulumi-up-flag-prod", "pulumi --stack prod up", {}, NOT_FREE, "work"),
     ("o-az-unknown-no-profile", "az frobnicate thing", {}, FREE, "work"),
-    ("o-az-unknown-unreadable-profile", "az frobnicate thing", {"azure_raw": "{broken"}, FREE, "work"),
+    ("o-az-unknown-unreadable-profile", "az frobnicate thing", {"azure_raw": "{broken"}, NOT_FREE, "work"),
     ("o-az-read-unreadable-profile", "az vm list -g rg", {"azure_raw": "{broken"}, FREE, "work"),
     ("o-az-version-prod-profile", "az --version", {"azure": "acme-prod"}, FREE, "work"),
     ("o-az-account-list-prod-profile", "az account list", {"azure": "acme-prod"}, FREE, "work"),
