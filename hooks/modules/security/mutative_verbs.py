@@ -344,6 +344,9 @@ _CLOUD_GLOBAL_OPTIONS: Dict[str, Dict[str, int]] = {
 }
 
 
+_CLOUD_SESSION_WORDS: FrozenSet[str] = frozenset({"ssh", "scp", "connect", "tunnel"})
+
+
 def _cloud_command_readings(base_cmd: str, tokens: List[str]) -> Tuple[List[str], bool]:
     """Return the command without its global options and whether that reading is exact; an unknown option before the operation word is read both ways."""
     arity = _CLOUD_GLOBAL_OPTIONS.get(base_cmd)
@@ -363,7 +366,9 @@ def _cloud_command_readings(base_cmd: str, tokens: List[str]) -> Tuple[List[str]
         if token.startswith("-") and "=" not in token and not operation_seen:
             after = rest[index + 1:]
             return [shlex.join(kept + after), shlex.join(kept + after[1:])], False
-        operation_seen = operation_seen or (not token.startswith("-") and _names_operation(token))
+        operation_seen = operation_seen or (not token.startswith("-") and (
+            _names_operation(token) or _is_known_verb(token) or token in _CLOUD_SESSION_WORDS
+        ))
         kept.append(token)
         index += 1
     return ([shlex.join(kept)] if len(kept) < len(tokens) else []), True
