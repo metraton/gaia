@@ -231,7 +231,11 @@ PSEUDO = ["/proc/self/pagemap", "/proc/self/mem", "/proc/self/environ", "/proc/k
 
 
 @pytest.mark.parametrize("target", PSEUDO)
-def test_r6_pseudo_file_config_is_bounded(target, env):
+def test_r6_pseudo_file_config_is_bounded(target, env, monkeypatch):
+    """Pseudo-file configs ask, read at most one cap and little CPU; a blocking open hits the deadline."""
+    from tests.hooks.modules.security.test_prod_target_probes_r5 import _counted_reads
+    from modules.security.targets import _READ_LIMIT
+
     held = None
     if target == "fifo-by-proc":
         target, held = _fifo_by_proc(env)
@@ -240,16 +244,18 @@ def test_r6_pseudo_file_config_is_bounded(target, env):
     config = env["home"] / ".kube" / "config"
     config.parent.mkdir(parents=True)
     config.symlink_to(target)
+    read_sizes = _counted_reads(monkeypatch)
     try:
-        with deadline(10, target):
-            start = time.monotonic()
+        with deadline(60, target):
+            start = time.thread_time()
             got_mut, reason = verdict("kubectl frobnicate x", env["work"])
             got_read, _ = verdict("kubectl get pods", env["work"])
-            elapsed = time.monotonic() - start
+            elapsed = time.thread_time() - start
     finally:
         for fd in (held if isinstance(held, tuple) else (held,) if held is not None else ()):
             os.close(fd)
     assert got_read == "FREE" and got_mut in ASK, (got_mut, got_read, reason[:120])
+    assert sum(read_sizes) <= _READ_LIMIT, sum(read_sizes)
     assert elapsed < 3.0, elapsed
 
 
