@@ -192,6 +192,8 @@ _SPEC_BY_EXT = {
 }
 _SPEC_BY_INTERPRETER = {
     "node": JS_SPEC,
+    "deno": JS_SPEC,
+    "bun": JS_SPEC,
     "php": PHP_SPEC,
     "ruby": RUBY_SPEC,
     "perl": PERL_SPEC,

@@ -76,6 +76,11 @@ class TestShutilCopyfileGate:
         assert copyfile.is_dangerous is copy.is_dangerous is True
         assert copyfile.category == copy.category == "FILE_MUTATION"
 
+    def test_copyfile_through_literal_import_module_is_mutative(self):
+        assert analyze_python_inline(
+            'import importlib\nimportlib.import_module("shutil").copyfile("/a","/b")'
+        ).is_dangerous is True
+
 
 # ---------------------------------------------------------------------------
 # A -- the rest of the audited shutil / os / pathlib mutation surface
@@ -317,11 +322,6 @@ class TestKnownEscapes:
     def test_dynamic_getattr_dispatch_is_not_caught(self):
         assert analyze_python_inline(
             'import shutil\ngetattr(shutil, "copy" + "file")("/a", "/b")'
-        ).is_dangerous is False
-
-    def test_importlib_dispatch_is_not_caught(self):
-        assert analyze_python_inline(
-            'import importlib\nimportlib.import_module("shutil").copyfile("/a","/b")'
         ).is_dangerous is False
 
     def test_write_on_a_handle_bound_elsewhere_is_not_caught(self):

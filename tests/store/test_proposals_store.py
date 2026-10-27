@@ -325,14 +325,22 @@ def test_proposals_store_every_cli_entry_point_is_refused_to_a_subagent(command,
 
 
 @pytest.mark.parametrize("command", [
-    f"python3 {CONTRACT_PY} proposals list --json",
+    "gaia contract proposals list --json",
     "{gaia_link} contract proposals list",
-    f"python3 {CONTRACT_PY} proposals accept --help",
     f"cat {CONTRACT_PY}",
     "{gaia_link} memory search proposals",
 ])
 def test_proposals_store_a_subagent_still_reads_through_any_entry_point(command, links):
     assert _subagent_verdict(command.format(**links), "developer").allowed is True
+
+
+@pytest.mark.parametrize("command", [
+    f"python3 {CONTRACT_PY} proposals list --json",
+    f"python3 {CONTRACT_PY} proposals accept --help",
+])
+def test_proposals_store_a_by_path_read_from_a_dev_checkout_asks_for_a_signature(command):
+    """By path from a git checkout the script is judged by its content; the `gaia` CLI is the read path."""
+    assert _subagent_verdict(command, "developer").allowed is False
 
 
 COMPUTED_OR_IDENTITY_CLEARING = [

@@ -67,6 +67,8 @@ from ..security.mutative_verbs import (
     git_under_injected_config,
     injects_git_config,
     node_test_under_node_options,
+    code_injecting_assignments,
+    runs_under_injected_environment,
     rewrites_package_inputs,
     runs_package_script,
     sets_node_options,
@@ -1227,7 +1229,7 @@ class BashValidator:
         # A sensitive read is refused before any check that can ask, and before the
         # sanitizer, which would strip a `< file` input with the trailing redirect.
         sensitive_allowed, sensitive_reason = check_sensitive_read(
-            _scan_heredocs(command)[0], cwd,
+            _scan_heredocs(command)[0], cwd, program=command,
         )
         if not sensitive_allowed:
             logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
@@ -2058,6 +2060,8 @@ class BashValidator:
         scan_cwd: Optional[str] = cwd
         # A NODE_OPTIONS set by an earlier component reaches every later node.
         node_options_set = False
+        # Code-injecting variables an earlier component set (export, assignment) reach every later program.
+        injected_environment: tuple = ()
         git_config_injected = False
         # A package.json or node_modules path rewritten by an earlier component
         # changes the script a later run executes, which was read before the chain ran.
@@ -2074,6 +2078,9 @@ class BashValidator:
             if node_options_set and not detected.is_mutative:
                 detected = node_test_under_node_options(comp, scan_cwd) or detected
             node_options_set = node_options_set or sets_node_options(comp)
+            if injected_environment and not detected.is_mutative:
+                detected = runs_under_injected_environment(comp, injected_environment, scan_cwd) or detected
+            injected_environment += code_injecting_assignments(comp)
             if git_config_injected and not detected.is_mutative:
                 detected = git_under_injected_config(comp) or detected
             git_config_injected = git_config_injected or injects_git_config(comp)
@@ -2900,13 +2907,13 @@ def _build_sealed_payload(
 
 def _categorical_refusal(command: str, cwd: str | None) -> BashValidationResult | None:
     """The refusal *command* carries anywhere in it, which outranks every signature request."""
-    command = _scan_heredocs(command)[0]
+    written, command = command, _scan_heredocs(command)[0]
     parts = [command, *(part.strip() for part in get_shell_parser().parse(command))]
     blocked = next((verdict for verdict in map(is_blocked_command, parts) if verdict.is_blocked), None)
     if blocked is not None:
         reason, rule = f"Command blocked by security policy: {blocked.category}", "floor.blocked"
     else:
-        reason, rule = check_sensitive_read(command, cwd)[1], "floor.secret-read"
+        reason, rule = check_sensitive_read(command, cwd, program=written)[1], "floor.secret-read"
     if not reason:
         return None
     return BashValidationResult(allowed=False, tier=SecurityTier.T3_BLOCKED, reason=reason, rule=rule)

@@ -17,12 +17,19 @@ Categories retained internally for verb classification:
 """
 
 import functools
+import json
 import logging
+import os
 import re
 import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
 
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
@@ -70,12 +77,14 @@ except ImportError:
 
 try:
     from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
-    from .inline_ast_analyzer import (
-        is_provably_read_only_python as _is_provably_read_only_python,
-    )
+    from .inline_ast_analyzer import parse_finds_no_effect as _parse_finds_no_effect
+    from .inline_ast_analyzer import runs_code_string as _runs_code_string
+    from .inline_ast_analyzer import loaded_modules as _loaded_modules
 except ImportError:  # pragma: no cover -- defensive
     _analyze_python_inline = None
-    _is_provably_read_only_python = None
+    _loaded_modules = None
+    _parse_finds_no_effect = None
+    _runs_code_string = None
     logging.getLogger(__name__).warning(
         "inline_ast_analyzer.analyze_python_inline not importable; "
         "AST-based Python inline analysis disabled (falling back to regex)"
@@ -1239,12 +1248,16 @@ _INLINE_CODE_MAP: Dict[str, FrozenSet[str]] = {
     "python3.11": frozenset({"-c"}),
     "python3.12": frozenset({"-c"}),
     "python3.13": frozenset({"-c"}),
-    "node": frozenset({"-e", "--eval"}),
+    "node": frozenset({"-e", "--eval", "-p", "--print"}),
     "ruby": frozenset({"-e"}),
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
     "lua": frozenset({"-e"}),
+    "luajit": frozenset({"-e"}),
     "rscript": frozenset({"-e"}),
+    "r": frozenset({"-e"}),
+    "deno": frozenset({"eval"}),
+    "bun": frozenset({"-e", "--eval", "-p", "--print"}),
 }
 _INLINE_CODE_CLIS: FrozenSet[str] = frozenset(_INLINE_CODE_MAP.keys())
 
@@ -1270,7 +1283,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
     "python", "python3",
     "python3.10", "python3.11", "python3.12", "python3.13",
     "bash", "sh", "zsh", "dash", "ksh",
-    "node", "ruby", "perl", "php",
+    "node", "ruby", "perl", "php", "lua", "luajit", "rscript",
 })
 
 # Non-shell, non-Python interpreters: their script files are SOURCE CODE in a
@@ -1283,7 +1296,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
 # camelCase multi-word tokens embedded inside a quoted string argument were
 # never matched anyway (the quote makes the whole string a single token).
 _NON_SHELL_SCRIPT_INTERPRETERS: FrozenSet[str] = frozenset({
-    "node", "ruby", "perl", "php",
+    "node", "ruby", "perl", "php", "lua", "luajit", "rscript",
 })
 
 # File extensions whose interpreter is implied by ``./script`` (no explicit
@@ -1426,7 +1439,30 @@ _INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "ruby": frozenset({"-e"}),
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
+    "lua": frozenset({"-e", "-l"}),
+    "luajit": frozenset({"-e", "-l"}),
+    "rscript": frozenset({"-e"}),
 }
+
+_PYTHON_OPTION_VALUE_FLAGS: FrozenSet[str] = frozenset({"-W", "-X", "--check-hash-based-pycs"})
+
+
+def script_positional(interpreter: str, arguments: List[str]) -> Optional[str]:
+    """The script file *interpreter* runs from *arguments*, or None when it runs inline code, a module or stdin."""
+    defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(interpreter, frozenset())
+    value_flags = _PYTHON_OPTION_VALUE_FLAGS if interpreter in _PYTHON_INTERPRETERS else frozenset()
+    skip_value = False
+    for token in arguments:
+        if skip_value:
+            skip_value = False
+        elif token == "-" or token in defer_flags:
+            return None
+        elif token in value_flags:
+            skip_value = True
+        elif not token.startswith("-"):
+            return token
+    return None
+
 
 # Interpreter flags that VALIDATE SYNTAX ONLY and never execute the script
 # body.  ``bash -n <script>`` reads the script and reports parse errors without
@@ -2186,6 +2222,45 @@ _EXEC_SINK_BACKTICK_RE = _re.compile(r"`([^`\n]{2,})`")
 _EXEC_SINK_PERCENT_X_RE = _re.compile(r"%x[\{\(\[]([^\}\)\]\n]{2,})[\}\)\]]")
 
 
+_EXEC_SINK_ARGV_RE = _re.compile(
+    r"\b(?:spawnSync|spawn|execFileSync|execFile)\s*\(\s*"
+    r"(?P<q>['\"])(?P<prog>(?:[^'\"\\]|\\.)*)(?P=q)\s*,\s*\[(?P<args>[^\]]*)\]"
+)
+_ARGV_LITERAL_ITEM_RE = _re.compile(r"""\s*(?P<q>['"])(?P<item>(?:[^'"\\]|\\.)*)(?P=q)\s*""")
+_ARGV_SHELL_PROGRAMS: FrozenSet[str] = frozenset({"cmd", "powershell", "pwsh"})
+
+
+def _scan_exec_sink_argv(
+    code: str, family: str, cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Judge ``spawn``/``execFile`` calls by the argv they run; a shell handed a computed argv asks."""
+    import os
+    from .shell_unwrapper import _SHELLS
+    for match in _EXEC_SINK_ARGV_RE.finditer(code):
+        program = match.group("prog")
+        items = [part for part in match.group("args").split(",") if part.strip()]
+        literals = [_ARGV_LITERAL_ITEM_RE.fullmatch(part) for part in items]
+        if all(literals):
+            argv = (program, *(literal.group("item") for literal in literals))
+            if not _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1):
+                continue
+            reason = f"exec-sink argv runs a mutative command: {shlex.join(argv)}"
+        else:
+            name = os.path.basename(program.replace("\\", "/")).lower().removesuffix(".exe")
+            if name not in _SHELLS and name not in _ARGV_SHELL_PROGRAMS:
+                continue
+            reason = f"exec-sink hands shell '{program}' an argv computed at runtime"
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="exec-sink-argv",
+            cli_family=family,
+            confidence="medium",
+            reason=reason,
+        )
+    return None
+
+
 def _scan_exec_sink_string_args(
     code: str, family: str, shell_backticks: bool = True,
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -2219,6 +2294,9 @@ def _scan_exec_sink_string_args(
     (the default) keeps the previous, hook-cwd-only behavior for the inline
     ``-c``/``-e`` caller, which has no surrounding script file to anchor to.
     """
+    argv_result = _scan_exec_sink_argv(code, family, cwd=cwd, _depth=_depth)
+    if argv_result is not None:
+        return argv_result
     candidates: List[str] = []
     for m in _EXEC_SINK_STRING_ARG_RE.finditer(code):
         candidates.append(m.group("cmd"))
@@ -2272,6 +2350,53 @@ _SUSPICIOUS_HEURISTICS: Tuple[Tuple[_re.Pattern, str], ...] = (
 
 MAX_SAFE_INLINE_LENGTH = 150
 MAX_NORMAL_INLINE_LENGTH = 500
+
+_JS_INLINE_INTERPRETERS: FrozenSet[str] = frozenset({"node", "deno", "bun"})
+# Long-JavaScript effects Layers 1-3a miss: built code, a network or process
+# module, an fs change outside the delete/write/append patterns.
+_JS_UNSEEN_EFFECT_RE = _re.compile(
+    r"\b(?:eval|Function|import)\s*\(|\bnew\s+Function\b|\bvm\b|\brequire\s*\(\s*[^'\"\s]"
+    r"|\brequire\s*\(\s*['\"](?:node:)?(?:net|https?|http2|dgram|tls|dns|cluster|worker_threads|inspector|child_process)['\"]"
+    r"|\bprocess\.(?:binding|dlopen|kill)\b"
+    r"|\b(?:rename|copyFile|cp|mkdir|mkdtemp|symlink|link|truncate|ftruncate|utimes|chown|lchown|open|"
+    r"createWriteStream|writev?)(?:Sync)?\s*\("
+)
+# JavaScript effects judged at every length and in every lane.
+_JS_NETWORK_MODULE_RE = _re.compile(
+    r"""(?:\brequire\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)['"](?:node:)?"""
+    r"""(?:net|https?|http2|dgram|tls|cluster|worker_threads|inspector|vm)['"]"""
+)
+_JS_HIDDEN_CALL_RE = _re.compile(
+    r"\b(?:eval|Function)\s*\(|\bnew\s+Function\b|\bimport\s*\(|\brequire\s*\(\s*[^'\"`\s)]"
+    r"|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\([^)]*\)\s*\["
+    r"|\bfetch\s*\([^)]*\b(?:body|method)\s*:|\bcreateRequire\b"
+)
+# Deno and Bun reach the filesystem, processes and the network through their own
+# globals; only the members named here are reads, any other member asks.
+_JS_RUNTIME_EFFECT_RE = _re.compile(
+    r"\bDeno\s*(?:\?\.\s*)?\[|\bBun\s*(?:\?\.\s*)?\["
+    r"|\bDeno\s*\??\.\s*(?!(?:readTextFile|readFile|readDir|stat|lstat|realPath|readLink)(?:Sync)?\b"
+    r"|(?:cwd|args|env|version|build|pid|ppid|noColor|inspect|mainModule|execPath|exit|hostname|osRelease"
+    r"|memoryUsage|stdout|stderr|stdin|errors)\b)"
+    r"|\bBun\s*\??\.\s*(?!(?:version|revision|argv|env|main|which|sleep|sleepSync|nanoseconds|hash|inspect"
+    r"|deepEquals|escapeHTML|stringWidth)\b)"
+)
+_JS_RUNTIME_MODULE_RE = _re.compile(
+    r"""(?:\brequire\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)['"]"""
+    r"""(?:bun(?::[\w-]+)?|(?:https?|jsr|npm):[^'"]*)['"]"""
+)
+_JS_EFFECT_BINDING_RE = _re.compile(
+    r"""\b(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]"""
+    r"""(?:node:)?(?:fs|fs/promises|net|child_process)['"]\s*\)"""
+    r"""|\bimport\s+(?:\*\s+as\s+)?(\w+)\s+from\s+['"](?:node:)?(?:fs|fs/promises|net|child_process)['"]"""
+)
+# Ruby, perl, php, lua and R have no parser here: their code asks unless every
+# statement prints only literals (no interpolation), numbers and arithmetic.
+_UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php", "lua", "luajit", "rscript", "r"})
+_PRINT_ONLY_STATEMENT_RE = _re.compile(
+    r"""\s*(?:(?:print|puts|pp|p|echo|say|printf)\b"""
+    r"""(?:'(?:[^'\\]|\\['\\])*'|"(?:[^"\\$#@{`]|\\[nt"\\])*"|\d+(?:\.\d+)?|[\s+\-*/%.,()])*)?\s*"""
+)
 
 
 # ============================================================================
@@ -5576,6 +5701,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     git_config_result = _check_git_code_config(command)
     if git_config_result is not None:
         return git_config_result
+    environment_result = runs_under_injected_environment(
+        command, code_injecting_assignments(command), cwd=cwd, _depth=_depth,
+    )
+    if environment_result is not None:
+        return environment_result
 
     assignment_result = _classify_leading_shell_assignments(
         command, cwd=cwd, _depth=_depth,
@@ -5931,6 +6061,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # list/download -> read-only).  Returns None when the command is not a
     # package-manager module invocation, so detection continues unchanged --
     # ``python3 -m pytest`` and ``python3 -m http.server`` are NOT rerouted.
+    load_result = _check_interpreter_loads(base_cmd, semantics, cwd, _depth)
+    if load_result is not None:
+        return load_result
+
     py_module_result = _check_python_module_runner(base_cmd, semantics)
     if py_module_result is not None:
         return py_module_result
@@ -6105,8 +6239,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # using the 3-layer approach instead of verb-matching tokens (which would
     # false-positive on generic keywords like "import", "create", etc.).
     cli_flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
-    if base_cmd in _INLINE_CODE_CLIS and cli_flags & set(semantics.flag_tokens):
-        return _check_inline_code(command, base_cmd, family)
+    if base_cmd in _INLINE_CODE_CLIS and (
+        cli_flags & set(semantics.flag_tokens) or (base_cmd == "deno" and tuple(semantics.non_flag_tokens[:1]) == ("eval",))
+    ):
+        return _check_inline_code(command, base_cmd, family, cwd=cwd, _depth=_depth)
 
     # --- Step 3c: Heredoc safety check ---
     # When a runtime interpreter is invoked with '-' (stdin) and the command
@@ -6124,7 +6260,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         program is not None
         or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
     ):
-        return _check_inline_code(command, base_cmd, family, skip_length_check=True)
+        return _check_inline_code(command, base_cmd, family, skip_length_check=True, cwd=cwd, _depth=_depth)
 
     # --- Step 3d: CLI-specific mutative command paths ---
     command_path = tuple(token.lower() for token in semantics.non_flag_tokens)
@@ -6840,17 +6976,17 @@ detect_mutative_command.cache_info = _detect_mutative_command.cache_info
 # ============================================================================
 
 def _extract_python_payload(command: str, base_cmd: str) -> str:
-    """Return the Python source string passed via ``-c "..."`` or ``-`` heredoc.
+    """Return the Python source the interpreter runs: its ``-c`` word as the shell passes it, else a ``-`` heredoc body.
 
-    The extractor looks for the canonical ``<python> -c <payload>`` shape,
-    accepting single, double, or unquoted payloads.  When the interpreter is
-    invoked with ``-`` (stdin) and a heredoc body, the body between
-    ``<<MARKER`` and ``MARKER`` is returned instead.
-
-    Empty string is returned when extraction fails -- the caller is expected
-    to fall back to its regex layer in that case.
+    A ``-c`` program wins over a heredoc, which is then only its stdin, and a
+    ``"$(cat <<'D' ... D)"`` word is read as the lines it prints.  Empty string
+    is returned when extraction fails.
     """
-    # Heredoc form: python3 - <<'PYEOF' ... PYEOF
+    from .gaia_cli_invocation import resolve_cat_heredocs
+
+    payload = _inline_code_text(resolve_cat_heredocs(command, keep_newlines=True), base_cmd, "")
+    if payload:
+        return payload
     if "<<" in command:
         m = _re.search(
             r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\s*\1\s*$",
@@ -6858,8 +6994,6 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
         )
         if m:
             return m.group(2)
-
-    # Inline -c form, with quoted or unquoted payload.
     m = _re.search(
         r"(?:^|\s)" + _re.escape(base_cmd) + r"\b[^-]*?-c\s+(['\"])(.*?)\1",
         command, _re.DOTALL,
@@ -7312,9 +7446,37 @@ def _check_prefix_runner(
 _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_plugins")
 
 
+_HOOK_ROOT = Path(__file__).resolve().parents[3]
+
+
+@functools.lru_cache(maxsize=1)
+def _hook_root_is_install() -> bool:
+    """True when the Gaia this hook runs from is an install, not the root of a git checkout anyone can edit; an npm install nested in a project's checkout still counts."""
+    top = _git_read(str(_HOOK_ROOT), "rev-parse", "--show-toplevel")
+    return top is None or os.path.realpath(top) != os.path.realpath(_HOOK_ROOT)
+
+
+def _gaia_shipped_script(script: Path) -> bool:
+    """True when *script* is a file of the installed Gaia this hook runs from; a checkout's copy, Gaia's own source included, is judged by content."""
+    real = Path(os.path.realpath(script))
+    return real.is_file() and real.is_relative_to(_HOOK_ROOT) and _hook_root_is_install()
+
+
+def _gaia_cli_group(script: Path) -> "Optional[str]":
+    """The group a Gaia-shipped ``bin/cli/<group>.py`` runs as, or None."""
+    from .gaia_cli_invocation import _CLI_MODULES
+
+    real = Path(os.path.realpath(script))
+    if real.suffix != ".py" or real.stem.startswith("_") or real.stem not in _CLI_MODULES:
+        return None
+    if real.parent.name != "cli" or real.parent.parent.name != "bin":
+        return None
+    return real.stem if _gaia_shipped_script(real) else None
+
+
 def _check_gaia_cli_dispatcher(
     script_path: str, content: str, semantics: "CommandSemantics", family: str,
-    _depth: int = 0,
+    _depth: int = 0, cwd: "Optional[str]" = None,
 ) -> "Optional[MutativeResult]":
     """Re-dispatch ``<python> <path>/bin/gaia <subcmd> ...`` as ``gaia <subcmd> ...``.
 
@@ -7338,16 +7500,25 @@ def _check_gaia_cli_dispatcher(
     narrowly scoped to the gaia dispatcher; it is NOT a general bypass of
     subprocess.run detection for arbitrary Python scripts.
 
+    A ``bin/cli/<group>.py`` script runs as ``gaia <group>`` and is
+    re-dispatched the same way.  Either script counts only inside the installed
+    Gaia this hook runs from (``_gaia_shipped_script``): a git checkout's copy,
+    Gaia's own source worktrees included, can import code anyone edited, so it
+    is judged by its content.
+
     Returns ``None`` when the script is not the gaia dispatcher, so the caller
     continues with ordinary AST/regex script analysis.
     """
     import os
 
-    if os.path.basename(script_path) != "gaia":
-        return None
-    if os.path.basename(os.path.dirname(script_path)) != "bin":
-        return None
-    if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE):
+    script = Path(cwd or Path.cwd(), Path(script_path).expanduser())
+    if os.path.basename(script_path) == "gaia" and os.path.basename(os.path.dirname(script_path)) == "bin":
+        if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE) or not _gaia_shipped_script(script):
+            return None
+        group: Tuple[str, ...] = ()
+    elif (cli_group := _gaia_cli_group(script)) is not None:
+        group = (cli_group,)
+    else:
         return None
 
     # Tokens AFTER the script positional are the gaia argv.
@@ -7356,7 +7527,7 @@ def _check_gaia_cli_dispatcher(
         idx = raw_tokens.index(script_path)
     except ValueError:
         return None
-    sub_args = raw_tokens[idx + 1:]
+    sub_args = [*group, *raw_tokens[idx + 1:]]
 
     if not sub_args:
         # `python3 bin/gaia` with no subcommand prints help -- read-only.
@@ -8133,6 +8304,38 @@ def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
     return command, False
 
 
+_JS_RUNTIME_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "deno": frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--preload"}),
+    "bun": frozenset({
+        "--cwd", "--env-file", "--config", "-c", "--tsconfig-override", "--port", "-r", "--preload", "--require",
+    }),
+}
+_JS_RUNTIME_SCRIPT_RE = _re.compile(r"[^\s]*(?:/|://)[^\s]*|[^\s]+\.(?:[mc]?[jt]s|[jt]sx)")
+
+
+def _js_runtime_script(runtime: str, arguments: List[str]) -> Optional[str]:
+    """The file ``deno [run]`` or ``bun [run]`` executes from *arguments*, or None for any other subcommand."""
+    value_flags = _JS_RUNTIME_SCRIPT_VALUE_FLAGS[runtime]
+    positionals: List[str] = []
+    skip_value = False
+    for token in arguments:
+        if skip_value:
+            skip_value = False
+        elif token in _INLINE_CODE_MAP[runtime]:
+            return None
+        elif token in value_flags:
+            skip_value = True
+        elif not token.startswith("-"):
+            positionals.append(token)
+            if token != "run" or len(positionals) > 1:
+                break
+    if positionals[:1] == ["run"]:
+        positionals = positionals[1:]
+    if positionals and _JS_RUNTIME_SCRIPT_RE.fullmatch(positionals[0]):
+        return positionals[0]
+    return None
+
+
 def _resolve_script_argument(
     base_cmd: str, semantics: "CommandSemantics",
 ) -> "Optional[Tuple[str, str]]":
@@ -8142,7 +8345,8 @@ def _resolve_script_argument(
 
     * ``<interpreter> <script-file>`` -- the first positional argument after a
       known interpreter, whose lane (``"python"`` or ``"shell"``) is decided by
-      the interpreter, not the filename.
+      the interpreter, not the filename; ``deno``/``bun`` count only a
+      file-shaped positional (``_js_runtime_script``), and ``R`` only ``CMD BATCH``.
     * ``./script`` / ``path/to/script`` -- a direct executable invocation whose
       lane is inferred from the file extension via ``_SHEBANG_EXT_LANES``.
 
@@ -8160,22 +8364,14 @@ def _resolve_script_argument(
             lane = "code"
         else:
             lane = "shell"
-        defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(base_cmd, frozenset())
-        # Walk the args (original casing) and return the first true positional
-        # -- the script file.  Standalone interpreter switches (-u, -O, -x, ...)
-        # are skipped; flags that consume the next token as inline code or a
-        # module name (-c, -m, -e, ...) mean there is NO script file, so we
-        # defer to the inline path / verb scanner by returning None.  The stdin
-        # sentinel "-" likewise defers (heredoc path owns it).
-        for token in raw_tokens[1:]:
-            if token == "-":
-                return None
-            if token in defer_flags:
-                return None
-            if token.startswith("-"):
-                continue
-            return (token, lane)
-        return None
+        path = script_positional(base_cmd, raw_tokens[1:])
+        return (path, lane) if path else None
+    if base_cmd in _JS_RUNTIME_SCRIPT_VALUE_FLAGS:
+        path = _js_runtime_script(base_cmd, raw_tokens[1:])
+        return (path, "code") if path else None
+    if base_cmd == "r" and [token.upper() for token in raw_tokens[1:3]] == ["CMD", "BATCH"]:
+        path = next((token for token in raw_tokens[3:] if not token.startswith("-")), None)
+        return (path, "code") if path else None
 
     # Direct ``./script`` or ``path/script.ext`` invocation: the executable
     # token IS the script.  Use the original-case token so the path resolves
@@ -8579,7 +8775,8 @@ def _read_script_content(
     the surrounding chain), else against the process cwd -- the previous,
     hook-cwd-only behavior.  This is what lets ``cd /repo && node build.mjs``
     find ``build.mjs`` under ``/repo`` instead of the Gaia install dir.  An
-    absolute path is unaffected.
+    absolute path is unaffected, and a leading ``~`` is the home directory the
+    shell expands it to.
 
     Returns ``None`` when the path cannot be resolved to a readable regular
     file -- the caller treats that as the conservative (mutative) case, because
@@ -8589,7 +8786,7 @@ def _read_script_content(
     """
     import os
 
-    resolved = path
+    resolved = path = os.path.expanduser(path)
     if not os.path.isabs(path):
         base = cwd if cwd is not None else os.getcwd()
         resolved = os.path.join(base, path)
@@ -8715,21 +8912,378 @@ def _script_honored_simulation_flag(
     return None
 
 
-_NODE_PRELOAD_FLAGS: FrozenSet[str] = frozenset({"-r", "--require", "--import"})
+_PRELOAD_FLAGS: Dict[str, FrozenSet[str]] = {
+    "node": frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"}),
+    "bun": frozenset({"-r", "--preload", "--require"}),
+    "deno": frozenset({"--preload"}),
+}
+_NODE_PRELOAD_FLAGS = _PRELOAD_FLAGS["node"]
 
 
-def _node_preload_values(args: "List[str]") -> "List[str]":
-    """The modules node loads before its entry point (``-r x``, ``--require=x``, ``--import x``)."""
+def _flag_values(args: "List[str]", flags: "FrozenSet[str]") -> "List[str]":
+    """The values *flags* take in *args*, spaced (``-r x``), with ``=`` or attached to a short flag (``-rx``)."""
     values = []
     for index, token in enumerate(args):
         flag, attached, value = token.partition("=")
-        if flag not in _NODE_PRELOAD_FLAGS:
-            continue
-        if attached:
-            values.append(value)
-        elif index + 1 < len(args):
-            values.append(args[index + 1])
+        if flag in flags:
+            values.append(value if attached else (args[index + 1] if index + 1 < len(args) else ""))
+        elif token[:2] in flags and not token.startswith("--") and len(token) > 2:
+            values.append(token[2:])
     return values
+
+
+def _node_preload_values(args: "List[str]") -> "List[str]":
+    """The modules node loads before its entry point, in every spelling of its preload flags."""
+    return _flag_values(args, _NODE_PRELOAD_FLAGS)
+
+
+def _foreign_code_result(reason: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="foreign-code",
+        cli_family="interpreter",
+        confidence="high",
+        reason=f"{reason} -- code the screen did not read, requiring approval",
+        rule="sign.foreign-code",
+    )
+
+
+_LUA_PROGRAM_RE = re.compile(r"lua(?:jit)?[\d.]*")
+_PYTHON_MODULE_SUFFIXES: FrozenSet[str] = frozenset({".py", ".pyc", ".pyw", ".so", ".pyd"})
+
+
+def _check_interpreter_loads(
+    base_cmd: str, semantics: "CommandSemantics", cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge the code an interpreter's own flags load before the code it is given; what it cannot read asks."""
+    args = semantics.tokens[1:]
+    for preload in _flag_values(args, _PRELOAD_FLAGS.get(base_cmd, frozenset())):
+        result = detect_mutative_command(f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1)
+        if result.is_mutative:
+            return result
+    if base_cmd == "deno":
+        return _deno_module_map(args, cwd)
+    if _LUA_PROGRAM_RE.fullmatch(base_cmd):
+        tokens = iter(args)
+        for token in tokens:
+            if token.startswith("-l"):
+                return _foreign_code_result(f"{base_cmd} {token} requires a module before the code")
+            if token == "-e":
+                next(tokens, None)
+            elif not token.startswith("-"):
+                break
+    if base_cmd in ("r", "rscript") and _flag_values(args, frozenset({"-f", "--file"})):
+        return _foreign_code_result(f"{base_cmd} --file runs another file")
+    auto_loaded = _AUTO_LOAD_CHECKS.get(base_cmd)
+    if auto_loaded is not None:
+        result = auto_loaded(args, cwd, _depth)
+        if result is not None:
+            return result
+    return _python_local_module_run(base_cmd, args, cwd, _depth)
+
+
+def _bunfig_loads(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Judge the preloads of the bunfig.toml bun reads: the one named, else the cwd's, and the user's global one."""
+    base = Path(cwd or Path.cwd())
+    named = [base / Path(value).expanduser() for value in _flag_values(args, frozenset({"-c", "--config"}))]
+    user_dir = os.environ.get("XDG_CONFIG_HOME") or os.environ.get("HOME") or str(Path.home())
+    for config in (*(named or [base / "bunfig.toml"]), Path(user_dir, ".bunfig.toml")):
+        if not config.is_file():
+            continue
+        if tomllib is None:
+            return _foreign_code_result(f"bun config '{config}' needs a TOML reader this Python lacks")
+        try:
+            table = tomllib.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _foreign_code_result(f"bun config '{config}' cannot be read")
+        if _config_values(table, "plugins"):
+            return _foreign_code_result(f"bun config '{config}' loads plugins")
+        for preload in _config_values(table, "preload"):
+            if not isinstance(preload, str):
+                return _foreign_code_result(f"bun config '{config}' preloads {preload!r}")
+            result = detect_mutative_command(f"node {shlex.quote(preload)}", cwd=str(config.parent), _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+    return None
+
+
+def _config_values(table: object, key: str) -> list:
+    """Every value *key* holds at any depth of a parsed config table, a list flattened to its items."""
+    if not isinstance(table, dict):
+        return []
+    found: list = []
+    for name, value in table.items():
+        if name == key:
+            found.extend(value if isinstance(value, list) else [value])
+        else:
+            found.extend(_config_values(value, key))
+    return found
+
+
+def _node_env_files(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Ask when a ``--env-file`` node reads sets a NODE_OPTIONS that loads code, or cannot be read."""
+    base = Path(cwd or Path.cwd())
+    for flag in ("--env-file", "--env-file-if-exists"):
+        for value in _flag_values(args, frozenset({flag})):
+            path = base / Path(value).expanduser()
+            if flag == "--env-file-if-exists" and not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                return _foreign_code_result(f"node {flag} '{value}' cannot be read")
+            for line in lines:
+                name, assigned, option = line.strip().removeprefix("export ").partition("=")
+                if assigned and name.strip() == "NODE_OPTIONS" and _node_options_load_code(option.strip().strip("'\"")):
+                    return _foreign_code_result(f"node {flag} '{value}' sets NODE_OPTIONS={option.strip()}")
+    return None
+
+
+def _r_startup_files(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Ask when R starts from a ./.Rprofile, or a ./.Renviron that names startup code or cannot be read."""
+    base = Path(cwd or Path.cwd())
+    if not {"--vanilla", "--no-init-file"} & set(args) and (base / ".Rprofile").exists():
+        return _foreign_code_result("R runs ./.Rprofile before the code")
+    environ = base / ".Renviron"
+    if {"--vanilla", "--no-environ"} & set(args) or not environ.exists():
+        return None
+    try:
+        lines = environ.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return _foreign_code_result("R reads ./.Renviron, which cannot be read")
+    names = _CODE_INJECTING_ENVIRONMENT["r"][1]
+    if any(names.fullmatch(line.partition("=")[0].strip()) for line in lines if "=" in line):
+        return _foreign_code_result("./.Renviron points R at a startup file")
+    return None
+
+
+def _ruby_requires(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Judge each ``-r`` feature ruby loads from a path or a ``-I`` directory like the script it is."""
+    base = Path(cwd or Path.cwd())
+    load_dirs = [base / Path(value).expanduser() for value in _flag_values(args, frozenset({"-I"}))]
+    for feature in _flag_values(args, frozenset({"-r", "--require"})):
+        is_path = feature.startswith((".", "/", "~"))
+        for directory in [base] if is_path else load_dirs:
+            stem = directory / Path(feature).expanduser()
+            found = next((p for p in (stem, Path(f"{stem}.rb"), Path(f"{stem}.so")) if p.is_file()), None)
+            if found is None and not is_path:
+                continue
+            if found is not None and found.suffix == ".so":
+                return _foreign_code_result(f"ruby -r {feature} loads a compiled extension")
+            result = detect_mutative_command(f"ruby {shlex.quote(str(found or stem))}", cwd=cwd, _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+            break
+    return None
+
+
+# The configuration each interpreter loads without being asked to on the
+# command line, judged before any inline code or script it is given.
+_AUTO_LOAD_CHECKS: "Dict[str, Callable[[List[str], Optional[str], int], Optional[MutativeResult]]]" = {
+    "bun": _bunfig_loads,
+    "node": _node_env_files,
+    "r": _r_startup_files,
+    "rscript": _r_startup_files,
+    "ruby": _ruby_requires,
+}
+
+
+def _python_skips_local_directory(command: str) -> bool:
+    """True when ``-I`` or ``-P`` keeps the cwd and the script's directory off Python's ``sys.path``."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    start = next((i for i, word in enumerate(words) if program_identity(word).lower() in _PYTHON_INTERPRETERS), None)
+    if start is None:
+        return False
+    tokens = iter(words[start + 1:])
+    for token in tokens:
+        if token in _PYTHON_OPTION_VALUE_FLAGS:
+            next(tokens, None)
+            continue
+        if token.startswith("--"):
+            continue
+        if not token.startswith("-") or token == "-":
+            return False
+        switches, value_letter = re.match(r"-([^cmWX]*)([cmWX]?)", token).groups()
+        if {"I", "P"} & set(switches):
+            return True
+        if value_letter in ("c", "m"):
+            return False
+    return False
+
+
+def _deno_module_map(args: "List[str]", cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    """Ask when deno resolves modules through an import map, given directly or inside a config file."""
+    if _flag_values(args, frozenset({"--import-map"})):
+        return _foreign_code_result("deno resolves modules through an import map")
+    configs = _flag_values(args, frozenset({"-c", "--config"}))
+    if not configs and "--no-config" not in args:
+        configs = _discovered_deno_config(Path(cwd or Path.cwd()))
+    for value in configs:
+        try:
+            config = json.loads(Path(cwd or Path.cwd(), Path(value).expanduser()).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _foreign_code_result(f"deno config '{value}' cannot be read as JSON")
+        if not isinstance(config, dict) or {"imports", "scopes", "importMap"} & config.keys():
+            return _foreign_code_result(f"deno config '{value}' maps module specifiers")
+    return None
+
+
+def _discovered_deno_config(directory: Path) -> "List[str]":
+    """The deno.json or deno.jsonc deno finds in *directory* or its nearest parent when no config is named."""
+    for folder in (directory, *directory.parents):
+        for name in ("deno.json", "deno.jsonc"):
+            if (folder / name).is_file():
+                return [str(folder / name)]
+    return []
+
+
+def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
+    """The file or package *name* resolves to in *directory*, a compiled file (``.so``, ``.pyc``, ``__pycache__``) ahead of the source Python may skip for it."""
+    package = directory / name
+    if package.is_dir():
+        return package
+    candidates = [
+        candidate for candidate in sorted(directory.glob(f"{name}.*"))
+        if candidate.suffix in _PYTHON_MODULE_SUFFIXES and candidate.name.split(".")[0] == name
+    ]
+    candidates += sorted((directory / "__pycache__").glob(f"{name}.*.pyc"))
+    compiled = [candidate for candidate in candidates if candidate.suffix != ".py"]
+    return (compiled or candidates or [None])[0]
+
+
+def _python_local_module_run(
+    base_cmd: str, args: "List[str]", cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge ``python -m <module>`` when the module is a file in the working directory, which Python runs first."""
+    if base_cmd not in _PYTHON_INTERPRETERS:
+        return None
+    tokens = iter(args)
+    for token in tokens:
+        if token.startswith("-m"):
+            module = token[2:] or next(tokens, "")
+            break
+        if token in _PYTHON_OPTION_VALUE_FLAGS:
+            next(tokens, None)
+        elif token == "-c" or not token.startswith("-"):
+            return None
+    else:
+        return None
+    local = _local_python_module(module.split(".")[0], Path(cwd or Path.cwd()))
+    if local is None:
+        return None
+    if local.suffix == ".py" and "." not in module:
+        return detect_mutative_command(f"python3 {shlex.quote(str(local))}", cwd=cwd, _depth=_depth + 1)
+    return _foreign_code_result(f"python -m {module} runs {local}")
+
+
+def _python_foreign_module(
+    code: str, directory: "Optional[Path]", family: str, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge the modules *code* loads from *directory* (None: off ``sys.path``): a module file is read like a script."""
+    if _loaded_modules is None:
+        return None
+    names, unnamed = _loaded_modules(code)
+    if unnamed:
+        return _foreign_code_result(
+            "Python loads a file by relative import, runpy.run_path, a site directory or a changed sys.path",
+        )
+    if directory is None:
+        return None
+    for name in sorted(names):
+        local = _local_python_module(name, directory)
+        if local is None:
+            continue
+        if local.suffix != ".py":
+            return _foreign_code_result(f"Python imports '{name}' from {local}")
+        result = detect_mutative_command(f"python3 {shlex.quote(str(local))}", cwd=cwd, _depth=_depth + 1)
+        if result.is_mutative:
+            return result
+    return None
+
+
+# Environment variables that make a program load code before or instead of
+# what its command line shows, keyed by the program they reach.
+_CODE_INJECTING_ENVIRONMENT: "Dict[str, Tuple[re.Pattern[str], re.Pattern[str]]]" = {
+    "node": (re.compile(r"node"), re.compile(r"NODE_OPTIONS")),
+    "python": (re.compile(r"python[\d.]*"), re.compile(r"PYTHONSTARTUP|PYTHONPATH")),
+    "lua": (_LUA_PROGRAM_RE, re.compile(r"LUA_INIT(?:_\d+_\d+)?")),
+    "r": (re.compile(r"r|rscript"), re.compile(r"R_(?:PROFILE|ENVIRON)(?:_USER)?")),
+    "git": (
+        re.compile(r"git"),
+        re.compile(r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|EXTERNAL_DIFF|ASKPASS|PROXY_COMMAND)"),
+    ),
+}
+_ASSIGNMENT_WORD_RE = re.compile(r"([A-Za-z_]\w*)=(.*)", re.DOTALL)
+
+
+def code_injecting_assignments(command: str) -> "Tuple[Tuple[str, str, str], ...]":
+    """Every ``(program, name, value)`` assignment in *command* that injects code into a program, wherever it is set."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ()
+    found = []
+    for word in words:
+        match = _ASSIGNMENT_WORD_RE.fullmatch(word)
+        if match is None:
+            continue
+        for program, (_, names) in _CODE_INJECTING_ENVIRONMENT.items():
+            if names.fullmatch(match.group(1)):
+                found.append((program, match.group(1), match.group(2)))
+    return tuple(found)
+
+
+def runs_under_injected_environment(
+    command: str, assignments: "Tuple[Tuple[str, str, str], ...]", cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """The verdict for *command* when it runs a program one of *assignments* injects code into, or None."""
+    if not assignments:
+        return None
+    programs = set()
+    for reading in _peel_wrapper_readings(command)[0]:
+        try:
+            words = shlex.split(reading)
+        except ValueError:
+            continue
+        if words:
+            programs.add(program_identity(words[0]).lower())
+    for program, name, value in assignments:
+        pattern = _CODE_INJECTING_ENVIRONMENT[program][0]
+        if not value or not any(pattern.fullmatch(candidate) for candidate in programs):
+            continue
+        if program == "git":
+            if value.lower() in _GIT_HARMLESS_CODE_VALUES:
+                continue
+            result = detect_mutative_command(value, cwd=cwd, _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+        elif name == "NODE_OPTIONS":
+            if _node_options_load_code(value):
+                return _foreign_code_result(f"NODE_OPTIONS={value} preloads code into node")
+        elif name != "PYTHONPATH" or _pythonpath_is_writable(value, cwd):
+            return _foreign_code_result(f"{name} makes {program} load {value}")
+    return None
+
+
+def _node_options_load_code(value: str) -> bool:
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return True
+    return "$" in value or "`" in value or bool(_node_preload_values(words))
+
+
+def _pythonpath_is_writable(value: str, cwd: "Optional[str]") -> bool:
+    """True unless every PYTHONPATH entry is an existing directory this process cannot write."""
+    for entry in value.split(os.pathsep):
+        path = Path(cwd or Path.cwd(), Path(entry).expanduser())
+        if not entry or not path.is_dir() or os.access(path, os.W_OK):
+            return True
+    return False
 
 
 # Test-runner options that load no code, checked against the Node CLI and
@@ -8882,13 +9436,6 @@ def _check_script_file(
     """
     if heredoc_program(command) is not None:
         return None
-    if base_cmd == "node":
-        for preload in _node_preload_values(semantics.tokens[1:]):
-            result = detect_mutative_command(
-                f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1,
-            )
-            if result.is_mutative:
-                return result
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
@@ -8967,7 +9514,7 @@ def _check_script_file(
     # dispatcher and re-dispatch to `gaia <args...>` classification. Returns None
     # for any non-dispatcher script, so ordinary analysis continues.
     gaia_result = _check_gaia_cli_dispatcher(
-        script_path, content, semantics, family, _depth=_depth,
+        script_path, content, semantics, family, _depth=_depth, cwd=cwd,
     )
     if gaia_result is not None:
         return gaia_result
@@ -8999,12 +9546,10 @@ def _check_script_file(
         )
 
     if lane == "python" and _analyze_python_inline is not None:
-        ast_result = _analyze_python_inline(
-            content,
-            argv_is_mutative=lambda argv: _argv_command_is_mutative(
-                argv, cwd=cwd, _depth=_depth + 1,
-            ),
-        )
+        def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
+            return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
+
+        ast_result = _analyze_python_inline(content, argv_is_mutative=argv_is_mutative)
         if ast_result.is_dangerous:
             return MutativeResult(
                 is_mutative=True,
@@ -9017,19 +9562,34 @@ def _check_script_file(
                     f"({ast_result.category})"
                 ),
             )
-        if not ast_result.parse_failed:
+        if ast_result.parse_failed:
+            return _unparsed_code(family, f"Python script '{script_path}'")
+        script_dir = Path(cwd or Path.cwd(), Path(script_path).expanduser()).parent
+        if _python_skips_local_directory(command):
+            script_dir = None
+        foreign = _python_foreign_module(content, script_dir, family, cwd, _depth)
+        if foreign is not None:
+            return foreign
+        if _runs_code_string(content):
             return MutativeResult(
-                is_mutative=False,
-                category=CATEGORY_READ_ONLY,
-                verb="script-file",
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="dynamic-code",
                 cli_family=family,
-                confidence="medium",
-                reason=(
-                    f"Python script '{script_path}' has no mutative invocation "
-                    f"(AST analysis)"
-                ),
+                confidence="high",
+                reason=f"Python script '{script_path}' hands a string to eval/exec/compile",
+                rule="sign.foreign-code",
             )
-        # parse_failed -> fall through to the shell/regex lane below.
+        if not _parse_finds_no_effect(content, argv_is_mutative):
+            return _uncatalogued_python_effect(family, f"Python script '{script_path}'")
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="script-file",
+            cli_family=family,
+            confidence="medium",
+            reason=f"Python script '{script_path}' has no mutative invocation (AST analysis)",
+        )
 
     # JavaScript family (node / .js / .mjs / .cjs): lex the source so comments
     # (``//``, ``/* */``) and string / template-literal CONTENTS are removed
@@ -9047,8 +9607,12 @@ def _check_script_file(
                 content, script_path, family, spec, cwd=cwd, _depth=_depth + 1,
                 stripped=entry_stripped,
             )
-            if entry_result.is_mutative or spec.name != "javascript":
+            if entry_result.is_mutative:
                 return entry_result
+            if spec.name != "javascript":
+                if _prints_literals_only(entry_stripped.exec_view):
+                    return entry_result
+                return _unparsed_code(family, f"Script '{script_path}'")
             closure_result = _classify_js_import_closure(
                 script_path, entry_stripped, family, spec, cwd=cwd, _depth=_depth + 1,
             )
@@ -9061,10 +9625,13 @@ def _check_script_file(
     # relative script/npm-run resolves against the SAME directory the outer
     # script was read from, not the hook's own cwd (see _classify_script_
     # content_by_regex's docstring).
-    return _classify_script_content_by_regex(
+    regex_result = _classify_script_content_by_regex(
         content, script_path, family, from_source_code=(lane == "code"),
         cwd=cwd, _depth=_depth + 1,
     )
+    if regex_result.is_mutative or base_cmd not in _UNPARSED_CODE_INTERPRETERS or _prints_literals_only(content):
+        return regex_result
+    return _unparsed_code(family, f"Script '{script_path}'")
 
 
 # A process inherits the script's stdin, so an interpreter started without a
@@ -9100,9 +9667,9 @@ def _argv_command_is_mutative(
     argv: Tuple[str, ...], cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> bool:
     """Judge what a script's literal argv runs, as the exec-sink lane does."""
-    if _argv_runs_unnamed_program(argv):
-        return True
     command = shlex.join(argv)
+    if _argv_runs_unnamed_program(argv) or _git_config_programs(command):
+        return True
     if _is_blocked_command is not None and _is_blocked_command(command).is_blocked:
         return True
     return detect_mutative_command(command, cwd=cwd, _depth=_depth).is_mutative
@@ -9224,6 +9791,8 @@ def _classify_source_with_lexer(
                     ),
                 )
 
+    if spec.name == "javascript" and _js_hidden_effect(stripped.exec_view, stripped.verb_view):
+        return _js_hidden_effect_result(family, f"Script '{script_path}'")
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
@@ -9262,13 +9831,41 @@ def _js_relative_specifiers(stripped) -> "List[str]":
     so its text is read back from the same span of the ``exec_view``.  A
     template literal with ``${}`` is not a literal path and is not followed.
     """
+    return [text for text in _js_literal_specifiers(stripped) if _JS_RELATIVE_SPECIFIER_RE.fullmatch(text)]
+
+
+def _js_literal_specifiers(stripped) -> "List[str]":
     found: List[str] = []
     for pattern in _JS_IMPORT_SYNTAX_RES:
         for match in pattern.finditer(stripped.verb_view):
             text = stripped.exec_view[match.start("spec"):match.end("spec")]
-            if "${" not in text and _JS_RELATIVE_SPECIFIER_RE.fullmatch(text):
+            if "${" not in text:
                 found.append(text)
     return found
+
+
+def _js_package_mapped_specifier(stripped, importer_dir: str) -> "Optional[str]":
+    """A ``#`` import or self-reference the nearest package.json maps, or any bare specifier when it is unreadable."""
+    bare = [text for text in _js_literal_specifiers(stripped) if not _JS_RELATIVE_SPECIFIER_RE.fullmatch(text)]
+    if not bare:
+        return None
+    directory = Path(importer_dir)
+    manifest = next((d / "package.json" for d in (directory, *directory.parents) if (d / "package.json").is_file()), None)
+    if manifest is None:
+        return None
+    try:
+        package = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return bare[0]
+    if not isinstance(package, dict):
+        return bare[0]
+    name = package.get("name")
+    for specifier in bare:
+        if specifier.startswith("#") and "imports" in package:
+            return specifier
+        if "exports" in package and isinstance(name, str) and specifier.split("/")[: name.count("/") + 1] == name.split("/"):
+            return specifier
+    return None
 
 
 def _first_js_file(path: str) -> "Optional[str]":
@@ -9416,8 +10013,13 @@ def _classify_js_import_closure(
     queue = [(entry_abs, entry_stripped, 0)]
     while queue:
         module, stripped, depth = queue.pop(0)
+        mapped = _js_package_mapped_specifier(stripped, os.path.dirname(module))
+        if mapped is not None:
+            return _foreign_code_result(f"'{module}' imports '{mapped}', which package.json maps to code")
         for specifier in _js_relative_specifiers(stripped):
             targets = _resolve_js_relative_import(specifier, os.path.dirname(module))
+            if targets is None and specifier.endswith(".json"):
+                continue
             if targets is None:
                 return _import_closure_unproven(
                     "js-import-unresolved", entry_path, family,
@@ -9990,7 +10592,10 @@ def _check_package_manager(
     return None
 
 
-def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:
+def _check_inline_code(
+    command: str, base_cmd: str, family: str, skip_length_check: bool = False,
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> MutativeResult:
     """Check inline code for dangerous patterns.
 
     Pipeline:
@@ -10001,11 +10606,11 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
     Layer 2 (Python only): Parse the payload with ``ast.parse`` and walk
              ``Call`` nodes.  ``import subprocess; print('hi')`` is **not**
              flagged because ``subprocess.run`` is never invoked, while
-             ``subprocess.run([...])`` is.  When parsing fails we degrade to
-             Layer 2b.
+             ``subprocess.run([...])`` is.  Python that does not parse is
+             UNKNOWN and asks.
 
-    Layer 2b: Universal regex scan for dangerous API keywords (used for non-
-             Python interpreters and as the fallback for un-parseable Python).
+    Layer 2b: Universal regex scan for dangerous API keywords (non-Python
+             interpreters).
 
     Layer 3: Heuristic safety classification (length, sensitive paths, encoding).
 
@@ -10036,10 +10641,18 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                 )
 
     # ---- Layer 2 (Python only): AST-based invocation analysis ----
+    def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
+        return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
+
+    unparsed_source = ""
+    if base_cmd in _UNPARSED_CODE_INTERPRETERS and not _prints_literals_only(
+        _inline_code_text(command, base_cmd, ""),
+    ):
+        unparsed_source = f"Inline {base_cmd} code"
     if base_cmd in _PYTHON_INTERPRETERS and _analyze_python_inline is not None:
         payload = _extract_python_payload(command, base_cmd)
         if payload:
-            ast_result = _analyze_python_inline(payload)
+            ast_result = _analyze_python_inline(payload, argv_is_mutative)
             if ast_result.is_dangerous:
                 return MutativeResult(
                     is_mutative=True,
@@ -10051,29 +10664,40 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                         f"Inline Python invokes {ast_result.detail} "
                         f"({ast_result.category})"
                     ),
+                    rule="sign.foreign-code" if ast_result.category == "DYNAMIC_CODE" else "",
                 )
-            if not ast_result.parse_failed:
-                # AST parsed cleanly and found nothing dangerous: trust it
-                # and skip the regex layer (which would false-positive on
-                # bare ``import subprocess`` or quoted strings).  Fall
-                # through to Layer 3 heuristics for length only.
-                return _layer3_length_check(
-                    command, base_cmd, family, skip_length_check,
-                )
-            # parse_failed=True -> fall through to regex layer 2b below.
+            if ast_result.parse_failed:
+                return _unparsed_code(family, "Inline Python that does not parse")
+            directory = None if _python_skips_local_directory(command) else Path(cwd or Path.cwd())
+            foreign = _python_foreign_module(payload, directory, family, cwd, _depth)
+            if foreign is not None:
+                return foreign
+            if not _parse_finds_no_effect(payload, argv_is_mutative):
+                return _uncatalogued_python_effect(family, "Inline Python")
+            return _layer3_length_check(
+                command, base_cmd, family, skip_length_check, argv_is_mutative,
+            )
 
-    # ---- Layer 2a: Exec-sink string-argument re-classification ----
-    # Shared with the script-file code lane (``_classify_script_content_by_regex``)
-    # so the two lanes cannot diverge on how a command handed to a subprocess
-    # sink is detected.  Runs before the broader Layer 2b keyword scan.  For a
-    # payload that already parsed cleanly as Python this point is unreachable
-    # (the AST block returned above), so Python behavior is unchanged.
-    sink_result = _scan_exec_sink_string_args(command, family)
+    # Layer 2a, shared with the script-file code lane so the two cannot diverge
+    # on exec sinks; a JS backtick is a template literal, not a command.
+    is_js = base_cmd in _JS_INLINE_INTERPRETERS
+    if is_js and _strip_source is not None and _spec_for_script is not None:
+        spec = _spec_for_script("node", "")
+        closure = _classify_js_import_closure(
+            str(Path(cwd or Path.cwd(), "[inline]")),
+            _strip_source(_inline_code_text(command, base_cmd, ""), spec),
+            family, spec, cwd=cwd, _depth=_depth,
+        )
+        if closure is not None:
+            return closure
+    sink_result =_scan_exec_sink_string_args(command, family, shell_backticks=not is_js, cwd=cwd, _depth=_depth)
     if sink_result is not None and sink_result.is_mutative:
         return sink_result
 
     # ---- Layer 2b: Universal dangerous API keyword patterns ----
     for pattern, label, category in _UNIVERSAL_DANGEROUS_PATTERNS:
+        if is_js and label == "backtick-exec":
+            continue
         if pattern.search(command):
             return MutativeResult(
                 is_mutative=True,
@@ -10085,7 +10709,14 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
             )
 
     # ---- Layer 3: Heuristic safety classification (suspicious patterns + length) ----
-    return _layer3_full_check(command, base_cmd, family, skip_length_check)
+    heuristic = _layer3_full_check(command, base_cmd, family, skip_length_check)
+    if heuristic.is_mutative:
+        return heuristic
+    if unparsed_source:
+        return _unparsed_code(family, unparsed_source)
+    if is_js and _js_hidden_effect(_inline_code_text(command, base_cmd, command)):
+        return _js_hidden_effect_result(family, "Inline JavaScript")
+    return heuristic
 
 
 def _layer3_full_check(
@@ -10093,9 +10724,8 @@ def _layer3_full_check(
 ) -> MutativeResult:
     """Run heuristic checks (3a suspicious patterns + 3b length).
 
-    Used as the tail for non-Python interpreters and for Python payloads
-    whose AST parse failed -- the regex layer needs the suspicious-pattern
-    fallback to keep network/encoding heuristics live.
+    Used as the tail for non-Python interpreters -- the regex layer needs the
+    suspicious-pattern fallback to keep network/encoding heuristics live.
     """
     # 3a: Check for suspicious indicators (sensitive paths, encoding, IPs)
     for pattern, label in _SUSPICIOUS_HEURISTICS:
@@ -10112,14 +10742,176 @@ def _layer3_full_check(
     return _layer3_length_check(command, base_cmd, family, skip_length_check)
 
 
+def _uncatalogued_python_effect(family: str, source: str) -> MutativeResult:
+    """The verdict for Python that parses clean of catalogued calls yet carries an effect the catalog does not name."""
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="uncatalogued-effect",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"{source} carries an effect the call catalog does not name (a network, process or "
+            "temp-file module, a write through a bound handle, a SQL write, or a name chosen at runtime)"
+        ),
+    )
+
+
+def _unparsed_code(family: str, source: str) -> MutativeResult:
+    """The verdict for code no parser here can read: its effect is unknown, so it asks."""
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_UNKNOWN,
+        verb="unparsed-code",
+        cli_family=family,
+        confidence="low",
+        reason=f"{source} is not parsed here, so what it does is unknown",
+        rule="unknown.dynamic-span",
+    )
+
+
+def _prints_literals_only(code: str) -> bool:
+    """True when every statement of ruby/perl/php *code* only prints literals (``_PRINT_ONLY_STATEMENT_RE``)."""
+    code = _re.sub(r"^\s*<\?php\b|\?>\s*$", "", code.strip())
+    return bool(code) and all(_PRINT_ONLY_STATEMENT_RE.fullmatch(part) for part in _re.split(r"[;\n]", code))
+
+
+def _js_hidden_effect(code: str, calls_view: "Optional[str]" = None) -> bool:
+    """True when JavaScript *code* (call shapes read in *calls_view*, strings blanked) reaches an unseen effect."""
+    calls = code if calls_view is None else calls_view
+    if _JS_NETWORK_MODULE_RE.search(code) or _JS_HIDDEN_CALL_RE.search(calls):
+        return True
+    if _JS_RUNTIME_MODULE_RE.search(code) or _JS_RUNTIME_EFFECT_RE.search(calls):
+        return True
+    names = {match.group(1) or match.group(2) for match in _JS_EFFECT_BINDING_RE.finditer(code)}
+    if any(_re.search(rf"\b{_re.escape(name)}\s*\[", calls) for name in names):
+        return True
+    if calls_view is None and _strip_source is not None and _spec_for_script is not None:
+        stripped = _strip_source(code, _spec_for_script("node", ""))
+        code, calls = stripped.exec_view, stripped.verb_view
+    return _js_effect_module_unproven(code, calls)
+
+
+# fs, fs/promises and child_process run free only through members named here: an fs read
+# or mkdir (free as shell mkdir is), or a sink whose literal command the exec-sink scan judges.
+_JS_FS_READ_MEMBERS: FrozenSet[str] = frozenset({
+    "mkdirSync", "mkdir", "readFileSync", "readFile", "readdirSync", "readdir", "existsSync", "exists", "statSync", "stat",
+    "lstatSync", "lstat", "accessSync", "access", "realpathSync", "realpath", "readlinkSync", "readlink",
+    "createReadStream", "opendirSync", "opendir", "constants",
+})
+_JS_CHILD_PROCESS_SINKS: FrozenSet[str] = frozenset({
+    "execSync", "execFileSync", "execFile", "spawnSync", "spawn", "exec",
+})
+_JS_EFFECT_SPECIFIER = r"""(?P<q>['"`])(?:node:)?(?P<module>fs|fs/promises|child_process)(?P=q)"""
+_JS_REQUIRE_RE = _re.compile(r"\brequire\s*(?:\?\.\s*)?\(\s*" + _JS_EFFECT_SPECIFIER + r"\s*\)")
+_JS_STATIC_IMPORT_RE = _re.compile(r"\bimport\s+([^'\"`;]+?)\s+from\s*" + _JS_EFFECT_SPECIFIER)
+_JS_ALIAS_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?$")
+_JS_DESTRUCTURE_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?$")
+_JS_MEMBER_RE = _re.compile(r"\s*\.\s*(?:promises\s*\.\s*)?([A-Za-z_$][\w$]*)")
+_JS_ENV_WRITE_RE = _re.compile(
+    r"\bprocess\s*\.\s*env\s*(?:\.\s*[\w$]+|\[[^\]]*\])\s*(?:=(?!=)|\+=)"
+    r"|\bObject\s*\.\s*assign\s*\(\s*process\s*\.\s*env\b|\bdelete\s+process\s*\.\s*env\b"
+)
+
+
+def _js_effect_module_unproven(code: str, calls: str) -> bool:
+    """True when *code* binds fs, fs/promises or child_process to anything but known members, or sets ``process.env`` before a child process."""
+    if _JS_ENV_WRITE_RE.search(calls) and _re.search(r"child_process", code):
+        return True
+    aliases: "List[Tuple[str, str]]" = []
+    for match in _JS_REQUIRE_RE.finditer(code):
+        module, before = match.group("module"), code[max(0, match.start() - 400):match.start()]
+        alias = _JS_ALIAS_DECLARATION_RE.search(before)
+        destructured = _JS_DESTRUCTURE_DECLARATION_RE.search(before)
+        member = _JS_MEMBER_RE.match(code, match.end())
+        if member:
+            if not _js_member_known(member.group(1), module):
+                return True
+        elif alias:
+            aliases.append((alias.group(1), module))
+        elif destructured:
+            if not _js_destructured_members_known(destructured.group(1), module, ":"):
+                return True
+        else:
+            return True
+    for match in _JS_STATIC_IMPORT_RE.finditer(code):
+        clause, module = match.group(1), match.group("module")
+        braces = _re.search(r"\{([^{}]*)\}", clause)
+        if braces and not _js_destructured_members_known(braces.group(1), module, " as "):
+            return True
+        bare = _re.sub(r"\{[^{}]*\}|\*\s*as\b|,", " ", clause).split()
+        aliases.extend((name, module) for name in bare)
+    for name, module in aliases:
+        for use in _re.finditer(rf"(?<![\w$.]){_re.escape(name)}(?![\w$])", calls):
+            if _re.search(r"\b(?:const|let|var|import|as)\s+$", calls[max(0, use.start() - 16):use.start()]):
+                continue
+            member = _JS_MEMBER_RE.match(calls, use.end())
+            if not (member and _js_member_known(member.group(1), module)):
+                return True
+    return False
+
+
+def _js_member_known(member: str, module: str) -> bool:
+    return member in (_JS_CHILD_PROCESS_SINKS if module == "child_process" else _JS_FS_READ_MEMBERS)
+
+
+def _js_destructured_members_known(entries: str, module: str, rename: str) -> bool:
+    """True when every destructured entry is a known member; a child_process sink must keep its name for the sink scan."""
+    for entry in filter(None, (part.strip() for part in entries.split(","))):
+        key, renamed, _ = entry.partition(rename)
+        key = key.strip()
+        if key.startswith("...") or not _js_member_known(key, module) or (renamed and module == "child_process"):
+            return False
+    return True
+
+
+def _js_hidden_effect_result(family: str, source: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="js-hidden-effect",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"{source} builds code at runtime, opens a network module, indexes an effect "
+            "module by a computed name, or sends a request body"
+        ),
+    )
+
+
+def _inline_code_text(command: str, base_cmd: str, fallback: str) -> str:
+    """The code an interpreter's inline flag hands it, unquoted as the shell passes it, else *fallback*."""
+    from ..tools.shell_parser import program_argv
+
+    words = program_argv(command)
+    flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
+    for index, word in enumerate(words[:-1]):
+        if word in flags:
+            return words[index + 1]
+    return fallback
+
+
+def _long_code_judged_by_content(
+    command: str, code_portion: str, base_cmd: str,
+    argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]",
+) -> bool:
+    """True when long Python or JavaScript inline code shows no effect, so its content outranks its length."""
+    if any(pattern.search(command) for pattern, _ in _SUSPICIOUS_HEURISTICS):
+        return False
+    if base_cmd in _PYTHON_INTERPRETERS:
+        return _parse_finds_no_effect is not None and _parse_finds_no_effect(
+            _extract_python_payload(command, base_cmd), argv_is_mutative,
+        )
+    return base_cmd in _JS_INLINE_INTERPRETERS and not _JS_UNSEEN_EFFECT_RE.search(
+        _inline_code_text(command, base_cmd, code_portion),
+    )
+
+
 def _layer3_length_check(
     command: str, base_cmd: str, family: str, skip_length_check: bool,
+    argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]" = None,
 ) -> MutativeResult:
-    """Run only the length heuristic (3b).
-
-    Used when AST analysis cleared a Python payload -- we trust the AST for
-    semantic safety but still flag suspiciously long inline code.
-    """
+    """Run only the length heuristic (3b), which yields to a content judgment that finds no effect."""
     code_portion = command
     cli_flag_tokens = _INLINE_CODE_MAP.get(base_cmd, frozenset())
     for flag in cli_flag_tokens:
@@ -10129,22 +10921,7 @@ def _layer3_length_check(
             break
 
     if not skip_length_check and len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
-        # AC-9 (Brief: endurecimiento-de-tests-del-security-core): the length
-        # heuristic is a *proxy* for "too complex to vet"; it must not flag
-        # inline code that is PROVABLY read-only just because it is long.  For
-        # Python payloads we re-parse the exact code and require a positive
-        # allowlist match (import + SELECT/PRAGMA + print + local assignments,
-        # no write call, no attribute/subscript assignment, no dynamic
-        # dispatch).  This is the inverse of analyze_python_inline's blocklist:
-        # a mutation never classifies as read-only, so the exemption cannot
-        # open a hole -- an AST-clean-but-mutating payload (``cur.execute(
-        # 'INSERT ...')``, ``con.commit()``) is NOT provably read-only and
-        # stays flagged.  Non-Python payloads are never exempted (no AST).
-        if (
-            base_cmd in _PYTHON_INTERPRETERS
-            and _is_provably_read_only_python is not None
-            and _is_provably_read_only_python(_extract_python_payload(command, base_cmd))
-        ):
+        if _long_code_judged_by_content(command, code_portion, base_cmd, argv_is_mutative):
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_READ_ONLY,
@@ -10152,8 +10929,8 @@ def _layer3_length_check(
                 cli_family=family,
                 confidence="medium",
                 reason=(
-                    f"Inline Python is long ({len(code_portion)} chars) but "
-                    "provably read-only (allowlisted constructs only)"
+                    f"Inline {base_cmd} code is long ({len(code_portion)} chars) "
+                    "but its content judgment finds no effect"
                 ),
             )
         return MutativeResult(

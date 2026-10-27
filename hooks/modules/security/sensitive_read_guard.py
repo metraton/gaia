@@ -8,16 +8,19 @@ signature route (``mutative_verbs`` for Bash, ``tool_policy`` for Write/Edit).
 
 A read is recognized by the command that performs it: a Bash component whose
 base command is a known reader or lister and that names a sensitive path, a
-publishing command whose body file is one, or a Read/Glob/Grep/list call whose
-path or pattern reaches one. What the guard
-cannot see is stated rather than claimed: a program that opens the file itself
-(``python3 script.py``, ``source .env``, ``git show HEAD:.env``), a copy made
-first and read later, and a recursive search started above a sensitive
-directory (``grep -r x ~``, Grep over the home directory).
+publishing command whose body file is one, code an interpreter runs (inline,
+as a heredoc program or as a script file) with a path-shaped string literal
+naming one, or a Read/Glob/Grep/list call whose path or pattern reaches one.
+What the guard cannot see is stated rather than claimed: a path the code
+assembles from pieces none of which names a secret, a program that opens the
+file itself (``source .env``, ``git show HEAD:.env``), a copy made first and
+read later, and a recursive search started above a sensitive directory
+(``grep -r x ~``, Grep over the home directory).
 """
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shlex
@@ -34,6 +37,7 @@ from .sensitive_paths import (
 )
 from .canonical_path import command_name
 from .nested_executors import nested_run
+from .program_heredoc import heredoc_program
 from .publish_attribution_guard import publishing_body_files
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -54,6 +58,7 @@ _LISTER_COMMANDS = frozenset({
     "get-childitem", "gci",
 })
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+_QUOTED_LITERAL = re.compile(r"""(['"`])((?:\\.|(?!\1).)*)\1""", re.S)
 # A program named by an expansion is unknown until the shell runs it.
 _UNDETERMINED_PROGRAM_MARKS = ("$", "`")
 # HTTP clients send a file they name (upload, form, body). These flags' values are
@@ -342,9 +347,66 @@ def reads_sensitive_path(command: str, cwd: Optional[str] = None) -> str:
     return ""
 
 
-def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-    """Bash entry point: ``(True, None)`` or ``(False, reason)``."""
-    hit = reads_sensitive_path(command, cwd)
+def _string_literals(code: str, interpreter: str) -> List[str]:
+    if interpreter.startswith("python"):
+        try:
+            tree = ast.parse(code)
+        except (SyntaxError, ValueError):
+            tree = None
+        if tree is not None:
+            return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    return [match.group(2) for match in _QUOTED_LITERAL.finditer(code)]
+
+
+def _names_a_path(literal: str) -> bool:
+    return "/" in literal or "\\" in literal or literal.startswith((".", "~", "$", "%"))
+
+
+def _secret_in_code(code: str, interpreter: str, cwd: Optional[str]) -> str:
+    if interpreter in _SHELLS:
+        return reads_sensitive_path(code, cwd)
+    return first_sensitive_token(
+        (literal for literal in _string_literals(code, interpreter) if _names_a_path(literal)), cwd,
+    )
+
+
+def _interpreter_code(tokens: List[str], cwd: Optional[str]) -> Tuple[str, str]:
+    """The interpreter of *tokens* and the code it runs (inline, or its script file read), else ``("", "")``."""
+    from .mutative_verbs import _INLINE_CODE_MAP, _SCRIPT_FILE_INTERPRETERS, _read_script_content, script_positional
+
+    base = command_name(tokens[0])
+    arguments = tokens[1:]
+    inline_flags = _INLINE_CODE_MAP.get(base, frozenset())
+    for index, argument in enumerate(arguments[:-1]):
+        if argument in inline_flags:
+            return base, arguments[index + 1]
+    path = script_positional(base, arguments) if base in _SCRIPT_FILE_INTERPRETERS else None
+    return (base, _read_script_content(path, cwd) or "") if path else ("", "")
+
+
+def code_reads_sensitive(command: str, cwd: Optional[str] = None) -> str:
+    """The sensitive path named in code an interpreter runs -- inline, as its heredoc program, or as a script file -- or ""."""
+    from ..tools.shell_parser import parse_command, shell_words
+
+    program = heredoc_program(command)
+    if program is not None:
+        return _secret_in_code(program.body, program.interpreter, cwd)
+    for component in parse_command(command):
+        tokens = _strip_transparent_prefixes(shell_words(component))
+        interpreter, code = _interpreter_code(tokens, cwd) if tokens else ("", "")
+        hit = _secret_in_code(code, interpreter, cwd) if code else ""
+        if hit:
+            return hit
+    return ""
+
+
+def check(command: str, cwd: Optional[str] = None, program: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    """Bash entry point: ``(True, None)`` or ``(False, reason)``.
+
+    *program* is the command as written, heredoc bodies included, when
+    *command* had them removed; the code an interpreter runs is read from it.
+    """
+    hit = reads_sensitive_path(command, cwd) or code_reads_sensitive(program or command, cwd)
     if not hit:
         return True, None
     return False, sensitive_read_denial(hit, sensitive_path_label(hit, cwd) or "directory holding credentials")

@@ -28,7 +28,7 @@ Design:
 - ``urlopen`` is a read when it sends no body and no ``Request`` the module
   builds carries a body or a non-GET/HEAD method, matching a ``curl`` GET.  A
   process call with a literal argv is judged by the command it runs only when
-  the caller passes ``argv_is_mutative`` (the script-file lane does).
+  the caller passes ``argv_is_mutative`` (the script-file and inline lanes do).
 - Call CHAINS are resolved through intermediate calls, because the idiomatic
   form of most mutating APIs is a chain, not a flat ``module.function(...)``:
   ``Path("/x").unlink()`` resolves to ``pathlib.Path.unlink`` and
@@ -229,7 +229,44 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     ("httpx.get", "httpx-get", "NETWORK"),
     ("httpx.post", "httpx-post", "NETWORK"),
     ("socket.socket", "socket-open", "NETWORK"),
+    ("socket.create_connection", "socket-open", "NETWORK"),
 )
+
+# Calls that run code chosen at runtime: any argument but a literal is foreign code.
+_DYNAMIC_CODE_CALLS: FrozenSet[str] = frozenset({
+    "eval", "exec", "compile", "__import__", "builtins.eval", "builtins.exec",
+    "importlib.import_module", "importlib.__import__", "runpy.run_path", "runpy.run_module",
+})
+_CODE_STRING_CALLS: FrozenSet[str] = frozenset({"eval", "exec", "compile", "builtins.eval", "builtins.exec"})
+_IMPORT_CALLS: FrozenSet[str] = frozenset({
+    "__import__", "builtins.__import__", "importlib.__import__", "importlib.import_module",
+})
+
+
+def _is_str_literal(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def _imported_module(call: ast.Call, dotted: Optional[str]) -> Optional[str]:
+    """The module a literal import call evaluates to (``__import__`` yields the top package without a fromlist), else None."""
+    if dotted not in _IMPORT_CALLS or not call.args or not _is_str_literal(call.args[0]):
+        return None
+    name = call.args[0].value
+    if not all(part.isidentifier() for part in name.split(".")):
+        return None
+    if dotted == "importlib.import_module":
+        return name
+    fromlist = call.args[3] if len(call.args) > 3 else None
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            return None
+        if keyword.arg == "fromlist":
+            fromlist = keyword.value
+    if fromlist is None or isinstance(fromlist, ast.Constant) and fromlist.value is None:
+        return name.split(".")[0]
+    if isinstance(fromlist, (ast.List, ast.Tuple)):
+        return name if fromlist.elts else name.split(".")[0]
+    return None
 
 _DANGEROUS_BY_DOTTED = {entry[0]: entry for entry in _DANGEROUS_CALLS}
 
@@ -527,6 +564,11 @@ def analyze_python_inline(
         if dotted is None:
             continue
 
+        if dotted in _DYNAMIC_CODE_CALLS:
+            result = _dynamic_code_result(node, dotted, argv_is_mutative)
+            if result.is_dangerous:
+                return result
+            continue
         if dotted == _URLOPEN and _urlopen_is_read(node, provenance):
             continue
         if argv_is_mutative is not None and dotted in _ARGV_PROCESS_CALLS:
@@ -572,6 +614,372 @@ def analyze_python_inline(
             )
 
     return InlineAstResult()
+
+
+def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
+    """Return the modules *code* loads by literal name, and whether it loads code no name proves (relative import, ``runpy.run_path``, a site directory, a ``sys.path`` change in code that imports)."""
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return frozenset(), False
+    alias_map = _AliasResolver()
+    alias_map.collect(tree)
+    names, unnamed, path_changed = set(), False, False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            unnamed = unnamed or bool(node.level)
+            names.add((node.module or "").split(".")[0])
+        elif isinstance(node, ast.Call):
+            dotted = alias_map.resolve_call(node.func)
+            module = _imported_module(node, dotted)
+            if dotted == "runpy.run_module" and node.args and _is_str_literal(node.args[0]):
+                module = node.args[0].value
+            unnamed = unnamed or dotted == "runpy.run_path" or dotted in _SITE_DIRECTORY_CALLS
+            path_changed = path_changed or dotted in _SYS_PATH_CHANGES
+            if module:
+                names.add(module.split(".")[0])
+        elif isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            path_changed = path_changed or any(_names_sys_path(alias_map, target) for target in targets)
+    names.discard("")
+    return frozenset(names), unnamed or (path_changed and bool(names - {"sys"}))
+
+
+_SITE_DIRECTORY_CALLS = frozenset({
+    "site.addsitedir", "site.addpackage", "site.main", "site.addsitepackages", "site.addusersitepackages",
+})
+_SYS_PATH_CHANGES = frozenset({"sys.path.insert", "sys.path.append", "sys.path.extend"})
+
+
+def _names_sys_path(alias_map: "_AliasResolver", target: ast.AST) -> bool:
+    while isinstance(target, ast.Subscript):
+        target = target.value
+    return alias_map.resolve_call(target) == "sys.path"
+
+
+def _dynamic_code_result(
+    node: ast.Call, dotted: str,
+    argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]],
+) -> InlineAstResult:
+    """Judge a call that runs code chosen at runtime by the code it is handed."""
+    first = node.args[0] if node.args else None
+    if dotted in _IMPORT_CALLS:
+        if _imported_module(node, dotted) is not None:
+            return InlineAstResult()
+    elif _is_str_literal(first):
+        if dotted not in _CODE_STRING_CALLS:
+            return InlineAstResult()
+        inner = analyze_python_inline(first.value, argv_is_mutative)
+        if inner.is_dangerous or not inner.parse_failed:
+            return inner
+    return InlineAstResult(is_dangerous=True, label="dynamic-code", category="DYNAMIC_CODE", detail=dotted)
+
+
+_UNCATALOGUED_EFFECT_MODULES: FrozenSet[str] = frozenset({
+    "socket", "ssl", "http", "requests", "httpx", "urllib3", "aiohttp", "ftplib", "smtplib",
+    "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "xmlrpc", "ctypes",
+    "asyncio", "multiprocessing", "pty", "shelve", "dbm", "tempfile", "webbrowser",
+})
+# Effect-module members that touch nothing outside the process (gettempdir removes its probe file).
+_EFFECT_MODULE_READS: Dict[str, FrozenSet[str]] = {
+    "tempfile": frozenset({"gettempdir", "gettempdirb", "gettempprefix", "gettempprefixb"}),
+    "socket": frozenset({"gethostname"}),
+    "multiprocessing": frozenset({"cpu_count"}),
+    "http": frozenset({"HTTPStatus"}),
+}
+_EFFECT_METHODS: FrozenSet[str] = frozenset({
+    "write", "writelines", "write_text", "write_bytes", "touch", "mkdir", "makedirs", "rmdir",
+    "unlink", "rename", "chmod", "chown", "lchmod", "symlink_to", "hardlink_to", "truncate",
+    "send", "sendall", "sendto", "sendmsg", "sendfile", "commit", "extractall", "extract",
+    "rmtree", "copyfile", "copytree", "removedirs", "kill", "terminate", "writestr", "addfile",
+})
+_STDIO_WRITERS: FrozenSet[str] = frozenset({"sys.stdout.write", "sys.stderr.write"})
+_RUNTIME_NAME_CALLS: FrozenSet[str] = frozenset({"getattr", "setattr", "delattr", "breakpoint"})
+
+
+def parse_finds_no_effect(
+    code: str, argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]] = None,
+) -> bool:
+    """True when ``code`` parses and neither the catalog nor the uncatalogued-effect screen finds an effect."""
+    if not code or not code.strip():
+        return False
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return False
+    if analyze_python_inline(code, argv_is_mutative).is_dangerous:
+        return False
+    return not uncatalogued_effect(tree)
+
+
+def uncatalogued_effect(tree: ast.AST) -> str:
+    """The first uncatalogued effect in *tree* (``module``, ``call``, ``sql``, ``write``, ``env`` or ``path``), or ""."""
+    alias_map = _AliasResolver()
+    alias_map.collect(tree)
+    if _environment_reaches_a_process(tree, alias_map):
+        return "env"
+    bindings = _single_bindings(tree)
+    sql = _ReadOnlyChecker()
+    receivers = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    receivers |= {
+        id(node.args[0]) for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and alias_map.getattr_name(node) is not None
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            imported = [f"{node.module or ''}.{alias.name}" for alias in node.names]
+        elif isinstance(node, ast.Call):
+            imported = [_imported_module(node, alias_map.resolve_call(node.func)) or ""]
+        else:
+            imported = []
+        for name in imported:
+            effect_module = name.split(".")[0] in _UNCATALOGUED_EFFECT_MODULES
+            if effect_module and name not in _EFFECT_MODULE_READS and not _effect_module_read(name):
+                return "module"
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Call, ast.Subscript)) and id(node) not in receivers:
+            used = alias_map.resolve_bound(node) or ""
+            if used.split(".")[0] in _EFFECT_MODULE_READS and not _effect_module_read(used):
+                return "module"
+        if isinstance(node, ast.Subscript) and alias_map.resolve_call(node.value) == "sys.modules":
+            if not _is_str_literal(node.slice):
+                return "call"
+        if _reaches_interpreter_internals(node):
+            return "call"
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and _is_path_value(node.left, alias_map):
+            if not _provable_path(node.right, alias_map, bindings):
+                return "path"
+        if not isinstance(node, ast.Call):
+            continue
+        dotted = alias_map.resolve_call(node.func) or ""
+        if dotted in _ARCHIVE_OPENERS and _opens_archive_to_write(node, dotted):
+            return "write"
+        from_environment = dotted not in _LISTING_CALLS
+        if not all(_provable_path(arg, alias_map, bindings, from_environment) for arg in _path_arguments(node, dotted)):
+            return "path"
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _LISTING_METHODS:
+            receiver = node.func.value
+            if _is_path_value(receiver, alias_map) and not _provable_path(receiver, alias_map, bindings, False):
+                return "path"
+        leaf = node.func.attr if isinstance(node.func, ast.Attribute) else dotted.rpartition(".")[2]
+        if alias_map.getattr_name(node) is not None and alias_map.resolve_call(node.args[0]) is not None:
+            continue
+        if leaf in _RUNTIME_NAME_CALLS or (leaf in _EFFECT_METHODS and dotted not in _STDIO_WRITERS):
+            return "call"
+        if leaf in _SQL_EXEC_METHODS and not sql._sql_arg_is_read_only(node):
+            return "sql"
+    return ""
+
+
+# Openers whose mode (positional index, keyword) decides read or write.
+_ARCHIVE_OPENERS: Dict[str, Tuple[int, str]] = {
+    **{name: (1, "mode") for name in (
+        "zipfile.ZipFile", "zipfile.PyZipFile", "tarfile.open", "tarfile.TarFile", "gzip.open",
+        "gzip.GzipFile", "bz2.open", "bz2.BZ2File", "lzma.open", "lzma.LZMAFile",
+    )},
+    "dbm.open": (1, "flag"), "shelve.open": (1, "flag"),
+}
+
+
+def _opens_archive_to_write(call: ast.Call, dotted: str) -> bool:
+    """True unless the opener's mode is absent or a literal read mode."""
+    index, keyword = _ARCHIVE_OPENERS[dotted]
+    if any(k.arg is None for k in call.keywords) or any(isinstance(a, ast.Starred) for a in call.args):
+        return True
+    mode = next((k.value for k in call.keywords if k.arg == keyword), None)
+    if mode is None and len(call.args) > index:
+        mode = call.args[index]
+    if mode is None:
+        return dotted == "shelve.open"
+    return not (_is_str_literal(mode) and mode.value.startswith("r") and "+" not in mode.value)
+
+
+_ENVIRON_WRITERS: FrozenSet[str] = frozenset({
+    "os.putenv", "os.unsetenv", "os.environ.update", "os.environ.setdefault", "os.environ.pop",
+    "os.environ.popitem", "os.environ.clear", "os.environ.__setitem__", "os.environ.__delitem__",
+})
+_PROCESS_LAUNCH_PREFIXES: Tuple[str, ...] = (
+    "subprocess.", "os.exec", "os.spawn", "os.posix_spawn", "os.system", "os.popen", "pty.spawn",
+    "asyncio.create_subprocess",
+)
+
+
+def _environment_reaches_a_process(tree: ast.AST, alias_map: "_AliasResolver") -> bool:
+    """True when *tree* changes ``os.environ`` and launches a process, which inherits the change."""
+    writes = launches = False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            targets = node.targets
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        else:
+            targets = []
+        for target in targets:
+            receiver = target.value if isinstance(target, ast.Subscript) else target
+            writes |= alias_map.resolve_call(receiver) == "os.environ"
+        if isinstance(node, ast.Call):
+            dotted = alias_map.resolve_call(node.func) or ""
+            writes |= dotted in _ENVIRON_WRITERS
+            launches |= dotted.startswith(_PROCESS_LAUNCH_PREFIXES)
+    return writes and launches
+
+
+# Dunders that only describe an object; any other reaches the interpreter's internals.
+_INERT_DUNDERS: FrozenSet[str] = frozenset({
+    "__name__", "__qualname__", "__doc__", "__version__", "__file__", "__module__", "__class__",
+    "__init__", "__enter__", "__exit__", "__annotations__", "__all__", "__path__", "__len__",
+    "__str__", "__repr__",
+})
+_INTERNAL_NAMES: FrozenSet[str] = frozenset({"__builtins__", "__loader__", "__spec__"})
+
+
+def _reaches_interpreter_internals(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in _INTERNAL_NAMES
+    if not isinstance(node, ast.Attribute):
+        return False
+    attr = node.attr
+    return attr.startswith("__") and attr.endswith("__") and attr not in _INERT_DUNDERS
+
+
+# The secret-read floor reads only literals, so every path argument here must be one ``_provable_path`` proves.
+_PATH_CALLS: Dict[str, int] = {name: 1 for name in (
+    "open", "builtins.open", "io.open", "io.FileIO", "codecs.open", "os.open", "pathlib.Path",
+    "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath", "os.listdir", "os.scandir",
+    "os.walk", "glob.glob", "glob.iglob", "fileinput.input", "linecache.getline",
+    "linecache.getlines", "sqlite3.connect", *_ARCHIVE_OPENERS,
+)}
+_PATH_KEYWORDS: FrozenSet[str] = frozenset({
+    "file", "path", "name", "filename", "src", "dst", "top", "pathname", "database", "files",
+})
+_PATH_BUILDERS: FrozenSet[str] = frozenset({
+    "os.path.join", "os.path.expanduser", "os.path.abspath", "os.path.normpath", "os.path.realpath",
+    "os.path.dirname", "os.fspath", "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath",
+})
+_PATH_ROOTS: FrozenSet[str] = frozenset({
+    "pathlib.Path.home", "pathlib.Path.cwd", "os.getcwd", "tempfile.gettempdir",
+})
+_PATH_METHODS: FrozenSet[str] = frozenset({
+    "joinpath", "expanduser", "resolve", "absolute", "with_name", "with_suffix",
+})
+_HOME_VARIABLES: FrozenSet[str] = frozenset({"HOME", "USERPROFILE"})
+# A listing returns names the secret floor never sees, so its directory may not come from the environment.
+_LISTING_CALLS: FrozenSet[str] = frozenset({"os.listdir", "os.scandir", "os.walk", "glob.glob", "glob.iglob"})
+_LISTING_METHODS: FrozenSet[str] = frozenset({"iterdir", "glob", "rglob", "walk"})
+_ENVIRONMENT_PATHS: FrozenSet[str] = frozenset({"pathlib.Path.home", "os.path.expanduser"})
+
+
+def _path_arguments(call: ast.Call, dotted: str) -> list:
+    """The path arguments of a file call or of a path extended by a method, else []."""
+    if isinstance(call.func, ast.Attribute) and call.func.attr in _PATH_METHODS:
+        return list(call.args)
+    count = 2 if dotted.startswith("shutil.") else _PATH_CALLS.get(dotted, 0)
+    if not count:
+        return []
+    keywords = [k.value for k in call.keywords if k.arg in _PATH_KEYWORDS or k.arg is None]
+    return call.args[:count] + keywords
+
+
+def _single_bindings(tree: ast.AST) -> Dict[str, ast.AST]:
+    """Names bound exactly once in *tree*, by a plain ``name = value``, mapped to that value."""
+    stores: Dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            stores[node.id] = stores.get(node.id, 0) + 1
+        elif isinstance(node, ast.arg):
+            stores[node.arg] = stores.get(node.arg, 0) + 2
+    return {
+        node.targets[0].id: node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name) and stores.get(node.targets[0].id) == 1
+    }
+
+
+def _provable_path(
+    node: ast.AST, alias_map: "_AliasResolver", bindings: Dict[str, ast.AST],
+    from_environment: bool = True, depth: int = 0,
+) -> bool:
+    """True when *node* is a path the parse proves: literals joined as path segments under a known root.
+
+    *from_environment* False refuses a root read from the environment (``HOME``, ``Path.home``, ``~``).
+    """
+    def proven(child: ast.AST) -> bool:
+        return _provable_path(child, alias_map, bindings, from_environment, depth + 1)
+
+    if depth > 8 or isinstance(node, ast.Starred):
+        return False
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.JoinedStr):
+        return all(isinstance(value, ast.Constant) for value in node.values)
+    if isinstance(node, ast.Name):
+        bound = bindings.get(node.id)
+        return node.id == "__file__" or (bound is not None and proven(bound))
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        return proven(node.value)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return proven(node.left) and proven(node.right)
+    if isinstance(node, ast.Subscript):
+        return from_environment and alias_map.resolve_call(node.value) == "os.environ" and _names_home(node.slice)
+    if not isinstance(node, ast.Call) or node.keywords and any(k.arg is None for k in node.keywords):
+        return False
+    dotted = alias_map.resolve_call(node.func)
+    expands_user = isinstance(node.func, ast.Attribute) and node.func.attr == "expanduser"
+    if not from_environment and (dotted in _ENVIRONMENT_PATHS or expands_user):
+        return False
+    if dotted in _PATH_ROOTS:
+        return not node.args
+    if dotted in ("os.getenv", "os.environ.get"):
+        return from_environment and bool(node.args) and _names_home(node.args[0])
+    if dotted in _PATH_BUILDERS:
+        receiver_proven = True
+    elif isinstance(node.func, ast.Attribute) and node.func.attr in _PATH_METHODS:
+        receiver_proven = proven(node.func.value)
+    else:
+        return False
+    return receiver_proven and all(proven(arg) for arg in node.args)
+
+
+def _is_path_value(node: ast.AST, alias_map: "_AliasResolver") -> bool:
+    """True when *node* is visibly a ``pathlib`` path, so ``/`` on it joins a path rather than divides."""
+    while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        node = node.left
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        return True
+    if not isinstance(node, ast.Call):
+        return False
+    dotted = alias_map.resolve_call(node.func) or ""
+    if dotted.startswith("pathlib.") or dotted in _PATH_ROOTS:
+        return True
+    return isinstance(node.func, ast.Attribute) and node.func.attr in _PATH_METHODS
+
+
+def _names_home(node: ast.AST) -> bool:
+    return _is_str_literal(node) and node.value in _HOME_VARIABLES
+
+
+def runs_code_string(code: str) -> bool:
+    """True when *code* parses and hands a string to ``eval``/``exec``/``compile``."""
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return False
+    alias_map = _AliasResolver()
+    alias_map.collect(tree)
+    return any(
+        isinstance(node, ast.Call) and alias_map.resolve_call(node.func) in _CODE_STRING_CALLS
+        for node in ast.walk(tree)
+    )
+
+
+def _effect_module_read(dotted: str) -> bool:
+    """True when *dotted* names a read of an effect module, with no private attribute after it."""
+    root, _, rest = dotted.partition(".")
+    member, *tail = rest.split(".")
+    return member in _EFFECT_MODULE_READS.get(root, ()) and not any(part.startswith("_") for part in tail)
 
 
 # ============================================================================
@@ -931,10 +1339,6 @@ class _AliasResolver:
     ``pathlib`` and every cloud SDK -- so a resolver that stopped at the first
     Call reported ``None`` for all of them, silently making the entire
     ``pathlib.Path.*`` block unmatchable.
-
-    Unresolved cases (``getattr(subprocess, "run")(...)``, a subscripted
-    receiver, an element of a list) still return ``None`` from
-    :meth:`resolve_call`.
     """
 
     def __init__(self) -> None:
@@ -966,46 +1370,54 @@ class _AliasResolver:
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
             target = node.targets[0]
-            if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Call):
+            if not isinstance(target, ast.Name) or not isinstance(node.value, (ast.Call, ast.Subscript)):
                 continue
-            resolved = self.resolve_call(node.value.func)
+            resolved = self.resolve_call(node.value)
             if resolved is not None:
                 self._aliases[target.id] = resolved
 
     def resolve_call(self, func: ast.AST) -> Optional[str]:
         """Return the dotted name of a Call's ``func`` expression, if known."""
-        # Attribute chain, traversing intermediate calls: a.b(x).c
-        parts = self._dotted_parts(func)
-        if parts is None:
+        chain = self._chain(func)
+        return ".".join(chain[0]) if chain else None
+
+    def resolve_bound(self, node: ast.AST) -> Optional[str]:
+        """The dotted name of *node* when its head was bound by an import or a resolvable call, else None."""
+        chain = self._chain(node)
+        return ".".join(chain[0]) if chain and chain[1] else None
+
+    def getattr_name(self, call: ast.Call) -> Optional[str]:
+        """The attribute a ``getattr`` call names by a string literal, which makes it a plain attribute access."""
+        if self.resolve_call(call.func) not in ("getattr", "builtins.getattr") or call.keywords:
             return None
-        head, *rest = parts
-        canonical = self._aliases.get(head, head)
-        if rest:
-            return f"{canonical}.{'.'.join(rest)}"
-        return canonical
+        if len(call.args) not in (2, 3) or not _is_str_literal(call.args[1]):
+            return None
+        return call.args[1].value
 
-    def _dotted_parts(self, node: ast.AST) -> Optional[list]:
-        """Walk an Attribute/Name/Call chain into a list of identifier parts.
-
-        Intermediate calls are transparent: ``Path("/x").open`` yields
-        ``["Path", "open"]``, because the receiver's IDENTITY is what selects
-        the API and its arguments are irrelevant to that choice.
-
-        Returns None if the expression is not a static chain (a subscript, a
-        literal receiver, a lambda).
-        """
-        parts: list = []
+    def _chain(self, node: ast.AST) -> Optional[Tuple[list, bool]]:
+        """The canonical dotted parts of *node* through calls and literal lookups, and whether its head is a known binding."""
+        tail: list = []
         cur = node
         while True:
             if isinstance(cur, ast.Attribute):
-                parts.append(cur.attr)
+                tail.append(cur.attr)
                 cur = cur.value
             elif isinstance(cur, ast.Call):
+                attr = self.getattr_name(cur)
+                if attr is not None:
+                    tail.append(attr)
+                    cur = cur.args[0]
+                    continue
+                module = _imported_module(cur, self.resolve_call(cur.func))
+                if module is not None:
+                    return module.split(".") + tail[::-1], True
                 cur = cur.func
+            elif isinstance(cur, ast.Subscript):
+                if self.resolve_call(cur.value) != "sys.modules" or not _is_str_literal(cur.slice):
+                    return None
+                return cur.slice.value.split(".") + tail[::-1], True
             else:
                 break
-        if isinstance(cur, ast.Name):
-            parts.append(cur.id)
-            parts.reverse()
-            return parts
-        return None
+        if not isinstance(cur, ast.Name):
+            return None
+        return self._aliases.get(cur.id, cur.id).split(".") + tail[::-1], cur.id in self._aliases

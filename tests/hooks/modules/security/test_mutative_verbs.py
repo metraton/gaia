@@ -607,10 +607,10 @@ class TestInlineCodeDetection:
     def test_subprocess_is_mutative(self):
         """subprocess in python -c is flagged -- the inner command runs in-process,
         bypassing the hook entirely (no separate Bash tool invocation)."""
-        result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"ls\"])"')
+        result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"kubectl\", \"apply\", \"-f\", \"x\"])"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "process-module"
+        assert result.verb == "subprocess-run"
 
     def test_python_variant(self):
         """python (not python3) with -c should also be checked."""
@@ -658,7 +658,7 @@ class TestInlineCodeDetection:
     def test_python_variant_subprocess_still_mutative(self):
         """No hole: a genuinely mutative `python -c` (subprocess) stays T3."""
         result = detect_mutative_command(
-            'python -c "import subprocess; subprocess.run([\'ls\'])"'
+            'python -c "import subprocess; subprocess.run([\'rm\', \'-rf\', \'build\'])"'
         )
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
@@ -862,7 +862,7 @@ class TestUniversalInlineCodeDetection:
         """Very long inline code (>500 chars) -> suspicious via heuristic."""
         long_code = "x" * 510
         result = detect_mutative_command(
-            f'node -e "{long_code}"'
+            f'ruby -e "{long_code}"'
         )
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
@@ -941,7 +941,7 @@ class TestLongInlineReadOnlyExemption:
         result = detect_mutative_command(self._long_mutating_ast_clean())
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "heuristic-long-code"
+        assert result.verb == "uncatalogued-effect"
 
     def test_long_open_write_still_t3(self):
         """NO REGRESSION: open(...,'w').write caught by AST before length."""
@@ -967,8 +967,8 @@ class TestLongInlineReadOnlyExemption:
         assert result.category == "MUTATIVE"
 
     def test_long_non_python_interpreter_still_t3(self):
-        """NO REGRESSION: exemption is Python-only; long node code stays T3."""
-        result = detect_mutative_command('node -e "%s"' % ("x" * 510))
+        """NO REGRESSION: the exemption is for Python and JavaScript; long ruby code stays T3."""
+        result = detect_mutative_command('ruby -e "%s"' % ("x" * 510))
         assert result.is_mutative is True
         assert result.verb == "heuristic-long-code"
 
@@ -982,7 +982,7 @@ class TestLongInlineReadOnlyExemption:
         result = detect_mutative_command('python3 -c "%s"' % body.replace('"', '\\"'))
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "heuristic-long-code"
+        assert result.verb == "uncatalogued-effect"
 
 
 class TestBuildT3BlockResponse:
@@ -3416,11 +3416,12 @@ class TestExecSinkStringArgInScriptFile:
         result = detect_mutative_command(f"node {script}")
         assert result.is_mutative is False
 
-    def test_ruby_file_system_echo_stays_safe(self, tmp_path):
+    def test_ruby_file_system_echo_asks_as_unknown_not_mutative(self, tmp_path):
         script = tmp_path / "ok.rb"
         script.write_text('system("echo hello")\n')
         result = detect_mutative_command(f"ruby {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
     def test_node_regex_exec_non_command_stays_safe(self, tmp_path):
         """``/re/.exec("some string")`` extracts a non-command string that does
@@ -3433,11 +3434,12 @@ class TestExecSinkStringArgInScriptFile:
         result = detect_mutative_command(f"node {script}")
         assert result.is_mutative is False
 
-    def test_perl_file_system_read_only_stays_safe(self, tmp_path):
+    def test_perl_file_system_read_only_asks_as_unknown_not_mutative(self, tmp_path):
         script = tmp_path / "r.pl"
         script.write_text('system("cat /etc/hostname");\nprint "done\\n";\n')
         result = detect_mutative_command(f"perl {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
     # ---- Inline path parity preserved (shared helper, no regression) ----
 
@@ -3788,8 +3790,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script.write_text(
             "<?php\n"
             "// update the user cache before returning the record\n"
-            "function getUser($id) { return $repo->find($id); }\n"
-            "echo getUser(1);\n"
+            "echo 'user 1';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3801,7 +3802,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script.write_text(
             "<?php\n"
             "# delete the temp files described below\n"
-            "$total = compute();\n"
+            "echo 'total';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3814,7 +3815,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "/*\n"
             " * This file does NOT deploy, install, or destroy anything.\n"
             " */\n"
-            "$x = render();\n"
+            "echo 'rendered';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3825,7 +3826,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script = tmp_path / "inline.php"
         script.write_text(
             "<?php\n"
-            "$n = 1;  // update the counter and delete the stale key\n"
+            "echo 1;  // update the counter and delete the stale key\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3837,7 +3838,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=begin\n"
             "delete all the records and push to prod\n"
             "=end\n"
-            "x = 1  # update the counter\n"
+            "puts 1  # update the counter\n"
         )
         result = detect_mutative_command(f"ruby {script}")
         assert result.is_mutative is False
@@ -3845,7 +3846,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
     def test_ruby_inline_hash_comment_is_safe(self, tmp_path):
         """A ruby inline `#` comment must be stripped from the scan."""
         script = tmp_path / "note.rb"
-        script.write_text("y = 2  # deploy and delete later\n")
+        script.write_text("puts 2  # deploy and delete later\n")
         result = detect_mutative_command(f"ruby {script}")
         assert result.is_mutative is False
 
@@ -3856,7 +3857,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=pod\n"
             "This POD mentions delete and update and apply repeatedly.\n"
             "=cut\n"
-            "my $x = 1;  # update the local variable\n"
+            "print 1;  # update the local variable\n"
         )
         result = detect_mutative_command(f"perl {script}")
         assert result.is_mutative is False
@@ -3868,7 +3869,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=head1 NAME\n"
             "tool - deletes and applies things (documentation only)\n"
             "=cut\n"
-            "my $n = 42;\n"
+            "print 42;\n"
         )
         result = detect_mutative_command(f"perl {script}")
         assert result.is_mutative is False
@@ -3945,16 +3946,17 @@ class TestRubyPerlPhpSourceCommentStringAware:
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is True
 
-    def test_php_system_ls_stays_safe(self, tmp_path):
-        """Benign inner command is not escalated (false-positive mitigation
-        preserved for the ruby/perl/php lane too)."""
+    def test_php_system_ls_asks_as_unknown_not_mutative(self, tmp_path):
+        """A benign inner command is not escalated to MUTATIVE; code that does
+        more than print literals still asks, as UNKNOWN."""
         script = tmp_path / "read.php"
         script.write_text(
             "<?php\n"
             '$out = system("ls -la");\n'
         )
         result = detect_mutative_command(f"php {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
 
 class TestSourceLexer:
@@ -4092,9 +4094,27 @@ class TestGaiaCliDispatcherReDispatch:
     _check_gaia_cli_dispatcher reconstructs `gaia <args>` and re-classifies it,
     so the real effect (owned by the subcommand) drives the tier. Critically,
     the mutative subcommands (dev, install) MUST stay T3.
+
+    The re-dispatch holds only inside the installed Gaia the hook runs from, so
+    these rows run the real dispatcher from a non-git install the hook root
+    points at.
     """
 
-    def _dispatcher(self, tmp_path, name="gaia", body=_FAKE_GAIA_DISPATCHER):
+    @pytest.fixture(autouse=True)
+    def _installed_gaia(self, tmp_path, monkeypatch):
+        from modules.security import mutative_verbs as mv
+
+        self.install = tmp_path / "install"
+        (self.install / "bin").mkdir(parents=True)
+        (self.install / "bin" / "gaia").write_text((HOOKS_DIR.parent / "bin" / "gaia").read_text())
+        monkeypatch.setattr(mv, "_HOOK_ROOT", self.install)
+        mv._hook_root_is_install.cache_clear()
+        yield
+        mv._hook_root_is_install.cache_clear()
+
+    def _dispatcher(self, tmp_path, name="gaia", body=None):
+        if body is None:
+            return self.install / "bin" / "gaia"
         bindir = tmp_path / "bin"
         bindir.mkdir()
         f = bindir / name
@@ -4171,6 +4191,10 @@ class TestGaiaCliDispatcherReDispatch:
         result = detect_mutative_command(f"python3 {gaia} doctor")
         assert result.is_mutative is True
 
+    def test_signature_bearing_bin_gaia_outside_gaia_source_is_judged_by_content(self, tmp_path):
+        gaia = self._dispatcher(tmp_path, body=_FAKE_GAIA_DISPATCHER)
+        assert detect_mutative_command(f"python3 {gaia} doctor").is_mutative is True
+
     def test_dispatcher_named_file_outside_bin_stays_mutative(self, tmp_path):
         """The dispatcher signature alone is not enough -- it must live in a
         bin/ directory. A signature-bearing file elsewhere is still AST-scanned."""
@@ -4206,11 +4230,12 @@ class TestRealGaiaDispatcherStillRecognized:
         for sig in _GAIA_DISPATCHER_SIGNATURE:
             assert sig in content, f"bin/gaia lost dispatcher signature marker: {sig!r}"
 
-    def test_real_dispatcher_doctor_is_read_only(self):
+    @pytest.mark.parametrize("sub", ["doctor", "contract view"])
+    def test_real_dispatcher_in_a_source_checkout_is_judged_by_content(self, sub):
+        """A checkout can import code anyone edited, so its bin/gaia is not re-dispatched; `gaia` is the read path."""
         gaia = self._real_bin_gaia()
-        result = detect_mutative_command(f"python3 {gaia} doctor")
-        assert result.is_mutative is False
-        assert result.category != "MUTATIVE"
+        assert detect_mutative_command(f"python3 {gaia} {sub}").is_mutative is True
+        assert detect_mutative_command(f"gaia {sub}").is_mutative is False
 
     def test_real_dispatcher_dev_stays_t3(self):
         gaia = self._real_bin_gaia()
@@ -4223,8 +4248,14 @@ class TestRealGaiaDispatcherStillRecognized:
         result = detect_mutative_command(f"python3 {gaia} install")
         assert result.is_mutative is True
 
-    def test_real_dispatcher_matches_launcher_form(self):
-        gaia = self._real_bin_gaia()
+    def test_real_dispatcher_installed_matches_launcher_form(self, tmp_path, monkeypatch):
+        from modules.security import mutative_verbs as mv
+
+        gaia = tmp_path / "bin" / "gaia"
+        gaia.parent.mkdir()
+        gaia.write_text(self._real_bin_gaia().read_text(encoding="utf-8"))
+        monkeypatch.setattr(mv, "_HOOK_ROOT", tmp_path)
+        monkeypatch.setattr(mv, "_hook_root_is_install", lambda: True)
         for sub in ("doctor", "history -n 5", "contract view", "dev", "install"):
             via_path = detect_mutative_command(f"python3 {gaia} {sub}")
             via_launcher = detect_mutative_command(f"gaia {sub}")
