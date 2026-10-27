@@ -18,11 +18,13 @@ Categories retained internally for verb classification:
 
 import functools
 import hashlib
+import importlib.machinery
 import json
 import logging
 import os
 import re
 import shlex
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
@@ -7019,18 +7021,58 @@ def _gaia_source_repositories() -> FrozenSet[str]:
     return frozenset(filter(None, [_git_common_dir(str(_HOOK_ROOT))]))
 
 
+_IMPORTABLE_SUFFIXES: Tuple[str, ...] = (*importlib.machinery.all_suffixes(), ".pth")
+
 _GAIA_IMPORTABLE_PATHSPECS: Tuple[str, ...] = (
-    "bin", "gaia", "hooks", "scripts", "tools", ":(glob)*.py", ":(glob)*/__init__.py",
+    "bin", "gaia", "hooks", "scripts", "tools", ":(glob)__pycache__/*",
+    *(f":(glob){stem}{suffix}" for stem in ("*", "*/__init__") for suffix in _IMPORTABLE_SUFFIXES),
 )
 
 
+def _validated_cached_pyc(top: str, relative: str, tracked: FrozenSet[str]) -> bool:
+    """True when *relative* is the ``__pycache__`` pyc of a tracked ``<name>.py`` (or extensionless ``<name>``) beside it and its header makes Python re-check it against that source."""
+    cache_dir, _, filename = relative.rpartition("/")
+    parent, _, cache_name = cache_dir.rpartition("/")
+    if cache_name != "__pycache__" or not filename.endswith(".pyc"):
+        return False
+    stem = filename[: -len(".pyc")]
+    sources = {f"{stem.partition('.')[0]}.py", stem.partition(sys.implementation.cache_tag or "\0")[0]}
+    if not any(name and (f"{parent}/{name}" if parent else name) in tracked for name in sources):
+        return False
+    path = Path(top, relative)
+    try:
+        if path.is_symlink():
+            return False
+        with open(path, "rb") as handle:
+            header = handle.read(16)
+    except OSError:
+        return False
+    timestamp, checked_hash = 0b00, 0b11
+    return len(header) == 16 and int.from_bytes(header[4:8], "little") in (timestamp, checked_hash)
+
+
 def _gaia_code_paths_clean(top: str) -> bool:
-    """True when nothing bin/gaia can import or run from checkout *top* (its root is on sys.path) is modified, staged or untracked."""
+    """True when nothing bin/gaia can import or run from checkout *top* (its root is on sys.path) is modified, staged, untracked, or ignored, a validated cached pyc of a tracked module excepted."""
     status = _git_read(
-        top, "--no-optional-locks", *_GIT_INDEX_ONLY,
-        "status", "--porcelain", "-z", "--untracked-files=all", "--", *_GAIA_IMPORTABLE_PATHSPECS,
+        top, "--no-optional-locks", *_GIT_INDEX_ONLY, "status", "--porcelain", "-z",
+        "--untracked-files=all", "--ignored=traditional", "--", *_GAIA_IMPORTABLE_PATHSPECS,
     )
-    return status == ""
+    if status is None:
+        return False
+    foreign = []
+    for entry in filter(None, status.split("\0")):
+        code, path = entry[:2], entry[3:]
+        if code not in ("??", "!!") or path.endswith("/"):
+            return False
+        if code == "??" or path.endswith(_IMPORTABLE_SUFFIXES):
+            foreign.append(path)
+    if not foreign:
+        return True
+    tracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-z", "--", *_GAIA_IMPORTABLE_PATHSPECS)
+    if tracked is None:
+        return False
+    names = frozenset(tracked.split("\0"))
+    return all(_validated_cached_pyc(top, path, names) for path in foreign)
 
 
 def _gaia_shipped_script(script: Path) -> bool:
