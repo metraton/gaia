@@ -616,12 +616,12 @@ def analyze_python_inline(
     return InlineAstResult()
 
 
-def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool, bool]:
-    """Return the modules *code* loads by literal name, whether it runs a file no name proves (relative import, ``runpy.run_path``, a site directory), and whether it moves ``sys.path``."""
+def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
+    """Return the modules *code* loads by literal name, and whether it loads code no name proves (relative import, ``runpy.run_path``, a site directory, a ``sys.path`` change in code that imports)."""
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError:
-        return frozenset(), False, False
+        return frozenset(), False
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     names, unnamed, path_changed = set(), False, False
@@ -644,7 +644,7 @@ def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool, bool]:
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             path_changed = path_changed or any(_names_sys_path(alias_map, target) for target in targets)
     names.discard("")
-    return frozenset(names), unnamed, path_changed and bool(names - {"sys"})
+    return frozenset(names), unnamed or (path_changed and bool(names - {"sys"}))
 
 
 _SITE_DIRECTORY_CALLS = frozenset({

@@ -4096,7 +4096,9 @@ class TestGaiaCliDispatcherReDispatch:
     the mutative subcommands (dev, install) MUST stay T3.
     """
 
-    def _dispatcher(self, tmp_path, name="gaia", body=_FAKE_GAIA_DISPATCHER):
+    def _dispatcher(self, tmp_path, name="gaia", body=None):
+        if body is None:
+            return HOOKS_DIR.parent / "bin" / "gaia"
         bindir = tmp_path / "bin"
         bindir.mkdir()
         f = bindir / name
@@ -4172,6 +4174,10 @@ class TestGaiaCliDispatcherReDispatch:
         gaia = self._dispatcher(tmp_path, body=body)
         result = detect_mutative_command(f"python3 {gaia} doctor")
         assert result.is_mutative is True
+
+    def test_signature_bearing_bin_gaia_outside_gaia_source_is_judged_by_content(self, tmp_path):
+        gaia = self._dispatcher(tmp_path, body=_FAKE_GAIA_DISPATCHER)
+        assert detect_mutative_command(f"python3 {gaia} doctor").is_mutative is True
 
     def test_dispatcher_named_file_outside_bin_stays_mutative(self, tmp_path):
         """The dispatcher signature alone is not enough -- it must live in a

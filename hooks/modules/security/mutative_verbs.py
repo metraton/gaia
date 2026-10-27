@@ -23,7 +23,6 @@ import logging
 import os
 import re
 import shlex
-import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, Union
@@ -7002,20 +7001,67 @@ def _check_prefix_runner(
 _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_plugins")
 
 
-def _committed_cli_group(script: Path) -> bool:
-    """True when *script* is a ``bin/cli/<group>.py`` Gaia ships, committed and unmodified in its repository."""
+_HOOK_ROOT = Path(__file__).resolve().parents[3]
+_GAIA_PROJECT_IDENTITY = "github.com/metraton/gaia"
+
+
+def _git_common_dir(root: str) -> "Optional[str]":
+    """The shared git directory of the repository whose worktree root is exactly *root*, or None."""
+    top = _git_read(root, "rev-parse", "--show-toplevel")
+    if top is None or os.path.realpath(top) != os.path.realpath(root):
+        return None
+    common = _git_read(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return os.path.realpath(common) if common else None
+
+
+@functools.lru_cache(maxsize=1)
+def _gaia_source_repositories() -> FrozenSet[str]:
+    """Git directories of Gaia's source: the checkout this hook runs from and every registry project with Gaia's identity."""
+    roots = [str(_HOOK_ROOT)]
+    try:
+        import sqlite3
+
+        from gaia.paths import db_path
+
+        database = db_path()
+        if database and Path(database).is_file():
+            connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+            try:
+                roots += [row[0] for row in connection.execute(
+                    "SELECT path FROM projects WHERE project_identity = ? AND path IS NOT NULL",
+                    (_GAIA_PROJECT_IDENTITY,),
+                )]
+            finally:
+                connection.close()
+    except Exception:
+        pass
+    return frozenset(filter(None, (_git_common_dir(root) for root in roots if os.path.isdir(root))))
+
+
+def _gaia_shipped_script(script: Path) -> bool:
+    """True when *script* is in the install this hook runs from, or committed and unmodified in a checkout of Gaia's source."""
+    real = Path(os.path.realpath(script))
+    if not real.is_file():
+        return False
+    if real.is_relative_to(_HOOK_ROOT) and _git_common_dir(str(_HOOK_ROOT)) is None:
+        return True
+    top = _repository_root(real)
+    if top is None or _git_common_dir(top) not in _gaia_source_repositories():
+        return False
+    relative = os.path.relpath(real, top)
+    return _committed_unmodified(top, [f":(literal){relative}"]) == {relative}
+
+
+def _gaia_cli_group(script: Path) -> "Optional[str]":
+    """The group a Gaia-shipped ``bin/cli/<group>.py`` runs as, or None."""
     from .gaia_cli_invocation import _CLI_MODULES
 
     real = Path(os.path.realpath(script))
     if real.suffix != ".py" or real.stem.startswith("_") or real.stem not in _CLI_MODULES:
-        return False
+        return None
     if real.parent.name != "cli" or real.parent.parent.name != "bin":
-        return False
-    top = _repository_root(real)
-    if top is None:
-        return False
-    relative = os.path.relpath(real, top)
-    return _committed_unmodified(top, [f":(literal){relative}"], lambda path: True) == {relative}
+        return None
+    return real.stem if _gaia_shipped_script(real) else None
 
 
 def _check_gaia_cli_dispatcher(
@@ -7045,20 +7091,21 @@ def _check_gaia_cli_dispatcher(
     subprocess.run detection for arbitrary Python scripts.
 
     A ``bin/cli/<group>.py`` script runs as ``gaia <group>`` and is
-    re-dispatched the same way, but only when its repository holds it
-    committed and unmodified (``_committed_cli_group``).
+    re-dispatched the same way.  Either script counts only where Gaia ships it
+    (``_gaia_shipped_script``); anywhere else it is judged by its content.
 
     Returns ``None`` when the script is not the gaia dispatcher, so the caller
     continues with ordinary AST/regex script analysis.
     """
     import os
 
+    script = Path(cwd or Path.cwd(), Path(script_path).expanduser())
     if os.path.basename(script_path) == "gaia" and os.path.basename(os.path.dirname(script_path)) == "bin":
-        if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE):
+        if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE) or not _gaia_shipped_script(script):
             return None
         group: Tuple[str, ...] = ()
-    elif _committed_cli_group(Path(cwd or Path.cwd(), Path(script_path).expanduser())):
-        group = (Path(script_path).stem,)
+    elif (cli_group := _gaia_cli_group(script)) is not None:
+        group = (cli_group,)
     else:
         return None
 
@@ -8677,14 +8724,17 @@ def _discovered_deno_config(directory: Path) -> "List[str]":
 
 
 def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
-    """The file or package *name* resolves to in *directory*, which Python searches before the stdlib."""
+    """The file or package *name* resolves to in *directory*, a compiled file (``.so``, ``.pyc``, ``__pycache__``) ahead of the source Python may skip for it."""
     package = directory / name
     if package.is_dir():
         return package
-    for candidate in sorted(directory.glob(f"{name}.*")):
-        if candidate.suffix in _PYTHON_MODULE_SUFFIXES and candidate.name.split(".")[0] == name:
-            return candidate
-    return None
+    candidates = [
+        candidate for candidate in sorted(directory.glob(f"{name}.*"))
+        if candidate.suffix in _PYTHON_MODULE_SUFFIXES and candidate.name.split(".")[0] == name
+    ]
+    candidates += sorted((directory / "__pycache__").glob(f"{name}.*.pyc"))
+    compiled = [candidate for candidate in candidates if candidate.suffix != ".py"]
+    return (compiled or candidates or [None])[0]
 
 
 # Comparing the worktree through git would run the repository's fsmonitor or clean filter in the hook.
@@ -8711,66 +8761,21 @@ def _git_blob_id(path: Path, length: int) -> "Optional[str]":
     return digest(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def _committed_unmodified(
-    top: str, pathspecs: "List[str]", counts: "Callable[[str], bool]",
-) -> "Optional[FrozenSet[str]]":
-    """The tracked files *counts* keeps under *pathspecs*, or None when one is staged, modified, a link, or untracked."""
+def _committed_unmodified(top: str, pathspecs: "List[str]") -> "Optional[FrozenSet[str]]":
+    """The tracked files under *pathspecs*, or None when one is staged, modified, a link, or untracked."""
     untracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-z", "--others", "--", *pathspecs)
     staged = _git_read(top, *_GIT_INDEX_ONLY, "diff-index", "--cached", "--name-only", "-z", "HEAD", "--", *pathspecs)
     tracked = _git_read(top, *_GIT_INDEX_ONLY, "ls-files", "-s", "-z", "--", *pathspecs)
-    if untracked is None or staged is None or tracked is None:
-        return None
-    for path in filter(None, untracked.split("\0")):
-        if "__pycache__" not in Path(path).parts and (counts(path) or os.path.islink(os.path.join(top, path))):
-            return None
-    if any(counts(path) for path in filter(None, staged.split("\0"))):
+    if untracked is None or staged is None or tracked is None or untracked or staged:
         return None
     committed = set()
     for entry in filter(None, tracked.split("\0")):
         info, _, path = entry.partition("\t")
         mode, blob, stage = info.split()
-        if mode in ("120000", "160000"):
-            return None
-        if not counts(path):
-            continue
-        if stage != "0" or _git_blob_id(Path(top, path), len(blob)) != blob:
+        if mode in ("120000", "160000") or stage != "0" or _git_blob_id(Path(top, path), len(blob)) != blob:
             return None
         committed.add(path)
     return frozenset(committed)
-
-
-def _python_repository_vouches(
-    script: "Optional[Path]", directory: "Optional[Path]", moved_names: "FrozenSet[str]",
-) -> bool:
-    """True when *script* and every Python module its repository could serve it are committed and unmodified.
-
-    The modules are the script's directory, Python's first import root, and,
-    for code that moves ``sys.path``, every file or package in the repository
-    named like one of *moved_names*; a name outside the standard library must
-    resolve to at least one of them, since anything else lies off the repository.
-    """
-    top = _repository_root(script) if script is not None else None
-    if top is None:
-        return False
-    script_rel = os.path.relpath(os.path.realpath(script), top)
-    pathspecs = [f":(literal){script_rel}"]
-    if directory is not None:
-        directory_rel = os.path.relpath(os.path.realpath(directory), top)
-        if directory_rel.startswith(".."):
-            return False
-        pathspecs.append(f":(literal){directory_rel}")
-    for name in moved_names:
-        pathspecs.extend((f":(glob)**/{name}", f":(glob)**/{name}.*", f":(glob)**/{name}/**"))
-    committed = _committed_unmodified(
-        top, pathspecs, lambda path: path == script_rel or Path(path).suffix in _PYTHON_MODULE_SUFFIXES,
-    )
-    if committed is None or script_rel not in committed:
-        return False
-    standard = frozenset(getattr(sys, "stdlib_module_names", ())) | frozenset(sys.builtin_module_names)
-    return all(
-        any(name in Path(path).parts[:-1] or Path(path).name.split(".")[0] == name for path in committed)
-        for name in moved_names - standard
-    )
 
 
 def _python_local_module_run(
@@ -8800,22 +8805,16 @@ def _python_local_module_run(
 
 def _python_foreign_module(
     code: str, directory: "Optional[Path]", family: str, cwd: "Optional[str]", _depth: int,
-    script: "Optional[Path]" = None,
 ) -> "Optional[MutativeResult]":
-    """Judge the modules *code* loads from *directory* (None: off ``sys.path``): a module file is read like a script.
-
-    Modules the repository of *script* holds committed and unmodified are
-    vouched for and not read (``_python_repository_vouches``).
-    """
+    """Judge the modules *code* loads from *directory* (None: off ``sys.path``): a module file is read like a script."""
     if _loaded_modules is None:
         return None
-    names, unnamed, path_changed = _loaded_modules(code)
-    vouched = _python_repository_vouches(script, directory, names - {"sys"} if path_changed else frozenset())
-    if unnamed or (path_changed and not vouched):
+    names, unnamed = _loaded_modules(code)
+    if unnamed:
         return _foreign_code_result(
             "Python loads a file by relative import, runpy.run_path, a site directory or a changed sys.path",
         )
-    if directory is None or vouched:
+    if directory is None:
         return None
     for name in sorted(names):
         local = _local_python_module(name, directory)
@@ -9188,9 +9187,10 @@ def _check_script_file(
             )
         if ast_result.parse_failed:
             return _unparsed_code(family, f"Python script '{script_path}'")
-        script_file = Path(cwd or Path.cwd(), Path(script_path).expanduser())
-        script_dir = None if _python_skips_local_directory(command) else script_file.parent
-        foreign = _python_foreign_module(content, script_dir, family, cwd, _depth, script=script_file)
+        script_dir = Path(cwd or Path.cwd(), Path(script_path).expanduser()).parent
+        if _python_skips_local_directory(command):
+            script_dir = None
+        foreign = _python_foreign_module(content, script_dir, family, cwd, _depth)
         if foreign is not None:
             return foreign
         if _runs_code_string(content):
@@ -9623,9 +9623,7 @@ def _classify_js_import_closure(
     screen), so a write in an imported module classifies as if inlined in the
     entry.  A relative import that cannot be resolved or read, or a closure past
     either bound, returns a mutative result naming the cause.  Cycles end on the
-    visited set.  A module the repository holds committed and unmodified, like
-    a committed unmodified entry, is vouched for and not read, though its own
-    imports still are.
+    visited set.
     """
     import os
 
@@ -9633,15 +9631,6 @@ def _classify_js_import_closure(
     if not os.path.isabs(entry_abs):
         entry_abs = os.path.join(cwd if cwd is not None else os.getcwd(), entry_abs)
     entry_abs = os.path.realpath(entry_abs)
-    top = _repository_root(Path(entry_abs))
-    entry_rel = os.path.relpath(entry_abs, top) if top else ""
-
-    def vouched(target: str) -> bool:
-        target_rel = os.path.relpath(target, top) if top else ".."
-        if target_rel.startswith(".."):
-            return False
-        pathspecs = [f":(literal){entry_rel}", f":(literal){target_rel}"]
-        return _committed_unmodified(top, pathspecs, lambda path: True) == {entry_rel, target_rel}
 
     seen = {entry_abs}
     queue = [(entry_abs, entry_stripped, 0)]
@@ -9684,9 +9673,6 @@ def _classify_js_import_closure(
                         f"{_MAX_SCRIPT_READ_BYTES}-byte read limit",
                     )
                 imported_stripped = _strip_source(imported, spec)
-                if vouched(target):
-                    queue.append((target, imported_stripped, depth + 1))
-                    continue
                 verdict = _classify_source_with_lexer(
                     imported, target, family, spec, cwd=cwd, _depth=_depth,
                     stripped=imported_stripped, screen_blocked=False,
