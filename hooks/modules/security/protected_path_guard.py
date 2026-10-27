@@ -315,6 +315,9 @@ _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]
 _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _GLOB = re.compile(r"[*?\[]")
 _MAX_SPELLINGS = 64
+_UNRESOLVED_START = re.compile(r"\$\{?[A-Za-z_]")
+_COMPUTED = re.compile(r"\$\(|`|\$\{(?![A-Za-z_][A-Za-z0-9_]*\})")
+_BACKTICK = re.compile(r"`([^`]*)`")
 _WELL_KNOWN_VARIABLE = re.compile(
     r"HOME|TMPDIR|TMP|TEMP|PWD|OLDPWD|XDG_\w+|GAIA_\w+|npm_config_prefix|NPM_CONFIG_PREFIX|PREFIX"
 )
@@ -337,8 +340,21 @@ def unprovable_write_target(command: str, cwd: Optional[str] = None) -> Optional
             else:
                 writes = base in _FILESYSTEM_WRITE_COMMANDS
             for target in redirects + (operands if writes else []):
-                if re.match(r"\$\{?[A-Za-z_]", target.strip("'\"")):
+                spelled = target.strip("'\"")
+                if _UNRESOLVED_START.match(spelled) or _COMPUTED.search(spelled):
                     return target
+    return None
+
+
+def _computed_target_names_root(command: str, cwd: Optional[str]) -> Optional[str]:
+    """The install root a substitution names when the line writes to a computed target."""
+    if unprovable_write_target(command, cwd) is None:
+        return None
+    for inner in extract_substitutions(command) + _BACKTICK.findall(command):
+        for word in _tokenize(inner):
+            hit = _install_root_spelling(word, cwd)
+            if hit is not None:
+                return hit + _NOT_READ_ONLY
     return None
 
 
@@ -558,7 +574,7 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
                 if hit is not None:
                     return hit
 
-    return _names_install_root_unread(command, cwd)
+    return _computed_target_names_root(command, cwd) or _names_install_root_unread(command, cwd)
 
 
 def rejection_message(path: str) -> str:

@@ -305,7 +305,34 @@ class TestVariableWriteTargets:
         assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
 
     @pytest.mark.parametrize("form", [
+        "echo x > $(mktemp -d)/x", "cp /tmp/f \"$(date +%s)/x\"", "touch `pwd`/x",
+        "echo x > ${OUT:-/tmp}/x", "touch /tmp/$(whoami)/x", "echo x > ${#OUT}/x",
+    ])
+    def test_a_computed_write_target_is_unprovable(self, tmp_path, form):
+        assert protected_path_guard.unprovable_write_target(form, str(tmp_path)) is not None
+        assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
+
+    @pytest.mark.parametrize("form", [
+        "echo x > $(echo {I})/bin/x",
+        "cp /tmp/f \"$(dirname {I}/bin/gaia)/x\"",
+        "touch `echo {I}`/bin/x",
+    ])
+    def test_a_computed_target_whose_substitution_names_a_root_is_refused(self, install_root, form):
+        assert protected_path_guard.check(form.format(I=install_root))[0] is False
+
+    def test_a_computed_target_asks_through_the_validator(self, subagent, tmp_path):
+        from modules.tools.bash_validator import BashValidator
+
+        result = BashValidator().validate(
+            "echo x > $(mktemp -d)/x", is_subagent=True, session_id=SESSION,
+            agent_type="developer", cwd=str(tmp_path),
+            hook_payload={"cwd": str(tmp_path), "agent_id": SUBAGENT_ID, "agent_type": "developer"},
+        )
+        assert not result.allowed and result.approval_id and "PROTECTED_PATH" not in result.reason
+
+    @pytest.mark.parametrize("form", [
         "echo x > $HOME/x", "touch $TMPDIR/x", "cat $UNSET_Q/x", "X=/tmp; touch $X/a",
+        "cat $(echo /tmp/x)",
     ])
     def test_a_resolvable_or_read_target_is_not_unprovable(self, monkeypatch, tmp_path, form):
         monkeypatch.setenv("HOME", str(tmp_path))
