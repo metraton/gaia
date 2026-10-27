@@ -1171,8 +1171,7 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
 }
 
 // ── 13b. PALETTE/neutral — the default palette gates its own text ────────────
-// The shipped stylesheet passes; putting back the secondary grey neutral had
-// before 2026-10-26 (3.65:1 on a box) fails the run.
+// The shipped grey passes; neutral's grey from before 2026-10-26 (3.65:1) fails.
 {
   const dir = mkDeck();
   fs.copyFileSync(path.join(ROOT, 'tools', 'contrast-audit.cjs'), path.join(dir, 'tools', 'contrast-audit.cjs'));
