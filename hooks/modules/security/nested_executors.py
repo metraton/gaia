@@ -130,7 +130,7 @@ _SCRIPT_WORD = re.compile(r"(^|/)[\w.-]+\.(sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|pm
 _WORD = re.compile(r"[^\s'\"`;&|()<>]+")
 _TARGET_NAMES = frozenset(name for variables in TARGET_VARIABLES.values() for name in variables)
 _OPAQUE_SETTER = re.compile(r"(?:^|[\s;&|(){}!`])(?:source|\.)(?=\s)|[<>]\(|<<<")
-_DECLARERS = frozenset({"export", "declare", "typeset", "readonly", "local"})
+_DECLARERS = frozenset({"export", "declare", "typeset", "readonly", "local", "unset"})
 _NAME_READERS = {"read": "dinNptu", "mapfile": "dnOsuCc", "readarray": "dnOsuCc"}
 _SETTERS = _DECLARERS | set(_NAME_READERS) | {"eval", "printf", "for", "select", "getopts"}
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
@@ -331,7 +331,7 @@ def _is_other_name(name: str) -> bool:
 
 
 def targets_set_on_line(line: str) -> Dict[str, str]:
-    """Every target variable, with the value a literal assignment gives it, once *line* may set one: any setter whose names are not all plain identifiers outside the table, a nameref, eval, source, a process substitution or a here-string; else none. No scope, unset or unexport on the line ends one."""
+    """Every target variable, with the value a literal assignment gives it, once *line* may set one: any setter or unset whose names are not all plain identifiers outside the table, a nameref, eval, source, a process substitution or a here-string; else none. Unsetting one switches the target back to the configured default, so it counts as setting it; no scope or unexport on the line ends one."""
     from ..tools.shell_parser import parse_command, shell_split
 
     escalates = bool(_OPAQUE_SETTER.search(line))
