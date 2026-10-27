@@ -171,7 +171,7 @@ def _ambient(program: str, args: Sequence[str], environment: Dict[str, str], cwd
     if program == "terraform":
         if environment.get("TF_WORKSPACE"):
             return [Target("workspace", environment["TF_WORKSPACE"])]
-        directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd)
+        directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd or os.getcwd())
         text = None if directory is None else _read_text(directory / ".terraform" / "environment")
         return [Target("workspace", UNDETERMINED if text is None else text.strip())]
     return []
