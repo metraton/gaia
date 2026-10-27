@@ -7019,8 +7019,22 @@ def _gaia_source_repositories() -> FrozenSet[str]:
     return frozenset(filter(None, [_git_common_dir(str(_HOOK_ROOT))]))
 
 
+_GAIA_IMPORTABLE_PATHSPECS: Tuple[str, ...] = (
+    "bin", "gaia", "hooks", "scripts", "tools", ":(glob)*.py", ":(glob)*/__init__.py",
+)
+
+
+def _gaia_code_paths_clean(top: str) -> bool:
+    """True when nothing bin/gaia can import or run from checkout *top* (its root is on sys.path) is modified, staged or untracked."""
+    status = _git_read(
+        top, "--no-optional-locks", *_GIT_INDEX_ONLY,
+        "status", "--porcelain", "-z", "--untracked-files=all", "--", *_GAIA_IMPORTABLE_PATHSPECS,
+    )
+    return status == ""
+
+
 def _gaia_shipped_script(script: Path) -> bool:
-    """True when *script* is in the install this hook runs from, or committed and unmodified in a checkout sharing the hook checkout's git storage."""
+    """True when *script* is in the install this hook runs from, or committed in a checkout sharing the hook checkout's git storage whose Gaia code is all clean."""
     real = Path(os.path.realpath(script))
     if not real.is_file():
         return False
@@ -7030,7 +7044,7 @@ def _gaia_shipped_script(script: Path) -> bool:
     if top is None or _git_common_dir(top) not in _gaia_source_repositories():
         return False
     relative = os.path.relpath(real, top)
-    return _committed_unmodified(top, [f":(literal){relative}"]) == {relative}
+    return _gaia_code_paths_clean(top) and _committed_unmodified(top, [f":(literal){relative}"]) == {relative}
 
 
 def _gaia_cli_group(script: Path) -> "Optional[str]":
@@ -7073,7 +7087,8 @@ def _check_gaia_cli_dispatcher(
 
     A ``bin/cli/<group>.py`` script runs as ``gaia <group>`` and is
     re-dispatched the same way.  Either script counts only where Gaia ships it
-    (``_gaia_shipped_script``); anywhere else it is judged by its content.
+    and every module it can load is shipped too (``_gaia_shipped_script``);
+    anywhere else it is judged by its content.
 
     Returns ``None`` when the script is not the gaia dispatcher, so the caller
     continues with ordinary AST/regex script analysis.
