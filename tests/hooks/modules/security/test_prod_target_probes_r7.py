@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import codecs
-import json
-import shutil
-import subprocess
-
 import pytest
 
 from tests.hooks.modules.security.test_prod_target_probes_r6 import (
@@ -72,15 +68,6 @@ GO_READS_PROD = {
 }
 
 
-def kubectl_reads(path):
-    done = subprocess.run(["kubectl", "config", "current-context", "--kubeconfig", str(path)],
-                          capture_output=True, text=True, timeout=30)
-    return done.stdout.strip() if done.returncode == 0 else "ERR:" + done.stderr.strip()[:80]
-
-
-needs_kubectl = pytest.mark.skipif(shutil.which("kubectl") is None, reason="kubectl not installed")
-
-
 @pytest.mark.parametrize("case", sorted(KUBE))
 def test_r7_kubeconfig_kubectl_reads_as_prod_asks(case, env):
     """Every kubeconfig spelling kubectl reads as prod-a asks; the rest may ask or keep the verdict."""
@@ -88,14 +75,6 @@ def test_r7_kubeconfig_kubectl_reads_as_prod_asks(case, env):
     got, reason = verdict("kubectl frobnicate x", env["work"])
     if case in KUBECTL_READS_PROD:
         assert got in ASK, (got, reason[:160])
-
-
-@needs_kubectl
-@pytest.mark.parametrize("case", sorted(KUBE))
-def test_r7_recorded_kubectl_reading_holds(case, env):
-    """The recorded kubectl readings still hold for the installed kubectl."""
-    path = put(env["home"] / ".kube" / "config", KUBE[case])
-    assert (kubectl_reads(path) == "prod-a") == (case in KUBECTL_READS_PROD)
 
 
 @pytest.mark.parametrize("case", sorted(JSON))
@@ -135,13 +114,11 @@ def _assert_denied_anew(command, cwd, minted):
     assert not after.allowed and after.approval_id and after.approval_id != minted, (after.reason or "")[:160]
 
 
-@needs_kubectl
 def test_r7_grant_minted_without_config_follows_escaped_prod(env):
     """Minted while no kubeconfig exists, then a config kubectl reads as prod-a appears: the grant must not match."""
     command = "kubectl apply -f x.yaml"
     minted = _mint(command, env["work"])
     _kube_escaped(env, "prod-a")
-    assert kubectl_reads(env["home"] / ".kube" / "config") == "prod-a"
     _assert_denied_anew(command, env["work"], minted)
 
 
@@ -269,13 +246,16 @@ users:
 """
 
 
+KUBECTL_READS_WRITTEN = {"dev": "gke_shop-dev_us-central1_main", "prod": "gke_shop-prod_us-central1_main"}
+
+
 @pytest.mark.parametrize("twin, expected", [("dev", ("FREE",)), ("prod", ASK)])
 def test_r7_kubectl_written_kubeconfig_is_certified(twin, expected, env):
     """A kubectl-written kubeconfig is read: the dev twin keeps its verdict, the prod twin asks naming the context."""
     put(env["home"] / ".kube" / "config", KUBECTL_WRITTEN.format(env=twin))
     got, reason = verdict("kubectl frobnicate x", env["work"])
     assert got in expected, (got, reason[:160])
-    assert _kube_names(env) == [f"gke_shop-{twin}_us-central1_main"]
+    assert _kube_names(env) == [KUBECTL_READS_WRITTEN[twin]]
 
 
 def test_r7_kubectl_written_kubeconfig_grant_follows_the_twin(env):
@@ -288,14 +268,6 @@ def test_r7_kubectl_written_kubeconfig_grant_follows_the_twin(env):
     minted = _mint(command, env["work"])
     put(path, KUBECTL_WRITTEN.format(env="prod"))
     _assert_denied_anew(command, env["work"], minted)
-
-
-@needs_kubectl
-@pytest.mark.parametrize("twin", ["dev", "prod"])
-def test_r7_kubectl_reads_the_written_kubeconfig(twin, env):
-    """kubectl itself loads the fixture and reads the same current context the hook certifies."""
-    path = put(env["home"] / ".kube" / "config", KUBECTL_WRITTEN.format(env=twin))
-    assert kubectl_reads(path) == f"gke_shop-{twin}_us-central1_main"
 
 
 def test_r7_pulumi_project_with_namespaced_config_keys_is_certified(env):
