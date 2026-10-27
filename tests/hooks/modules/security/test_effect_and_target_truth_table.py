@@ -34,9 +34,9 @@ EXTERNAL = {"codex": "Apache-2.0", "continue": "Apache-2.0", "roo": "Apache-2.0"
 SOURCE_VERDICT = {"free": "FREE", "ask": "SIGNED", "deny": "BLOCKED", "unknown": "UNKNOWN"}
 COMPOUND_DENIAL = "Compound T3 execution is disabled"
 UNDETERMINED = "could not be determined"
-AMBIENT_CONFIG = ("KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG")
+AMBIENT_CONFIG = ("KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG", "AZURE_CONFIG_DIR", "PULUMI_HOME")
 AMBIENT_NAMES = ("DOCKER_CONTEXT", "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME",
-                 "AWS_PROFILE", "TF_WORKSPACE")
+                 "AWS_PROFILE", "TF_WORKSPACE", "AZURE_SUBSCRIPTION_ID", "CONTAINER_CONNECTION")
 
 
 def _isolate_targets(patch, root: Path) -> None:

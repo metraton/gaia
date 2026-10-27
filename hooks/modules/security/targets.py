@@ -106,6 +106,10 @@ _DYNAMIC = re.compile(r"[$`]")
 _ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)", re.S)
 _CURRENT_CONTEXT = re.compile(r"""^current-context:[ \t]*["']?([^"'\s#]*)""", re.M)
 _PULUMI_NAME = re.compile(r"""^name:[ \t]*["']?([^"'\s#]+)""", re.M)
+_CONFIGURATION_NAME = re.compile(r"[A-Za-z0-9][\w.-]*")
+_YAML_KEY = re.compile(r"^﻿?[A-Za-z][\w-]*:", re.M)
+_SUBSCRIPTION_ID = re.compile(r"(?=[^0-9]*[0-9])[0-9A-Fa-f-]+")
+_HELP_PROGRAMS = frozenset(_OPTION_ARITY) | frozenset(_PROGRAM_TARGET_FLAGS) | _KUBE_PROGRAMS | _SWITCHER_PROGRAMS
 
 
 @dataclass(frozen=True)
@@ -160,43 +164,77 @@ def _literal(value: str) -> str:
     return UNDETERMINED if not value or _DYNAMIC.search(value) else value
 
 
-def _read_text(path: Path) -> Optional[str]:
-    """The file's text, "" when it does not exist, None when it exists and cannot be read."""
-    if not path.exists() and not path.is_symlink():
-        return ""
+def _named(value: str) -> str:
+    """*value* when literal, "" when nothing names a target, UNDETERMINED when the shell computes it."""
+    return value and _literal(value)
+
+
+def _read_text(path: Optional[Path]) -> Optional[str]:
+    """The file's text, "" when it does not exist, None when it exists and cannot be read or *path* is unknown."""
     try:
+        if path is None:
+            return None
+        if not path.exists() and not path.is_symlink():
+            return ""
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, ValueError):
         return None
 
 
-def _kube_context(environment: Dict[str, str]) -> str:
+def _json_value(text: str, kind: type, key: str):
+    """``key`` of the JSON object *text*, which must be of *kind* or absent; UNDETERMINED for anything else."""
+    try:
+        document = json.loads(text.lstrip("﻿"))
+    except (ValueError, RecursionError):
+        return UNDETERMINED
+    if not isinstance(document, dict):
+        return UNDETERMINED
+    value = document.get(key)
+    return value if value is None or isinstance(value, kind) else UNDETERMINED
+
+
+def _in_directory(path: str, cwd: Optional[str]) -> Optional[Path]:
+    expanded = Path(path).expanduser()
+    return expanded if expanded.is_absolute() else (Path(cwd) / expanded if cwd else None)
+
+
+def _config_root(environment: Dict[str, str], variable: str, default: Tuple[str, ...], cwd: Optional[str]) -> Optional[Path]:
+    """The directory *variable* names, read against the command's *cwd*; the home default when unset; None when unknown."""
+    value = environment.get(variable)
+    if not value:
+        return Path.home().joinpath(*default)
+    return None if _DYNAMIC.search(value) else _in_directory(value, cwd)
+
+
+def _kube_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
     paths = environment.get("KUBECONFIG")
-    files = [Path(p) for p in paths.split(os.pathsep) if p] if paths else [Path.home() / ".kube" / "config"]
+    if paths and _DYNAMIC.search(paths):
+        return UNDETERMINED
+    files = [_in_directory(p, cwd) for p in paths.split(os.pathsep) if p] if paths else [Path.home() / ".kube" / "config"]
     for path in files:
-        text = _read_text(path.expanduser())
+        text = _read_text(path)
         if text is None:
             return UNDETERMINED
-        if not text.lstrip().startswith("{"):
+        if not text.lstrip("﻿").lstrip().startswith("{"):
+            if text.strip() and not _YAML_KEY.search(text):
+                return UNDETERMINED
             match = _CURRENT_CONTEXT.search(text)
             if match and match.group(1):
                 return match.group(1)
             continue
-        try:
-            context = json.loads(text).get("current-context")
-        except (ValueError, AttributeError):
-            return UNDETERMINED
+        context = _json_value(text, str, "current-context")
         if context:
-            return str(context)
+            return context
     return ""
 
 
-def _gcloud_properties(environment: Dict[str, str]) -> Tuple[str, str]:
-    root = Path(environment.get("CLOUDSDK_CONFIG") or Path.home() / ".config" / "gcloud").expanduser()
-    active = environment.get("CLOUDSDK_ACTIVE_CONFIG_NAME") or _read_text(root / "active_config")
-    if active is None:
+def _gcloud_properties(environment: Dict[str, str], cwd: Optional[str]) -> Tuple[str, str]:
+    root = _config_root(environment, "CLOUDSDK_CONFIG", (".config", "gcloud"), cwd)
+    active = environment.get("CLOUDSDK_ACTIVE_CONFIG_NAME") or _read_text(None if root is None else root / "active_config")
+    active = None if active is None else active.strip() or "default"
+    if root is None or active is None or not _CONFIGURATION_NAME.fullmatch(active):
         return UNDETERMINED, UNDETERMINED
-    text = _read_text(root / "configurations" / f"config_{active.strip() or 'default'}")
+    text = _read_text(root / "configurations" / f"config_{active}")
     if text is None:
         return UNDETERMINED, UNDETERMINED
     parser = configparser.ConfigParser(interpolation=None)
@@ -207,35 +245,39 @@ def _gcloud_properties(environment: Dict[str, str]) -> Tuple[str, str]:
     return parser.get("core", "project", fallback=""), parser.get("core", "account", fallback="")
 
 
-def _docker_context(environment: Dict[str, str]) -> str:
+def _docker_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
     if environment.get("DOCKER_CONTEXT"):
-        return environment["DOCKER_CONTEXT"]
-    root = Path(environment.get("DOCKER_CONFIG") or Path.home() / ".docker").expanduser()
-    text = _read_text(root / "config.json")
+        return _literal(environment["DOCKER_CONTEXT"])
+    root = _config_root(environment, "DOCKER_CONFIG", (".docker",), cwd)
+    text = _read_text(None if root is None else root / "config.json")
     if not text:
         return "" if text == "" else UNDETERMINED
-    try:
-        return str(json.loads(text).get("currentContext") or "")
-    except (ValueError, AttributeError):
-        return UNDETERMINED
+    return _json_value(text, str, "currentContext") or ""
 
 
-def _azure_subscription(environment: Dict[str, str]) -> Tuple[str, ...]:
-    """Name and id of the default subscription in azureProfile.json; () when none is set, UNDETERMINED when unreadable."""
-    root = Path(environment.get("AZURE_CONFIG_DIR") or Path.home() / ".azure").expanduser()
-    text = _read_text(root / "azureProfile.json")
-    if not text:
-        return () if text == "" else (UNDETERMINED,)
-    try:
-        default = next((s for s in json.loads(text.lstrip("﻿")).get("subscriptions") or () if s.get("isDefault")), None)
-    except (ValueError, AttributeError):
-        return (UNDETERMINED,)
-    return () if default is None else (str(default.get("name") or ""), str(default.get("id") or ""))
+def _azure_profile(environment: Dict[str, str], cwd: Optional[str]) -> Optional[List[Tuple[str, str, bool]]]:
+    """(name, id, is default) of each subscription in azureProfile.json; [] when there is none, None when unreadable."""
+    root = _config_root(environment, "AZURE_CONFIG_DIR", (".azure",), cwd)
+    text = _read_text(None if root is None else root / "azureProfile.json")
+    if text == "":
+        return []
+    subscriptions = UNDETERMINED if text is None else _json_value(text, list, "subscriptions")
+    if not isinstance(subscriptions, list):
+        return None
+    profile = []
+    for entry in subscriptions:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not isinstance(entry.get("id"), str):
+            return None
+        profile.append((entry["name"], entry["id"], bool(entry.get("isDefault"))))
+    return profile
 
 
-def _in_directory(path: str, cwd: Optional[str]) -> Optional[Path]:
-    expanded = Path(path).expanduser()
-    return expanded if expanded.is_absolute() else (Path(cwd) / expanded if cwd else None)
+def _azure_subscriptions(value: str, profile: Optional[List[Tuple[str, str, bool]]], fetching: bool) -> List[str]:
+    value = _literal(value)
+    match = next((s for s in profile or () if value.lower() in (s[0].lower(), s[1].lower())), None)
+    if match is not None:
+        return [match[0], match[1]]
+    return [UNDETERMINED if fetching and _SUBSCRIPTION_ID.fullmatch(value) else value]
 
 
 def _pulumi_stack(args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> str:
@@ -252,63 +294,68 @@ def _pulumi_stack(args: Sequence[str], environment: Dict[str, str], cwd: Optiona
     name = _PULUMI_NAME.search(text or "")
     if name is None:
         return UNDETERMINED
-    home = Path(environment.get("PULUMI_HOME") or Path.home() / ".pulumi").expanduser()
+    home = _config_root(environment, "PULUMI_HOME", (".pulumi",), cwd)
     digest = hashlib.sha1(str(project).encode()).hexdigest()
-    settings = _read_text(home / "workspaces" / f"{name.group(1)}-{digest}-workspace.json")
+    settings = _read_text(None if home is None else home / "workspaces" / f"{name.group(1)}-{digest}-workspace.json")
     if not settings:
         return "" if settings == "" else UNDETERMINED
-    try:
-        return str(json.loads(settings).get("stack") or "")
-    except (ValueError, AttributeError):
-        return UNDETERMINED
+    return _json_value(settings, str, "stack") or ""
 
 
-def _ambient(program: str, args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> List[Target]:
+def _ambient(
+    program: str, args: Sequence[str], environment: Dict[str, str], cwd: Optional[str], fetching: bool,
+) -> List[Target]:
     if program in _KUBE_PROGRAMS and not _flag_values(args, _KUBE_CONTEXT_FLAGS):
         for value in _flag_values(args, frozenset({"--kubeconfig"})):
             path = _in_directory(value, cwd)
             if path is None or _DYNAMIC.search(value):
                 return [Target("kube-context", UNDETERMINED)]
             environment["KUBECONFIG"] = str(path)
-        return [Target("kube-context", _kube_context(environment))]
+        return [Target("kube-context", _kube_context(environment, cwd))]
     if program == "gcloud":
         for value in _flag_values(args, frozenset({"--configuration"})):
             environment["CLOUDSDK_ACTIVE_CONFIG_NAME"] = value
-        project, account = _gcloud_properties(environment)
+        project, account = _gcloud_properties(environment, cwd)
         found = []
         if not _flag_values(args, frozenset({"--project"})):
-            found.append(Target("project", environment.get("CLOUDSDK_CORE_PROJECT") or project))
+            found.append(Target("project", _named(environment.get("CLOUDSDK_CORE_PROJECT") or project)))
         if not _flag_values(args, frozenset({"--account"})):
-            found.append(Target("account", environment.get("CLOUDSDK_CORE_ACCOUNT") or account))
+            found.append(Target("account", _named(environment.get("CLOUDSDK_CORE_ACCOUNT") or account)))
         return found
     if program in ("docker", "podman") and not _flag_values(args, _PROGRAM_TARGET_FLAGS[program]):
         if program == "podman" and environment.get("CONTAINER_CONNECTION"):
-            return [Target("podman-connection", environment["CONTAINER_CONNECTION"])]
-        return [Target("docker-context", _docker_context(environment))]
+            return [Target("podman-connection", _literal(environment["CONTAINER_CONNECTION"]))]
+        return [Target("docker-context", _docker_context(environment, cwd))]
     if program == "az" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["az"]):
-        found = [Target("subscription", name) for name in _azure_subscription(environment)]
+        profile = _azure_profile(environment, cwd)
+        if profile is None:
+            found = [Target("subscription", UNDETERMINED)]
+        else:
+            found = [Target("subscription", part) for name, sid, default in profile if default for part in (name, sid)]
         if environment.get("AZURE_SUBSCRIPTION_ID"):
-            found.append(Target("subscription", environment["AZURE_SUBSCRIPTION_ID"]))
+            found += [Target("subscription", name)
+                      for name in _azure_subscriptions(environment["AZURE_SUBSCRIPTION_ID"], profile, fetching)]
         return found
     if program == "pulumi" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["pulumi"]):
         return [Target("stack", _pulumi_stack(args, environment, cwd))]
     if program == "aws" and not _flag_values(args, frozenset({"--profile"})):
-        return [Target("profile", environment.get("AWS_PROFILE", ""))]
+        return [Target("profile", _literal(environment["AWS_PROFILE"]) if environment.get("AWS_PROFILE") else "")]
     if program == "terraform":
         if environment.get("TF_WORKSPACE"):
-            return [Target("workspace", environment["TF_WORKSPACE"])]
+            return [Target("workspace", _literal(environment["TF_WORKSPACE"]))]
         directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd)
         text = None if directory is None else _read_text(directory / ".terraform" / "environment")
         return [Target("workspace", UNDETERMINED if text is None else text.strip())]
     return []
 
 
-def _gcloud_configuration_targets(name: str, environment: Dict[str, str]) -> List[Target]:
-    project, account = _gcloud_properties({**environment, "CLOUDSDK_ACTIVE_CONFIG_NAME": name})
+def _gcloud_configuration_targets(name: str, environment: Dict[str, str], cwd: Optional[str]) -> List[Target]:
+    project, account = _gcloud_properties({**environment, "CLOUDSDK_ACTIVE_CONFIG_NAME": name}, cwd)
     return [Target("switch", project), Target("switch", account)]
 
 
-def _split(command: str) -> Optional[Tuple[List[str], List[str]]]:
+def _split(command: str) -> Optional[Tuple[List[str], List[str], List[str]]]:
+    """The assignments before the program, the program's words, and every word written before them."""
     from ..tools.shell_parser import shell_split
     from .mutative_verbs import _expand_split_strings, _peel_wrapper_readings
 
@@ -319,7 +366,23 @@ def _split(command: str) -> Optional[Tuple[List[str], List[str]]]:
     except ValueError:
         return None
     prefix = written[: max(len(written) - len(words), 0)]
-    return [w for w in prefix if _ASSIGNMENT.fullmatch(w)], words
+    return [w for w in prefix if _ASSIGNMENT.fullmatch(w)], words, prefix
+
+
+def _wrapper_cwd(prefix: Sequence[str], cwd: Optional[str]) -> Optional[str]:
+    """*cwd* after the ``env -C``/``--chdir`` written before the program; None when the shell computes it."""
+    under_env = False
+    for index, word in enumerate(prefix):
+        under_env = under_env or command_name(word) == "env"
+        name, equals, value = word.partition("=")
+        if under_env and word.startswith("-C") and word != "-C":
+            name, equals, value = "-C", "=", word[2:]
+        if not under_env or name not in ("-C", "--chdir"):
+            continue
+        value = value if equals else (prefix[index + 1] if index + 1 < len(prefix) else "")
+        located = None if not value or _DYNAMIC.search(value) else _in_directory(value, cwd)
+        cwd = str(located) if located else None
+    return cwd
 
 
 def command_targets(
@@ -333,7 +396,8 @@ def command_targets(
     split = _split(command)
     if split is None or not split[1]:
         return []
-    assignments, words = split
+    assignments, words, prefix = split
+    cwd = _wrapper_cwd(prefix, cwd)
     program, args = command_name(words[0]), words[1:]
     environment = {**os.environ, **(inherited or {})}
     for word in assignments:
@@ -341,8 +405,12 @@ def command_targets(
         environment[name] = value
     operation, operands, _ = _operation(words)
     fetching = operation is not None and _CREDENTIAL_FETCHERS.get(program) == operation
-    found = [Target("switch" if fetching else "flag", _literal(value))
-             for value in _flag_values(args, _target_flags(program))]
+    kind, flagged = "switch" if fetching else "flag", _flag_values(args, _target_flags(program))
+    if program == "az" and flagged:
+        profile = _azure_profile(environment, cwd)
+        found = [Target(kind, name) for value in flagged for name in _azure_subscriptions(value, profile, fetching)]
+    else:
+        found = [Target(kind, _literal(value)) for value in flagged]
     found += [Target("variable", _literal(environment[name])) for name in sorted(_naming_variables(program))
               if name in environment and (name in (inherited or {}) or any(w.startswith(f"{name}=") for w in assignments))]
     if operation in _SWITCH_WORDS.get(program, ()):
@@ -354,11 +422,11 @@ def command_targets(
         for destination in map(_literal, destinations):
             found.append(Target("switch", destination))
             if program == "gcloud" and operation == "activate" and destination != UNDETERMINED:
-                found += _gcloud_configuration_targets(destination, environment)
+                found += _gcloud_configuration_targets(destination, environment, cwd)
         if program == "kubens" and destinations:
-            found.append(Target("switch", _kube_context(environment)))
+            found.append(Target("switch", _kube_context(environment, cwd)))
     if ambient:
-        found += _ambient(program, args, environment, cwd)
+        found += _ambient(program, args, environment, cwd, fetching)
     return [target for target in found if target.name]
 
 
@@ -401,7 +469,7 @@ def _operation(words: Sequence[str]) -> Tuple[Optional[str], List[str], bool]:
     groups = _GROUP_WORDS.get(program, frozenset())
     operands = [w for w, _, _ in positionals]
     if program in _SWITCHER_PROGRAMS:
-        return program, operands, all(known for _, known, _ in positionals)
+        return program, operands, True
     if program == "aws":
         return (operands[1], operands[2:], positionals[1][1]) if len(positionals) > 1 else (None, [], False)
     if program in _VERB_PATH_PROGRAMS:
@@ -437,7 +505,11 @@ def naming_variables_on_line(line: str) -> Dict[str, str]:
     from ..tools.shell_parser import parse_command, shell_split
 
     assigned: Dict[str, str] = {}
-    for component in parse_command(line):
+    try:
+        components = parse_command(line)
+    except Exception:
+        return assigned
+    for component in components:
         try:
             words = shell_split(component)
         except ValueError:
@@ -492,7 +564,10 @@ def declaration_for(cwd: Optional[str]) -> Dict:
 
 def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
     """The resolved targets a grant for *command* binds to, as one string; UNDETERMINED when any of them cannot be read."""
-    targets = command_targets(command, cwd=cwd)
+    try:
+        targets = command_targets(command, cwd=cwd)
+    except Exception:
+        return UNDETERMINED
     if any(t.name == UNDETERMINED for t in targets):
         return UNDETERMINED
     return ";".join(sorted(f"{t.kind}={t.name}" for t in targets))
@@ -538,18 +613,50 @@ def production_target_verdict(
 
     The operation word decides a read (``_operation``), never an operand; an executor keeps the verdict of what it runs.
     A target that is not literal keeps the verdict (D178 pins ``docker --context $CTX ps`` free); only a grant refuses it.
+    A failure while reading targets is a target that could not be determined, so it asks rather than reach the validator.
     """
-    from .mutative_verbs import _READING_CATEGORIES, CATEGORY_MUTATIVE, MutativeResult
-    from .nested_executors import nested_run
+    from .mutative_verbs import CATEGORY_MUTATIVE, MutativeResult
 
     if detected.is_mutative:
         return None
+    try:
+        landing = _landing(command, detected, cwd, inherited)
+    except Exception:
+        landing = ("a target that could not be determined", [])
+    if landing is None:
+        return None
+    place, words = landing
+    return MutativeResult(
+        is_mutative=True, category=CATEGORY_MUTATIVE, verb=detected.verb or (command_name(words[0]) if words else ""),
+        confidence="high", reason=f"{shlex.join(words) if words else command!r} lands on {place}", rule="sign.lands",
+    )
+
+
+def _performs_no_operation(words: Sequence[str], operation: Optional[str]) -> bool:
+    """No operation word, a ``help`` first word, or ``--help`` on a modelled CLI: it prints and touches no target."""
+    program = command_name(words[0])
+    first = next((w.lower() for w, _, _ in _positionals(words)), None)
+    if program not in _SWITCHER_PROGRAMS and (operation is None or first == "help"):
+        return True
+    shown = words[1:words.index("--")] if "--" in words else words[1:]
+    return program in _HELP_PROGRAMS and any(w in ("--help", "-help") for w in shown)
+
+
+def _landing(
+    command: str, detected, cwd: Optional[str], inherited: Optional[Dict[str, str]],
+) -> Optional[Tuple[str, List[str]]]:
+    """What production target or protected branch *command* lands on, with the words that land there; None when none."""
+    from .mutative_verbs import _READING_CATEGORIES
+    from .nested_executors import nested_run
+
     split = _split(command)
     words = split[1] if split else []
     branch, repo = _pushed_branch(words, cwd) if words and command_name(words[0]) == "git" else (None, None)
     if detected.category in _READING_CATEGORIES and words and nested_run(words) is not None:
         return None
     operation, _, known = _operation(words)
+    if not branch and words and _performs_no_operation(words, operation):
+        return None
     switching = known and operation in _SWITCH_WORDS.get(command_name(words[0]) if words else "", ())
     if not branch and known and not switching and _is_read(operation):
         return None
@@ -567,9 +674,4 @@ def production_target_verdict(
         landing = f"the production {named.kind} {named.name!r}"
     elif switching and any(t.name == UNDETERMINED for t in targets):
         landing = "a target that could not be determined"
-    if not landing:
-        return None
-    return MutativeResult(
-        is_mutative=True, category=CATEGORY_MUTATIVE, verb=detected.verb or command_name(words[0]),
-        confidence="high", reason=f"{shlex.join(words)!r} lands on {landing}", rule="sign.lands",
-    )
+    return (landing, list(words)) if landing else None
