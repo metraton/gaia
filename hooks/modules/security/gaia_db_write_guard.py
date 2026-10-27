@@ -36,7 +36,7 @@ from .canonical_path import canonical_path, command_name
 from .data_heredoc import data_heredoc_header
 from .mutative_verbs import _peel_leading_command_wrappers, detect_mutative_command
 from .shell_substitution import extract_substitutions
-from .shell_write_guard import _split_components, _tokenize, _writer_targets, download_output_targets
+from .shell_write_guard import _split_components, _tokenize, _writer_targets, downloader_paths
 
 # ---------------------------------------------------------------------------
 # Detection regex
@@ -133,7 +133,7 @@ def _component_writes_db(component: str) -> bool:
     tokens = _tokenize(peeled)
     if not tokens:
         return False
-    if any(_is_gaia_db_file(t) for t in download_output_targets(tokens)):
+    if any(_is_gaia_db_file(t) for t in downloader_paths(tokens)):
         return True
     base = command_name(tokens[0])
     operands =[t for t in tokens[1:] if not t.startswith("-")]

@@ -328,10 +328,59 @@ def _option_value_positions(semantics: "CommandSemantics") -> FrozenSet[int]:
     return frozenset(positions)
 
 
+# Global options of the cloud CLIs and how many words each takes. They hold no command word, so they are read
+# away before the command path is classified; an option missing here may take a value, so it is read both ways.
+_CLOUD_GLOBAL_OPTIONS: Dict[str, Dict[str, int]] = {
+    "aws": {
+        "--profile": 1, "--region": 1, "--output": 1, "--query": 1, "--endpoint-url": 1, "--color": 1,
+        "--ca-bundle": 1, "--cli-read-timeout": 1, "--cli-connect-timeout": 1, "--cli-binary-format": 1,
+        "--debug": 0, "--no-verify-ssl": 0, "--no-paginate": 0, "--no-sign-request": 0, "--no-cli-pager": 0,
+    },
+    "az": {"--subscription": 1, "--output": 1, "-o": 1, "--query": 1, "--debug": 0, "--verbose": 0, "--only-show-errors": 0},
+    "gcloud": {
+        "--project": 1, "--account": 1, "--configuration": 1, "--format": 1, "--verbosity": 1,
+        "--billing-project": 1, "--trace-token": 1, "--quiet": 0, "--log-http": 0,
+    },
+}
+
+
+def _cloud_command_readings(base_cmd: str, tokens: List[str]) -> Tuple[List[str], bool]:
+    """Return the command without its global options and whether that reading is exact; an unknown leading option is read both ways."""
+    arity = _CLOUD_GLOBAL_OPTIONS.get(base_cmd)
+    start = next((i for i, t in enumerate(tokens) if program_identity(t) == base_cmd), None) if arity else None
+    if start is None:
+        return [], True
+    kept, rest, index = tokens[:start + 1], tokens[start + 1:], 0
+    while index < len(rest):
+        token = rest[index]
+        name = token.split("=", 1)[0]
+        if token == "--":
+            kept += rest[index:]
+            break
+        if name in arity:
+            index += 1 + (0 if "=" in token else arity[name])
+            continue
+        if token.startswith("-") and len(kept) == start + 1:
+            after = rest[index + 1:]
+            spellings = [kept + after] if "=" in token else [kept + after, kept + after[1:]]
+            return [shlex.join(spelling) for spelling in spellings], False
+        kept.append(token)
+        index += 1
+    return ([shlex.join(kept)] if len(kept) < len(tokens) else []), True
+
+
+# Reads that take the resource they read as an operand: a config after one is that operand, not the verb.
+_OPERAND_READ_VERBS: FrozenSet[str] = frozenset({"get", "list", "describe", "show", "read", "view", "inspect", "ls"})
+
+
 def _configure_position(head_tokens: Tuple[str, ...], values: FrozenSet[int]) -> int:
-    """Return where a group-path command ends on the verb ``config`` (az webapp log config), or 0."""
-    for position, token in enumerate(head_tokens[2:], start=2):
-        if token == "config" and position not in values:
+    """Return where a group-path command ends on the verb ``config`` (az webapp log config), or 0 when a read names it."""
+    for position, token in enumerate(head_tokens):
+        if position in values:
+            continue
+        if token.split("-", 1)[0] in _OPERAND_READ_VERBS:
+            return 0
+        if token == "config" and position >= 2:
             later = [t for p, t in enumerate(head_tokens[position + 1:], start=position + 1) if p not in values]
             return 0 if any(_names_operation(t) for t in later) else position
     return 0
@@ -5965,6 +6014,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             reason=f"the word {dynamic_word!r} naming what runs could not be determined",
             rule="unknown.dynamic-span",
         )
+    spellings, exact = _cloud_command_readings(base_cmd, tokens)
+    readings = [_detect_mutative_command(s, from_source_code, cwd, _depth, caller, _in_prefix) for s in spellings]
+    changed = next((reading for reading in readings if reading.is_mutative), None)
+    if changed is not None or (readings and exact):
+        return changed or readings[0]
     if unlisted_subcommand and "-" in first_word and _verb_word_effect(first_word) == CATEGORY_MUTATIVE:
         return MutativeResult(
             is_mutative=True,

