@@ -1202,7 +1202,11 @@ _INLINE_CODE_MAP: Dict[str, FrozenSet[str]] = {
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
     "lua": frozenset({"-e"}),
+    "luajit": frozenset({"-e"}),
     "rscript": frozenset({"-e"}),
+    "r": frozenset({"-e"}),
+    "deno": frozenset({"eval"}),
+    "bun": frozenset({"-e", "--eval", "-p", "--print"}),
 }
 _INLINE_CODE_CLIS: FrozenSet[str] = frozenset(_INLINE_CODE_MAP.keys())
 
@@ -1228,7 +1232,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
     "python", "python3",
     "python3.10", "python3.11", "python3.12", "python3.13",
     "bash", "sh", "zsh", "dash", "ksh",
-    "node", "ruby", "perl", "php", "lua", "rscript",
+    "node", "ruby", "perl", "php", "lua", "luajit", "rscript",
 })
 
 # Non-shell, non-Python interpreters: their script files are SOURCE CODE in a
@@ -1241,7 +1245,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
 # camelCase multi-word tokens embedded inside a quoted string argument were
 # never matched anyway (the quote makes the whole string a single token).
 _NON_SHELL_SCRIPT_INTERPRETERS: FrozenSet[str] = frozenset({
-    "node", "ruby", "perl", "php", "lua", "rscript",
+    "node", "ruby", "perl", "php", "lua", "luajit", "rscript",
 })
 
 # File extensions whose interpreter is implied by ``./script`` (no explicit
@@ -1385,6 +1389,7 @@ _INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
     "lua": frozenset({"-e", "-l"}),
+    "luajit": frozenset({"-e", "-l"}),
     "rscript": frozenset({"-e"}),
 }
 
@@ -2166,6 +2171,45 @@ _EXEC_SINK_BACKTICK_RE = _re.compile(r"`([^`\n]{2,})`")
 _EXEC_SINK_PERCENT_X_RE = _re.compile(r"%x[\{\(\[]([^\}\)\]\n]{2,})[\}\)\]]")
 
 
+_EXEC_SINK_ARGV_RE = _re.compile(
+    r"\b(?:spawnSync|spawn|execFileSync|execFile)\s*\(\s*"
+    r"(?P<q>['\"])(?P<prog>(?:[^'\"\\]|\\.)*)(?P=q)\s*,\s*\[(?P<args>[^\]]*)\]"
+)
+_ARGV_LITERAL_ITEM_RE = _re.compile(r"""\s*(?P<q>['"])(?P<item>(?:[^'"\\]|\\.)*)(?P=q)\s*""")
+_ARGV_SHELL_PROGRAMS: FrozenSet[str] = frozenset({"cmd", "powershell", "pwsh"})
+
+
+def _scan_exec_sink_argv(
+    code: str, family: str, cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Judge ``spawn``/``execFile`` calls by the argv they run; a shell handed a computed argv asks."""
+    import os
+    from .shell_unwrapper import _SHELLS
+    for match in _EXEC_SINK_ARGV_RE.finditer(code):
+        program = match.group("prog")
+        items = [part for part in match.group("args").split(",") if part.strip()]
+        literals = [_ARGV_LITERAL_ITEM_RE.fullmatch(part) for part in items]
+        if all(literals):
+            argv = (program, *(literal.group("item") for literal in literals))
+            if not _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1):
+                continue
+            reason = f"exec-sink argv runs a mutative command: {shlex.join(argv)}"
+        else:
+            name = os.path.basename(program.replace("\\", "/")).lower().removesuffix(".exe")
+            if name not in _SHELLS and name not in _ARGV_SHELL_PROGRAMS:
+                continue
+            reason = f"exec-sink hands shell '{program}' an argv computed at runtime"
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="exec-sink-argv",
+            cli_family=family,
+            confidence="medium",
+            reason=reason,
+        )
+    return None
+
+
 def _scan_exec_sink_string_args(
     code: str, family: str, shell_backticks: bool = True,
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -2199,6 +2243,9 @@ def _scan_exec_sink_string_args(
     (the default) keeps the previous, hook-cwd-only behavior for the inline
     ``-c``/``-e`` caller, which has no surrounding script file to anchor to.
     """
+    argv_result = _scan_exec_sink_argv(code, family, cwd=cwd, _depth=_depth)
+    if argv_result is not None:
+        return argv_result
     candidates: List[str] = []
     for m in _EXEC_SINK_STRING_ARG_RE.finditer(code):
         candidates.append(m.group("cmd"))
@@ -2253,7 +2300,7 @@ _SUSPICIOUS_HEURISTICS: Tuple[Tuple[_re.Pattern, str], ...] = (
 MAX_SAFE_INLINE_LENGTH = 150
 MAX_NORMAL_INLINE_LENGTH = 500
 
-_JS_INLINE_INTERPRETERS: FrozenSet[str] = frozenset({"node"})
+_JS_INLINE_INTERPRETERS: FrozenSet[str] = frozenset({"node", "deno", "bun"})
 # Long-JavaScript effects Layers 1-3a miss: built code, a network or process
 # module, an fs change outside the delete/write/append patterns.
 _JS_UNSEEN_EFFECT_RE = _re.compile(
@@ -2271,7 +2318,21 @@ _JS_NETWORK_MODULE_RE = _re.compile(
 _JS_HIDDEN_CALL_RE = _re.compile(
     r"\b(?:eval|Function)\s*\(|\bnew\s+Function\b|\bimport\s*\(|\brequire\s*\(\s*[^'\"`\s)]"
     r"|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\([^)]*\)\s*\["
-    r"|\bfetch\s*\([^)]*\b(?:body|method)\s*:"
+    r"|\bfetch\s*\([^)]*\b(?:body|method)\s*:|\bcreateRequire\b"
+)
+# Deno and Bun reach the filesystem, processes and the network through their own
+# globals; only the members named here are reads, any other member asks.
+_JS_RUNTIME_EFFECT_RE = _re.compile(
+    r"\bDeno\s*(?:\?\.\s*)?\[|\bBun\s*(?:\?\.\s*)?\["
+    r"|\bDeno\s*\??\.\s*(?!(?:readTextFile|readFile|readDir|stat|lstat|realPath|readLink)(?:Sync)?\b"
+    r"|(?:cwd|args|env|version|build|pid|ppid|noColor|inspect|mainModule|execPath|exit|hostname|osRelease"
+    r"|memoryUsage|stdout|stderr|stdin|errors)\b)"
+    r"|\bBun\s*\??\.\s*(?!(?:version|revision|argv|env|main|which|sleep|sleepSync|nanoseconds|hash|inspect"
+    r"|deepEquals|escapeHTML|stringWidth)\b)"
+)
+_JS_RUNTIME_MODULE_RE = _re.compile(
+    r"""(?:\brequire\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)['"]"""
+    r"""(?:bun(?::[\w-]+)?|(?:https?|jsr|npm):[^'"]*)['"]"""
 )
 _JS_EFFECT_BINDING_RE = _re.compile(
     r"""\b(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]"""
@@ -2280,7 +2341,7 @@ _JS_EFFECT_BINDING_RE = _re.compile(
 )
 # Ruby, perl, php, lua and R have no parser here: their code asks unless every
 # statement prints only literals (no interpolation), numbers and arithmetic.
-_UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php", "lua", "rscript"})
+_UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php", "lua", "luajit", "rscript", "r"})
 _PRINT_ONLY_STATEMENT_RE = _re.compile(
     r"""\s*(?:(?:print|puts|pp|p|echo|say|printf)\b"""
     r"""(?:'(?:[^'\\]|\\['\\])*'|"(?:[^"\\$#@{`]|\\[nt"\\])*"|\d+(?:\.\d+)?|[\s+\-*/%.,()])*)?\s*"""
@@ -5724,7 +5785,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # using the 3-layer approach instead of verb-matching tokens (which would
     # false-positive on generic keywords like "import", "create", etc.).
     cli_flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
-    if base_cmd in _INLINE_CODE_CLIS and cli_flags & set(semantics.flag_tokens):
+    if base_cmd in _INLINE_CODE_CLIS and (
+        cli_flags & set(semantics.flag_tokens) or (base_cmd == "deno" and semantics.non_flag_tokens[:1] == ["eval"])
+    ):
         return _check_inline_code(command, base_cmd, family, cwd=cwd, _depth=_depth)
 
     # --- Step 3c: Heredoc safety check ---
@@ -7734,6 +7797,36 @@ def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
     return command, False
 
 
+_JS_RUNTIME_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "deno": frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed"}),
+    "bun": frozenset({"--cwd", "--env-file", "--config", "-c", "--tsconfig-override", "--port"}),
+}
+_JS_RUNTIME_SCRIPT_RE = _re.compile(r"[^\s]*(?:/|://)[^\s]*|[^\s]+\.(?:[mc]?[jt]s|[jt]sx)")
+
+
+def _js_runtime_script(runtime: str, arguments: List[str]) -> Optional[str]:
+    """The file ``deno [run]`` or ``bun [run]`` executes from *arguments*, or None for any other subcommand."""
+    value_flags = _JS_RUNTIME_SCRIPT_VALUE_FLAGS[runtime]
+    positionals: List[str] = []
+    skip_value = False
+    for token in arguments:
+        if skip_value:
+            skip_value = False
+        elif token in _INLINE_CODE_MAP[runtime]:
+            return None
+        elif token in value_flags:
+            skip_value = True
+        elif not token.startswith("-"):
+            positionals.append(token)
+            if token != "run" or len(positionals) > 1:
+                break
+    if positionals[:1] == ["run"]:
+        positionals = positionals[1:]
+    if positionals and _JS_RUNTIME_SCRIPT_RE.fullmatch(positionals[0]):
+        return positionals[0]
+    return None
+
+
 def _resolve_script_argument(
     base_cmd: str, semantics: "CommandSemantics",
 ) -> "Optional[Tuple[str, str]]":
@@ -7763,6 +7856,12 @@ def _resolve_script_argument(
             lane = "shell"
         path = script_positional(base_cmd, raw_tokens[1:])
         return (path, lane) if path else None
+    if base_cmd in _JS_RUNTIME_SCRIPT_VALUE_FLAGS:
+        path = _js_runtime_script(base_cmd, raw_tokens[1:])
+        return (path, "code") if path else None
+    if base_cmd == "r" and [token.upper() for token in raw_tokens[1:3]] == ["CMD", "BATCH"]:
+        path = next((token for token in raw_tokens[3:] if not token.startswith("-")), None)
+        return (path, "code") if path else None
 
     # Direct ``./script`` or ``path/script.ext`` invocation: the executable
     # token IS the script.  Use the original-case token so the path resolves
@@ -9770,6 +9869,8 @@ def _js_hidden_effect(code: str, calls_view: "Optional[str]" = None) -> bool:
     calls = code if calls_view is None else calls_view
     if _JS_NETWORK_MODULE_RE.search(code) or _JS_HIDDEN_CALL_RE.search(calls):
         return True
+    if _JS_RUNTIME_MODULE_RE.search(code) or _JS_RUNTIME_EFFECT_RE.search(calls):
+        return True
     names = {match.group(1) or match.group(2) for match in _JS_EFFECT_BINDING_RE.finditer(code)}
     if any(_re.search(rf"\b{_re.escape(name)}\s*\[", calls) for name in names):
         return True
@@ -9790,7 +9891,7 @@ _JS_CHILD_PROCESS_SINKS: FrozenSet[str] = frozenset({
     "execSync", "execFileSync", "execFile", "spawnSync", "spawn", "exec",
 })
 _JS_EFFECT_SPECIFIER = r"""(?P<q>['"`])(?:node:)?(?P<module>fs|fs/promises|child_process)(?P=q)"""
-_JS_REQUIRE_RE = _re.compile(r"\brequire\s*\(\s*" + _JS_EFFECT_SPECIFIER + r"\s*\)")
+_JS_REQUIRE_RE = _re.compile(r"\brequire\s*(?:\?\.\s*)?\(\s*" + _JS_EFFECT_SPECIFIER + r"\s*\)")
 _JS_STATIC_IMPORT_RE = _re.compile(r"\bimport\s+([^'\"`;]+?)\s+from\s*" + _JS_EFFECT_SPECIFIER)
 _JS_ALIAS_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?$")
 _JS_DESTRUCTURE_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?$")

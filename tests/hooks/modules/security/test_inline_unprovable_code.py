@@ -177,6 +177,20 @@ JS_ASKS = {
     "import-named": "import { unlinkSync } from 'fs'; unlinkSync('a')",
     "cp-renamed": "const { execSync: run } = require('child_process'); run('rm -rf x')",
     "env-spawn": "process.env.GIT_DIR = '/x'; require('child_process').execFileSync('git', ['status'])",
+    "optchain-require": "require?.('fs').unlinkSync('a')",
+    "create-require": "require('module').createRequire(__filename)('fs').unlinkSync('a')",
+    "spawn-sh": "require('child_process').spawn('sh', ['-c', 'rm -rf x'])",
+    "execfile-bash": "require('child_process').execFileSync('/bin/bash', ['-c', 'git push --force'])",
+    "spawn-cmd": "require('child_process').spawnSync('cmd', ['/c', 'del /q build'])",
+    "spawn-sh-computed": "const c = process.argv[2]; require('child_process').spawnSync('sh', ['-c', c])",
+    "deno-remove": "Deno.removeSync('a')",
+    "deno-write": "Deno.writeTextFileSync('o.txt', 'x')",
+    "deno-command": "new Deno.Command('rm', {args: ['-rf', 'x']}).outputSync()",
+    "deno-connect": "Deno.connect({port: 80})",
+    "bun-write": "Bun.write('o.txt', 'x')",
+    "bun-spawn": "Bun.spawnSync(['rm', '-rf', 'x'])",
+    "bun-shell": "Bun.$`rm -rf x`",
+    "bun-import-shell": "import { $ } from 'bun'; await $`rm -rf x`",
 }
 JS_FREE = {
     "json": "console.log(JSON.parse('{\"a\":1}').a)",
@@ -184,22 +198,34 @@ JS_FREE = {
     "fs-literal-member": "const fs = require('fs'); console.log(fs.readFileSync('package.json', 'utf8'))",
     "fs-destructured-read": "const { readFileSync, existsSync: has } = require('fs'); console.log(has('a') && readFileSync('a', 'utf8'))",
     "promises-read": "require('fs/promises').readFile('package.json', 'utf8').then(console.log)",
+    "deno-read": "console.log(Deno.readTextFileSync('package.json'), Deno.cwd(), Deno.args)",
+    "bun-read": "console.log(Bun.version, Bun.argv, Bun.env.HOME)",
 }
 JS_FILE_FREE = {
     "fetch-get": "fetch('https://example.com').then(r => r.text()).then(console.log)",
     "stdout": "process.stdout.write(String(require('os').cpus().length))",
     "mention": "// eval(x) and require('net') appear only in this comment\nconsole.log('import(x)')",
+    "spawn-sh-read": "require('child_process').spawnSync('sh', ['-c', 'git status'], {stdio: 'inherit'})",
+    "execfile-read": "require('child_process').execFileSync('git', ['status'])",
 }
 
 
 def _js_spellings(code: str, tmp_path: Path) -> dict:
     (tmp_path / "s.js").write_text(code + "\n", encoding="utf-8")
+    (tmp_path / "s.mjs").write_text(code + "\n", encoding="utf-8")
     return {
         "-e": f"node -e {shlex.quote(code)}",
         "-p": f"node -p {shlex.quote(code)}",
         "--print": f"node --print {shlex.quote(code)}",
         "heredoc": f"node - <<'JS'\n{code}\nJS",
         "file": f"node {tmp_path / 's.js'}",
+        "mjs": f"node {tmp_path / 's.mjs'}",
+        "deno eval": f"deno eval {shlex.quote(code)}",
+        "deno run": f"deno run -A {tmp_path / 's.js'}",
+        "deno file": f"deno {tmp_path / 's.js'}",
+        "bun -e": f"bun -e {shlex.quote(code)}",
+        "bun file": f"bun {tmp_path / 's.js'}",
+        "bun run": f"bun run {tmp_path / 's.js'}",
     }
 
 
@@ -217,7 +243,17 @@ def test_javascript_read_runs_free_in_every_lane(name, tmp_path):
 
 @pytest.mark.parametrize("name", list(JS_FILE_FREE))
 def test_javascript_file_screen_reads_code_not_comments_or_strings(name, tmp_path):
-    assert _verdict(_js_spellings(JS_FILE_FREE[name], tmp_path)["file"], str(tmp_path)) == "FREE", name
+    spellings = _js_spellings(JS_FILE_FREE[name], tmp_path)
+    for lane in ("file", "mjs", "deno run", "bun file"):
+        assert _verdict(spellings[lane], str(tmp_path)) == "FREE", (name, lane)
+
+
+def test_bun_and_deno_forms_that_name_no_script_file_keep_their_own_lanes(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"build": "tsc"}}', encoding="utf-8")
+    assert _verdict(f"bun run --cwd {tmp_path} build", str(tmp_path)) == "FREE"
+    assert _verdict("deno fmt --check", str(tmp_path)) == "FREE"
+    assert _verdict(f"deno run -A {tmp_path / 'missing.ts'}", str(tmp_path)) == "ASK"
+    assert _verdict("deno run https://example.com/x.ts", str(tmp_path)) == "ASK"
 
 
 UNPARSED = {
@@ -235,6 +271,10 @@ UNPARSED = {
     }),
     "lua": ("-e", "lua", {
         "asks": ["os.remove('a')", "os.execute('rm -rf x')", "io.open('o.txt', 'w'):write('x')", "io.popen('ls')"],
+        "free": ["print(1)", "print('hello')"],
+    }),
+    "luajit": ("-e", "lua", {
+        "asks": ["loadstring(\"os.remove('a')\")()", "dofile('evil.lua')", "print(os.execute('rm -rf x'))"],
         "free": ["print(1)", "print('hello')"],
     }),
     "Rscript": ("-e", "R", {
@@ -255,3 +295,12 @@ def test_inline_code_with_no_parser_asks_unless_it_only_prints_literals(language
                 actual = _verdict(command, str(tmp_path))
                 assert (actual == "FREE") == (verdict == "FREE"), (verdict, code, command.split()[1],
                                                                    detect_mutative_command(command).reason)
+
+
+@pytest.mark.parametrize("spelling", ["R -e {code}", "R --vanilla -e {code}", "R --no-save -e {code}", "R CMD BATCH {script}"])
+def test_bare_r_is_judged_like_rscript(spelling, tmp_path):
+    for verdict, code in (("ASK", "file.remove('a')"), ("ASK", "system('rm -rf x')"), ("FREE", "print('hello')")):
+        script = tmp_path / f"{verdict}.R"
+        script.write_text(code + "\n", encoding="utf-8")
+        command = spelling.format(code=shlex.quote(code), script=script)
+        assert _verdict(command, str(tmp_path)) == verdict, (command, detect_mutative_command(command).reason)
