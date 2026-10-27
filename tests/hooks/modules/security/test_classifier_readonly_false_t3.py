@@ -86,15 +86,26 @@ def scratch(monkeypatch, tmp_path):
     from gaia.paths import ensure_layout, scratch_dir
 
     ensure_layout()
-    turn_entry = scratch_dir() / "agent.token"
+    turn_entry = scratch_dir() / f"{ENTRY_OWNER}.token"
     (turn_entry / "empty").mkdir(parents=True)
     detect_mutative_command.cache_clear()
     return turn_entry, tmp_path
 
 
+ENTRY_OWNER = "aentryowner01"
+
+
+def _as_entry_owner(command, cwd):
+    """Validate *command* as the subagent whose id names the scratch entry."""
+    detect_mutative_command.cache_clear()
+    payload = {"agent_id": ENTRY_OWNER, "cwd": str(cwd)}
+    return BashValidator(agent_names_scratch=True).validate(command, hook_payload=payload)
+
+
 def test_rmdir_inside_the_turn_scratch_entry_is_free(scratch):
-    turn_entry, _ = scratch
-    assert _verdict(f"rmdir {turn_entry}/empty") == (False, SecurityTier.T0_READ_ONLY)
+    turn_entry, tmp_path = scratch
+    result = _as_entry_owner(f"rmdir {turn_entry}/empty", tmp_path)
+    assert (result.allowed, result.tier) == (True, SecurityTier.T0_READ_ONLY)
 
 
 def test_removal_outside_the_scratch_still_asks(scratch):
@@ -111,12 +122,12 @@ def test_npm_prefix_run_reads_the_script_body(tmp_path):
 
 
 def test_tar_extract_inside_the_turn_scratch_is_free(scratch):
-    turn_entry, _ = scratch
+    turn_entry, tmp_path = scratch
     for command in (
         f"tar -xf {turn_entry}/a.tar -C {turn_entry}/empty",
         f"tar -xzf {turn_entry}/a.tgz -C {turn_entry}/empty",
     ):
-        assert BashValidator().validate(command).allowed, command
+        assert _as_entry_owner(command, tmp_path).allowed, command
 
 
 def test_tar_extract_that_leaves_the_scratch_still_asks(scratch):
@@ -130,4 +141,4 @@ def test_tar_extract_that_leaves_the_scratch_still_asks(scratch):
         f"tar -xf {turn_entry}/a.tar -C {turn_entry}/empty --to-command=sh",
         f"tar -cf {turn_entry}/a.tar -C {turn_entry}/empty .",
     ):
-        assert not BashValidator().validate(command).allowed, command
+        assert not _as_entry_owner(command, tmp_path).allowed, command

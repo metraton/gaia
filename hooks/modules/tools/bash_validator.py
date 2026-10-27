@@ -61,6 +61,8 @@ from ..security.mutative_verbs import (
     account_path_redirect_target,
     detect_mutative_command,
     build_t3_block_response,
+    LocalWorkCaller,
+    local_work_callers,
     cwd_after_component,
     git_under_injected_config,
     injects_git_config,
@@ -527,8 +529,9 @@ class BashValidator:
 
     last_warning = ""
 
-    def __init__(self):
-        """Initialize validator with parser, unwrapper, and decomposer."""
+    def __init__(self, agent_names_scratch: bool = False):
+        """Initialize the validator; only a host whose agent id names scratch entries passes *agent_names_scratch*, the ownership local-work relief keys on."""
+        self.agent_names_scratch = agent_names_scratch
         self.shell_parser = get_shell_parser()
         self._unwrapper = ShellUnwrapper()
         self._decomposer = StageDecomposer()
@@ -1495,21 +1498,24 @@ class BashValidator:
         # An interpreter's heredoc is its program: splitting it into shell
         # components would validate the body's lines one by one and never
         # show the classifier the program whose effect decides the tier.
+        agent_id = str((hook_payload or {}).get("agent_id") or "") if self.agent_names_scratch else ""
         if not has_operators or program is not None:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
+                caller=LocalWorkCaller(agent_id, payload_cwd),
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=payload_cwd,
-                command=command, tool_use_id=tool_use_id,
+                command=command, tool_use_id=tool_use_id, agent_id=agent_id,
             )
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
+                caller=LocalWorkCaller(agent_id, payload_cwd),
             )
         if code_heredocs:
             result = self._fail_closed_on_code_heredoc(
@@ -1688,8 +1694,9 @@ class BashValidator:
         agent_type: str = "",
         cwd: Optional[str] = None,
         tool_use_id: str = "",
+        caller: Optional[LocalWorkCaller] = None,
     ) -> BashValidationResult:
-        """Validate a single command (no operators).
+        """Validate a single command (no operators); *caller* is what the local-work relief needs.
 
         Simplified pipeline:
         0. Indirect execution detection (for compound command components)
@@ -1723,7 +1730,7 @@ class BashValidator:
         # folded from a preceding ``cd`` component of the chain (see
         # _validate_compound_command), so a relative script path resolves
         # against the workspace the chain navigated to, not the hook's own cwd.
-        result = detect_mutative_command(command, cwd=cwd)
+        result = detect_mutative_command(command, cwd=cwd, caller=caller)
         if result.is_mutative:
             from gaia.store.writer import find_pending_plan_command
             if not session_id or not tool_use_id:
@@ -1868,7 +1875,7 @@ class BashValidator:
         # detect_mutative_command() already has deliberate git handling.  If it
         # chose not to block a git command, that decision should be respected.
         # Git BLOCKED results still fire as a safety net (force push, etc.).
-        flag_result = classify_by_flags(command)
+        flag_result = classify_by_flags(command, caller)
         if flag_result is not None:
             if flag_result.outcome == FLAG_BLOCKED:
                 return BashValidationResult(
@@ -2007,6 +2014,7 @@ class BashValidator:
         cwd: Optional[str] = None,
         command: str = "",
         tool_use_id: str = "",
+        agent_id: str = "",
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
@@ -2053,8 +2061,9 @@ class BashValidator:
         # changes the script a later run executes, which was read before the chain ran.
         package_inputs_rewritten = False
         tripped, tripped_command = None, command
-        for comp in components:
-            detected = detect_mutative_command(comp, cwd=scan_cwd)
+        callers = local_work_callers(command, components, cwd, agent_id)
+        for comp, caller in zip(components, callers):
+            detected = detect_mutative_command(comp, cwd=scan_cwd, caller=caller)
             if package_inputs_rewritten and runs_package_script(comp):
                 has_t3 = True
                 break
@@ -2065,7 +2074,7 @@ class BashValidator:
             if git_config_injected and not detected.is_mutative:
                 detected = git_under_injected_config(comp) or detected
             git_config_injected = git_config_injected or injects_git_config(comp)
-            flagged = classify_by_flags(comp)
+            flagged = classify_by_flags(comp, caller)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (
                 flagged is not None
@@ -2117,7 +2126,7 @@ class BashValidator:
             # and must never be reserved as one component of a chain.
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type, cwd=running_cwd,
+                agent_type=agent_type, cwd=running_cwd, caller=callers[i - 1],
             )
             # Advance the cwd AFTER classifying this component, so a `cd` only
             # affects subsequent components (POSIX chain semantics).

@@ -254,6 +254,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
     PRIMARY_AGENT_TYPE = PRIMARY_AGENT
     HOST_NAME = HOST_NAME
+    AGENT_ID_NAMES_SCRATCH = True
 
     # ------------------------------------------------------------------ #
     # parse_event: stdin JSON -> HookEvent

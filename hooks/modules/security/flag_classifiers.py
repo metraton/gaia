@@ -42,7 +42,10 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .mutative_verbs import LocalWorkCaller
 
 
 # ---------------------------------------------------------------------------
@@ -524,39 +527,127 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
 
 
 # 11. tar
-_TAR_SCRATCH_EXTRACT_LETTERS = frozenset("xvzjJfCkpm")
+_TAR_LOCAL_WORK_LETTERS = frozenset("xvzjJfCkpmoO")
+_TAR_LOCAL_WORK_SWITCHES = frozenset({
+    "--extract", "--get", "--verbose", "--gzip", "--bzip2", "--xz", "--keep-old-files",
+    "--no-same-owner", "--no-same-permissions", "--touch", "--to-stdout",
+})
+_TAR_VALUE_LETTERS = {"f": "--file", "C": "--directory"}
+_TAR_MEMBER_BUDGET = 20000
 
 
-def _tar_extracts_only_into_scratch(tokens: List[str]) -> bool:
-    """True for a short-flag extraction whose archive and -C target are in scratch.
+def _tar_extract_operands(tokens: List[str]) -> Optional[dict]:
+    """Parse a getopt-style extraction into its options, or None for anything outside the modelled grammar."""
+    args = list(tokens[1:])
+    if args and not args[0].startswith("-") and args[0].isalpha():
+        args[0] = "-" + args[0]
+    seen: dict = {"members_before_directory": False}
+    i = 0
+    while i < len(args):
+        token = args[i]
+        i += 1
+        if token.startswith("--"):
+            name, eq, value = token.partition("=")
+            if name in _TAR_LOCAL_WORK_SWITCHES and not eq:
+                seen[name] = True
+            elif name in ("--file", "--directory", "--one-top-level", "--strip-components") and (eq or i < len(args)):
+                if not eq:
+                    if name == "--one-top-level":
+                        return None
+                    value, i = args[i], i + 1
+                if name in seen:
+                    return None
+                seen[name] = value
+            else:
+                return None
+        elif token.startswith("-") and len(token) > 1:
+            j = 1
+            while j < len(token):
+                letter = token[j]
+                j += 1
+                if letter not in _TAR_LOCAL_WORK_LETTERS:
+                    return None
+                if letter in _TAR_VALUE_LETTERS:
+                    name = _TAR_VALUE_LETTERS[letter]
+                    if j < len(token):
+                        value, j = token[j:], len(token)
+                    elif i < len(args):
+                        value, i = args[i], i + 1
+                    else:
+                        return None
+                    if name in seen:
+                        return None
+                    seen[name] = value
+                else:
+                    seen[{"x": "--extract", "O": "--to-stdout"}.get(letter, letter)] = True
+        elif "--directory" not in seen:
+            seen["members_before_directory"] = True
+    return seen
 
-    Fail-closed: long options (--to-command and --use-compress-program run
-    programs), a stdin archive, a missing -C and any path the scratch check
-    cannot confine all decline. The archive's members are not inspected.
-    """
-    from .mutative_verbs import _rm_scratch_confined_targets
 
-    flags = [a for a in tokens[1:] if a.startswith("-")]
-    if any(len(a) < 2 or a.startswith("--") for a in flags):
+def _tar_member_paths(archive: str, strip: int) -> Optional[Tuple[bool, List[str]]]:
+    """Return (every member is a plain relative path, their stripped paths), or None when Python cannot list it within budget."""
+    import tarfile
+    paths = []
+    try:
+        with tarfile.open(archive, "r:*") as handle:
+            for count, member in enumerate(handle):
+                if count >= _TAR_MEMBER_BUDGET:
+                    return None
+                parts = [p for p in member.name.split("/") if p not in ("", ".")]
+                if member.issym() or member.islnk() or member.name.startswith("/") or ".." in parts:
+                    return False, []
+                if parts[strip:]:
+                    paths.append("/".join(parts[strip:]))
+    except Exception:
+        return None
+    return True, paths
+
+
+def _tar_extracts_only_into_local_work(tokens: List[str], caller: "Optional[LocalWorkCaller]") -> bool:
+    """True when every member lands in the caller's scratch entry or a managed worktree; an unreadable archive only into its own entry."""
+    import os
+    from .mutative_verbs import (
+        _local_work_root, _resolve_local_work_path, _scratch_entry, _shares_inode, _tree_shares_inode,
+    )
+
+    seen = _tar_extract_operands(tokens)
+    if caller is None or seen is None or not seen.get("--extract") and not seen.get("--get"):
         return False
-    letters = "".join(a[1:] for a in flags)
-    if "x" not in letters or "C" not in letters:
+    archive = seen.get("--file")
+    if not archive or archive == "-" or _resolve_local_work_path(archive, None) is None:
         return False
-    if not set(letters) <= _TAR_SCRATCH_EXTRACT_LETTERS:
+    if seen.get("--to-stdout"):
+        return True
+    directory, top_level = seen.get("--directory"), seen.get("--one-top-level")
+    strip = seen.get("--strip-components", "0")
+    if directory is None or seen["members_before_directory"] or not str(strip).isdigit():
         return False
-    return _rm_scratch_confined_targets(tuple(tokens)) is not None
+    target = _resolve_local_work_path(os.path.join(directory, top_level) if top_level else directory, None)
+    root = None if target is None else _local_work_root(target, caller, allow_top=True)
+    if root is None:
+        return False
+    real_archive = _resolve_local_work_path(archive, None)
+    listing = _tar_member_paths(real_archive, int(strip))
+    if listing is None:
+        return _scratch_entry(real_archive) == root and not _tree_shares_inode(target)
+    plain, members = listing
+    if not plain:
+        return False
+    landed = [os.path.realpath(os.path.join(target, m)) for m in members]
+    return all(_local_work_root(path, caller) is not None and not _shares_inode(path) for path in landed)
 
 
-def _classify_tar(tokens: List[str]) -> Optional[FlagClassifierResult]:
+def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] != "tar":
         return None
     args = tokens[1:]
 
-    if _tar_extracts_only_into_scratch(tokens):
+    if _tar_extracts_only_into_local_work(tokens, caller):
         return FlagClassifierResult(
             outcome=OUTCOME_READ_ONLY,
-            reason="tar extraction confined to the Gaia scratch directory",
-            matched_pattern="tar-scratch-extract",
+            reason="tar extraction writing only inside the Gaia scratch directory or a Gaia-managed worktree",
+            matched_pattern="tar-local-work-extract",
             command_family="tar",
         )
 
@@ -891,7 +982,7 @@ _CLASSIFIER_REGISTRY: Dict[str, Callable[[List[str]], Optional[FlagClassifierRes
 # Public API
 # ---------------------------------------------------------------------------
 
-def classify_by_flags(command: str) -> Optional[FlagClassifierResult]:
+def classify_by_flags(command: str, caller: "Optional[LocalWorkCaller]" = None) -> Optional[FlagClassifierResult]:
     """Classify a command based on flags and sub-commands.
 
     This is the primary entry point.  Call this BEFORE detect_mutative_command()
@@ -899,7 +990,11 @@ def classify_by_flags(command: str) -> Optional[FlagClassifierResult]:
     classification.  If it returns None, fall through to the existing pipeline.
 
     Args:
-        command: The full shell command string (already unwrapped if applicable).
+        command: The full shell command string.  Behind a transparent wrapper
+            (``sudo``, ``env -C``) each wrapped reading is classified with no
+            caller, and only a blocked or mutative verdict is adopted.
+        caller: Who runs the command and from where; tar's local-work relief
+            needs it.
 
     Returns:
         FlagClassifierResult if the command belongs to a known family, else None.
@@ -913,5 +1008,14 @@ def classify_by_flags(command: str) -> Optional[FlagClassifierResult]:
     base_cmd = tokens[0]
     classifier = _CLASSIFIER_REGISTRY.get(base_cmd)
     if classifier is None:
+        from .mutative_verbs import _peel_wrapper_readings
+        readings, peeled = _peel_wrapper_readings(command)
+        wrapped = [classify_by_flags(r) for r in readings if peeled and r.strip() != command.strip()]
+        for outcome in (OUTCOME_BLOCKED, OUTCOME_MUTATIVE):
+            for result in wrapped:
+                if result is not None and result.outcome == outcome:
+                    return result
         return None
+    if classifier is _classify_tar:
+        return _classify_tar(tokens, caller)
     return classifier(tokens)
