@@ -1136,11 +1136,13 @@ def activate_approval_atomically(
                 left, danger_verb = operation.split("intercepted:", 1)
                 danger_verb = danger_verb.strip()
                 danger_category = left.strip().split()[0] if left.strip() else "MUTATIVE"
+            items = payload.get("items")
             signature = build_approval_signature(
                 command,
                 scope_type=SCOPE_SEMANTIC_SIGNATURE,
                 danger_verb=danger_verb,
                 danger_category=danger_category,
+                cwd=items[0].get("cwd") if isinstance(items, list) and items and isinstance(items[0], dict) else None,
             )
             if signature is None:
                 rollback()

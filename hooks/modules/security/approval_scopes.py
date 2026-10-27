@@ -74,6 +74,7 @@ def build_approval_signature(
     *,
     danger_verb: str = "",
     danger_category: str = CATEGORY_UNKNOWN,
+    cwd: Optional[str] = None,
 ) -> Optional[ApprovalSignature]:
     """Build a stable scope signature for a command."""
     if scope_type not in SUPPORTED_SCOPE_TYPES:
@@ -110,11 +111,11 @@ def build_approval_signature(
         normalized_flags=_sorted_unique(semantics.flag_tokens_raw),
         dangerous_flags=_sorted_unique(danger.dangerous_flags),
         exact_tokens=exact_tokens,
-        target=grant_target(stripped),
+        target=grant_target(stripped, cwd=cwd),
     )
 
 
-def matches_approval_signature(signature: ApprovalSignature, command: str) -> bool:
+def matches_approval_signature(signature: ApprovalSignature, command: str, cwd: Optional[str] = None) -> bool:
     """Return True when a command falls inside an approved scope."""
     stripped = command.strip() if command else ""
     exact_tokens = tuple(tokenize_command(stripped))
@@ -149,7 +150,7 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
         incoming_flags = _sorted_unique(semantics.flag_tokens_raw)
         if incoming_semantic_tokens != signature.semantic_tokens or incoming_flags != signature.normalized_flags:
             return False
-        current = grant_target(stripped)
+        current = grant_target(stripped, cwd=cwd)
         return current != UNDETERMINED and current == signature.target
 
     return False

@@ -8840,7 +8840,7 @@ def check_db_semantic_grant(
 
             try:
                 signature = ApprovalSignature.from_dict(sig_dict)
-                if matches_approval_signature(signature, command):
+                if matches_approval_signature(signature, command, (requester or {}).get("cwd")):
                     return row_dict
             except Exception:
                 continue
