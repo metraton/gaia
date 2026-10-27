@@ -7002,7 +7002,6 @@ _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_pl
 
 
 _HOOK_ROOT = Path(__file__).resolve().parents[3]
-_GAIA_PROJECT_IDENTITY = "github.com/metraton/gaia"
 
 
 def _git_common_dir(root: str) -> "Optional[str]":
@@ -7016,30 +7015,12 @@ def _git_common_dir(root: str) -> "Optional[str]":
 
 @functools.lru_cache(maxsize=1)
 def _gaia_source_repositories() -> FrozenSet[str]:
-    """Git directories of Gaia's source: the checkout this hook runs from and every registry project with Gaia's identity."""
-    roots = [str(_HOOK_ROOT)]
-    try:
-        import sqlite3
-
-        from gaia.paths import db_path
-
-        database = db_path()
-        if database and Path(database).is_file():
-            connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
-            try:
-                roots += [row[0] for row in connection.execute(
-                    "SELECT path FROM projects WHERE project_identity = ? AND path IS NOT NULL",
-                    (_GAIA_PROJECT_IDENTITY,),
-                )]
-            finally:
-                connection.close()
-    except Exception:
-        pass
-    return frozenset(filter(None, (_git_common_dir(root) for root in roots if os.path.isdir(root))))
+    """Git storage of the checkout this hook runs from (none from an install); remotes and the registry are claimable, so never trusted."""
+    return frozenset(filter(None, [_git_common_dir(str(_HOOK_ROOT))]))
 
 
 def _gaia_shipped_script(script: Path) -> bool:
-    """True when *script* is in the install this hook runs from, or committed and unmodified in a checkout of Gaia's source."""
+    """True when *script* is in the install this hook runs from, or committed and unmodified in a checkout sharing the hook checkout's git storage."""
     real = Path(os.path.realpath(script))
     if not real.is_file():
         return False
