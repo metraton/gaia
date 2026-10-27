@@ -427,7 +427,9 @@ def _build_parser(plugin_entries):
         if hasattr(mod, "register"):
             mod.register(subparsers)
 
-    return parser
+    from cli import refuse_abbreviations
+
+    return refuse_abbreviations(parser)
 
 
 def _apply_global_json(args, argv):

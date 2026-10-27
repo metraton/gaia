@@ -36,7 +36,7 @@ from .sensitive_paths import (
     sensitive_read_denial,
 )
 from .canonical_path import command_name
-from .data_heredoc import _STDIN_CONTENT_FLAG, data_heredoc_header
+from .data_heredoc import data_heredoc_header, is_gaia_cli
 from .nested_executors import nested_run
 from .program_heredoc import heredoc_program
 from .publish_attribution_guard import publishing_body_files
@@ -281,14 +281,17 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     return hit
 
 
-def _content_files(arguments: List[str]) -> List[str]:
-    """The files a gaia call reads its content from: each ``--<name>-file`` value, spaced or after ``=``."""
-    files = []
+def _gaia_read_candidates(tokens: List[str]) -> List[str]:
+    """Every option value of the gaia CLI, spaced or after ``=``; every argument of another program named gaia."""
+    arguments = tokens[1:]
+    if not is_gaia_cli(tokens[0]):
+        return arguments
+    values = []
     for index, argument in enumerate(arguments):
-        name, equals, value = argument.partition("=")
-        if _STDIN_CONTENT_FLAG.fullmatch(name):
-            files.append(value if equals else "".join(arguments[index + 1:index + 2]))
-    return [path for path in files if path not in ("", "-")]
+        if argument.startswith("-") and argument != "-":
+            _name, equals, value = argument.partition("=")
+            values.append(value if equals else "".join(arguments[index + 1:index + 2]))
+    return [value for value in values if value not in ("", "-")]
 
 
 def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) -> str:
@@ -309,7 +312,7 @@ def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) ->
     base = command_name(tokens[0])
     arguments = tokens[1:]
     if base == "gaia":
-        return first_sensitive_token(_content_files(arguments), cwd)
+        return first_sensitive_token(_gaia_read_candidates(tokens), cwd)
     if base in _SHELLS and "-c" in arguments:
         inline = arguments[arguments.index("-c") + 1:]
         return reads_sensitive_path(inline[0], cwd) if inline else ""

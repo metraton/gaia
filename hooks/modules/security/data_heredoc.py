@@ -30,7 +30,9 @@ file`` is a shell-authored write that belongs to the Write tool.
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .shell_substitution import _heredoc_body_span, _read_heredoc_opener
@@ -42,10 +44,19 @@ _DOUBLE_QUOTE_EXPANSION = frozenset("$`\\")
 
 
 def is_gaia_cli(word: str) -> bool:
-    """True for the bare word ``gaia`` or the gaia executable a genuine install declares, never another file so named."""
-    from .gaia_cli_only_guard import is_trusted_gaia_binary
+    """True for the bare word ``gaia`` or the ``bin/gaia`` of the installed Gaia this hook runs from.
 
-    return word == "gaia" or is_trusted_gaia_binary(word)
+    Not a package.json or an install-root path shape: a subagent can write one and forge the other by renaming a parent.
+    """
+    from .mutative_verbs import _HOOK_ROOT, _gaia_shipped_script
+
+    if word == "gaia":
+        return True
+    return (
+        os.path.isabs(word)
+        and os.path.realpath(word) == str(_HOOK_ROOT / "bin" / "gaia")
+        and _gaia_shipped_script(Path(word))
+    )
 
 
 def _literal_words(header: str) -> Optional[List[Tuple[str, bool]]]:
