@@ -916,6 +916,12 @@ PROD_TARGETS = [
     ("gcloud --project acme-dev compute instances frobnicate vm-1", {"project": "acme-prod"}, "FREE"),
     ("gcloud --account ops@acme-prod.example compute instances frobnicate vm-1", {}, "SIGNED"),
     ("gcloud compute instances list", {"project": "acme-prod"}, "FREE"),
+    ("gcloud secrets versions access latest --secret=db-password --project prod", {}, "FREE"),
+    ("gcloud --project prod secrets versions access 3 --secret=json-config", {}, "FREE"),
+    ("gcloud secrets versions access latest --secret=db-password", {"project": "acme-prod"}, "FREE"),
+    ("aws --profile prod ssm get-parameter --name /app/db --with-decryption", {}, "FREE"),
+    ("aws --profile prod ec2 describe-instances", {}, "FREE"),
+    ("shipit describe-release --env prod", {}, "FREE"),
 ]
 
 

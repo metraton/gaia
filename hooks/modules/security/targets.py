@@ -242,6 +242,27 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
     return ";".join(sorted(f"{t.kind}={t.name}" for t in targets))
 
 
+def _names_a_read(words: Sequence[str]) -> bool:
+    """True when a word before ``--``, other than a target name, is a read or simulation verb or hyphen part and none is mutative.
+
+    ``access`` reads a stored value (``gcloud secrets versions access``) but is in no verb table yet.
+    """
+    from .mutative_verbs import MUTATIVE_VERBS, READ_ONLY_VERBS, SIMULATION_VERBS
+
+    flags = _TARGET_FLAGS | _PROGRAM_TARGET_FLAGS.get(command_name(words[0]) if words else "", frozenset())
+    reading = False
+    for index, word in enumerate(words[1:], 1):
+        if word == "--":
+            break
+        if word.startswith("-") or words[index - 1] in flags:
+            continue
+        parts = set(word.lower().split("-"))
+        if parts & MUTATIVE_VERBS:
+            return False
+        reading = reading or bool(parts & (READ_ONLY_VERBS | SIMULATION_VERBS | {"access"}))
+    return reading
+
+
 def _pushed_branch(words: Sequence[str]) -> Optional[str]:
     from .mutative_verbs import _git_subcommand_split
 
@@ -267,6 +288,8 @@ def production_target_verdict(
     split = _split(command)
     words = split[1] if split else []
     branch = _pushed_branch(words) if words and command_name(words[0]) == "git" else None
+    if not branch and _names_a_read(words):
+        return None
     targets = [] if branch else command_targets(command, cwd=cwd, inherited=inherited)
     if not branch and not targets:
         return None
