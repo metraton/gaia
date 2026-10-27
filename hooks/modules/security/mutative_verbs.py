@@ -5786,7 +5786,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # false-positive on generic keywords like "import", "create", etc.).
     cli_flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
     if base_cmd in _INLINE_CODE_CLIS and (
-        cli_flags & set(semantics.flag_tokens) or (base_cmd == "deno" and semantics.non_flag_tokens[:1] == ["eval"])
+        cli_flags & set(semantics.flag_tokens) or (base_cmd == "deno" and tuple(semantics.non_flag_tokens[:1]) == ("eval",))
     ):
         return _check_inline_code(command, base_cmd, family, cwd=cwd, _depth=_depth)
 
