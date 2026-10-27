@@ -267,14 +267,9 @@ def _yaml_scalar(value: str) -> Optional[Tuple[str, bool]]:
 
 
 def _yaml_value(text: str, key: str) -> Optional[str]:
-    """Root *key* of YAML *text*, None when absent; UNREADABLE unless every line is in the subset and *key* holds one
-    plain or unescaped quoted string on its own line.
-
-    The subset: a root mapping at column 0 whose keys are plain ``[A-Za-z0-9_.-]`` (nested keys may join such words with
-    ``:``), ``- `` items, one-line values per ``_yaml_scalar``, space indentation, and lines deeper than a plain value
-    continuing it. ``?`` keys, quoted keys, ``&``/``*``/``!``, ``|``/``>``, flow content, directives and any control or
-    Unicode line-break character are outside it.
-    """
+    """Root *key* of YAML *text*, None when absent; UNREADABLE unless every line is in the block subset (root mapping at
+    column 0, plain keys, ``- `` items, one-line values per ``_yaml_scalar``, deeper lines folding a plain value) and
+    *key* holds one plain or unescaped quoted string on its own line."""
     text = text.removeprefix("﻿").replace("\r\n", "\n")
     if _YAML_FORBIDDEN.search(text):
         return UNREADABLE
