@@ -746,6 +746,38 @@ _CURL_WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 _CURL_QUERY_DATA_FLAGS = frozenset({"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode"})
 
 
+_CURL_GET_SAFE_SWITCHES = frozenset({
+    "-G", "--get", "-s", "-S", "-sS", "-Ss", "-L", "-sL", "-sSL", "-f", "-fsSL", "--fail", "--silent",
+    "--show-error", "--location", "--compressed", "-v", "--verbose", "-i", "--include", "-k", "--insecure",
+    "-g", "--globoff",
+})
+_CURL_GET_SAFE_VALUE_FLAGS = frozenset({
+    "-o", "--output", "-H", "--header", "-A", "--user-agent", "-e", "--referer", "-m", "--max-time",
+    "--connect-timeout", "-u", "--user", "-w", "--write-out", "--retry",
+})
+
+
+def _curl_get_sends_only_literals(args: List[str]) -> bool:
+    """Return True when every option is a known read option or literal query data, so -G cannot be undone."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _CURL_QUERY_DATA_FLAGS or a in _CURL_GET_SAFE_VALUE_FLAGS:
+            if i + 1 >= len(args):
+                return False
+            value = args[i + 1]
+            if a in _CURL_QUERY_DATA_FLAGS and _curl_data_reads_file(a, value):
+                return False
+            if a in ("-H", "--header") and "method" in value.lower():
+                return False
+            i += 2
+            continue
+        if a.startswith("-") and a not in _CURL_GET_SAFE_SWITCHES:
+            return False
+        i += 1
+    return True
+
+
 def _curl_data_reads_file(flag: str, value: str) -> bool:
     """Return True when a curl data value names a file or stdin whose contents curl sends."""
     if flag == "--data-raw":
@@ -759,13 +791,27 @@ def _classify_curl(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] != "curl":
         return None
     args = tokens[1:]
-    get_query = "-G" in args or "--get" in args
+    get_query = ("-G" in args or "--get" in args) and _curl_get_sends_only_literals(args)
     i = 0
     while i < len(args):
         a = args[i]
-        if get_query and a in _CURL_QUERY_DATA_FLAGS and i + 1 < len(args) and not _curl_data_reads_file(a, args[i + 1]):
+        if get_query and a in _CURL_QUERY_DATA_FLAGS:
             i += 2
             continue
+        if a[:2] in ("-d", "-F", "-T") and len(a) > 2:
+            return FlagClassifierResult(
+                outcome=OUTCOME_MUTATIVE,
+                reason=f"curl {a[:2]} with an attached value sends data to the server",
+                matched_pattern=a[:2],
+                command_family="curl",
+            )
+        if a.startswith("-X") and len(a) > 2 and a[2:].upper() in _CURL_WRITE_METHODS:
+            return FlagClassifierResult(
+                outcome=OUTCOME_MUTATIVE,
+                reason=f"curl {a} sends a write request",
+                matched_pattern=a,
+                command_family="curl",
+            )
         # -X / --request METHOD
         if a in ("-X", "--request"):
             if i + 1 < len(args) and args[i + 1].upper() in _CURL_WRITE_METHODS:

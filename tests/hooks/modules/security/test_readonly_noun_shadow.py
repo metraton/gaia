@@ -165,6 +165,7 @@ def without_the_config_anchors(monkeypatch):
         lambda base_cmd, family, semantics: None,
     )
     monkeypatch.setattr(mutative_verbs_module, "GROUP_READ_WORDS", frozenset())
+    monkeypatch.setattr(mutative_verbs_module, "_later_head_mutates", lambda *_: False)
     for base_cmd, anchors in list(COMMAND_PATH_MUTATIVE_UPGRADES.items()):
         survivors = tuple(a for a in anchors if a.path[0] != SHADOWING_NOUN)
         if len(survivors) == len(anchors):

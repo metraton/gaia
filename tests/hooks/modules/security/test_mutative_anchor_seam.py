@@ -228,6 +228,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             "kubectl",
             "gh",
             "git",
+            "helm",
             "terraform",
             "tofu",
             "terragrunt",
