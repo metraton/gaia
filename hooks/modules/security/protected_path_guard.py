@@ -48,12 +48,8 @@ path reconstructed by variable interpolation or read from a file
 literal token and is not caught here. The literal-token slice is the bounded,
 low-false-positive portion that is closed.
 
-An installed Gaia root is held more strictly than the ``.claude`` tree: a line
-that names one in any word (attached option values and paths joined in inline
-code included) or runs with its cwd inside one is refused unless every
-component is a known reader (``_names_install_root_unread``). A file reached
-through a hardlink made before the line runs carries no install-root path, so
-no path-based guard sees it -- a known limit.
+A line naming an installed Gaia root, or running inside one, must be all known
+readers (``_names_install_root_unread``); a hardlink made earlier is a known limit.
 
 Public API:
     targets_protected_path(command: str, cwd: str | None = None) -> str | None
@@ -63,6 +59,7 @@ Public API:
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 import shlex
@@ -70,7 +67,12 @@ from typing import List, Optional, Tuple
 
 from .canonical_path import command_name
 from .mutative_verbs import UNKNOWN_CWD, cwd_after_component, detect_mutative_command
-from .protected_paths import is_install_root_path, is_protected_hook_path, is_read_spool_path
+from .protected_paths import (
+    is_install_root_container,
+    is_install_root_path,
+    is_protected_hook_path,
+    is_read_spool_path,
+)
 from .sensitive_paths import expand_home
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -246,15 +248,13 @@ def _interpreter_writes_protected_path(command: str, cwd: Optional[str]) -> Opti
     return None
 
 
-# A shell line that names an installed Gaia root, or runs inside one, must be
-# provably read-only: enumerating every writer (unzip, patch, py_compile, git
-# --work-tree, xargs, ...) left each unlisted one open, so the rule inverts to
-# an allow-list of readers.
+# Readers, not writers, are listed: every writer left out of a list was a way into an install root.
 _READ_ONLY_COMMANDS = frozenset({
     "cat", "head", "tail", "less", "more", "ls", "stat", "file", "wc", "grep", "egrep",
     "fgrep", "rg", "diff", "cmp", "du", "df", "readlink", "realpath", "tree", "jq",
     "echo", "printf", "pwd", "test", "[", "true", "md5sum", "sha1sum", "sha256sum",
     "basename", "dirname", "which", "type", "cd", "pushd", "popd", "find",
+    "export", "declare", "local", "readonly", "typeset",
 })
 _GIT_READ_SUBCOMMANDS = frozenset({
     "status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse",
@@ -310,24 +310,105 @@ def _named_words(tokens: List[str]) -> List[str]:
     return words
 
 
+_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.S)
+_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+_GLOB = re.compile(r"[*?\[]")
+_MAX_SPELLINGS = 64
+
+
+def _line_assignments(command: str) -> dict:
+    values: dict = {}
+    for component in _OPERATOR_SPLIT.split(command):
+        for token in _tokenize(strip_grouping_wrappers(component.strip())) if component.strip() else []:
+            match = _ASSIGNMENT.fullmatch(token)
+            if match:
+                values.setdefault(match.group(1), []).append(match.group(2))
+    return values
+
+
+def _substituted_lines(command: str) -> List[str]:
+    """The line with $NAME and ${NAME} replaced by each value the line assigns NAME."""
+    values = _line_assignments(command)
+    if not values:
+        return [command]
+    lines = []
+    for index in range(min(max(len(v) for v in values.values()), 4)):
+        def value(match, index=index):
+            assigned = values.get(match.group(1) or match.group(2))
+            return assigned[min(index, len(assigned) - 1)] if assigned else match.group(0)
+
+        line = command
+        for _ in range(3):
+            line = _VARIABLE.sub(value, line)
+        lines.append(line)
+    return lines
+
+
+def _brace_spellings(word: str) -> List[str]:
+    match = _BRACE.search(word)
+    if not match:
+        return [word]
+    spellings: List[str] = []
+    for alternative in match.group(1).split(","):
+        spellings += _brace_spellings(word[:match.start()] + alternative + word[match.end():])
+        if len(spellings) >= _MAX_SPELLINGS:
+            break
+    return spellings[:_MAX_SPELLINGS]
+
+
+def _pattern_spellings(word: str) -> List[str]:
+    spellings: List[str] = []
+    for spelling in _brace_spellings(word):
+        parts = spelling.split("/")
+        globbed = next((index for index, part in enumerate(parts) if _GLOB.search(part)), None)
+        if globbed is None:
+            spellings.append(spelling)
+            continue
+        head, tail = "/".join(parts[:globbed + 1]), parts[globbed + 1:]
+        spellings += ["/".join([match] + tail) for match in glob.glob(head)[:_MAX_SPELLINGS]]
+    return spellings
+
+
+def _deepest_existing(path: str) -> str:
+    path = os.path.abspath(path)
+    while not os.path.lexists(path) and path != os.path.dirname(path):
+        path = os.path.dirname(path)
+    return path
+
+
 def _install_root_spelling(word: str, cwd: Optional[str]) -> Optional[str]:
+    """`word` when its deepest existing directory, or the static prefix before an unassigned variable, holds a root."""
     word = word.lstrip("<>&|+").strip("'\"")
     if not word:
         return None
-    if not os.path.isabs(expand_home(word)) and cwd:
+    path = os.path.expanduser(expand_home(word))
+    if not os.path.isabs(path) and not path.startswith("$") and cwd:
         if cwd == UNKNOWN_CWD:
             return None
-        word = os.path.join(cwd, word)
-    # Judged at the deepest directory that exists, so a package name such as
-    # `@jaguilar87/gaia` handed to npm is not mistaken for an install root.
-    existing = os.path.abspath(os.path.expanduser(expand_home(word)))
-    while not os.path.lexists(existing) and existing != os.path.dirname(existing):
-        existing = os.path.dirname(existing)
-    return word if is_install_root_path(existing) else None
+        path = os.path.join(cwd, path)
+    if "$" in path:
+        prefix = path[:path.index("$")]
+        directory = prefix if prefix.endswith("/") else os.path.dirname(prefix)
+        if prefix and (is_install_root_path(directory) or is_install_root_container(directory)):
+            return word
+        return None
+    for spelling in _pattern_spellings(path):
+        if is_install_root_path(_deepest_existing(spelling)):
+            return word
+    return None
 
 
 def _names_install_root_unread(command: str, cwd: Optional[str]) -> Optional[str]:
     """The install-root path a line names or runs in when the line is not provably read-only."""
+    for line in _substituted_lines(command):
+        hit = _line_names_install_root_unread(line, cwd)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _line_names_install_root_unread(command: str, cwd: Optional[str]) -> Optional[str]:
     named: List[str] = []
     read_only = True
     programs: List[str] = []
@@ -335,14 +416,21 @@ def _names_install_root_unread(command: str, cwd: Optional[str]) -> Optional[str
     for component in _OPERATOR_SPLIT.split(command):
         component = component.strip()
         tokens = _tokenize(strip_grouping_wrappers(component)) if component else []
-        if not tokens:
-            continue
-        read_only = read_only and _is_read_only(tokens)
-        programs += _program_words(tokens)
-        if command_name(tokens[0]) not in ("cd", "pushd", "popd") and running_cwd \
-                and running_cwd != UNKNOWN_CWD and is_install_root_path(running_cwd):
-            named.append(running_cwd)
-        named += [hit for word in _named_words(tokens) if (hit := _install_root_spelling(word, running_cwd))]
+        assignments = 0
+        while assignments < len(tokens) and _ASSIGNMENT.fullmatch(tokens[assignments]):
+            assignments += 1
+        words = [token.split("=", 1)[1] for token in tokens[:assignments]]
+        tokens = tokens[assignments:]
+        if tokens:
+            redirects, _ = _write_targets(tokens, command_name(tokens[0]))
+            writes_root = any(_install_root_spelling(target, running_cwd) for target in redirects)
+            read_only = read_only and not writes_root and _is_read_only(tokens)
+            programs += _program_words(tokens)
+            words += _named_words(tokens)
+            if command_name(tokens[0]) not in ("cd", "pushd", "popd") and running_cwd \
+                    and running_cwd != UNKNOWN_CWD and is_install_root_path(running_cwd):
+                named.append(running_cwd)
+        named += [hit for word in words if (hit := _install_root_spelling(word, running_cwd))]
         running_cwd = _fold_cwd(component, running_cwd)
     if _has_interpreter(command):
         code_cwd = _proven_cwd(command, cwd)

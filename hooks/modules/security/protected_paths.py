@@ -206,6 +206,17 @@ def _install_root_hit(path: Path) -> bool:
     return not (inside[:1] == (_HOOKS_DIR,) and path.suffix == ".md")
 
 
+def is_install_root_container(path_str: str) -> bool:
+    """True iff `path_str` is a package scope, node_modules or Gaia data directory holding an install root."""
+    path = Path(os.path.abspath(os.path.expanduser(path_str)))
+    for container in _dev_plugin_caches():
+        if path in (container, container.parent, container.parent.parent):
+            return True
+    if path.name == _PACKAGE_SCOPE_DIR:
+        return (path / _PACKAGE_DIR).is_dir()
+    return (path / _PACKAGE_SCOPE_DIR / _PACKAGE_DIR).is_dir()
+
+
 def is_install_root_path(path_str: str) -> bool:
     """True iff `path_str` is an installed Gaia root or lies inside one, hook docs excepted."""
     if not path_str:

@@ -119,6 +119,17 @@ class TestShellSurface:
     def test_provable_reads_and_running_installed_code_pass(self, install_root, form):
         assert protected_path_guard.check(form.format(I=install_root))[0] is True
 
+    @pytest.mark.parametrize("form", [
+        "X={I}; ls $X/bin",
+        "export X={I}; cat $X/bin/json.py",
+        "X={T}; touch $X/a.txt",
+        "touch $UNSET/bin/e.py",
+        "touch {T}/*.txt",
+        "touch {T}/{{a,b}}.txt",
+    ])
+    def test_variables_and_patterns_away_from_a_root_pass(self, install_root, tmp_path, form):
+        assert protected_path_guard.check(form.format(I=install_root, T=tmp_path / "elsewhere"))[0] is True
+
     @pytest.mark.parametrize("form", ["npm install -g @jaguilar87/gaia", "npm install @jaguilar87/gaia@5.7.0"])
     def test_a_package_name_is_not_an_install_root(self, tmp_path, form):
         assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
@@ -271,6 +282,17 @@ SHELL_PROBES = {
     "perl_inline": "perl -e 'open(F, \">{I}/bin/evil.py\")'",
     "find_exec_cp": "find /tmp/a -exec cp {{}} {I}/bin/evil.py ;",
     "xargs_touch": "echo {I}/bin/evil.py | xargs touch",
+    "var_touch": "X={I}; touch $X/bin/e.py",
+    "var_touch_and": "X={I} && touch $X/bin/e.py",
+    "var_braced": "X={I}; touch ${{X}}/bin/e.py",
+    "var_redirect": "X={I}; echo x > $X/bin/e.py",
+    "var_tee": "X={I}; echo x | tee $X/bin/e.py",
+    "var_mkdir": "X={I}; mkdir -p $X/gaia/evil",
+    "parent_var_touch": "P={P}; touch $P/{BASE}/bin/e.py",
+    "unassigned_var_under_parent": "touch {P}/$UNSET/bin/e.py",
+    "glob_touch": "touch {GLOB}/bin/e.py",
+    "brace_touch": "touch {BRACE}/bin/e.py",
+    "glob_redirect": "echo x > {GLOB}/bin/e.py",
 }
 
 
@@ -283,7 +305,11 @@ class TestShellAsSubagent:
 
         scratch = tmp_path / "scratch"
         scratch.mkdir(exist_ok=True)
-        command = SHELL_PROBES[name].format(I=install_root, S=scratch, P=install_root.parent)
+        root = str(install_root)
+        command = SHELL_PROBES[name].format(
+            I=root, S=scratch, P=install_root.parent, BASE=install_root.name,
+            GLOB=root[:-1] + "?", BRACE=root[:-1] + "{" + root[-1] + ",zz}",
+        )
         result = BashValidator().validate(
             command, is_subagent=True, session_id=SESSION, agent_type="developer",
             hook_payload={"cwd": str(tmp_path), "agent_id": SUBAGENT_ID, "agent_type": "developer"},
