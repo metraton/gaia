@@ -191,7 +191,7 @@ PULUMI = {
     "p-nested-name-ignored": ("Pulumi.yaml", "name: shop\nruntime:\n  name: python\n", "stack", "prod-a", "ask"),
     "p-dev-quoted-name": ("Pulumi.yaml", 'name: "shop"\nruntime: python\n', "stack", "dev-a", "free"),
     "p-dev-description-folded": ("Pulumi.yaml", "name: shop\ndescription: >\n  long text\nruntime: python\n", "stack",
-                                 "dev-a", "free"),
+                                 "dev-a", "ask"),
     "p-project-file-yml": ("Pulumi.yml", "name: shop\nruntime: python\n", "stack", "prod-a", "ask"),
     "p-stack-key-capitalised": ("Pulumi.yaml", "name: shop\nruntime: python\n", "Stack", "prod-a", "ask"),
 }

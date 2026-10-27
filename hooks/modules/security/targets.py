@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import configparser
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -21,6 +20,7 @@ from .canonical_path import command_name
 
 UNDETERMINED = "?"
 UNREADABLE = "??"
+UNSET = "\x00"
 DECLARATION_SECTION = "targets"
 
 # Only a program no classifier table names (mutative_verbs._is_unmodelled_cli) is read with the generic row.
@@ -107,9 +107,14 @@ _PRODUCTION_WORDS = frozenset({"prod", "production", "prd"})
 _NAME_PARTS = re.compile(r"[a-z0-9]+")
 _DYNAMIC = re.compile(r"[$`]")
 _ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)", re.S)
-# The hook runtime ships no YAML parser (pyyaml is a dev extra), so only these canonical spellings are read.
-_YAML_TOP_LINE = re.compile(r"[A-Za-z_][\w.-]*:(?=[ \t]|$).*|-(?=[ \t]|$).*|(?:---|\.\.\.)[ \t]*(?:#.*)?|[%#].*")
-_YAML_SCALAR = r"""(?:"(?P<double>[^"\\]*)"|'(?P<single>[^']*)'|(?P<plain>[A-Za-z0-9_./][\w.@:/+=~-]*(?<!:)))"""
+# The hook runtime ships no YAML parser (pyyaml is a dev extra): a YAML file is read only when every line is in the
+# block subset kubectl and pulumi write, including a plain value folded onto deeper lines (kubectl wraps installHint).
+_YAML_FORBIDDEN = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
+_YAML_LINE = re.compile(r"(?P<item>-(?:[ \t]+|$))?(?:(?P<key>[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*):(?:[ \t]+|$))?(?P<value>.*)")
+_YAML_ROOT_KEY = re.compile(r"[A-Za-z0-9_.-]+")
+_YAML_QUOTED = re.compile(r"""(?:"(?P<double>[^"\\]*)"|'(?P<single>[^']*)'|\{\}|\[\])(?:[ \t]+#.*)?""")
+_YAML_PLAIN = re.compile(r"""(?![-?:](?:[ \t]|$))[^\s#&*!|>'"%@`{}\[\],](?:(?!:[ \t]).)*(?<!:)""")
+_YAML_COMMENT = re.compile(r"[ \t]+#")
 _YAML_TYPED = re.compile(r"(?i:null|true|false|yes|no|on|off|y|n|\.inf|\.nan)|\.?\d[\d_.eE+:-]*|0[xXoO][\w]+")
 _READ_LIMIT = 1024 * 1024
 _PULUMI_PROJECT_FILES = ("Pulumi.yaml", "Pulumi.yml")
@@ -240,36 +245,69 @@ def _json_value(text: str, kind: type, key: str, *, fold: bool = False):
 
 
 def _certified(value, text: str, key: str):
-    """*value* when the strict reader found *key*; otherwise "" (no target), or UNREADABLE when *text* still mentions
-    *key* loosely: case-insensitive, every Unicode line break read as one, leading whitespace ignored."""
+    """*value* when the strict reader found *key* set; otherwise UNSET (the file names no target), or UNREADABLE when
+    *text* still mentions *key* loosely: case-insensitive, every Unicode line break read as one, leading whitespace
+    ignored. A value spelling UNSET itself is UNREADABLE."""
     if value is not None:
-        return value
+        return UNREADABLE if value == UNSET else value or UNSET
     loose = "\n".join(line.lstrip() for line in text.splitlines()).casefold()
-    return UNREADABLE if key.casefold() in loose else ""
+    return UNREADABLE if key.casefold() in loose else UNSET
+
+
+def _yaml_scalar(value: str) -> Optional[Tuple[str, bool]]:
+    """The string one-line YAML *value* holds and whether it is plain; ("", False) for nothing, a comment or an empty
+    collection; None when it is outside the subset: escapes, anchors, aliases, tags, block scalars, flow content."""
+    quoted = _YAML_QUOTED.fullmatch(value)
+    if quoted:
+        return next((part for part in quoted.group("double", "single") if part is not None), ""), False
+    plain = "" if value.startswith("#") else _YAML_COMMENT.split(value, maxsplit=1)[0].rstrip()
+    if not plain:
+        return "", False
+    return (plain, True) if _YAML_PLAIN.fullmatch(plain) else None
 
 
 def _yaml_value(text: str, key: str) -> Optional[str]:
-    """Top-level *key* of YAML *text*, None when absent; UNREADABLE unless every top-level line is a plain key, a sequence
-    item or a comment, and every *key* line holds one plain or unescaped quoted string with nothing folded into it."""
-    lines = text.lstrip("﻿").replace("\r\n", "\n").split("\n")
-    if any(line[:1] not in ("", " ", "\t") and not _YAML_TOP_LINE.fullmatch(line) for line in lines):
+    """Root *key* of YAML *text*, None when absent; UNREADABLE unless every line is in the subset and *key* holds one
+    plain or unescaped quoted string on its own line.
+
+    The subset: a root mapping at column 0 whose keys are plain ``[A-Za-z0-9_.-]`` (nested keys may join such words with
+    ``:``), ``- `` items, one-line values per ``_yaml_scalar``, space indentation, and lines deeper than a plain value
+    continuing it. ``?`` keys, quoted keys, ``&``/``*``/``!``, ``|``/``>``, flow content, directives and any control or
+    Unicode line-break character are outside it.
+    """
+    text = text.removeprefix("﻿").replace("\r\n", "\n")
+    if _YAML_FORBIDDEN.search(text):
         return UNREADABLE
-    pattern = re.compile(rf"{re.escape(key)}:(?:[ \t]+{_YAML_SCALAR})?(?:[ \t]+(?:#.*)?)?")
-    found = set()
-    for index, line in enumerate(lines):
-        if not line.startswith(f"{key}:"):
+    found, folding, owner, seen = set(), None, None, False
+    for line in text.split("\n"):
+        body = line.lstrip(" ")
+        indent = len(line) - len(body)
+        if not body.strip() or body.startswith("#"):
+            folding = folding if not body.strip() else None
             continue
-        match = pattern.fullmatch(line)
-        if match is None:
+        parts = _YAML_LINE.fullmatch(body)
+        at_root = indent == 0 and not parts.group("item")
+        if body[0] == "\t" or not (seen or (at_root and parts.group("key"))):
             return UNREADABLE
-        nested = list(itertools.takewhile(lambda follower: follower[:1] in ("", " ", "\t"), lines[index + 1:]))
-        after = next((follower for follower in lines[index + 1:] if follower.strip()), "")
-        scalar = next((part for part in match.group("double", "single", "plain") if part is not None), None)
-        if any(follower.strip() and not follower.lstrip().startswith("#") for follower in nested) \
-                or (scalar is None and after.startswith("-")) \
-                or (match.group("plain") and _YAML_TYPED.fullmatch(scalar)):
+        seen = True
+        if not parts.group("item") and not parts.group("key"):
+            continued = _YAML_COMMENT.split(body, maxsplit=1)[0].rstrip()
+            if folding is None or indent <= folding or not _YAML_PLAIN.fullmatch(continued) or owner == key:
+                return UNREADABLE
+            continue
+        scalar = _yaml_scalar(parts.group("value"))
+        if scalar is None:
             return UNREADABLE
-        found.add(scalar or "")
+        if at_root and not _YAML_ROOT_KEY.fullmatch(parts.group("key")):
+            return UNREADABLE
+        if owner == key and not at_root:
+            return UNREADABLE
+        owner = parts.group("key") if at_root else (owner if indent else None)
+        folding = indent if scalar[1] else None
+        if at_root and owner == key:
+            if scalar[1] and _YAML_TYPED.fullmatch(scalar[0]):
+                return UNREADABLE
+            found.add(scalar[0])
     return UNREADABLE if len(found) > 1 else next(iter(found), None)
 
 
@@ -291,20 +329,24 @@ def _kube_context(environment: Dict[str, str], cwd: Optional[str]) -> str:
     if paths and _DYNAMIC.search(paths):
         return UNDETERMINED
     files = [_in_directory(p, cwd) for p in paths.split(os.pathsep) if p] if paths else [Path.home() / ".kube" / "config"]
+    unset = ""
     for path in files:
         if path is None:
             return UNDETERMINED
         text = _read_text(path)
         if text is None:
             return UNREADABLE
+        if not text:
+            continue
         if text.lstrip("﻿").lstrip().startswith("{"):
             context = _json_value(text, str, "current-context")
         else:
             context = _yaml_value(text, "current-context")
         context = _certified(context, text, "current-context")
-        if context:
+        if context != UNSET:
             return context
-    return ""
+        unset = UNSET
+    return unset
 
 
 def _gcloud_properties(environment: Dict[str, str], cwd: Optional[str]) -> Tuple[str, str]:
@@ -681,7 +723,7 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
         return UNDETERMINED
     if any(t.name in (UNDETERMINED, UNREADABLE) for t in targets):
         return UNDETERMINED
-    return ";".join(sorted(f"{t.kind}={t.name}" for t in targets))
+    return json.dumps(sorted([t.kind, t.name] for t in targets)) if targets else ""
 
 
 def _pushed_branch(words: Sequence[str], cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
