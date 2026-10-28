@@ -530,6 +530,19 @@ def _fresh_mutative_classification_cache():
         pass
 
 
+@pytest.fixture
+def installed_gaia(tmp_path, monkeypatch):
+    """The path of a ``bin/gaia`` in an npm-location install the classifier's hook root points at."""
+    from modules.security import mutative_verbs
+
+    root = tmp_path / "installed" / "node_modules" / "@jaguilar87" / "gaia"
+    (root / "bin").mkdir(parents=True)
+    (root / "package.json").write_text('{"name": "@jaguilar87/gaia", "bin": {"gaia": "bin/gaia"}}')
+    shutil.copy(Path(__file__).resolve().parents[1] / "bin" / "gaia", root / "bin" / "gaia")
+    monkeypatch.setattr(mutative_verbs, "_HOOK_ROOT", root)
+    return str(root / "bin" / "gaia")
+
+
 def pytest_collection_modifyitems(config, items):
     """Deselect what layer 1 excludes; auto-skip llm and e2e tests unless -m selects them."""
     _deselect_outside_layer1(config, items)

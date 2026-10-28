@@ -212,3 +212,120 @@ def test_the_installed_cli_run_directly_stays_free(tmp_path, monkeypatch):
     monkeypatch.setattr(mv, "_HOOK_ROOT", install)
     assert mv.detect_mutative_command(f"{install}/bin/gaia memory list").is_mutative is False
     assert mv.detect_mutative_command("gaia memory list").is_mutative is False
+
+
+def test_an_install_root_reached_through_a_symlink_is_the_install(tmp_path, monkeypatch):
+    install = _install(tmp_path)
+    link = tmp_path / "linked-install"
+    link.symlink_to(install)
+    assert mv._root_is_install(link) is True
+    monkeypatch.setattr(mv, "_HOOK_ROOT", install)
+    assert _redispatched(link) == [True, True]
+
+
+def test_an_npm_location_symlinked_to_a_plain_folder_is_not_an_install(tmp_path, monkeypatch):
+    plain = _copy_cli(tmp_path / "plain")
+    link = _npm_location(tmp_path)
+    link.parent.mkdir(parents=True)
+    link.symlink_to(plain)
+    monkeypatch.setattr(mv, "_HOOK_ROOT", link)
+    assert mv._hook_root_is_install() is False
+    assert _redispatched(link) == [False, False]
+
+
+@pytest.mark.parametrize("variable, value", [("LANG", "es_ES.UTF-8"), ("LC_ALL", "de_DE.UTF-8"), ("LANGUAGE", "fr")])
+def test_the_callers_locale_changes_no_verdict(tmp_path, monkeypatch, variable, value):
+    install = _install(tmp_path)
+    checkout = _checkout(_npm_location(tmp_path / "other"))
+    monkeypatch.setenv(variable, value)
+    assert mv._root_is_install(install) is True
+    assert mv._root_is_install(checkout) is False
+
+
+def test_git_is_asked_in_the_c_locale_whatever_the_caller_exports(tmp_path, monkeypatch):
+    install = _install(tmp_path)
+    translating_git = _fake_git(tmp_path, (
+        'if [ "$LC_ALL" = C ] && [ -z "$LANGUAGE" ]; then echo "fatal: not a git repository" >&2; '
+        'else echo "fatal: no es un repositorio git" >&2; fi; exit 128'
+    ))
+    monkeypatch.setenv("PATH", translating_git)
+    monkeypatch.setenv("LC_ALL", "es_ES.UTF-8")
+    monkeypatch.setenv("LANGUAGE", "es")
+    assert mv._root_is_install(install) is True
+
+
+def test_dubious_ownership_is_asked_again_once_the_variable_is_gone(tmp_path, monkeypatch):
+    checkout = _checkout(_npm_location(tmp_path))
+    monkeypatch.setattr(mv, "_HOOK_ROOT", checkout)
+    with monkeypatch.context() as environment:
+        environment.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+        assert mv._hook_root_is_install() is False
+    assert mv._hook_root_is_install() is False
+    assert _redispatched(checkout) == [False, False]
+
+
+@pytest.mark.parametrize("form", [
+    "python3 {bin}/gaia contract list", "{bin}/gaia contract list", "python3 {bin}/cli/contract.py list",
+])
+def test_the_installed_root_with_git_missing_asks_by_path_and_the_launcher_stays_free(tmp_path, monkeypatch, form):
+    from gaia.paths import cache_dir
+    from modules.security import data_heredoc
+
+    install = _copy_cli(cache_dir() / "dev-plugin" / "ws")
+    monkeypatch.setattr(mv, "_HOOK_ROOT", install)
+    command = form.format(bin=install / "bin")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with monkeypatch.context() as without_git:
+        without_git.setenv("PATH", str(empty))
+        assert mv.detect_mutative_command(command).is_mutative is True
+        assert data_heredoc.is_gaia_cli(str(install / "bin" / "gaia")) is False
+        assert mv.detect_mutative_command("gaia contract list").is_mutative is False
+    mv._detect_mutative_command.cache_clear()
+    assert mv.detect_mutative_command(command).is_mutative is False
+    assert data_heredoc.is_gaia_cli(str(install / "bin" / "gaia")) is True
+
+
+@pytest.mark.parametrize("shape, asks", [
+    ("symlink", False), ("relative-dot", False), ("tilde", False), ("shell-script", True), ("byte-copy", True),
+])
+def test_a_launcher_by_path_is_free_only_when_it_resolves_into_the_hook_install(tmp_path, monkeypatch, shape, asks):
+    install = _install(tmp_path)
+    monkeypatch.setattr(mv, "_HOOK_ROOT", install)
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    cwd = None
+    word = str(shims / "gaia")
+    if shape == "symlink":
+        (shims / "gaia").symlink_to(install / "bin" / "gaia")
+    elif shape == "relative-dot":
+        word, cwd = "./gaia", str(install / "bin")
+    elif shape == "tilde":
+        monkeypatch.setenv("HOME", str(shims))
+        (shims / "gaia").symlink_to(install / "bin" / "gaia")
+        word = "~/gaia"
+    elif shape == "shell-script":
+        (shims / "gaia").write_text(f'#!/bin/sh\nexec "{install}/bin/gaia" "$@"\n')
+    else:
+        (shims / "gaia").write_bytes((install / "bin" / "gaia").read_bytes())
+    assert mv.detect_mutative_command(f"{word} memory list", cwd=cwd).is_mutative is asks
+
+
+def test_a_second_install_at_another_npm_location_asks(tmp_path, monkeypatch):
+    install = _install(tmp_path)
+    other = _install(tmp_path / "second")
+    assert mv._root_is_install(other) is True
+    monkeypatch.setattr(mv, "_HOOK_ROOT", install)
+    assert _redispatched(other) == [False, False]
+    assert mv.detect_mutative_command(f"{other}/bin/gaia memory list").is_mutative is True
+
+
+@pytest.mark.parametrize("body", [
+    "echo 'fatal: not a git repository' >&2; exit 128",
+    "echo / ; exit 0",
+], ids=["claims-not-a-repository", "claims-a-parent-top-level"])
+def test_residual_a_git_on_path_that_lies_proves_an_install_location_checkout(tmp_path, monkeypatch, body):
+    checkout = _checkout(_npm_location(tmp_path))
+    monkeypatch.setattr(mv, "_HOOK_ROOT", checkout)
+    monkeypatch.setenv("PATH", _fake_git(tmp_path, body))
+    assert mv._hook_root_is_install() is True
