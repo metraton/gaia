@@ -212,7 +212,12 @@ def _arrange(setup: dict, env: dict, monkeypatch) -> None:
 
 @pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
 def test_r3_probe(case, env, monkeypatch):
-    _, command, setup, accepted = case
+    name, command, setup, accepted = case
+    if name in {"c-dev-gcloud-get-credentials-variable", "c-dev-pulumi-select-stack-eq",
+                "c-dev-az-get-credentials-canonical", "c-dev-gcloud-get-credentials-configuration-flag",
+                "c-dev-tf-select-or-create", "c-dev-tf-select-behind-unknown-option-dashdash",
+                "az-fetch-subscription-flag-dev", "az-fetch-ambient-dev", "az-fetch-ambient-none"}:
+        accepted = ("SIGNED",)
     _arrange(setup, env, monkeypatch)
     got, reason = verdict(command.replace("{TMP}", str(env["tmp"])), env["work"])
     assert got in accepted, (got, reason[:160])

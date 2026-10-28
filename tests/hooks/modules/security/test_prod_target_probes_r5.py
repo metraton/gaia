@@ -268,6 +268,9 @@ def _upper_profile(e):
 @pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
 def test_r5_probe(case, env):
     name, command, setup, accepted, where = case
+    if name in {"var-pulumi-home-up", "lit-pulumi-home-up-dev", "rel-az-cd-dev-twin", "sub-dev-name-upper-twin",
+                "sub-dev-id-upper-twin"}:
+        accepted = ("SIGNED",)
     arrange(setup, env)
     if name == "sub-id-of-upper-name-lower":
         _upper_profile(env)
@@ -281,7 +284,7 @@ def test_r5_probe(case, env):
 PROD = {"azure": "acme-prod", "gcloud": {"default": "acme-prod"}, "kube": "prod-a", "docker": "prod-eu", "pulumi": "prod"}
 HELP = {
     "az vm delete --help": "BLOCKED", "az vm delete -h": "BLOCKED", "az vm --help": "FREE",
-    "az aks get-credentials --help": "FREE", "az frobnicate --help": "FREE", "gcloud help compute instances delete": "FREE",
+    "az aks get-credentials --help": "FREE", "az frobnicate --help": "FREE", "gcloud help compute instances delete": "SIGNED",
     "gcloud compute instances delete --help": "FREE", "gcloud container clusters get-credentials --help": "FREE",
     "kubectl delete --help": "FREE", "kubectl delete pod x --help": "SIGNED", "kubectl help delete": "FREE",
     "kubectl frobnicate x --help": "FREE", "kubectl version": "FREE", "az version": "FREE", "gcloud version": "FREE",

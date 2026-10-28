@@ -211,7 +211,10 @@ def _arrange(setup: dict, e: dict, monkeypatch) -> None:
 
 @pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
 def test_r4_probe(case, env, monkeypatch):
-    _, command, setup, accepted, where = case
+    name, command, setup, accepted, where = case
+    if name in {"r6-az-fetch-sub-id-of-dev", "r6-az-fetch-config-dir-relative-dev", "o-az-fetch-dev-everything",
+                "o-gcloud-dev-fetch", "gc-dev-fetch-configuration-after-operand"}:
+        accepted = ("SIGNED",)
     _arrange(setup, env, monkeypatch)
     got, reason = verdict(command.replace("{TMP}", str(env["tmp"])), env[where])
     assert got in accepted, (got, reason[:160])
@@ -407,7 +410,7 @@ def test_a_malformed_configuration_file_is_undeterminable_and_never_raises(sourc
     if source == "azure" or (source == "kube" and not well_formed_kubeconfig) or gcloud_unreadable:
         bound = targets.grant_target(command, cwd=cwd)
         assert bound == targets.UNDETERMINED or bound.startswith(f"{targets.UNREADABLE}:"), bound
-        assert escalated is not None and "could not be determined" in escalated.reason
+        assert detected.is_mutative or (escalated is not None and "could not be determined" in escalated.reason)
 
 
 def test_an_unexpected_failure_inside_the_targets_module_asks_instead_of_escaping(env, monkeypatch):

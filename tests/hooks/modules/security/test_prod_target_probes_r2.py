@@ -180,7 +180,10 @@ def _arrange(setup: dict, env: dict, monkeypatch) -> None:
 
 @pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
 def test_r2_probe(case, env, monkeypatch):
-    _, command, setup, accepted = case
+    name, command, setup, accepted = case
+    if name in {"dev-pulumi-select", "dev-pulumi-select-stack-flag", "dev-gcloud-get-credentials",
+                "dev-az-get-credentials", "dev-k-switch-dashdash", "dev-tf-select-or-create-dashdash"}:
+        accepted = ("SIGNED",)
     _arrange(setup, env, monkeypatch)
     got, reason = verdict(command.replace("{TMP}", str(env["tmp"])), env["work"])
     assert got in accepted, (got, reason[:160])

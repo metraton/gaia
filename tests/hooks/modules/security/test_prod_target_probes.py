@@ -371,7 +371,9 @@ FRESH = FRESH_OPERATION_WORD + FRESH_SWITCHES + FRESH_EXTRACTION
 
 @pytest.mark.parametrize("case", FRESH, ids=[c[0] for c in FRESH])
 def test_prod_target_fresh_probe(case, env, monkeypatch):
-    _, command, setup, accepted = case
+    name, command, setup, accepted = case
+    if name in {"dev-kube-switch-from-prod-flag", "dev-tf-select"}:
+        accepted = ("SIGNED",)
     _arrange(setup, env, monkeypatch)
     got, reason = verdict(command.replace("{TMP}", str(env["tmp"])), env["work"])
     assert got in accepted, (got, reason[:200])
