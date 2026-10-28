@@ -11530,41 +11530,46 @@ def tool_records_for_contract(contract_id: str, *, db_path: "Path | None" = None
     calls an earlier finalize already consumed (its ``harness_record``) are
     excluded by event id rather than by timestamp, which has one-second grain.
     """
+    con = _connect(db_path)
+    try:
+        return tool_records_on(con, contract_id)
+    finally:
+        con.close()
+
+
+def tool_records_on(con: sqlite3.Connection, contract_id: str) -> dict:
+    """``tool_records_for_contract`` read through the caller's connection, inside its open transaction."""
     from gaia.contract.tool_record import TOOL_CALLED
 
     empty = {"agent_id": None, "harness_agent_id": None, "records": [], "through_event_id": 0}
-    con = _connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT id, agent_id, harness_agent_id, continues_handoff_id "
-            "FROM agent_contract_handoffs WHERE contract_id = ?",
-            (contract_id,),
+    row = con.execute(
+        "SELECT id, agent_id, harness_agent_id, continues_handoff_id "
+        "FROM agent_contract_handoffs WHERE contract_id = ?",
+        (contract_id,),
+    ).fetchone()
+    if row is None:
+        return empty
+    handoff_id, agent_id, harness_agent_id, parent = row[0], row[1], row[2], row[3]
+    while not harness_agent_id and parent:
+        ancestor = con.execute(
+            "SELECT harness_agent_id, continues_handoff_id FROM agent_contract_handoffs WHERE id = ?",
+            (parent,),
         ).fetchone()
-        if row is None:
-            return empty
-        handoff_id, agent_id, harness_agent_id, parent = row[0], row[1], row[2], row[3]
-        while not harness_agent_id and parent:
-            ancestor = con.execute(
-                "SELECT harness_agent_id, continues_handoff_id FROM agent_contract_handoffs WHERE id = ?",
-                (parent,),
-            ).fetchone()
-            harness_agent_id, parent = (ancestor[0], ancestor[1]) if ancestor else (None, None)
-        if not harness_agent_id:
-            return {**empty, "agent_id": agent_id}
-        consumed = con.execute(
-            "SELECT MAX(CAST(json_extract(raw, '$.harness_record.through_event_id') AS INTEGER)) "
-            "FROM (SELECT CASE WHEN json_valid(raw_handoff_json) THEN raw_handoff_json END AS raw "
-            "      FROM agent_contract_handoffs WHERE id != ?) "
-            "WHERE json_extract(raw, '$.harness_record.harness_agent_id') = ?",
-            (handoff_id, harness_agent_id),
-        ).fetchone()[0] or 0
-        events = con.execute(
-            "SELECT id, payload FROM harness_events WHERE type = ? AND id > ? "
-            "AND json_extract(payload, '$.harness_agent_id') = ? ORDER BY id",
-            (TOOL_CALLED, consumed, harness_agent_id),
-        ).fetchall()
-    finally:
-        con.close()
+        harness_agent_id, parent = (ancestor[0], ancestor[1]) if ancestor else (None, None)
+    if not harness_agent_id:
+        return {**empty, "agent_id": agent_id}
+    consumed = con.execute(
+        "SELECT MAX(CAST(json_extract(raw, '$.harness_record.through_event_id') AS INTEGER)) "
+        "FROM (SELECT CASE WHEN json_valid(raw_handoff_json) THEN raw_handoff_json END AS raw "
+        "      FROM agent_contract_handoffs WHERE id != ?) "
+        "WHERE json_extract(raw, '$.harness_record.harness_agent_id') = ?",
+        (handoff_id, harness_agent_id),
+    ).fetchone()[0] or 0
+    events = con.execute(
+        "SELECT id, payload FROM harness_events WHERE type = ? AND id > ? "
+        "AND json_extract(payload, '$.harness_agent_id') = ? ORDER BY id",
+        (TOOL_CALLED, consumed, harness_agent_id),
+    ).fetchall()
     return {
         "agent_id": agent_id,
         "harness_agent_id": harness_agent_id,

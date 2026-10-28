@@ -70,7 +70,8 @@ def _bash(agent: str, command: str) -> None:
     adapter.adapt_post_tool_use(adapter.parse_event(json.dumps({
         "hook_event_name": "PostToolUse", "session_id": "ses-parent", "cwd": "/repo",
         "tool_name": "Bash", "tool_input": {"command": command},
-        "tool_response": {"stdout": "ok", "stderr": "", "interrupted": False, "exit_code": 0},
+        "tool_response": {"stdout": "web   1/1   registry/web:0.0.255", "stderr": "", "interrupted": False,
+                          "exit_code": 0},
         "tool_use_id": f"toolu-{uuid.uuid4().hex[:8]}", "agent_id": agent, "agent_type": "cloud-troubleshooter",
     })))
 

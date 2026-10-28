@@ -246,17 +246,25 @@ minted, `approval_id`, copied verbatim from the request's output.
   A drift correction (`agent-protocol` principle 3) adds `drift: {key_path,
   old, new, command, observed_at}` to the entry. At the close it is applied
   without the orchestrator only when every guard holds
-  (`gaia/context_drift.py::auto_apply_refusal`): it touches HOW keys only --
-  until keys carry a WHAT/HOW mark, the whole `project_identity` and
-  `environment` sections and any key path through `environment(s)`,
-  `cluster(s)`, `cluster_name`, `context`, `kube_context`, `project`,
-  `project_id`, `gcp_project` or `namespace(s)` are WHAT (`WHAT_SECTIONS`,
-  `WHAT_KEYS`); the turn record holds a run of `drift.command` that exited 0
-  and classifies T0; and every cluster, context, project or namespace that
-  command names explicitly is named in the goal. An applied proposal is
+  (`gaia/context_drift.py::auto_apply_refusals`). Its project is the
+  dispatch's resolved project. It touches HOW keys only: a section or key
+  whose name, split at case, hyphen and underscore changes, names an
+  environment, cluster, context, project or namespace is WHAT
+  (`is_what_key`), and so is the `targets` section; keys inside lists count,
+  and so does every key of the STORED subtree a null, a list or a scalar
+  replaces. It deletes or replaces no stored value, and its section name is
+  spelled as the stored one. The harness's own record of the turn (never the
+  agent's `commands_run` or `harness_record`) holds a run of `drift.command`
+  that exited 0, and every value it applies appears literally in that run's
+  recorded output excerpt (redacted, at most 500 characters). The command
+  classifies T0, is one `kubectl`/`oc` or `gcloud` command with nothing
+  written before it, no `--kubeconfig`, `--cluster`, `--server`, `-A` or
+  `--configuration`, no unknown option before its operation, exactly one
+  explicit context and namespace (kube) or project (gcloud), and each of them
+  is named in the goal. An applied proposal is
   marked accepted by `auto:<agent_id>` with its evidence in the decision
   note, and announced in the "changed" signal line as `project context
-  <identity>`. Anything else stays pending with the failed guard in
+  <identity>`. Anything else stays pending with every failed guard in
   `gaia contract proposals list`; a proposal whose dispatch project did not
   resolve keeps the goal's project token there.
 

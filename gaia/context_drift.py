@@ -9,18 +9,18 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, List, Optional
 
-WHAT_SECTIONS = frozenset({"project_identity", "environment"})
-WHAT_KEYS = frozenset({
-    "environment", "environments", "cluster", "clusters", "cluster_name", "context", "kube_context",
-    "project", "project_id", "gcp_project", "namespace", "namespaces",
-})
+WHAT_ROOTS = ("environment", "cluster", "context", "project", "namespace")
+WHAT_ABBREVIATIONS = frozenset({"env", "envs", "ns"})
 
 _STALE = re.compile(r"\b(stale|outdated|out of date|contradict\w*|no longer (?:true|matches|accurate))\b",
                     re.IGNORECASE)
-_ANNOTATION = "[agent annotation] "
-_NAMESPACE_FLAGS = ("-n", "--namespace")
+_WORD_BREAK = re.compile(r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])")
+_KUBE_DIMENSIONS = (("context", ("--context",)), ("namespace", ("-n", "--namespace")))
+_DIMENSIONS = {"kubectl": _KUBE_DIMENSIONS, "oc": _KUBE_DIMENSIONS, "gcloud": (("project", ("--project",)),)}
+_KUBE_REPOINTING = ("--kubeconfig", "--cluster", "-s", "--server", "-A", "--all-namespaces")
+_REPOINTING = {"kubectl": _KUBE_REPOINTING, "oc": _KUBE_REPOINTING, "gcloud": ("--configuration",)}
 
 
 def _hooks_on_path() -> None:
@@ -54,79 +54,163 @@ def stale_context_warning(envelope: Any) -> Optional[str]:
     return None
 
 
-def _paths(payload: dict, prefix: tuple = ()) -> list:
-    paths = []
-    for key, value in payload.items():
-        path = prefix + (str(key),)
-        paths.extend(_paths(value, path) if isinstance(value, dict) and value else [path])
-    return paths
+def _words(name: Any) -> list:
+    return [word.casefold() for word in _WORD_BREAK.split(str(name)) if word]
 
 
-def what_paths(entry: dict) -> list:
-    """The dotted key paths of the entry's payload that are WHAT, which only the orchestrator accepts."""
-    paths = _paths(entry.get("payload") or {})
-    if entry.get("contract") not in WHAT_SECTIONS:
-        paths = [path for path in paths if WHAT_KEYS.intersection(path)]
-    return [".".join(path) for path in paths]
+def is_what_key(name: Any) -> bool:
+    """Whether a key or section name, split at case, hyphen and underscore changes, names an environment, cluster, context, project or namespace."""
+    return any(word in WHAT_ABBREVIATIONS or any(root in word for root in WHAT_ROOTS) for word in _words(name))
 
 
-def _recorded_exit(envelope: dict, command: str) -> Optional[str]:
-    if not (envelope.get("harness_record") or {}).get("harness_agent_id"):
-        return None
-    code = None
-    for entry in (envelope.get("evidence_report") or {}).get("commands_run") or []:
-        if not isinstance(entry, str) or entry.startswith(_ANNOTATION):
+def _what_within(value: Any, path: str) -> list:
+    if isinstance(value, dict):
+        found = []
+        for key, item in value.items():
+            child = f"{path}.{key}"
+            found += ([child] if is_what_key(key) else []) + _what_within(item, child)
+        return found
+    if isinstance(value, list):
+        return [found for index, item in enumerate(value) for found in _what_within(item, f"{path}[{index}]")]
+    return []
+
+
+def _touched(delta: dict, stored: Any, prefix: str = "") -> tuple:
+    what: list = []
+    replaced: list = []
+    for key, value in delta.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        current = stored.get(key) if isinstance(stored, dict) else None
+        if is_what_key(key):
+            what.append(path)
+        if isinstance(value, dict):
+            inner_what, inner_replaced = _touched(value, current, path)
+            what += inner_what
+            replaced += inner_replaced
             continue
-        ran, marker, tail = entry.rpartition(" (exit ")
-        if (ran if marker else entry).strip() == command.strip():
-            code = tail.rstrip(")") if marker else None
-    return code
+        what += _what_within(value, path) + _what_within(current, path)
+        if value is None or isinstance(value, list) or isinstance(current, (dict, list)):
+            replaced.append(path)
+    return list(dict.fromkeys(what)), replaced
 
 
-def _named_targets(command: str) -> Optional[list]:
-    from modules.security.targets import UNDETERMINED, UNREADABLE, command_targets
-
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        return None
-    names = [target.name for target in command_targets(command, ambient=False)]
-    for index, word in enumerate(words[:-1]):
-        if word in _NAMESPACE_FLAGS:
-            names.append(words[index + 1])
-    names += [word.split("=", 1)[1] for word in words if word.startswith("--namespace=")]
-    if any(name in (UNDETERMINED, UNREADABLE) for name in names):
-        return None
-    return list(dict.fromkeys(names))
+def _leaves(value: Any) -> Iterator[str]:
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _leaves(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _leaves(item)
+    else:
+        yield value if isinstance(value, str) else json.dumps(value)
 
 
 def _named_in(goal: str, name: str) -> bool:
     return re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w.-])", goal) is not None
 
 
-def auto_apply_refusal(entry: dict, envelope: dict, goal: str) -> Optional[str]:
-    """Why the proposal stays pending for the orchestrator, or None when every auto-apply guard holds."""
-    drift = entry.get("drift")
-    command = drift.get("command") if isinstance(drift, dict) else None
-    if not isinstance(command, str) or not command.strip():
-        return "no drift.command names the read that observed the value"
-    what = what_paths(entry)
-    if what:
-        return f"touches WHAT keys ({', '.join(what)})"
-    if _recorded_exit(envelope, command) != "0":
-        return "the turn record holds no successful run of drift.command"
-    _hooks_on_path()
-    from modules.security.tiers import SecurityTier, classify_command_tier
+def _section_refusals(entry: dict, sections: dict) -> List[str]:
+    from modules.security.targets import DECLARATION_SECTION
 
-    if classify_command_tier(command) != SecurityTier.T0_READ_ONLY:
-        return "drift.command is not a T0 read"
-    targets = _named_targets(command)
-    if not targets:
-        return "drift.command names no explicit cluster, context, project or namespace"
-    unnamed = [target for target in targets if not _named_in(goal, target)]
+    contract, payload = str(entry.get("contract") or ""), entry.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        return ["its payload is not a non-empty object"]
+    if is_what_key(contract) or "_".join(_words(contract)) == DECLARATION_SECTION:
+        return [f"touches WHAT section {contract}"]
+    spelled = [name for name in sections if _words(name) == _words(contract) and name != contract]
+    if spelled:
+        return [f"section {contract} is stored as {spelled[0]}"]
+    stored = sections[contract]["payload"] if contract in sections else None
+    if contract in sections and not isinstance(stored, dict):
+        return [f"replaces the stored section {contract} whole"]
+    what, replaced = _touched(payload, stored)
+    refusals = [f"touches WHAT keys ({', '.join(what)})"] if what else []
+    return refusals + ([f"deletes or replaces stored values at {', '.join(replaced)}"] if replaced else [])
+
+
+def _output_refusal(command: str, payload: Any, records: list) -> Optional[str]:
+    runs = [record for record in records if isinstance(record.get("command"), str)
+            and record["command"].strip() == command.strip() and record.get("exit_code") in (0, "0")]
+    if not runs:
+        return "the turn record holds no successful run of drift.command"
+    excerpt = runs[-1].get("excerpt") or ""
+    missing = [value for value in dict.fromkeys(_leaves(payload)) if not value or value not in excerpt]
+    if missing:
+        return f"value {', '.join(map(repr, missing))} does not appear in the recorded output of drift.command"
+    return None
+
+
+def _target_refusal(command: str, goal: str) -> Optional[str]:
+    from modules.security.canonical_path import command_name
+    from modules.security.targets import (
+        UNDETERMINED, UNREADABLE, _attached_short, _flag_values, _literal, _operation, _split, command_targets,
+    )
+    from modules.tools.shell_parser import parse_command
+
+    if len(parse_command(command)) != 1:
+        return "drift.command runs more than one command"
+    split = _split(command)
+    if split is None or not split[1]:
+        return "drift.command cannot be parsed"
+    _, words, prefix = split
+    if prefix:
+        return f"drift.command has {shlex.join(prefix)} written before the program"
+    program, args = command_name(words[0]), words[1:]
+    if program not in _DIMENSIONS:
+        return f"drift.command runs {program}, whose target is not modelled"
+    options = args[:args.index("--")] if "--" in args else args
+    repointing = frozenset(_REPOINTING[program])
+    used = [word for word in options if word.partition("=")[0] in repointing or _attached_short(word, repointing)]
+    if used:
+        return f"drift.command passes {', '.join(used)}"
+    operation, _, known = _operation(words)
+    if operation is None or not known:
+        return "drift.command has an unknown option before its operation"
+    names = []
+    for dimension, flags in _DIMENSIONS[program]:
+        values = set(map(_literal, _flag_values(args, frozenset(flags))))
+        if not values:
+            return f"drift.command names no explicit {dimension}"
+        if len(values) > 1:
+            return f"drift.command names {len(values)} {dimension}s"
+        if values & {UNDETERMINED, UNREADABLE}:
+            return f"drift.command computes its {dimension}"
+        names += values
+    targets = command_targets(command, ambient=False)
+    if any(target.kind != "flag" or target.name in (UNDETERMINED, UNREADABLE) for target in targets):
+        return "drift.command reaches a target that is not determinate"
+    unnamed = [name for name in dict.fromkeys(names + [t.name for t in targets]) if not _named_in(goal, name)]
     if unnamed:
         return f"drift.command targets {', '.join(unnamed)}, which the goal did not name"
     return None
+
+
+def auto_apply_refusals(
+    con: sqlite3.Connection, entry: dict, owner: Optional[dict], workspace: Optional[str], sections: dict,
+    records: list, goal: str,
+) -> List[str]:
+    """Every reason the proposal stays pending for the orchestrator; empty when each auto-apply guard holds."""
+    from gaia.store.project_context import resolve_project
+
+    drift = entry.get("drift")
+    command = drift.get("command") if isinstance(drift, dict) else None
+    if not isinstance(command, str) or not command.strip():
+        return ["no drift.command names the read that observed the value"]
+    _hooks_on_path()
+    from modules.security.tiers import SecurityTier, classify_command_tier
+
+    refusals = []
+    named = entry.get("project")
+    if owner is None:
+        refusals.append("its project does not resolve")
+    elif named and (resolve_project(con, named, workspace) or {}).get("identity") != owner["identity"]:
+        refusals.append(f"names project {named}, not the dispatch's project")
+    refusals += _section_refusals(entry, sections)
+    refusals.append(_output_refusal(command, entry.get("payload"), records))
+    if classify_command_tier(command) != SecurityTier.T0_READ_ONLY:
+        refusals.append("drift.command is not a T0 read")
+    refusals.append(_target_refusal(command, goal))
+    return [refusal for refusal in refusals if refusal]
 
 
 def _evidence(entry: dict) -> str:
@@ -145,9 +229,12 @@ def auto_apply(con: sqlite3.Connection, handoff_id: int, envelope: Any) -> list:
         return []
     goal, dispatch_project, workspace, agent_id, contract_id = row
     _hooks_on_path()
-    from gaia.store.project_context import resolve_project
+    from gaia.store.project_context import project_sections, resolve_project
+    from gaia.store.writer import tool_records_on
     from modules.context.context_writer import merge_into_section
 
+    owner = resolve_project(con, dispatch_project, workspace)
+    records = tool_records_on(con, contract_id)["records"]
     applied = []
     pending = con.execute(
         "SELECT id, payload FROM proposals WHERE handoff_id = ? AND kind = 'context' "
@@ -155,12 +242,12 @@ def auto_apply(con: sqlite3.Connection, handoff_id: int, envelope: Any) -> list:
     ).fetchall()
     for proposal_id, payload in pending:
         entry = json.loads(payload)
-        refusal = auto_apply_refusal(entry, envelope, goal or "")
-        owner = None if refusal else resolve_project(con, entry.get("project") or dispatch_project, workspace)
-        if owner is None:
+        sections = project_sections(con, owner) if owner else {}
+        refusals = auto_apply_refusals(con, entry, owner, workspace, sections, records, goal or "")
+        if refusals:
             if "drift" in entry:
                 con.execute("UPDATE proposals SET decision_note = ? WHERE id = ?",
-                            (f"not auto-applied: {refusal or 'its project does not resolve'}", proposal_id))
+                            (f"not auto-applied: {'; '.join(refusals)}", proposal_id))
             continue
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         merge_into_section(con, owner, entry["contract"], entry["payload"], now, agent_id, contract_id)
