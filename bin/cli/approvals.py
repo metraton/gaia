@@ -2962,7 +2962,9 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_stats.add_argument("--json", action="store_true")
     p_stats.set_defaults(func=cmd_stats)
 
-    return parser
+    from gaia.cli_parsing import refuse_abbreviations
+
+    return refuse_abbreviations(parser)
 
 
 if __name__ == "__main__":

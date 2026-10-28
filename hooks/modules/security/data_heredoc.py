@@ -9,7 +9,7 @@ The exemption is deliberately narrow, and each condition below is what keeps
 it from reaching text the shell would run:
 
 - the delimiter is QUOTED, so the body cannot expand ``$(...)`` or backticks;
-- the receiver is ``gaia`` and a ``--<name>-file`` flag takes ``-``, which is how
+- the receiver is ``is_gaia_cli`` and a ``--<name>-file`` flag takes ``-``, which is how
   the plan/task/brief/ac/memory commands read content from stdin -- or a bare
   ``cat`` with no argument, which only echoes the body (the
   ``"$(cat <<'EOF' ... EOF)"`` idiom that passes a value to a CLI). Interpreters
@@ -32,15 +32,31 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .shell_substitution import _heredoc_body_span, _read_heredoc_opener
 
-_DATA_RECEIVERS = frozenset({"gaia"})
 _ECHO_RECEIVER = [("cat", False)]
 _STDIN_CONTENT_FLAG = re.compile(r"--[a-z][a-z0-9-]*-file")
 _UNQUOTED_SHELL_SYNTAX = frozenset("|&;<>()`$\\")
 _DOUBLE_QUOTE_EXPANSION = frozenset("$`\\")
+
+
+def is_gaia_cli(word: str) -> bool:
+    """True for the bare word ``gaia`` or the ``bin/gaia`` of the installed Gaia this hook runs from.
+
+    Not a package.json or an install-root path shape: a subagent can write one and forge the other by renaming a parent.
+    """
+    from .mutative_verbs import _HOOK_ROOT, _gaia_shipped_script
+
+    if word == "gaia":
+        return True
+    return (
+        os.path.isabs(word)
+        and os.path.realpath(word) == str(_HOOK_ROOT / "bin" / "gaia")
+        and _gaia_shipped_script(Path(word))
+    )
 
 
 def _literal_words(header: str) -> Optional[List[Tuple[str, bool]]]:
@@ -116,7 +132,7 @@ def data_heredoc_header(command: str) -> Optional[str]:
         return None
     if words != _ECHO_RECEIVER:
         receiver, receiver_quoted = words[0]
-        if receiver_quoted or os.path.basename(receiver) not in _DATA_RECEIVERS:
+        if receiver_quoted or not is_gaia_cli(receiver):
             return None
         unquoted = [value if not quoted else "" for value, quoted in words]
         if not _reads_content_from_stdin(unquoted):

@@ -24,6 +24,7 @@ import ast
 import os
 import re
 import shlex
+from pathlib import Path
 from typing import Any, List, Mapping, Optional, Tuple
 
 from .composition_rules import _strip_transparent_prefixes
@@ -36,6 +37,7 @@ from .sensitive_paths import (
     sensitive_read_denial,
 )
 from .canonical_path import command_name
+from .data_heredoc import data_heredoc_header, is_gaia_cli
 from .nested_executors import nested_run
 from .program_heredoc import heredoc_program
 from .publish_attribution_guard import publishing_body_files
@@ -280,6 +282,34 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     return hit
 
 
+def _gaia_read_candidates(tokens: List[str]) -> List[str]:
+    """Every option value of the gaia CLI, spaced or after ``=``; every argument of another program named gaia."""
+    arguments = tokens[1:]
+    return _option_values(arguments) if is_gaia_cli(tokens[0]) else arguments
+
+
+def _option_values(arguments: List[str]) -> List[str]:
+    values = []
+    for index, argument in enumerate(arguments):
+        if argument.startswith("-") and argument != "-":
+            _name, equals, value = argument.partition("=")
+            values.append(value if equals else "".join(arguments[index + 1:index + 2]))
+    return [value for value in values if value not in ("", "-")]
+
+
+def _shipped_gaia_script_arguments(base: str, arguments: List[str], cwd: Optional[str]) -> Optional[List[str]]:
+    """The arguments after a script of the installed Gaia's ``bin/`` that an interpreter runs, or None."""
+    from .mutative_verbs import _HOOK_ROOT, _SCRIPT_FILE_INTERPRETERS, _gaia_shipped_script, script_positional
+
+    path = script_positional(base, arguments) if base in _SCRIPT_FILE_INTERPRETERS else None
+    if not path or path not in arguments:
+        return None
+    script = Path(os.path.join(cwd or os.getcwd(), os.path.expanduser(path)))
+    if not _gaia_shipped_script(script) or not Path(os.path.realpath(script)).is_relative_to(_HOOK_ROOT / "bin"):
+        return None
+    return arguments[arguments.index(path) + 1:]
+
+
 def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) -> str:
     words, inputs = _split_redirects(strip_grouping_wrappers(component))
     fed = first_sensitive_token(inputs, cwd)
@@ -297,6 +327,11 @@ def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) ->
         return published
     base = command_name(tokens[0])
     arguments = tokens[1:]
+    if base == "gaia":
+        return first_sensitive_token(_gaia_read_candidates(tokens), cwd)
+    script_arguments = _shipped_gaia_script_arguments(base, arguments, cwd)
+    if script_arguments is not None:
+        return first_sensitive_token(_option_values(script_arguments), cwd)
     if base in _SHELLS and "-c" in arguments:
         inline = arguments[arguments.index("-c") + 1:]
         return reads_sensitive_path(inline[0], cwd) if inline else ""
@@ -406,6 +441,9 @@ def check(command: str, cwd: Optional[str] = None, program: Optional[str] = None
     *program* is the command as written, heredoc bodies included, when
     *command* had them removed; the code an interpreter runs is read from it.
     """
+    header = data_heredoc_header(program or command)
+    if header is not None:
+        command = program = header
     hit = reads_sensitive_path(command, cwd) or code_reads_sensitive(program or command, cwd)
     if not hit:
         return True, None

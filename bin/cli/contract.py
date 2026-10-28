@@ -3080,7 +3080,9 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="contract_cmd", metavar="SUBCOMMAND")
     sub.required = True
     _build_subcommands(sub)
-    return parser
+    from gaia.cli_parsing import refuse_abbreviations
+
+    return refuse_abbreviations(parser)
 
 
 if __name__ == "__main__":
