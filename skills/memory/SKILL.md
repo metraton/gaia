@@ -133,7 +133,8 @@ list. The first yes wins:
    - Otherwise, one concern with no work object: a thread in that project's
      initiative.
 2. **A short fixed rule an agent on one project must obey** (how it integrates,
-   reviews, releases): a key of that project's `project_identity.workflow`, not
+   reviews, releases): written into the `workflow` value of that project's
+   `project_identity` entry, which every kernel dispatched to it carries; not
    memory.
 3. **His difference, true in any project:** `type=user`. One that bends a
    harness default is written once he has agreed to the bend.
