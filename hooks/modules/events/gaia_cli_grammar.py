@@ -207,8 +207,8 @@ OPTIONS = {
     'memory edit': "",
     'memory episode-show': '--help --json -h',
     'memory get-relevant': (
-        '--help --initiative --json --limit --max-chars --no-pointer --project --sections '
-        '--types --workspace -h'
+        '--group --help --initiative --json --limit --max-chars --no-pointer --project '
+        '--sections --types --workspace -h'
     ),
     'memory link': '--delete --help --json --kind --workspace -h',
     'memory list': (
