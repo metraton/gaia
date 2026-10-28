@@ -42,7 +42,12 @@ One command, one result, one exit code. This skill owns invocation discipline;
    refuses the write CATEGORICALLY, with no `approval_id`, because the same edit
    through `Write`/`Edit` is already permitted and so there is nothing a consent
    prompt could buy; only the channel is refused. The body of a quoted heredoc
-   fed to a `gaia --<name>-file -` flag is data: the write guards read only that
+   fed to a `gaia --<name>-file -` flag is data only under all the conditions
+   `security-tiers` lists: the delimiter is quoted; the receiver is the unquoted
+   bare word `gaia` or an absolute path whose realpath is the `bin/gaia` of the
+   installed Gaia the hook runs from; the body is read through an unquoted
+   `--<name>-file -`; the declaring line is one plain command that the
+   terminator ends. Then the write guards read only that
    command line, and a redirect on the command line itself is still checked. Read that as a net beneath the
    norm, never as the norm's replacement: the guard fires on a resolved
    destination under a git tree, so a shell writer aimed anywhere else -- and
