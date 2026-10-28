@@ -867,7 +867,8 @@ class TestProjectsSectionNamesWorkspacesGroupsAndProjects:
 
         block = session_manifest.build_projects_section(len(roomy) - 1)
 
-        assert "map <palabra>" not in block and "newco-pitot" in block, block
+        fallback = next(line for line in roomy.splitlines() if "map <palabra>" in line)
+        assert block == roomy.replace(fallback + "\n", ""), block
 
     def test_a_tighter_cap_keeps_one_line_per_workspace_naming_its_groups(self):
         roomy = session_manifest.build_projects_section(_ROOMY)

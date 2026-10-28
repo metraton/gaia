@@ -585,12 +585,13 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     # kind classification below.
     # The name may hold inner dots (``metraton.github.io``) but must end on a
     # word character, so a sentence's closing ``.`` is not read as part of it.
-    project_match = _re.search(
-        r"\bproject\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])", prompt,
+    # A real name outranks ``none`` wherever each appears, since prose may
+    # mention ``project=none`` beside the goal's real token.
+    names = _re.findall(
+        r"(?<![\w.\-])project\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])", prompt,
     )
-    project = project_match.group(1) if project_match else None
-    if project and project.lower() == NO_PROJECT:
-        project = NO_PROJECT
+    real = [name for name in names if name.lower() != NO_PROJECT]
+    project = real[0] if real else (NO_PROJECT if names else None)
     # A verifier dispatch names the PRODUCER handoff it verifies via a
     # ``parent_handoff_id=<N>`` token in its prompt. Without this the verifier
     # branch of validate_dispatch_binding (which REQUIRES a resolvable

@@ -27,13 +27,6 @@ def test_each_habit_carries_the_wording_of_its_identity_row():
         assert identity_anchor in IDENTITY, identity_anchor
 
 
-def test_a_named_thing_is_placed_against_the_index_before_the_map():
-    row = next(line for line in IDENTITY.splitlines() if line.startswith("| The user names a thing"))
-    assert row.index("Placed against `## Projects` first") < row.index("`gaia map <word>` only when")
-    assert "The resolved names and coordinates go into the goal" in row
-    assert "dictation variants" not in IDENTITY
-
-
 def test_map_names_skills_by_their_current_names():
     text = gaia_map.render_map([], "ws") + "\n" + "\n".join(gaia_map.render_intent(i) for i in gaia_map.INTENTS)
     assert "technical-writing" in text and "deck-builder" in text

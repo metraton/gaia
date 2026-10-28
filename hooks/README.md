@@ -84,7 +84,7 @@ Claude Code replaces a hook's `additionalContext` over 10,000 chars with a 2,000
 The order defends what matters most if the block is ever cut. Over the budget it shrinks in a fixed order, and each step runs only when the previous one was not enough:
 
 1. the `## Leftovers` notice leaves the model context; the host still shows it to the user as a system message;
-2. the project index (names only: each workspace as its groups, each group as its projects) degrades to one line per workspace naming its groups, then one line naming every group, then a line that counts projects, groups and workspaces;
+2. the project index (names only: each workspace as its groups, each group as its projects) degrades to one line per workspace naming its groups, then one line naming every group, then a line that counts projects, groups and workspaces; each level is tried first with the line pointing at `gaia map <word>`, then without it, so the line never costs a richer level. When user rows are trimmed, the index takes the richest of these that fits what they leave;
 3. the snapshot lists become counts plus the `gaia session snapshot --session-id` command;
 4. whole user rows leave, stalest first (the reader orders them by `updated_at`), and one line names them. No row is ever cut mid-text, and only the rows the block carries count an injection.
 
