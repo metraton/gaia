@@ -179,17 +179,20 @@ def test_project_memory_never_loads_at_birth_only_its_counts(birth):
     assert PROJECT_ANCHOR not in block
     assert THREAD_TEXT not in block
     projects = _sections(block)[session_manifest.PROJECTS_HEADER]
-    gaia_line = next(line for line in projects.splitlines() if line.startswith("- gaia"))
-    assert re.search(r"\b3\b", gaia_line), "the count must add the threads of both workspaces"
+    assert re.search(r"\bgaia \(3\)", projects), "the count must add the threads of both workspaces"
 
 
-def test_a_large_group_is_one_line_with_its_count(birth):
+def test_a_large_workspace_is_named_whole_then_degrades_to_one_line_with_its_count(birth):
     block = session_manifest.build_session_context()
     projects = _sections(block)[session_manifest.PROJECTS_HEADER]
-    lines = [line for line in projects.splitlines() if "github-repos" in line]
-    assert len(lines) == 1
-    assert re.search(r"\b30\b", lines[0].rsplit(":", 1)[-1])
-    assert not re.search(r"\brepo\d\d\b", block)
+    assert len(re.findall(r"\brepo\d\d\b", projects)) == 30
+
+    roomy = session_manifest.build_projects_section(sys.maxsize)
+    fallback = next(line for line in roomy.splitlines() if "map <palabra>" in line)
+    tight = session_manifest.build_projects_section(len(roomy) - len(fallback) - 2)
+    lines = [line for line in tight.splitlines() if "github-repos" in line]
+    assert len(lines) == 1 and lines[0].endswith(": 30 projects"), tight
+    assert not re.search(r"\brepo\d\d\b", tight)
 
 
 def test_the_environment_names_the_real_data_home_and_its_database(birth):
@@ -226,3 +229,21 @@ def test_user_rows_over_their_share_still_arrive_whole_with_a_visible_excess_lin
     from modules.context.user_sections import overflow_line
     assert overflow_line(sum(map(len, bodies))) in user_part
     assert len(block) <= 9_500
+
+
+def test_after_user_rows_are_trimmed_the_index_takes_the_richest_level_that_fits(birth):
+    con = sqlite3.connect(birth.db)
+    try:
+        for i in range(8):
+            _user(con, f"user_pref_bulk_{i}", f"Preferencia: bulk standing rule {i}. " * 40)
+        con.commit()
+    finally:
+        con.close()
+
+    block = session_manifest.build_session_context()
+    projects = block[block.index(session_manifest.PROJECTS_HEADER):]
+    room = 9_500 - (len(block) - len(projects))
+
+    assert len(block) <= 9_500
+    assert "### " in projects, projects
+    assert projects == session_manifest.build_projects_section(room)

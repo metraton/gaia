@@ -161,6 +161,73 @@ def test_intent_expands_one_row_and_unknown_intent_fails(runtime, capsys):
     assert mod.cmd_map(type("A", (), {"intent": "nope"})()) == 2
 
 
+def _seed_names(db):
+    _exec(db, "INSERT OR IGNORE INTO workspaces (name, identity, root_path) VALUES ('aaxis', 'aaxis', '/w/aaxis')")
+    for name, path, group in (("bildwiz-iac", "/w/aaxis/bildwiz/bildwiz-iac", "bildwiz"),
+                              ("newco-pitot", "/w/aaxis/bildwiz/newco-pitot", "bildwiz"),
+                              ("aos", "/w/aaxis/aos/aos", "aos")):
+        _exec(db, "INSERT INTO projects (workspace, name, path, group_name, status) "
+                  "VALUES ('aaxis', ?, ?, ?, 'active')", (name, path, group))
+
+
+def test_a_word_that_is_not_an_intent_resolves_as_a_name(runtime, capsys):
+    _env, db = runtime
+    _seed_names(db)
+    mod = _load_map()
+
+    assert mod.cmd_map(type("A", (), {"intent": "BildWiz"})()) == 0
+    out = capsys.readouterr().out
+    assert "bildwiz -- group of 2 projects in workspace aaxis: bildwiz-iac, newco-pitot" in out
+    assert "-> gaia context project bildwiz --workspace aaxis" in out
+
+    assert mod.cmd_map(type("A", (), {"intent": "aaxis"})()) == 0
+    assert "aaxis -- workspace of 3 projects in 2 groups: aos, bildwiz" in capsys.readouterr().out
+
+
+def test_a_name_at_two_levels_is_named_as_both(runtime, capsys):
+    _env, db = runtime
+    _seed_names(db)
+
+    assert _load_map().cmd_map(type("A", (), {"intent": "aos"})()) == 0
+    out = capsys.readouterr().out
+    assert "aos -- group of 1 projects" in out and "aos -- project in workspace aaxis, group aos" in out
+    assert "names more than one level" in out
+
+
+def test_retired_and_undeclared_workspaces_are_not_names(runtime, capsys):
+    _env, db = runtime
+    _seed_names(db)
+    _exec(db, "INSERT INTO workspaces (name, identity, status) VALUES ('rnd', 'rnd', 'retired')")
+    _exec(db, "INSERT INTO workspaces (name, identity) VALUES ('bildwiz', 'bildwiz')")
+    mod = _load_map()
+
+    assert mod.cmd_map(type("A", (), {"intent": "bildwiz"})()) == 0
+    out = capsys.readouterr().out
+    assert "workspace of" not in out and "more than one level" not in out, out
+    assert mod.cmd_map(type("A", (), {"intent": "rnd"})()) == 2
+
+
+def test_a_misspelled_name_answers_with_the_closest_names(runtime, capsys):
+    _env, db = runtime
+    _seed_names(db)
+
+    assert _load_map().cmd_map(type("A", (), {"intent": "buildwiz"})()) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("No name 'buildwiz'; closest names:") and "bildwiz -- group" in out
+
+
+def test_closest_names_at_different_levels_are_not_one_name_at_two_levels(runtime, capsys):
+    _env, db = runtime
+    _seed_names(db)
+    _exec(db, "INSERT INTO projects (workspace, name, path, group_name, status) "
+              "VALUES ('aaxis', 'bildwizz', '/w/aaxis/bildwizz', NULL, 'active')")
+
+    assert _load_map().cmd_map(type("A", (), {"intent": "buildwiz"})()) == 1
+    out = capsys.readouterr().out
+    assert "bildwiz -- group" in out and "bildwizz -- project" in out, out
+    assert "more than one level" not in out
+
+
 def _sha(db: Path) -> str:
     return hashlib.sha256(db.read_bytes()).hexdigest()
 

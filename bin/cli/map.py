@@ -29,8 +29,9 @@ HABITS = (
      "offer a reminder in one line; on their yes, Skill reminders"),
     ("ids arrive in a return (contract, handoff, plan, slug)",
      "append them to the project's thread row before answering"),
-    ("the user names a project or a part of one, or a (N) count sits by its name",
-     "gaia context project <name> before answering or dispatching, once per subject per session"),
+    ("the user names a thing (workspace, group, project, app, cluster, environment), or a (N) count sits by a name",
+     "place it against ## Projects; gaia map <word> only when the index does not place it or places it "
+     "at two levels; then gaia context project <name>, once per subject per session"),
     ("the intent needs a capability the user did not name",
      "offer it in one line after the answer, at most one per turn; act only on their yes"),
 )
@@ -229,6 +230,57 @@ def render_intent(intent: Intent) -> str:
     ])
 
 
+def _name_index() -> list[tuple[str, str, str]]:
+    """Every active declared workspace, its groups and active projects as (name, kind, what it is with the verb that reads it)."""
+    from gaia.store.reader import _read_only_rows
+
+    projects = _read_only_rows(
+        "SELECT workspace, name, group_name FROM projects WHERE status = 'active' ORDER BY workspace, name", ())
+    workspaces = _read_only_rows(
+        "SELECT name FROM workspaces WHERE status = 'active' AND root_path IS NOT NULL ORDER BY name", ())
+    index = []
+    for ws in workspaces:
+        members = [p for p in projects if p["workspace"] == ws["name"]]
+        groups = sorted({p["group_name"] for p in members if p["group_name"]})
+        index.append((ws["name"], "workspace",
+                      f"workspace of {len(members)} projects in {len(groups)} groups"
+                      f"{': ' + ', '.join(groups) if groups else ''}"
+                      f"\n      -> gaia context get --workspace {ws['name']}"))
+    groups: dict[tuple[str, str], list[str]] = {}
+    for p in projects:
+        if p["group_name"]:
+            groups.setdefault((p["workspace"], p["group_name"]), []).append(p["name"])
+    for (ws, group), names in sorted(groups.items()):
+        index.append((group, "group",
+                      f"group of {len(names)} projects in workspace {ws}: {', '.join(names)}"
+                      f"\n      -> gaia context project {group} --workspace {ws}"))
+    for p in projects:
+        where = f"workspace {p['workspace']}" + (f", group {p['group_name']}" if p["group_name"] else "")
+        index.append((p["name"], "project",
+                      f"project in {where}\n      -> gaia context project {p['name']} --workspace {p['workspace']}"))
+    return index
+
+
+def resolve_name(word: str) -> tuple[bool, list[str]]:
+    """``word`` as a workspace, group or project name: (exact, lines); case-insensitive, else the closest names."""
+    import difflib
+
+    index = _name_index()
+    wanted = {variant.lower() for variant in (word, word.replace("_", "-"), word.replace("-", "_"))}
+    hits = [entry for entry in index if entry[0].lower() in wanted]
+    exact = bool(hits)
+    if not hits:
+        close = set(difflib.get_close_matches(word.lower(), {e[0].lower() for e in index}, n=5, cutoff=0.6))
+        hits = [entry for entry in index if entry[0].lower() in close]
+    lines = [f"{name} -- {what}" for name, _kind, what in hits]
+    levels: dict[str, set[str]] = {}
+    for name, kind, _what in hits:
+        levels.setdefault(name.lower(), set()).add(kind)
+    lines += [f"{name!r} names more than one level: say which, or ask the user"
+              for name, kinds in levels.items() if len(kinds) > 1]
+    return exact, lines
+
+
 def register(subparsers) -> None:
     """Register the `map` subcommand with the root parser."""
     p = subparsers.add_parser(
@@ -242,10 +294,12 @@ def register(subparsers) -> None:
             "is not a signal channel."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  gaia map\n  gaia map remember\n",
+        epilog="Examples:\n  gaia map\n  gaia map remember\n  gaia map bildwiz\n",
     )
     p.add_argument("intent", nargs="?", default=None,
-                   help=f"Expand one row: {', '.join(i.key for i in INTENTS)}.")
+                   help=f"Expand one row: {', '.join(i.key for i in INTENTS)}; any other word is "
+                        "resolved as a workspace, group or project name (exit 0 exact, 1 closest "
+                        "names only, 2 nothing).")
 
 
 def cmd_map(args) -> int:
@@ -253,8 +307,14 @@ def cmd_map(args) -> int:
     if args.intent is not None:
         match = next((i for i in INTENTS if i.key == args.intent), None)
         if match is None:
-            print(f"Unknown intent {args.intent!r}; one of: {', '.join(i.key for i in INTENTS)}",
-                  file=sys.stderr)
+            exact, lines = resolve_name(args.intent)
+            if lines:
+                if not exact:
+                    print(f"No name {args.intent!r}; closest names:")
+                print("\n".join(lines))
+                return 0 if exact else 1
+            print(f"{args.intent!r} is neither an intent ({', '.join(i.key for i in INTENTS)}) "
+                  "nor a workspace, group or project name", file=sys.stderr)
             return 2
         print(render_intent(match))
         return 0

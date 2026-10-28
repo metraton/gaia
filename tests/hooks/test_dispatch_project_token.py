@@ -64,6 +64,26 @@ def test_project_token_stops_before_trailing_punctuation(prompt, expected):
     assert binding["project"] == expected
 
 
+@pytest.mark.parametrize("prompt", [
+    "Fix the hook. project=gaia. Note: `project=none` now stamps no project.",
+    "Context: the `project=none` token is new. Fix the hook. project=gaia",
+])
+def test_a_real_project_token_outranks_none_in_any_order(prompt):
+    binding = extract_dispatch_binding({"prompt": prompt, "subagent_type": "developer"})
+    assert binding["project"] == "gaia"
+
+
+@pytest.mark.parametrize("prompt, expected", [
+    ("Answer. my-project=none then report", None),
+    ("Answer. subproject=gaia", None),
+    ("Answer. my-project=none then project=gaia", "gaia"),
+    ("Answer a general question. project=None", "none"),
+])
+def test_the_project_token_stands_alone_not_as_the_tail_of_a_word(prompt, expected):
+    binding = extract_dispatch_binding({"prompt": prompt, "subagent_type": "developer"})
+    assert binding["project"] == expected
+
+
 def test_project_token_of_only_punctuation_is_none():
     binding = extract_dispatch_binding({"prompt": "project=. next", "subagent_type": "developer"})
     assert binding["project"] is None
@@ -145,6 +165,36 @@ def test_known_name_without_path_resolves_bare(monkeypatch):
 def test_unknown_name_passes_through_verbatim(monkeypatch):
     _patch_identity(monkeypatch)
     assert context_provider.resolve_project_by_name("me", "brand-new") == "brand-new"
+
+
+@pytest.mark.parametrize("token, expected", [("none", None), (None, "gaia (/cwd)"), ("gaia", "gaia (/named)")])
+def test_project_none_stamps_no_project_and_skips_the_cwd_fallback(monkeypatch, token, expected):
+    from adapters.tool_policy import ToolPolicy
+
+    monkeypatch.setattr(context_provider, "build_kernel_sections", lambda *a, **k: {})
+    monkeypatch.setattr(context_provider, "resolve_dispatch_project", lambda ws, cwd: "gaia (/cwd)")
+    monkeypatch.setattr(context_provider, "resolve_project_by_name",
+                        lambda ws, name: "gaia (/named)" if name else None)
+    prompt = "Answer a general question." + (f" project={token.upper()}" if token else "")
+    binding = extract_dispatch_binding({"prompt": prompt, "subagent_type": "developer"})
+
+    _sections, project = ToolPolicy._kernel_dispatch_facts(
+        "developer", "me", cwd="/w/me/gaia", project_token=binding["project"])
+
+    assert project == expected
+
+
+def test_project_none_keeps_the_same_can_read_and_can_write_as_a_named_dispatch(monkeypatch):
+    from adapters.tool_policy import ToolPolicy
+
+    sections = {"can_read": ["project_identity"], "can_write": ["infrastructure"]}
+    monkeypatch.setattr(context_provider, "build_kernel_sections", lambda *a, **k: dict(sections))
+    monkeypatch.setattr(context_provider, "resolve_project_by_name", lambda ws, name: name)
+
+    unnamed, _ = ToolPolicy._kernel_dispatch_facts("developer", "me", project_token="none")
+    named, _ = ToolPolicy._kernel_dispatch_facts("developer", "me", project_token="gaia")
+
+    assert unnamed == named == sections
 
 
 def test_absent_name_is_none(monkeypatch):

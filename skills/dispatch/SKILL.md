@@ -129,7 +129,9 @@ at a time); the craft of the rest is here.
   approved wording -- travels literally in the goal or at a reference that
   resolves, never only in a return message, because contract rows persist
   verdicts, not bodies. A sibling's finished contract is handed off by pointing
-  at the rows and fields that hold the evidence.
+  at the rows and fields that hold the evidence. The `project=` in a goal is the
+  name `gaia context project` printed for a ficha opened this session, or
+  `project=none` when the work belongs to no project.
 - **What is already measured, before an investigation.** Before dispatching
   one, the orchestrator searches prior contract rows, memory and deposited
   evidence for the part of the question they already answer, and passes each

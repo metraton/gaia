@@ -14,7 +14,7 @@ HABIT_ANCHORS = (
     ("a doubt, an idea or a pending", "Where it goes", "The user voices a doubt, an idea or a pending"),
     ("beside something to do", "offer a reminder in one line", "A time or a date is mentioned beside something to do"),
     ("ids arrive in a return", "project's thread row", "Ids arrive in a return"),
-    ("(N) count", "gaia context project <name>", "a `(N)` count sits beside a name"),
+    ("names a thing", "gaia map <word>", "The user names a thing"),
     ("did not name", "only on their yes", "I offer it in one line after the answer"),
 )
 

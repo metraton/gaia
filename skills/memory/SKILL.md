@@ -177,8 +177,10 @@ there>."
    read its whole live-pending set with
    `gaia memory get-relevant --initiative=<key>`, uncapped and with bodies, and
    its standing notes with `--sections anchor` added. A reader who only sees the
-   counts can add rows and never retire one. `gaia session preview` shows the birth block without
-   recording anything.
+   counts can add rows and never retire one. For a project the user names, the
+   memory index in its `gaia context project` ficha is the first memory read;
+   bodies open when the request is about what it owes or decided.
+   `gaia session preview` shows the birth block without recording anything.
 2. **Search before writing; do not read silence as absence.** Find the topic's
    existing owner and its lineage — a duplicate divides relevance instead of
    strengthening knowledge. An empty result answers "no row matches this
