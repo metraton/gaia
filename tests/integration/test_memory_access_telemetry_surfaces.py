@@ -249,6 +249,10 @@ SURFACES: tuple[Surface, ...] = (
           ["memory", "get-relevant", "--workspace", WORKSPACE,
            "--project", "alpha", "--json"],
           DELIBERATE, ["t_alpha"], action="get-relevant", contains=("t_alpha",)),
+    _read("get-relevant-group-miss-json",
+          ["memory", "get-relevant", "--workspace", WORKSPACE,
+           "--group", "alpha", "--json"],
+          None, action="get-relevant", rc=1, contains=("not_found", "--initiative alpha")),
 
     # -- gaia query: the substrate's event reader ---------------------------
     #
