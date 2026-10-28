@@ -256,17 +256,19 @@ minted, `approval_id`, copied verbatim from the request's output.
   replaces. It deletes or replaces no stored value, and its section name is
   spelled as the stored one. The harness's own record of the turn (never the
   agent's `commands_run` or `harness_record`) holds a run of `drift.command`
-  that exited 0, and every value it applies appears as a whole token in that
-  run's recorded output excerpt (redacted, at most 500 characters); a value
-  shorter than 4 characters, numeric, or carrying `[REDACTED]` or
-  `...[truncated]` never applies. The command classifies T0, is one
-  `kubectl`/`oc` or `gcloud` command with nothing written before it, no
-  `--kubeconfig`, `--cluster`, `--server`, `-A`, `-f`, `-k`,
-  `--configuration` or `--*-file` option, an output format of the default,
-  `json` or `yaml` (kube also `wide` and `name`), no unknown option before
-  its operation, exactly one
-  explicit context and namespace (kube) or project (gcloud), and each of them
-  is named in the goal. An applied proposal is
+  that exited 0, and every value it applies appears as a whole token (bounded
+  by no word character, `.`, `+` or dash, Unicode dashes included) in that
+  run's recorded output excerpt: the redacted first 500 characters of stdout,
+  into which Claude Code folds stderr. So a value shorter than 4 characters,
+  numeric, carrying `[REDACTED]` or `...[truncated]`, or written in the
+  command itself (which stderr can echo) never applies. The command
+  classifies T0 and is one command with nothing written before it, built
+  only from an allowlist: `kubectl`/`oc` `get` or `describe`, at most a
+  resource and a name, `--context`, `-n`/`--namespace` and `-o`/`--output`
+  `json|yaml|wide|name`; `gcloud` with a `describe` or `list` verb path,
+  `--project`, `--format json|yaml`, `--region` and `--zone`. Any other
+  option keeps it pending. It names exactly one context and namespace
+  (kube) or project (gcloud), and each is named in the goal. An applied proposal is
   marked accepted by `auto:<agent_id>` with its evidence in the decision
   note, and announced in the "changed" signal line as `project context
   <identity>`. Anything else stays pending with every failed guard in

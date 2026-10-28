@@ -20,14 +20,17 @@ _STALE = re.compile(r"\b(stale|outdated|out of date|contradict\w*|no longer (?:t
 _WORD_BREAK = re.compile(r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])")
 _KUBE_DIMENSIONS = (("context", ("--context",)), ("namespace", ("-n", "--namespace")))
 _DIMENSIONS = {"kubectl": _KUBE_DIMENSIONS, "oc": _KUBE_DIMENSIONS, "gcloud": (("project", ("--project",)),)}
-_KUBE_REPOINTING = ("--kubeconfig", "--cluster", "-s", "--server", "-A", "--all-namespaces", "-f", "--filename",
-                    "-k", "--kustomize")
-_REPOINTING = {"kubectl": _KUBE_REPOINTING, "oc": _KUBE_REPOINTING, "gcloud": ("--configuration",)}
+_KUBE_OPTIONS = frozenset({"--context", "-n", "--namespace", "-o", "--output"})
+_READ_OPTIONS = {"kubectl": _KUBE_OPTIONS, "oc": _KUBE_OPTIONS,
+                 "gcloud": frozenset({"--project", "--format", "--region", "--zone"})}
+_KUBE_READ = (frozenset({"get", "describe"}), 2)
+_READ_VERBS = {"kubectl": _KUBE_READ, "oc": _KUBE_READ, "gcloud": (frozenset({"describe", "list"}), None)}
 _KUBE_FORMAT = (("-o", "--output"), frozenset({"json", "yaml", "wide", "name"}))
 _FORMATS = {"kubectl": _KUBE_FORMAT, "oc": _KUBE_FORMAT, "gcloud": (("--format",), frozenset({"json", "yaml"}))}
 _UNPROVEN_OUTPUT = ("[REDACTED]", "...[truncated]")
 _NUMERIC = re.compile(r"[+-]?\d+(?:\.\d+)?")
 _MIN_VALUE_LENGTH = 4
+_TOKEN_CHARS = r"\w.+\-‐-―−﹘﹣－"
 
 
 def _hooks_on_path() -> None:
@@ -137,6 +140,10 @@ def _section_refusals(entry: dict, sections: dict) -> List[str]:
     return refusals + ([f"deletes or replaces stored values at {', '.join(replaced)}"] if replaced else [])
 
 
+def _has_token(text: str, value: str) -> bool:
+    return re.search(rf"(?<![{_TOKEN_CHARS}]){re.escape(value)}(?![{_TOKEN_CHARS}])", text) is not None
+
+
 def _output_refusal(command: str, payload: Any, records: list) -> Optional[str]:
     runs = [record for record in records if isinstance(record.get("command"), str)
             and record["command"].strip() == command.strip() and record.get("exit_code") in (0, "0")]
@@ -150,8 +157,10 @@ def _output_refusal(command: str, payload: Any, records: list) -> Optional[str]:
     weak = [value for value in values if len(value) < _MIN_VALUE_LENGTH or _NUMERIC.fullmatch(value)]
     if weak:
         return f"value {', '.join(map(repr, weak))} is too short or numeric to tie to the output"
-    missing = [value for value in values
-               if not re.search(rf"(?<![\w.-]){re.escape(value)}(?![\w.-])", excerpt)]
+    echoed = [value for value in values if _has_token(command, value)]
+    if echoed:
+        return f"value {', '.join(map(repr, echoed))} appears in drift.command, whose output can echo it"
+    missing = [value for value in values if not _has_token(excerpt, value)]
     if missing:
         return f"value {', '.join(map(repr, missing))} does not appear in the recorded output of drift.command"
     return None
@@ -175,19 +184,21 @@ def _target_refusal(command: str, goal: str) -> Optional[str]:
     program, args = command_name(words[0]), words[1:]
     if program not in _DIMENSIONS:
         return f"drift.command runs {program}, whose target is not modelled"
-    options = args[:args.index("--")] if "--" in args else args
-    repointing = frozenset(_REPOINTING[program])
-    used = [word for word in options if word.partition("=")[0] in repointing or _attached_short(word, repointing)
-            or (word.startswith("--") and word.partition("=")[0].endswith("-file"))]
-    if used:
-        return f"drift.command passes {', '.join(used)}"
+    allowed = _READ_OPTIONS[program]
+    outside = [word for word in args if word.startswith("-") and word.partition("=")[0] not in allowed
+               and not _attached_short(word, allowed)]
+    if outside:
+        return f"drift.command passes {', '.join(outside)}, outside the read allowlist"
     format_flags, plain = _FORMATS[program]
     printed = [value for value in _flag_values(args, frozenset(format_flags)) if value.lower() not in plain]
     if printed:
         return f"drift.command prints with {', '.join(printed)}, which can print any literal"
-    operation, _, known = _operation(words)
-    if operation is None or not known:
-        return "drift.command has an unknown option before its operation"
+    operation, operands, known = _operation(words)
+    verbs, most_operands = _READ_VERBS[program]
+    if operation not in verbs or not known:
+        return f"drift.command is not a {' or '.join(sorted(verbs))} read"
+    if most_operands is not None and len(operands) > most_operands:
+        return f"drift.command names more than {most_operands} operands after {operation}"
     names = []
     for dimension, flags in _DIMENSIONS[program]:
         values = set(map(_literal, _flag_values(args, frozenset(flags))))

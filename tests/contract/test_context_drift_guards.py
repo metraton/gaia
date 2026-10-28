@@ -172,7 +172,7 @@ TARGET_CASES = {
     "case-differs": (f"project=gaia check web in {NS.upper()} on context DEV-GKE", READ, "which the goal did not name"),
     "all-namespaces": (GOAL, "kubectl get deploy -A --context dev-gke", "-A"),
     "unknown-option-before-operation": (GOAL, f"kubectl --frobnicate x get deploy web -n {NS} --context dev-gke",
-                                        "unknown option"),
+                                        "outside the read allowlist"),
     "piped-output": (GOAL, f"{READ} | grep web", "more than one command"),
 }
 
@@ -431,6 +431,39 @@ def test_an_explicit_spelling_with_a_plain_output_format_applies(cli, capsys, co
     item = _round_two(cli, capsys, {"web": {"image_tag": "0.0.255"}}, command, OUTPUT)
 
     assert item["status"] == "accepted", item["decision_note"]
+
+
+TAG = {"web": {"image_tag": "0.0.999"}}
+ROUND_THREE_PENDING = {
+    "template-without-output-equals": (TAG, f"{READ} --template=0.0.999", "0.0.999", "outside the read allowlist"),
+    "template-without-output-space": (TAG, f"{READ} --template 0.0.999", "0.0.999", "outside the read allowlist"),
+    "label-column-header-short": (TAG, f"{READ} -L 0.0.999", "NAME  READY  0.0.999\nweb   1/1",
+                                  "outside the read allowlist"),
+    "label-column-header-long": (TAG, f"{READ} --label-columns=0.0.999", "NAME  READY  0.0.999\nweb   1/1",
+                                 "outside the read allowlist"),
+    "show-labels": ({"web": {"image_tag": "0.0.255"}}, f"{READ} --show-labels", OUTPUT, "outside the read allowlist"),
+    "gcloud-log-http": ({"web": {"image_tag": "0.0.255"}},
+                        "gcloud run services describe web --project dev-proj --log-http", OUTPUT,
+                        "outside the read allowlist"),
+    "kubectl-not-a-read-verb": ({"web": {"image_tag": "0.0.255"}},
+                                f"kubectl logs web -n {NS} --context dev-gke", OUTPUT, "not a describe or get read"),
+    "unicode-hyphen-suffix": ({"web": {"image_tag": "0.0.255"}}, READ, "web   1/1   registry/web:0.0.255‐rc1",
+                              "does not appear"),
+    "semver-build-suffix": ({"web": {"image_tag": "0.0.255"}}, READ, "web   1/1   registry/web:0.0.255+build7",
+                            "does not appear"),
+    "value-echoed-from-the-command": ({"web": {"replicas_note": "dev-gke"}}, READ, "context dev-gke not found",
+                                      "appears in drift.command"),
+}
+
+
+@pytest.mark.parametrize("payload, command, stdout, reason", list(ROUND_THREE_PENDING.values()),
+                         ids=list(ROUND_THREE_PENDING))
+def test_a_round_three_probe_stays_pending(cli, capsys, payload, command, stdout, reason):
+    item = _round_two(cli, capsys, payload, command, stdout)
+
+    assert item["status"] == "pending", item["decision_note"]
+    assert reason in item["decision_note"], item["decision_note"]
+    assert _stored() == SEED
 
 
 @pytest.mark.parametrize("state, where", [("BLOCKED", "prose"), ("NEEDS_INPUT", "gaps")])
