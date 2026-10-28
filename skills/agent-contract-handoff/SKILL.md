@@ -58,7 +58,8 @@ resolve, none of its `can_read` sections is stored, or the read fails
 No surface routing arrives. Pull what the block only points at on demand
 before querying anything wider (`agent-protocol/read-map.md`).
 `update_contracts` may propose any section: `can_write` does not gate a
-proposal, the orchestrator decides (`hooks/modules/context/context_writer.py`).
+proposal, the orchestrator decides (`hooks/modules/context/context_writer.py`),
+save a drift correction whose every guard holds (see the `drift` paragraph below).
 
 ## Minimal increment
 
@@ -249,6 +250,40 @@ minted, `approval_id`, copied verbatim from the request's output.
   entry or key (`gaia/store/writer.py::record_update_contracts_outcome`), and
   the dispatch result names them to the orchestrator beside the proposal
   notice (`hooks/modules/agents/proposal_notices.py::proposal_notice`).
+  A drift correction (`agent-protocol` principle 3) adds `drift: {key_path,
+  old, new, command, observed_at}` to the entry. At the close it is applied
+  without the orchestrator only when every guard holds
+  (`gaia/context_drift.py::auto_apply_refusals`). Its project is the
+  dispatch's resolved project. It touches HOW keys only: a section or key
+  that is not ASCII after NFKC, or whose name, split at case, hyphen and
+  underscore changes, names an environment, cluster, context, project or
+  namespace (or `ctx`, `proj`, `cl`, `ns`, `env`) is WHAT (`is_what_key`),
+  and so is the `targets` section; keys inside lists count,
+  and so does every key of the STORED subtree a null, a list or a scalar
+  replaces. It deletes or replaces no stored value, and its section name is
+  spelled as the stored one. The harness's own record of the turn (never the
+  agent's `commands_run` or `harness_record`) holds a run of `drift.command`
+  that exited 0, and every value it applies appears as a whole token (bounded
+  by no word character, `.`, `+` or dash, Unicode dashes included) in that
+  run's recorded output excerpt: the redacted first 500 characters of stdout,
+  into which Claude Code folds stderr. So a value shorter than 4 characters,
+  numeric, carrying `[REDACTED]` or `...[truncated]`, or written in the
+  command itself (which stderr can echo) never applies. The command
+  classifies T0 and is one command with nothing written before it, built
+  only from an allowlist: `kubectl`/`oc` `get` or `describe`, at most a
+  resource and a name, `--context`, `-n`/`--namespace` and `-o`/`--output`
+  `json|yaml|wide|name`; `gcloud` in a project-scoped group (`run`,
+  `container`, `compute`, `sql`, `functions`, `pubsub`, `storage`; `config`,
+  `auth`, `projects`, `alpha`, `beta` and any other group stay pending) with
+  a `describe` or `list` verb path,
+  `--project`, `--format json|yaml`, `--region` and `--zone`. Any other
+  option keeps it pending. It names exactly one context and namespace
+  (kube) or project (gcloud), and each is named in the goal. An applied proposal is
+  marked accepted by `auto:<agent_id>` with its evidence in the decision
+  note, and announced in the "changed" signal line as `project context
+  <identity>`. Anything else stays pending with every failed guard in
+  `gaia contract proposals list`; a proposal whose dispatch project did not
+  resolve keeps the goal's project token there.
 
 ## The evidence clause of `update_contracts`
 

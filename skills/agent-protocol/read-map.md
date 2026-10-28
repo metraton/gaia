@@ -69,7 +69,8 @@ persisting. It belongs to the write cycle, not to a coordinate; that cycle is in
 ## Project knowledge -- two namespaces that share section names and are not the same
 
 The dispatch project's `can_read` sections are preloaded as the kernel's `# Project context` block
-(whole when they fit, else pointer lines, else one line). What the block only points at is pulled
+(whole when they fit, else pointer lines, else one line; a group dispatch gets one pointer per
+member section). What the block only points at is pulled
 with exactly one verb.
 
 - `gaia context get-contract --section <s> [--project <name>] [--workspace <w>] [--text]` is the ONLY
@@ -77,10 +78,14 @@ with exactly one verb.
   `--section` is required; `--project` reads that project's section and falls back to the workspace
   row; `--workspace` when the workspace is not the cwd's; `--text` for the human form. It returns
   the contract payload; an unknown name exits 1 listing the available ones.
-- `gaia context project <name>` returns one project's sheet by name or basename, read-only: its
-  `projects` row and facets, its `project_identity` entry, and an index (slug and description) of at
-  most 10 memory rows anchored to it. It prints no other section; read those with
-  `get-contract --project <name> --section <s>`. Both verbs are in the orchestrator's lane, so the
+- `gaia context project <name>` returns one project's sheet by name or basename, exact before
+  ignoring case, read-only: its `projects` row and facets, its `project_identity` entry, and an
+  index (slug and description) of at most 10 memory rows anchored to it. It prints no other section;
+  read those with `get-contract --project <name> --section <s>`. A group name answers as its
+  members instead: each with the sections it holds itself and the
+  `get-contract --project <member> --section <s>` line that reads one, plus the workspace sections
+  a member without its own falls back to (`--json` for the same as data). `get-contract --project
+  <group>` exits 1 naming the members. Both verbs are in the orchestrator's lane, so the
   orchestrator reads any project's sections itself.
 - `gaia context get --section <s>` and `gaia context show` resolve against the workspace SHAPE
   (`apps`, `services`, `stack`, `git`, ...). The names OVERLAP without meaning the same thing:

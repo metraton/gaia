@@ -109,7 +109,7 @@ def _row_project(con: sqlite3.Connection, handoff_id: int) -> Optional[str]:
     from gaia.store.project_context import resolve_project
 
     owner = resolve_project(con, row[0], row[1])
-    return owner["identity"] if owner else None
+    return owner["identity"] if owner else row[0]
 
 
 def _insert(con: sqlite3.Connection, handoff_id: int, found: list) -> int:
@@ -152,6 +152,16 @@ def record_close(con: sqlite3.Connection, handoff_id: int, raw_handoff_json: str
         print(f"gaia: proposals of handoff {handoff_id} not recorded: {exc}", file=sys.stderr)
     finally:
         con.execute("RELEASE SAVEPOINT record_proposals")
+    con.execute("SAVEPOINT auto_apply")
+    try:
+        from gaia.context_drift import auto_apply
+
+        auto_apply(con, handoff_id, envelope)
+    except Exception as exc:
+        con.execute("ROLLBACK TO SAVEPOINT auto_apply")
+        print(f"gaia: context proposals of handoff {handoff_id} not auto-applied: {exc}", file=sys.stderr)
+    finally:
+        con.execute("RELEASE SAVEPOINT auto_apply")
 
 
 def _decode(row: sqlite3.Row) -> dict:

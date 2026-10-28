@@ -50,13 +50,14 @@ def harness_evidence(
 def stamp_harness_fields(
     envelope: Dict[str, Any], contract_id: str, *, worktree_scope: str, db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Overwrite agent_id, worktree_scope and, for a harness-bound turn, the evidence lists with what the harness holds; return what was read."""
+    """Overwrite agent_id, worktree_scope, harness_record and, for a harness-bound turn, the evidence lists with what the harness holds; return what was read."""
     from gaia.store.writer import tool_records_for_contract
 
     found = tool_records_for_contract(contract_id, db_path=db_path)
     status = envelope.setdefault("agent_status", {})
     status["agent_id"] = found["agent_id"] or contract_id.split(".", 1)[0]
     envelope["worktree_scope"] = worktree_scope
+    envelope.pop("harness_record", None)
     if not found["harness_agent_id"]:
         return found
     report = envelope.setdefault("evidence_report", {})

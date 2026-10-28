@@ -1,4 +1,4 @@
-"""Signals: what other sessions changed in curated memory, read once through a per-session cursor file."""
+"""Signals: what other sessions changed in curated memory or auto-applied project context, read once per session cursor."""
 
 from __future__ import annotations
 
@@ -60,6 +60,8 @@ def subject_label(subject: str) -> str:
         return "user preference"
     if subject.startswith("project:"):
         return f"project memory {subject[len('project:'):]}"
+    if subject.startswith("context:"):
+        return f"project context {subject[len('context:'):]}"
     return subject
 
 
@@ -99,6 +101,9 @@ def opener(row: dict[str, Any]) -> str:
     """The command that opens the changed row a signal points at."""
     if row.get("source") == "memory":
         return f"gaia memory show {row['ref']} --workspace {row['workspace']}"
+    if row.get("source") == "project_context":
+        return (f"gaia context get-contract --workspace {row['workspace']} "
+                f"--project {row['subject'][len('context:'):]} --section {row['ref']}")
     return ""
 
 
