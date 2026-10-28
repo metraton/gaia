@@ -4104,7 +4104,7 @@ class TestGaiaCliDispatcherReDispatch:
     def _installed_gaia(self, tmp_path, monkeypatch):
         from modules.security import mutative_verbs as mv
 
-        self.install = tmp_path / "install"
+        self.install = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
         (self.install / "bin").mkdir(parents=True)
         (self.install / "bin" / "gaia").write_text((HOOKS_DIR.parent / "bin" / "gaia").read_text())
         monkeypatch.setattr(mv, "_HOOK_ROOT", self.install)
@@ -4725,10 +4725,12 @@ class TestNounFirstGroupVerbExceptions:
             assert result.is_mutative is writes, f"{command}: {result.reason}"
             assert (tier == SecurityTier.T3_BLOCKED) is writes, f"{command}: {tier}"
 
-    def test_dispatcher_path_form_from_the_issue(self):
-        gaia_bin = HOOKS_DIR.parent / "bin" / "gaia"
+    def test_dispatcher_path_form_from_the_issue(self, tmp_path, monkeypatch):
+        gaia_bin = self._installed_gaia_bin(tmp_path, monkeypatch)
         assert detect_mutative_command(f"{gaia_bin} migrate plan").is_mutative is False
         assert detect_mutative_command(f"{gaia_bin} migrate apply").is_mutative is True
+        checkout_bin = HOOKS_DIR.parent / "bin" / "gaia"
+        assert detect_mutative_command(f"{checkout_bin} migrate plan").is_mutative is True
 
     def test_tiers(self):
         from modules.security.tiers import classify_command_tier
@@ -4754,20 +4756,32 @@ class TestNounFirstGroupVerbExceptions:
 
     @pytest.mark.parametrize("key,command", [
         (("gaia", "migrate"), "gaia migrate plan"),
-        (("gaia", "migrate"), f"{HOOKS_DIR.parent / 'bin' / 'gaia'} migrate plan"),
+        (("gaia", "migrate"), "{installed} migrate plan"),
         (("gh", "label"), "gh label list"),
     ])
-    def test_the_table_entry_is_what_produces_the_verdict(self, key, command, monkeypatch):
+    def test_the_table_entry_is_what_produces_the_verdict(self, key, command, monkeypatch, tmp_path):
         from modules.security import mutative_verbs
 
-        monkeypatch.delitem(mutative_verbs.SUBCOMMAND_VERB_TIER_EXCEPTIONS, key)
-        detect_mutative_command.cache_clear()
-        try:
-            assert detect_mutative_command(command).is_mutative is True
-        finally:
-            monkeypatch.undo()
+        with pytest.MonkeyPatch.context() as hook:
+            command = command.format(installed=self._installed_gaia_bin(tmp_path, hook))
+            monkeypatch.delitem(mutative_verbs.SUBCOMMAND_VERB_TIER_EXCEPTIONS, key)
             detect_mutative_command.cache_clear()
-        assert detect_mutative_command(command).is_mutative is False
+            try:
+                assert detect_mutative_command(command).is_mutative is True
+            finally:
+                monkeypatch.undo()
+                detect_mutative_command.cache_clear()
+            assert detect_mutative_command(command).is_mutative is False
+
+    @staticmethod
+    def _installed_gaia_bin(tmp_path, hook):
+        from modules.security import mutative_verbs
+
+        install = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        (install / "bin").mkdir(parents=True)
+        (install / "bin" / "gaia").write_text((HOOKS_DIR.parent / "bin" / "gaia").read_text())
+        hook.setattr(mutative_verbs, "_HOOK_ROOT", install)
+        return install / "bin" / "gaia"
 
 
 class TestScriptRecursionCycleGuard:

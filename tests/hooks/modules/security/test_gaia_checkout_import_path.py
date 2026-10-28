@@ -51,7 +51,7 @@ def hook_root(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_the_installed_gaia_the_hook_runs_from_is_re_dispatched(tmp_path, hook_root):
-    install = _copy_cli(tmp_path / "install")
+    install = _copy_cli(tmp_path / "store/node_modules/@jaguilar87/gaia")
     hook_root(install)
     assert _redispatched(install) == [True, True]
 
@@ -64,20 +64,8 @@ def test_an_install_nested_in_a_project_checkout_is_still_the_install(tmp_path, 
 
 
 def test_another_install_than_the_hook_one_is_judged_by_content(tmp_path, hook_root):
-    hook_root(_copy_cli(tmp_path / "install"))
-    assert _redispatched(_copy_cli(tmp_path / "elsewhere")) == [False, False]
-
-
-def test_an_unanswered_git_judges_by_content_and_is_not_remembered(tmp_path, hook_root, monkeypatch):
-    install = _copy_cli(tmp_path / "install")
-    hook_root(install)
-    no_git = tmp_path / "no-git"
-    no_git.mkdir()
-    with monkeypatch.context() as without_git:
-        without_git.setenv("PATH", str(no_git))
-        assert _redispatched(install) == [False, False]
-        assert mv._hook_root_is_install() is False
-    assert mv._hook_root_is_install() is True
+    hook_root(_copy_cli(tmp_path / "store/node_modules/@jaguilar87/gaia"))
+    assert _redispatched(_copy_cli(tmp_path / "other/node_modules/@jaguilar87/gaia")) == [False, False]
 
 
 def test_a_checkout_classified_while_git_is_unavailable_still_asks_once_git_returns(monkeypatch, tmp_path):

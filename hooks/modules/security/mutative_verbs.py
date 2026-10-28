@@ -5989,6 +5989,21 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     base_cmd = semantics.base_cmd
     family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
 
+    if base_cmd == "gaia" and "/" in tokens[0] and not _gaia_shipped_script(
+        Path(cwd or Path.cwd(), os.path.expanduser(tokens[0]))
+    ):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="gaia-by-path",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                f"'{tokens[0]}' runs a Gaia CLI by path from outside the installed Gaia this hook "
+                f"runs from, so it can import code anyone edited -- use the gaia launcher"
+            ),
+        )
+
     # --- Step 0-redirect: a redirect onto an account-sensitive path ---
     # Ahead of every step below: the alias fast-path and the read-only base
     # commands key on the base command alone and return before any destination
@@ -7707,21 +7722,41 @@ _HOOK_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _GitUnanswered(Exception):
-    """git could not run or did not finish, so whether a root is a checkout is unknown."""
+    pass
 
 
 @functools.lru_cache(maxsize=8)
 def _root_is_install(root: Path) -> bool:
-    """True when git says *root* is not the top of a checkout; raises _GitUnanswered, which lru_cache never stores, when git gives no answer."""
-    ran = _git_run(str(root), "rev-parse", "--show-toplevel")
-    if ran is None:
-        raise _GitUnanswered(root)
-    code, top = ran
-    return code != 0 or os.path.realpath(top) != os.path.realpath(root)
+    """True only for a root at a known install location (protected_paths._install_root) that git, run without GIT_* in the C locale, proves no checkout's top level; any unproven git reply raises _GitUnanswered, which lru_cache never stores."""
+    import subprocess
+    from .protected_paths import _install_root
+
+    real = Path(os.path.realpath(root))
+    if _install_root(real) != real:
+        return False
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    env.update(LC_ALL="C", LANGUAGE="")
+    try:
+        ran = subprocess.run(
+            ["git", "-C", str(real), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3, check=False, env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise _GitUnanswered(root) from error
+    if ran.returncode == 128 and "not a git repository" in ran.stderr:
+        return True
+    top = ran.stdout.strip()
+    if ran.returncode == 0 and os.path.isabs(top):
+        top_real = Path(os.path.realpath(top))
+        if top_real == real:
+            return False
+        if top_real in real.parents:
+            return True
+    raise _GitUnanswered(root)
 
 
 def _hook_root_is_install() -> bool:
-    """True when the Gaia this hook runs from is an install, not the root of a git checkout anyone can edit; an npm install nested in a project's checkout still counts, and an unanswered git counts as a checkout."""
+    """True when the Gaia this hook runs from is proven an install, not a git checkout anyone can edit; an npm install nested in a project's checkout still counts, anything unproven counts as a checkout."""
     try:
         return _root_is_install(_HOOK_ROOT)
     except _GitUnanswered:
