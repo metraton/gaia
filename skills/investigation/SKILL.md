@@ -14,13 +14,15 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    `project` and its declared `workflow`, the `can_read` menu),
    `# How the user works`, and `# Project context`: the dispatch project's
    `can_read` sections, whole when they fit, else one
-   `gaia context get-contract` pointer per section. Do not re-derive facts it
+   `gaia context get-contract` pointer per section, else a single count
+   line. Do not re-derive facts it
    already supplies. This is the first move, before any live query: when the
    goal names a component the block does not carry whole (a cluster, a
    namespace, a service, another project), fetch its section with
    `gaia context get-contract --project <p> --section <s>` before
-   investigating live. No block at all means the goal's `project` resolved
-   to no project or it has no readable section stored; record that in
+   investigating live. No block at all means the `project` in
+   `# Your Contract` resolved to no project, the turn has no `can_read`
+   section, none of them is stored, or the read failed; record that in
    `open_gaps` instead of working as if the context were empty.
 2. Pull the rest of what the goal needs from the substrate on demand -- memory,
    briefs and other contracts are not preloaded, and a coordinate in the goal (a contract id, a memory slug, a

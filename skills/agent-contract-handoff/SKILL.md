@@ -14,11 +14,12 @@ injected `# Your Contract` block, mutated by `gaia contract set/add/fill`,
 closed by `gaia contract finalize`. A *project context contract* is a
 different thing -- a slice of project knowledge stored per workspace
 (`project_context_contracts`, seeded by `seed_contract_permissions.py`). It
-is NOT injected: the kernel's `can_read` / `can_write` lists (from
-`agent_contract_permissions`) name which of those slices the turn may pull
-on demand (the verb that reaches them, and the same-named sibling that reads a
-different table entirely, are in `agent-protocol/read-map.md`) and which it may
-propose updates to via `update_contracts`. When a message says "contract" without
+reaches the turn as the kernel's `# Project context` block: the dispatch
+project's `can_read` sections (from `agent_contract_permissions`), as far as
+the budget allows; the rest is pulled on demand (the verb that reaches them,
+and the same-named sibling that reads a different table entirely, are in
+`agent-protocol/read-map.md`). Updates to any section are proposed via
+`update_contracts`. When a message says "contract" without
 qualifying it, ask which one it means before assuming.
 
 ## Draft creation is implicit
@@ -48,11 +49,16 @@ declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
 acceptance gates), `# How the user works` (only the user's rows marked
 `executor`), `# Standing notes` (the project's live anchors, one line each, when
 it has any), `# Environment` (one line: OS, the gaia CLI path, the tools on
-PATH including the user's own executables) and `# Your CLI`.
-Project context is NOT preloaded and no surface routing arrives: pull the
-sections you need on demand, within the `can_read` menu, before querying
-anything wider (`agent-protocol/read-map.md`). Only sections in `can_write`
-may appear in `update_contracts`.
+PATH including the user's own executables), `# Project context` and
+`# Your CLI`. `# Project context` carries the dispatch project's `can_read`
+sections whole when they fit, else one `get-contract` pointer per section,
+else a single count line; it is absent when the row's project does not
+resolve, none of its `can_read` sections is stored, or the read fails
+(`hooks/modules/context/kernel_builder.py::build_project_context_block`).
+No surface routing arrives. Pull what the block only points at on demand
+before querying anything wider (`agent-protocol/read-map.md`).
+`update_contracts` may propose any section: `can_write` does not gate a
+proposal, the orchestrator decides (`hooks/modules/context/context_writer.py`).
 
 ## Minimal increment
 
