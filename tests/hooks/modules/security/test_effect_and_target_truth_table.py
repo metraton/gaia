@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import inspect
 import json
 import os
@@ -33,6 +34,38 @@ EXTERNAL = {"codex": "Apache-2.0", "continue": "Apache-2.0", "roo": "Apache-2.0"
 SOURCE_VERDICT = {"free": "FREE", "ask": "SIGNED", "deny": "BLOCKED", "unknown": "UNKNOWN"}
 COMPOUND_DENIAL = "Compound T3 execution is disabled"
 UNDETERMINED = "could not be determined"
+AMBIENT_CONFIG = ("KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG", "AZURE_CONFIG_DIR", "PULUMI_HOME")
+AMBIENT_NAMES = ("DOCKER_CONTEXT", "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME",
+                 "AWS_PROFILE", "TF_WORKSPACE", "AZURE_SUBSCRIPTION_ID", "CONTAINER_CONNECTION")
+
+
+def _isolate_targets(patch, root: Path) -> None:
+    for name in AMBIENT_CONFIG:
+        patch.setenv(name, str(root / "no-ambient-config" / name))
+    for name in AMBIENT_NAMES:
+        patch.delenv(name, raising=False)
+
+
+@contextlib.contextmanager
+def declared(directory: Path, payload: dict):
+    """*payload* as the ``targets`` project-context section of a project rooted at *directory*, in the test's GAIA_DB."""
+    from gaia.store.writer import _connect
+
+    identity = f"truth-table/{directory.name}"
+    con = _connect()
+    try:
+        con.execute("INSERT OR IGNORE INTO workspaces (name) VALUES ('truth-table')")
+        con.execute("INSERT OR REPLACE INTO projects (workspace, name, path, status, project_identity) "
+                    "VALUES ('truth-table', ?, ?, 'active', ?)", (directory.name, str(directory), identity))
+        con.execute("INSERT OR REPLACE INTO project_context (project_identity, contract_name, payload) VALUES (?, 'targets', ?)",
+                    (identity, json.dumps(payload)))
+        con.commit()
+        yield
+    finally:
+        con.execute("DELETE FROM project_context WHERE project_identity = ?", (identity,))
+        con.execute("DELETE FROM projects WHERE project_identity = ?", (identity,))
+        con.commit()
+        con.close()
 
 
 def _build_context(spec: dict, root: Path, name: str, managed_root: Path) -> Path:
@@ -74,6 +107,7 @@ def world(tmp_path_factory):
     patch.setenv("GAIA_DATA_DIR", str(root / "gaia-data"))
     patch.setenv("GAIA_DB", str(root / "gaia-data" / "gaia.db"))
     patch.delenv("GAIA_CLI_ALIASES", raising=False)
+    _isolate_targets(patch, root)
     from gaia.paths import ensure_layout, scratch_dir, worktrees_dir
 
     ensure_layout()
@@ -130,6 +164,7 @@ def _observe_isolated(row, world, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(world["root"] / "gaia-data"))
     monkeypatch.setenv("GAIA_DB", str(world["root"] / "gaia-data" / "gaia.db"))
     monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
+    _isolate_targets(monkeypatch, world["root"])
     monkeypatch.chdir(world["root"])
     assert os.environ["GAIA_DB"].startswith(str(world["root"]))
     if row.get("seed_contracts"):
@@ -139,7 +174,9 @@ def _observe_isolated(row, world, monkeypatch):
             return [c for c in seeded if c.get("harness_agent_id") == harness_agent_id or c.get("contract_id") == contract_id][:limit]
 
         monkeypatch.setattr("gaia.store.writer.list_agent_contract_handoffs", fake_list)
-    return observe(row["command"], row.get("context", "none"), world, row.get("role", "subagent"), not row.get("no_session"))
+    context = row.get("context", "none")
+    with declared(world["dirs"][context], row["declare"]) if row.get("declare") else contextlib.nullcontext():
+        return observe(row["command"], context, world, row.get("role", "subagent"), not row.get("no_session"))
 
 
 @pytest.mark.parametrize("row", [_case(r) for r in ROWS])
@@ -847,3 +884,98 @@ def test_a_credential_flag_asks_and_an_unrelated_or_read_carrier_stays_as_it_was
     monkeypatch.chdir(world["root"])
     verdict, reason = observe(command, "none", world)
     assert verdict == expected, (verdict, reason)
+
+
+def _ambient_config(root: Path, monkeypatch, kube_context: str = "", project: str = "") -> None:
+    kubeconfig, gcloud = root / "kubeconfig", root / "gcloud"
+    kubeconfig.write_text(f"apiVersion: v1\nkind: Config\ncurrent-context: {kube_context}\n", encoding="utf-8")
+    (gcloud / "configurations").mkdir(parents=True, exist_ok=True)
+    (gcloud / "active_config").write_text("default", encoding="utf-8")
+    (gcloud / "configurations" / "config_default").write_text(f"[core]\nproject = {project}\n", encoding="utf-8")
+    monkeypatch.setenv("KUBECONFIG", str(kubeconfig))
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(gcloud))
+
+
+PROD_TARGETS = [
+    ("kubectl --context prod-x frobnicate thing", {}, "SIGNED"),
+    ("kubectl --context dev-x frobnicate thing", {}, "FREE"),
+    ("kubectl --context=prod-x frobnicate thing", {"kube_context": "dev-a"}, "SIGNED"),
+    ("kubectl --context dev-x frobnicate thing", {"kube_context": "prod-a"}, "FREE"),
+    ("kubectl frobnicate thing", {"kube_context": "prod-a"}, "SIGNED"),
+    ("kubectl frobnicate thing", {"kube_context": "dev-a"}, "FREE"),
+    ("kubectl frobnicate thing", {"kube_context": "nonprod-a"}, "FREE"),
+    ("kubectl --context prod-x get pods", {}, "FREE"),
+    ("kubectl get pods", {"kube_context": "prod-a"}, "FREE"),
+    ("kubectl --context dev-x apply -f x.yaml", {}, "SIGNED"),
+    ("kubectl --context $CTX frobnicate thing", {"kube_context": "prod-a"}, "FREE"),
+    ("docker --context prod-eu frobnicate c1", {}, "SIGNED"),
+    ("docker -c dev-eu frobnicate c1", {}, "FREE"),
+    ("DOCKER_CONTEXT=prod-eu docker frobnicate c1", {}, "SIGNED"),
+    ("gcloud compute instances frobnicate vm-1", {"project": "acme-prod"}, "SIGNED"),
+    ("gcloud compute instances frobnicate vm-1", {"project": "acme-dev"}, "FREE"),
+    ("gcloud --project acme-dev compute instances frobnicate vm-1", {"project": "acme-prod"}, "FREE"),
+    ("gcloud --account ops@acme-prod.example compute instances frobnicate vm-1", {}, "SIGNED"),
+    ("gcloud compute instances list", {"project": "acme-prod"}, "FREE"),
+    ("gcloud secrets versions access latest --secret=db-password --project prod", {}, "FREE"),
+    ("gcloud --project prod secrets versions access 3 --secret=json-config", {}, "FREE"),
+    ("gcloud secrets versions access latest --secret=db-password", {"project": "acme-prod"}, "FREE"),
+    ("aws --profile prod ssm get-parameter --name /app/db --with-decryption", {}, "FREE"),
+    ("aws --profile prod ec2 describe-instances", {}, "FREE"),
+    ("shipit describe-release --env prod", {}, "FREE"),
+]
+
+
+@pytest.mark.parametrize("command,ambient,expected", PROD_TARGETS, ids=[f"{c}|{a}" for c, a, _ in PROD_TARGETS])
+def test_prod_target_decides_a_verb_that_does_not_sign_by_itself(command, ambient, expected, world, monkeypatch, tmp_path):
+    _isolate_targets(monkeypatch, world["root"])
+    _ambient_config(tmp_path, monkeypatch, **ambient)
+    monkeypatch.chdir(world["root"])
+    verdict, reason = observe(command, "none", world)
+    assert verdict == expected, (verdict, reason)
+    if expected == "SIGNED":
+        assert "Rule: sign.lands." in reason, reason
+
+
+@pytest.mark.parametrize("command,declaration,expected", [
+    ("kubectl --context nonprod-x frobnicate thing", {"production": ["nonprod-x"]}, "SIGNED"),
+    ("kubectl --context nonprod-x frobnicate thing", {}, "FREE"),
+    ("kubectl frobnicate thing", {"production": ["staging-a"]}, "SIGNED"),
+    ("kubectl --context prod-preview frobnicate thing", {"development": ["prod-preview"]}, "FREE"),
+    ("kubectl --context prod-preview frobnicate thing", {}, "SIGNED"),
+    ("kubectl --context nonprod-x get pods", {"production": ["nonprod-x"]}, "FREE"),
+])
+def test_prod_target_declaration_overrides_the_name(command, declaration, expected, world, monkeypatch, tmp_path):
+    _isolate_targets(monkeypatch, world["root"])
+    _ambient_config(tmp_path, monkeypatch, kube_context="staging-a")
+    monkeypatch.chdir(world["root"])
+    with declared(world["dirs"]["none"], declaration):
+        verdict, reason = observe(command, "none", world)
+    assert verdict == expected, (verdict, reason)
+
+
+TARGET_SWITCH_CLAIMS = [
+    ("export -- FOO=1; docker exec ctr ls", "FREE"),
+    ("typeset -gx FOO=1; docker exec ctr ls", "FREE"),
+    ("echo $DOCKER_HOST; docker exec ctr ls", "FREE"),
+    ('echo "${DOCKER_HOST}"; docker exec ctr ls', "FREE"),
+    ('echo "${DOCKER_HOST:-none}"; docker exec ctr ls', "FREE"),
+    ('echo "DOCKER_HOST is set"; docker exec ctr ls', "FREE"),
+    ("docker exec ctr ls # DOCKER_HOST=x", "FREE"),
+    ("export {A,B}=1; docker exec ctr ls", "UNKNOWN"),
+    ("unset DOCKER_HOST; docker exec ctr ls", "UNKNOWN"),
+    ("unset -v CONTAINER_HOST; podman exec c1 ls", "UNKNOWN"),
+    ("unset FOO; docker exec ctr ls", "FREE"),
+]
+
+
+@pytest.mark.parametrize("command,expected", TARGET_SWITCH_CLAIMS)
+def test_a_target_switch_claim_keeps_its_decided_verdict(command, expected, world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    verdict, reason = observe(command, "none", world)
+    assert verdict == expected, (verdict, reason)
+
+
+def test_a_target_name_inside_a_read_heredoc_changes_nothing(world, monkeypatch):
+    monkeypatch.chdir(world["root"])
+    named = observe("read -r FOO <<EOF\nDOCKER_HOST\nEOF\nls", "none", world)[0]
+    assert named == observe("read -r FOO <<EOF\nX\nEOF\nls", "none", world)[0]

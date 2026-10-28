@@ -75,6 +75,7 @@ from ..security.mutative_verbs import (
     target_under_line,
 )
 from ..security.nested_executors import targets_set_on_line
+from ..security.targets import naming_variables_on_line, production_target_verdict
 from ..security.flag_classifiers import (
     classify_by_flags,
     OUTCOME_BLOCKED as FLAG_BLOCKED,
@@ -1751,6 +1752,7 @@ class BashValidator:
         # _validate_compound_command), so a relative script path resolves
         # against the workspace the chain navigated to, not the hook's own cwd.
         result = detect_mutative_command(command, cwd=cwd, caller=caller)
+        result = production_target_verdict(command, result, cwd=cwd) or result
         if result.is_mutative:
             from gaia.store.writer import find_pending_plan_command
             if not session_id or not tool_use_id:
@@ -2083,6 +2085,7 @@ class BashValidator:
         # changes the script a later run executes, which was read before the chain ran.
         package_inputs_rewritten = False
         line_targets = targets_set_on_line(command or "\n".join(components))
+        line_naming = naming_variables_on_line(command or "\n".join(components))
         tripped, tripped_command = None, command
         callers = local_work_callers(command, components, cwd, agent_id)
         for comp, caller in zip(components, callers):
@@ -2102,6 +2105,7 @@ class BashValidator:
             git_config_injected = git_config_injected or injects_git_config(comp)
             if not detected.is_mutative:
                 detected = target_under_line(comp, line_targets, cwd=scan_cwd) or detected
+            detected = production_target_verdict(comp, detected, cwd=scan_cwd, inherited=line_naming) or detected
             flagged = classify_by_flags(comp, caller)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (

@@ -497,6 +497,21 @@ def _isolate_claude_session_id(monkeypatch):
     yield
 
 
+_TARGET_CONFIGURATION = (
+    "KUBECONFIG", "CLOUDSDK_CONFIG", "CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT",
+    "DOCKER_CONFIG", "DOCKER_CONTEXT", "CONTAINER_CONNECTION", "AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID",
+    "AWS_PROFILE", "TF_WORKSPACE", "PULUMI_HOME",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_target_configuration(monkeypatch):
+    """Unset every variable targets.py reads to place a command, so verdicts come from the session's private HOME."""
+    for name in _TARGET_CONFIGURATION:
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _fresh_mutative_classification_cache():
     """Drop the classifier's verdict cache after each test.
