@@ -861,10 +861,19 @@ class TestProjectsSectionNamesWorkspacesGroupsAndProjects:
                 "ungrouped: solo") in block, block
         assert "### me — /ws/me\ngaia" in block, block
 
-    def test_a_tighter_cap_keeps_one_line_per_workspace_naming_its_groups(self):
+    def test_the_map_fallback_line_gives_way_before_any_name(self):
         roomy = session_manifest.build_projects_section(_ROOMY)
+        assert "\nUn nombre que no está aquí: gaia map <palabra>\nFicha de un proyecto" in roomy
 
         block = session_manifest.build_projects_section(len(roomy) - 1)
+
+        assert "map <palabra>" not in block and "newco-pitot" in block, block
+
+    def test_a_tighter_cap_keeps_one_line_per_workspace_naming_its_groups(self):
+        roomy = session_manifest.build_projects_section(_ROOMY)
+        fallback = next(line for line in roomy.splitlines() if "map <palabra>" in line)
+
+        block = session_manifest.build_projects_section(len(roomy) - len(fallback) - 2)
 
         assert "### aaxis — /ws/aaxis: 4 projects; groups: aos (1), bildwiz (2)" in block, block
         assert "newco-pitot" not in block

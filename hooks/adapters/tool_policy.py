@@ -714,8 +714,9 @@ class ToolPolicy:
         ``agent_contract_permissions`` for can_read/can_write, the agent's own
         ``surface_routing`` row for its surface, the dispatch binding for its
         role. The project is dispatch data first: a ``project=<name>`` token in
-        the prompt resolves by name; only a dispatch that named none falls back
-        to the cwd, because the orchestrator dispatches from the workspace root.
+        the prompt resolves by name, ``project=none`` stamps no project; only a
+        dispatch with no token falls back to the cwd, because the orchestrator
+        dispatches from the workspace root.
 
         Fail-safe: any error degrades to ``(None, None)`` -- a birth without a
         kernel payload, never a blocked dispatch.
@@ -730,9 +731,13 @@ class ToolPolicy:
                 resolve_project_by_name,
             )
 
+            from modules.agents.dispatch_binding import NO_PROJECT
+
             sections = build_kernel_sections(
                 agent_name, workspace, turn_role=turn_role,
             )
+            if project_token == NO_PROJECT:
+                return sections, None
             project = resolve_project_by_name(workspace, project_token)
             if not project:
                 project = resolve_dispatch_project(workspace, cwd)

@@ -98,6 +98,10 @@ _TASK_EXECUTION_KIND = "task_execution"
 # The turn role that makes a resolvable parent_handoff_id MANDATORY.
 _VERIFIER_ROLE = "verifier"
 
+# ``project=none``: the dispatch is about no project, so the birth stamps none
+# and skips the cwd fallback.
+NO_PROJECT = "none"
+
 # Free-turn kind labels (plan 49 task 1, S1). Neither requires plan_task_id --
 # they exist so a dispatch with NO binding token at all still births a row,
 # instead of being forced through the task_execution branch it never intended
@@ -585,6 +589,8 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
         r"\bproject\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])", prompt,
     )
     project = project_match.group(1) if project_match else None
+    if project and project.lower() == NO_PROJECT:
+        project = NO_PROJECT
     # A verifier dispatch names the PRODUCER handoff it verifies via a
     # ``parent_handoff_id=<N>`` token in its prompt. Without this the verifier
     # branch of validate_dispatch_binding (which REQUIRES a resolvable

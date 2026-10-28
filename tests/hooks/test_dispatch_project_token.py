@@ -147,6 +147,23 @@ def test_unknown_name_passes_through_verbatim(monkeypatch):
     assert context_provider.resolve_project_by_name("me", "brand-new") == "brand-new"
 
 
+@pytest.mark.parametrize("token, expected", [("none", None), (None, "gaia (/cwd)"), ("gaia", "gaia (/named)")])
+def test_project_none_stamps_no_project_and_skips_the_cwd_fallback(monkeypatch, token, expected):
+    from adapters.tool_policy import ToolPolicy
+
+    monkeypatch.setattr(context_provider, "build_kernel_sections", lambda *a, **k: {})
+    monkeypatch.setattr(context_provider, "resolve_dispatch_project", lambda ws, cwd: "gaia (/cwd)")
+    monkeypatch.setattr(context_provider, "resolve_project_by_name",
+                        lambda ws, name: "gaia (/named)" if name else None)
+    prompt = "Answer a general question." + (f" project={token.upper()}" if token else "")
+    binding = extract_dispatch_binding({"prompt": prompt, "subagent_type": "developer"})
+
+    _sections, project = ToolPolicy._kernel_dispatch_facts(
+        "developer", "me", cwd="/w/me/gaia", project_token=binding["project"])
+
+    assert project == expected
+
+
 def test_absent_name_is_none(monkeypatch):
     _patch_identity(monkeypatch)
     assert context_provider.resolve_project_by_name("me", None) is None

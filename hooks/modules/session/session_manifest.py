@@ -878,28 +878,32 @@ def projects_renderer():
         census = (f"{len(live)} projects in {group_count} groups in "
                   f"{len(workspace_order)} workspaces")
 
-        def render(block) -> str:
-            parts = [PROJECTS_HEADER, *(block(ws, members) for ws, members in by_workspace)]
+        def body(block) -> list[str]:
+            parts = [block(ws, members) for ws, members in by_workspace]
             if unresolved and block is names_block:
                 parts.append(
                     f"unresolved ({len(unresolved)}): {', '.join(unresolved)} "
                     f"— no path on disk; 'gaia context get'"
                 )
-            parts.append(pointer)
-            return "\n\n".join(parts)
+            return parts
 
         every_group = "; ".join(
             f"{ws}: {', '.join(g for g, _ in _groups_of(members) if g)}"
             for ws, members in by_workspace if any(e["group"] for e in members)
         )
-        rendered = [render(names_block), render(summary_line)]
+        census_floor = [f"{census}; list them with `{cli} context get`"]
+        bodies = [body(names_block), body(summary_line)]
         if every_group:
-            rendered.append("\n\n".join([PROJECTS_HEADER, f"{census} — {every_group}", pointer]))
-        floor = "\n\n".join([
-            PROJECTS_HEADER,
-            f"{census}; list them with `{cli} context get`",
-            pointer,
-        ])
+            bodies.append([f"{census} — {every_group}"])
+        bodies.append(census_floor)
+        # Each level is tried with the map fallback line, then without it: a
+        # richer index level outranks the fallback line.
+        fallback = f"Un nombre que no está aquí: {cli} map <palabra>\n{pointer}"
+        rendered = [
+            "\n\n".join([PROJECTS_HEADER, *parts, tail])
+            for parts in bodies for tail in (fallback, pointer)
+        ]
+        floor = rendered.pop()
 
         def fit(max_chars: int) -> str:
             return next((text for text in rendered if len(text) <= max_chars), floor)

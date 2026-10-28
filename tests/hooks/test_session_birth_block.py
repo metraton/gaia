@@ -188,7 +188,8 @@ def test_a_large_workspace_is_named_whole_then_degrades_to_one_line_with_its_cou
     assert len(re.findall(r"\brepo\d\d\b", projects)) == 30
 
     roomy = session_manifest.build_projects_section(sys.maxsize)
-    tight = session_manifest.build_projects_section(len(roomy) - 1)
+    fallback = next(line for line in roomy.splitlines() if "map <palabra>" in line)
+    tight = session_manifest.build_projects_section(len(roomy) - len(fallback) - 2)
     lines = [line for line in tight.splitlines() if "github-repos" in line]
     assert len(lines) == 1 and lines[0].endswith(": 30 projects"), tight
     assert not re.search(r"\brepo\d\d\b", tight)

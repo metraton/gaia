@@ -30,8 +30,8 @@ HABITS = (
     ("ids arrive in a return (contract, handoff, plan, slug)",
      "append them to the project's thread row before answering"),
     ("the user names a thing (workspace, group, project, app, cluster, environment), or a (N) count sits by a name",
-     "gaia map <word>, then the verb it prints (gaia context project <name>), before answering or "
-     "dispatching, once per subject per session"),
+     "place it against ## Projects; gaia map <word> only when the index does not place it or places it "
+     "at two levels; then gaia context project <name>, once per subject per session"),
     ("the intent needs a capability the user did not name",
      "offer it in one line after the answer, at most one per turn; act only on their yes"),
 )
