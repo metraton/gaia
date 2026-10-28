@@ -124,8 +124,10 @@ _SUBSCRIPTION_ID = re.compile(r"(?=[^0-9]*[0-9])[0-9A-Fa-f-]+")
 _HELP_PROGRAMS = frozenset(_OPTION_ARITY) | frozenset(_PROGRAM_TARGET_FLAGS) | _KUBE_PROGRAMS | _SWITCHER_PROGRAMS
 _SELECTOR_VARIABLES = tuple(sorted(_NAMING_VARIABLES | {
     "HOME", "KUBECONFIG", "CLOUDSDK_CONFIG", "CLOUDSDK_ACTIVE_CONFIG_NAME", "DOCKER_CONFIG", "DOCKER_CONTEXT",
-    "CONTAINER_CONNECTION", "AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID", "PULUMI_HOME",
+    "CONTAINER_CONNECTION", "AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID", "PULUMI_HOME", "DOCKER_HOST", "CONTAINER_HOST",
 }))
+_ENGINE_HOST_VARIABLES = {"docker": "DOCKER_HOST", "podman": "CONTAINER_HOST"}
+_TREE_LIMIT = 512
 _CONFIG_READS: ContextVar[Optional[list]] = ContextVar("target_config_reads", default=None)
 
 
@@ -485,11 +487,13 @@ def _ambient(
             found.append(Target("account", _named(environment.get("CLOUDSDK_CORE_ACCOUNT") or account)))
         return found
     if program in ("docker", "podman") and not _flag_values(args, _PROGRAM_TARGET_FLAGS[program]):
+        host = environment.get(_ENGINE_HOST_VARIABLES[program])
+        found = [Target(f"{program}-host", _literal(host))] if host else []
         if program == "podman" and environment.get("CONTAINER_CONNECTION"):
-            return [Target("podman-connection", _literal(environment["CONTAINER_CONNECTION"]))]
+            return found + [Target("podman-connection", _literal(environment["CONTAINER_CONNECTION"]))]
         for value in _leading_option_values(program, args, "--config") if program == "docker" else ():
             environment["DOCKER_CONFIG"] = value
-        return [Target("docker-context", _docker_context(environment, cwd))]
+        return found + [Target("docker-context", _docker_context(environment, cwd))]
     if program == "az" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["az"]):
         profile = _azure_profile(environment, cwd)
         if isinstance(profile, str):
@@ -551,24 +555,108 @@ def _wrapper_cwd(prefix: Sequence[str], cwd: Optional[str]) -> Optional[str]:
     return cwd
 
 
-def command_targets(
-    command: str, *, cwd: Optional[str] = None, inherited: Optional[Dict[str, str]] = None, ambient: bool = True,
-) -> List[Target]:
-    """Every target *command* lands on: its target flags, the naming variables set before it, a switch's destination,
-    then what its configuration picks, read in *cwd* after any leading ``cd`` of the line."""
+def _command_context(command: str, cwd: Optional[str], inherited: Optional[Dict[str, str]]):
+    """(program, args, environment, cwd, assignments, words) *command* runs with; None when it runs no program."""
     from .mutative_verbs import _peel_leading_cd
 
     cwd, command, _ = _peel_leading_cd(command, cwd)
     split = _split(command)
     if split is None or not split[1]:
-        return []
+        return None
     assignments, words, prefix = split
-    cwd = _wrapper_cwd(prefix, cwd)
-    program, args = command_name(words[0]), words[1:]
     environment = {**os.environ, **(inherited or {})}
     for word in assignments:
         name, value = _ASSIGNMENT.fullmatch(word).groups()
         environment[name] = value
+    return command_name(words[0]), words[1:], environment, _wrapper_cwd(prefix, cwd), assignments, words
+
+
+def _file_state(path: Path) -> list:
+    """[path, resolved path, sha256 of its bytes, "absent", or None when it cannot be hashed]."""
+    real, text, data = _read_file(path)
+    return [str(path), real, None if text is None else "absent" if data is None else hashlib.sha256(data).hexdigest()]
+
+
+def _tree_state(root: Path) -> Optional[list]:
+    """The _file_state of every file under *root*, [] when it is absent; None for a symlinked directory, an entry that
+    is neither file nor directory, or more than _TREE_LIMIT entries."""
+    if not os.path.lexists(root):
+        return [[str(root), None, "absent"]]
+    if os.path.islink(root) or not os.path.isdir(root):
+        return None
+    states, pending = [], [root]
+    while pending:
+        try:
+            entries = sorted(os.scandir(pending.pop()), key=lambda e: e.name)
+        except OSError:
+            return None
+        for entry in entries:
+            if len(states) >= _TREE_LIMIT or entry.is_symlink() and os.path.isdir(entry.path):
+                return None
+            if entry.is_dir(follow_symlinks=False):
+                pending.append(Path(entry.path))
+            else:
+                states.append(_file_state(Path(entry.path)))
+    return states
+
+
+def _consultable(program: str, args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> Optional[list]:
+    """Every file *program* could consult to pick its target, each with its state; None when that set is not known."""
+    if program in _KUBE_PROGRAMS or program == "kubens":
+        chosen = _flag_values(args, frozenset({"--kubeconfig"}))
+        listed = chosen[-1:] or (environment.get("KUBECONFIG") or "").split(os.pathsep)
+        paths = [_in_directory(p, cwd) for p in listed if p] or [Path.home() / ".kube" / "config"]
+        return None if None in paths else [_file_state(p) for p in paths]
+    roots = {"gcloud": ("CLOUDSDK_CONFIG", (".config", "gcloud")), "az": ("AZURE_CONFIG_DIR", (".azure",)),
+             "docker": ("DOCKER_CONFIG", (".docker",)), "podman": ("DOCKER_CONFIG", (".docker",)),
+             "pulumi": ("PULUMI_HOME", (".pulumi",))}
+    if program in roots:
+        if program == "docker":
+            environment = {**environment, **{"DOCKER_CONFIG": v for v in _leading_option_values(program, args, "--config")}}
+        root = _config_root(environment, *roots[program], cwd)
+        if root is None:
+            return None
+        if program == "gcloud":
+            return _states([_file_state(root / "active_config")], _tree_state(root / "configurations"))
+        if program == "az":
+            return [_file_state(root / "azureProfile.json"), _file_state(root / "config")]
+        if program in ("docker", "podman"):
+            return _states([_file_state(root / "config.json")], _tree_state(root / "contexts"))
+        return _states(_pulumi_project_files(args, cwd), _tree_state(root / "workspaces"))
+    if program == "terraform":
+        directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd)
+        return None if directory is None else [_file_state(directory / ".terraform" / "environment")]
+    return None
+
+
+def _states(*groups: Optional[list]) -> Optional[list]:
+    return None if any(group is None for group in groups) else [state for group in groups for state in group]
+
+
+def _pulumi_project_files(args: Sequence[str], cwd: Optional[str]) -> Optional[list]:
+    """The state of each pulumi project file from the selected directory up to the first directory holding one."""
+    chosen = _flag_values(args, frozenset({"-C", "--cwd"}))
+    start = _in_directory(chosen[-1] if chosen else ".", cwd)
+    if start is None:
+        return None
+    states = []
+    for directory in (start.absolute(), *start.absolute().parents):
+        found = [_file_state(directory / name) for name in _PULUMI_PROJECT_FILES]
+        states += found
+        if any(state[2] != "absent" for state in found):
+            break
+    return states
+
+
+def command_targets(
+    command: str, *, cwd: Optional[str] = None, inherited: Optional[Dict[str, str]] = None, ambient: bool = True,
+) -> List[Target]:
+    """Every target *command* lands on: its target flags, the naming variables set before it, a switch's destination,
+    then what its configuration picks, read in *cwd* after any leading ``cd`` of the line."""
+    context = _command_context(command, cwd, inherited)
+    if context is None:
+        return []
+    program, args, environment, cwd, assignments, words = context
     operation, operands, _ = _operation(words)
     fetching = operation is not None and _CREDENTIAL_FETCHERS.get(program) == operation
     kind, flagged = "switch" if fetching else "flag", _flag_values(args, _target_flags(program))
@@ -732,8 +820,8 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
     """The resolved targets a grant for *command* binds to, as one string; UNDETERMINED when the shell computes one.
 
     A target a config file names without certainty binds to UNREADABLE plus a fingerprint of what would decide it: the
-    command, *cwd*, the selector variables, the targets, and each file read with its content hash. Equal only while all
-    of that is; UNDETERMINED when a file could not be hashed.
+    command, *cwd*, the selector variables, the targets, and every file the tool could consult (_consultable) with its
+    content hash. UNDETERMINED when that set is not known or a file in it cannot be hashed.
     """
     reads: list = []
     listening = _CONFIG_READS.set(reads)
@@ -748,10 +836,15 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
     found = sorted([t.kind, t.name] for t in targets)
     if not any(t.name == UNREADABLE for t in targets):
         return json.dumps(found) if found else ""
-    if not reads or any(digest is None for _, _, digest in reads):
+    try:
+        context = _command_context(command, cwd, None)
+        consulted = None if context is None else _consultable(*context[:4])
+    except Exception:
         return UNDETERMINED
-    selectors = {name: os.environ.get(name) for name in _SELECTOR_VARIABLES}
-    inputs = json.dumps([command, cwd, selectors, found, reads], sort_keys=True)
+    if consulted is None or any(digest is None for _, _, digest in reads + consulted):
+        return UNDETERMINED
+    selectors = {name: context[2].get(name) for name in _SELECTOR_VARIABLES}
+    inputs = json.dumps([command, cwd, selectors, found, reads, consulted], sort_keys=True)
     return f"{UNREADABLE}:{hashlib.sha256(inputs.encode('utf-8')).hexdigest()}"
 
 

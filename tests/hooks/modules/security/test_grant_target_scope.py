@@ -15,7 +15,7 @@ for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "hooks")):
 from modules.security import tiers as tiers_module  # noqa: E402
 from modules.security.approval_grants import activate_db_pending_by_id  # noqa: E402
 from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
-from modules.security.targets import UNREADABLE, grant_target  # noqa: E402
+from modules.security.targets import UNDETERMINED, UNREADABLE, grant_target  # noqa: E402
 from modules.tools.bash_validator import BashValidator  # noqa: E402
 
 COMMAND = "kubectl apply -f x"
@@ -105,6 +105,38 @@ def test_grant_target_scope_undeterminable_selector_changed_matches_nothing(clus
     twin = cluster["tmp"] / "kubeconfig-twin"
     twin.write_text(UNDETERMINABLE, encoding="utf-8")
     monkeypatch.setenv("KUBECONFIG", str(twin))
+    _asks_again(cluster, minted)
+
+
+@pytest.mark.parametrize("mint, lookup", [("determinate", "undeterminable"), ("undeterminable", "determinate")])
+def test_grant_target_scope_determinate_and_undeterminable_never_cross_match(mint, lookup, cluster):
+    states = {"determinate": "apiVersion: v1\nkind: Config\ncurrent-context: shop-dev\n", "undeterminable": UNDETERMINABLE}
+    cluster["kubeconfig"].write_text(states[mint], encoding="utf-8")
+    minted = _mint(cluster["cwd"])
+    cluster["kubeconfig"].write_text(states[lookup], encoding="utf-8")
+    _asks_again(cluster, minted)
+
+
+def test_grant_target_scope_shell_computed_context_matches_nothing(cluster):
+    command = "kubectl --context $CTX apply -f x"
+    assert grant_target(command, cwd=cluster["cwd"]) == UNDETERMINED
+    payload = {"cwd": cluster["cwd"], "session_id": SESSION, "tool_use_id": "t-grant-target", "agent_id": AGENT,
+               "agent_type": "developer"}
+    validator = BashValidator(agent_names_scratch=True)
+    blocked = validator.validate(command, is_subagent=True, session_id=SESSION, agent_type="developer", hook_payload=payload)
+    assert not blocked.allowed and blocked.approval_id, blocked.reason
+    assert activate_db_pending_by_id(blocked.approval_id, current_session_id="s-approver").success
+    retry = validator.validate(command, is_subagent=True, session_id=SESSION, agent_type="developer", hook_payload=payload)
+    assert not retry.allowed and retry.approval_id != blocked.approval_id, retry.reason
+
+
+def test_grant_target_scope_unenumerable_candidates_match_nothing(cluster, monkeypatch):
+    cluster["kubeconfig"].write_text(UNDETERMINABLE, encoding="utf-8")
+    directory = cluster["tmp"] / "kubeconfig-dir"
+    directory.mkdir()
+    monkeypatch.setenv("KUBECONFIG", f"{cluster['kubeconfig']}:{directory}")
+    assert grant_target(COMMAND, cwd=cluster["cwd"]) == UNDETERMINED
+    minted = _mint(cluster["cwd"])
     _asks_again(cluster, minted)
 
 
