@@ -78,6 +78,45 @@ def test_group_lists_members_sections_and_the_read_verb_without_bodies(db, capsy
     assert "SECRET-BODY" not in out
 
 
+def test_single_project_resolves_case_insensitively(db, capsys):
+    rc = _cmd_project(_Args("GRP-IAC"))
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "name             : grp-iac" in out
+    assert "group of" not in out
+
+
+def test_group_resolves_case_insensitively(db, capsys):
+    assert _cmd_project(_Args("GRP")) == 0
+    assert capsys.readouterr().out.startswith("GRP: group of 2 projects")
+
+
+def test_names_differing_only_by_case_stay_ambiguous(db, capsys):
+    con = sqlite3.connect(db)
+    try:
+        for name in ("Dup", "dup"):
+            con.execute(
+                "INSERT INTO projects (workspace, name, path, status) VALUES (?, ?, ?, 'active')",
+                (WS, name, f"/work/case-{name}"),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    assert _cmd_project(_Args("dup")) == 0
+    capsys.readouterr()
+    assert _cmd_project(_Args("DUP")) == 1
+    err = capsys.readouterr().err
+    assert "ambiguous" in err and f"{WS}/Dup" in err and f"{WS}/dup" in err
+
+
+@pytest.mark.parametrize("name", ["gr", "grp-", "api", "grp api", "grp-apix", "iac"])
+def test_partial_words_resolve_to_nothing(db, capsys, name):
+    assert _cmd_project(_Args(name)) == 1
+    assert "group of" not in capsys.readouterr().out
+
+
 def test_group_json_carries_members_and_sections(db, capsys):
     rc = _cmd_project(_Args("grp", json_output=True))
     out = json.loads(capsys.readouterr().out)

@@ -19,7 +19,11 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "hooks"):
 from gaia.store import project_context  # noqa: E402
 from gaia.store.project_context import resolve_project  # noqa: E402
 from modules.context.context_writer import _route  # noqa: E402
-from modules.context.kernel_builder import KERNEL_BUDGET, build_kernel_context  # noqa: E402
+from modules.context.kernel_builder import (  # noqa: E402
+    KERNEL_BUDGET,
+    build_group_context_block,
+    build_kernel_context,
+)
 from tools.context.context_provider import resolve_project_by_name  # noqa: E402
 
 WS = "acme"
@@ -107,6 +111,50 @@ def test_kernel_for_a_group_points_at_each_members_readable_sections(db):
     assert f"`gaia context get-contract --section stack --workspace {WS} --project {API}`" in kernel
     assert f"`gaia context get-contract --section cluster_details --workspace {WS} --project {IAC}`" in kernel
     assert len(kernel) <= KERNEL_BUDGET
+
+
+def test_kernel_for_a_member_dispatch_renders_only_that_member(db):
+    row = {
+        "contract_id": "a0123456789abcdef.beefcafe0123",
+        "agent_id": "a0123456789abcdef",
+        "workspace": "me",
+        "dispatch_prompt": "project=grp-iac check the plan",
+        "dispatch_project": resolve_project_by_name(WS, "grp-iac", db_path=db),
+        "kernel_sections": json.dumps(
+            {"role": "primary", "surface": "live_runtime", "can_read": ["stack", "cluster_details"]},
+        ),
+    }
+
+    kernel = build_kernel_context(row, agent_name="cloud-troubleshooter", db_path=db)
+
+    assert '"cluster": "dev-gke"' in kernel
+    assert "is a group" not in kernel
+    assert API not in kernel
+
+
+def test_a_space_ends_the_dispatch_token(db):
+    from modules.agents.dispatch_binding import extract_dispatch_binding
+
+    token = extract_dispatch_binding({"prompt": "project=grp iac look", "subagent_type": "cloud-troubleshooter"})["project"]
+
+    assert token == "grp"
+    assert resolve_project_by_name(WS, token, db_path=db) == "grp"
+
+
+_MEMBERS = [
+    ({"name": "grp-api", "workspace": WS, "identity": API}, [("stack", 120)]),
+    ({"name": "grp-iac", "workspace": WS, "identity": IAC}, [("cluster_details", 900)]),
+]
+
+
+def test_group_block_over_budget_is_one_line_naming_the_group():
+    full = build_group_context_block("grp", _MEMBERS, max_chars=10_000)
+    short = build_group_context_block("grp", _MEMBERS, max_chars=len(full) - 1)
+
+    assert full.count("gaia context get-contract --section ") == 2
+    assert "get-contract" not in short
+    assert short.splitlines()[-1] == "grp is a group of 2 projects with context — `gaia context project grp`"
+    assert build_group_context_block("grp", [], max_chars=10_000) == ""
 
 
 def test_update_contracts_under_a_group_dispatch_names_the_members(db):

@@ -642,7 +642,8 @@ def _resolve_project(
 ) -> dict:
     """Resolve NAME (and optional --workspace) to exactly one `projects` row.
 
-    Two match passes, in order -- exact `projects.name` first, basename of
+    Two match passes, in order, each exact before ignoring case (two rows
+    equal ignoring case are ambiguous) -- `projects.name` first, basename of
     `projects.path` second (the fix for the legacy opaque-slot rows: a
     project scanned as `bildwiz-5` whose real repo is `control-tower-livekit`
     is found when the user names the repo they actually know). When both miss,
@@ -654,18 +655,16 @@ def _resolve_project(
       {"status": "ambiguous", "candidates": [{"workspace", "name", "path"}, ...]}
       {"status": "not_found", "candidates": [...], "hint": str | None}
     """
-    if workspace:
+    scope, params = ("workspace = ? AND ", (workspace,)) if workspace else ("", ())
+    for collate, via in (("", "exact name match"), (" COLLATE NOCASE", "name match ignoring case")):
         exact = con.execute(
-            "SELECT * FROM projects WHERE workspace = ? AND name = ?",
-            (workspace, name),
+            f"SELECT * FROM projects WHERE {scope}name = ?{collate}", params + (name,),
         ).fetchall()
-    else:
-        exact = con.execute(
-            "SELECT * FROM projects WHERE name = ?", (name,),
-        ).fetchall()
+        if exact:
+            break
 
     if len(exact) == 1:
-        return {"status": "resolved", "row": dict(exact[0]), "resolved_via": "exact name match"}
+        return {"status": "resolved", "row": dict(exact[0]), "resolved_via": via}
     if len(exact) > 1:
         return {
             "status": "ambiguous",
@@ -685,7 +684,9 @@ def _resolve_project(
             "SELECT * FROM projects WHERE path IS NOT NULL",
         ).fetchall()
 
-    basename_matches = [r for r in rows if Path(r["path"]).name == name]
+    basename_matches = [r for r in rows if Path(r["path"]).name == name] or [
+        r for r in rows if Path(r["path"]).name.lower() == name.lower()
+    ]
     if len(basename_matches) == 1:
         r = basename_matches[0]
         via = (
