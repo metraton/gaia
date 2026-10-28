@@ -30,27 +30,28 @@ from modules.security import gaia_cli_only_guard as guard  # noqa: E402
 
 _GAIA = str(_REPO_ROOT / "bin" / "gaia")
 
-_WORKTREE_COMMANDS = {
-    "create": f"{_GAIA} worktree create --repo /tmp/repo --project gaia-test "
-              f"--contract-id c1.abc --agent-id c1 --branch feature/wt-test --json",
-    "list": f"{_GAIA} worktree list --repo /tmp/repo --json",
-    "show": f"{_GAIA} worktree show /tmp/repo/.gaia/worktrees/wt1 --json",
-    "release": f"{_GAIA} worktree release /tmp/repo/.gaia/worktrees/wt1 "
-               f"--workspace me --brief b --ac AC-1 --json",
+_WORKTREE_ARGLINES = {
+    "create": "worktree create --repo /tmp/repo --project gaia-test "
+              "--contract-id c1.abc --agent-id c1 --branch feature/wt-test --json",
+    "list": "worktree list --repo /tmp/repo --json",
+    "show": "worktree show /tmp/repo/.gaia/worktrees/wt1 --json",
+    "release": "worktree release /tmp/repo/.gaia/worktrees/wt1 "
+               "--workspace me --brief b --ac AC-1 --json",
 }
+_WORKTREE_COMMANDS = {verb: f"{_GAIA} {argline}" for verb, argline in _WORKTREE_ARGLINES.items()}
 
 
 @pytest.mark.parametrize("argline", sorted(_WORKTREE_COMMANDS))
-def test_worktree_verb_never_reaches_t3(argline):
+def test_worktree_verb_never_reaches_t3(argline, installed_gaia):
     """Every `gaia worktree <verb>` command classifies below T3 (no signature)."""
-    result = BashValidator().validate(_WORKTREE_COMMANDS[argline])
+    result = BashValidator().validate(f"{installed_gaia} {_WORKTREE_ARGLINES[argline]}")
     assert result.tier != SecurityTier.T3_BLOCKED, (
         f"'gaia worktree {argline}' classified {result.tier}: {result.reason}"
     )
     assert result.allowed is True, result.reason
 
 
-def test_worktree_create_and_release_are_read_only_by_the_group_exception():
+def test_worktree_create_and_release_are_read_only_by_the_group_exception(installed_gaia):
     """`create`/`release` are the two generic-MUTATIVE_VERBS tokens this task
     exists to downgrade -- confirm the classifier's OWN category, not merely
     that BashValidator let the command through for some other reason."""
@@ -60,7 +61,7 @@ def test_worktree_create_and_release_are_read_only_by_the_group_exception():
     )
 
     for argline in ("create", "release"):
-        result = detect_mutative_command(_WORKTREE_COMMANDS[argline])
+        result = detect_mutative_command(f"{installed_gaia} {_WORKTREE_ARGLINES[argline]}")
         assert result.is_mutative is False, (argline, result.reason)
         assert result.category == CATEGORY_READ_ONLY, (argline, result.category)
 

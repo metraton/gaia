@@ -49,8 +49,8 @@ def test_redirect_sign_inside_quoted_json_is_not_a_redirect(value):
 
 
 @pytest.mark.parametrize("text", ["'reads $(date) as text'", "'a `code` span'"])
-def test_substitution_inside_single_quotes_runs_nothing(text):
-    verdict = _verdict(f"{GAIA} memory search {text}", ORCHESTRATOR)
+def test_substitution_inside_single_quotes_runs_nothing(text, installed_gaia):
+    verdict = _verdict(f"{installed_gaia} memory search {text}", ORCHESTRATOR)
 
     assert verdict.allowed is True, verdict.reason
 

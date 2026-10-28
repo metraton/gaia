@@ -514,7 +514,7 @@ def _isolate_target_configuration(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_mutative_classification_cache():
-    """Drop the classifier's verdict cache after each test.
+    """Drop the classifier's verdict and install-root caches after each test.
 
     The cache is keyed on command and cwd, not on file content, and
     tmp_path_retention_policy deletes a passed test's directory so the next
@@ -523,10 +523,24 @@ def _fresh_mutative_classification_cache():
     """
     yield
     try:
-        from modules.security.mutative_verbs import _detect_mutative_command
+        from modules.security.mutative_verbs import _detect_mutative_command, _root_is_install
         _detect_mutative_command.cache_clear()
+        _root_is_install.cache_clear()
     except ImportError:
         pass
+
+
+@pytest.fixture
+def installed_gaia(tmp_path, monkeypatch):
+    """The path of a ``bin/gaia`` in an npm-location install the classifier's hook root points at."""
+    from modules.security import mutative_verbs
+
+    root = tmp_path / "installed" / "node_modules" / "@jaguilar87" / "gaia"
+    (root / "bin").mkdir(parents=True)
+    (root / "package.json").write_text('{"name": "@jaguilar87/gaia", "bin": {"gaia": "bin/gaia"}}')
+    shutil.copy(Path(__file__).resolve().parents[1] / "bin" / "gaia", root / "bin" / "gaia")
+    monkeypatch.setattr(mutative_verbs, "_HOOK_ROOT", root)
+    return str(root / "bin" / "gaia")
 
 
 def pytest_collection_modifyitems(config, items):

@@ -83,6 +83,34 @@ def verdict(command, cwd):
     return "BLOCKED", reason
 
 
+CPU_BOUND = 3.0
+
+
+def bounded_verdict(label, command, cwd, run=verdict):
+    """The verdict, failing on a hang past a load-tolerant wall deadline or on more than CPU_BOUND seconds of this thread's CPU."""
+    with deadline(60, label):
+        start = time.thread_time()
+        outcome = run(command, cwd)
+        elapsed = time.thread_time() - start
+    assert elapsed < CPU_BOUND, f"{label} spent {elapsed:.2f}s of CPU"
+    return outcome
+
+
+def test_the_bound_still_catches_a_blocking_hang_and_a_spinning_one(monkeypatch):
+    with monkeypatch.context() as short:
+        short.setattr(signal, "alarm", lambda seconds: signal.setitimer(signal.ITIMER_REAL, min(seconds, 1)))
+        with pytest.raises(Hung):
+            bounded_verdict("blocking", "", None, run=lambda *_: time.sleep(5))
+
+    def spin(*_):
+        end = time.thread_time() + CPU_BOUND + 0.2
+        while time.thread_time() < end:
+            pass
+
+    with pytest.raises(AssertionError, match="of CPU"):
+        bounded_verdict("spinning", "", None, run=spin)
+
+
 def put(path: Path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data.encode("utf-8") if isinstance(data, str) else data)
@@ -158,8 +186,7 @@ def test_r6_probe(case, env):
     if case == "d-env-prod-flag-dev":
         put(tmp / "dc" / "config.json", '{"currentContext": "prod-a"}')
     command = command.replace("{TMP}", str(tmp))
-    with deadline(10, case):
-        got, reason = verdict(command, env["work"])
+    got, reason = bounded_verdict(case, command, env["work"])
     accepted = {"ask": ASK, "free": ("FREE",)}
     allowed = accepted[expected] + (accepted[also] if also else ())
     assert got in allowed, (got, reason[:160])
@@ -202,8 +229,7 @@ PULUMI = {
 def test_r6_pulumi(case, env):
     filename, text, key, stack, expected = PULUMI[case]
     pulumi_project(env, filename, text, key, stack)
-    with deadline(10, case):
-        got, reason = verdict("pulumi frobnicate x", env["work"])
+    got, reason = bounded_verdict(case, "pulumi frobnicate x", env["work"])
     assert got in ({"ask": ASK, "free": ("FREE",)}[expected]), (got, reason[:160])
 
 
