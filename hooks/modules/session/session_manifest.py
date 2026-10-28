@@ -542,6 +542,7 @@ def _extract_projects_from_identity(
         return ""
 
     from gaia.identity_shape import (
+        COPY_MARK_KEY,
         MISSING_MARK_KEY,
         classify_identity_shape,
         is_reserved_slug,
@@ -550,6 +551,8 @@ def _extract_projects_from_identity(
     if classify_identity_shape(payload) == "map":
         for slug, v in payload.items():
             if is_reserved_slug(slug) or not isinstance(v, dict):
+                continue
+            if v.get(COPY_MARK_KEY):
                 continue
             name = v.get("name") or slug
             path = v.get("local_path") or _resolve(slug) or _resolve(name)
@@ -844,7 +847,7 @@ def projects_renderer():
         # The first command a newborn orchestrator tries: never the bare
         # `gaia` token the trust guard rejects.
         cli = _resolve_gaia_cli_path() or "gaia"
-        pointer = f"Ficha de un proyecto: {cli} context project <nombre>"
+        pointer = f"A project's card: {cli} context project <name>"
 
         def label(e: dict) -> str:
             name = _display_name(e)
@@ -898,7 +901,7 @@ def projects_renderer():
         bodies.append(census_floor)
         # Each level is tried with the map fallback line, then without it: a
         # richer index level outranks the fallback line.
-        fallback = f"Un nombre que no está aquí: {cli} map <palabra>\n{pointer}"
+        fallback = f"A name that is not listed here: {cli} map <word>\n{pointer}"
         rendered = [
             "\n\n".join([PROJECTS_HEADER, *parts, tail])
             for parts in bodies for tail in (fallback, pointer)

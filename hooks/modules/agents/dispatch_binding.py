@@ -586,7 +586,8 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     # The name may hold inner dots (``metraton.github.io``) but must end on a
     # word character, so a sentence's closing ``.`` is not read as part of it.
     names = _re.findall(
-        r"(?<![\w.\-])project\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])", prompt,
+        r"(?:^|(?<=[\s(\[{<\"'`]))project\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])",
+        prompt,
     )
     real = [name for name in names if name.lower() != NO_PROJECT]
     project = real[0] if real else (NO_PROJECT if names else None)

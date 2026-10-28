@@ -124,6 +124,8 @@ SEEDS: tuple[Seed, ...] = (
 
 EPISODE_ID = "ep_seeded_for_surface_census"
 
+GROUP = "alphagroup"
+
 
 # ---------------------------------------------------------------------------
 # Surface recipes
@@ -248,6 +250,10 @@ SURFACES: tuple[Surface, ...] = (
     _read("get-relevant-project-json",
           ["memory", "get-relevant", "--workspace", WORKSPACE,
            "--project", "alpha", "--json"],
+          DELIBERATE, ["t_alpha"], action="get-relevant", contains=("t_alpha",)),
+    _read("get-relevant-group-json",
+          ["memory", "get-relevant", "--workspace", WORKSPACE,
+           "--group", GROUP, "--json"],
           DELIBERATE, ["t_alpha"], action="get-relevant", contains=("t_alpha",)),
     _read("get-relevant-group-miss-json",
           ["memory", "get-relevant", "--workspace", WORKSPACE,
@@ -413,6 +419,7 @@ def seeded(tmp_path_factory) -> dict:
                     seed.name, class_=seed.class_, status=seed.status,
                     db_path=db)
         _seed_episode(db)
+        _seed_group_member(db)
         payload = data_dir / "checkpoint.json"
         payload.write_text(json.dumps({
             "resumen": {"name": "w_ckpt", "type": "project",
@@ -427,6 +434,20 @@ def seeded(tmp_path_factory) -> dict:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _seed_group_member(db: Path) -> None:
+    from gaia.store.writer import _connect
+    con = _connect(db)
+    try:
+        con.execute(
+            "INSERT INTO projects (workspace, name, group_name, path, status) "
+            "VALUES (?, 'alpha', ?, '/seeded/alpha', 'active')",
+            (WORKSPACE, GROUP),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _seed_episode(db: Path) -> None:

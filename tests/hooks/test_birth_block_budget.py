@@ -188,7 +188,7 @@ def test_under_pressure_lists_become_counts_and_the_roster_a_pointer(corpus, mai
     room = BIRTH_BUDGET - (len(context) - len(projects))
     assert "me-project-" not in projects
     assert projects == build_projects_section(room), "the richest index level that fits the room"
-    assert projects.rstrip().endswith("context project <nombre>")
+    assert projects.rstrip().endswith("context project <name>")
     assert RESUME in context
 
 
