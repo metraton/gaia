@@ -36,10 +36,19 @@ def _summary(item: dict) -> str:
         return f"{operation} {body.get('slug') or body.get('name') or '(no slug)'}: {body.get('description', '')}"
     if item["kind"] == "thread":
         return f"open gap in {len(payload.get('handoff_ids') or [])} rows: {payload.get('gap')}"
-    return f"{payload.get('contract')} keys {', '.join(sorted(payload.get('payload') or {}))}"
+    summary = f"{payload.get('contract')} keys {', '.join(sorted(payload.get('payload') or {}))}"
+    drift = payload.get("drift")
+    if isinstance(drift, dict):
+        summary += (f"; drift {drift.get('key_path')}: {drift.get('old')!r} -> {drift.get('new')!r}"
+                    f" read by {drift.get('command')!r}")
+    if item.get("decision_note"):
+        summary += f" [{item['decision_note']}]"
+    return summary
 
 
 def _cmd_list(args) -> int:
+    from collections import Counter
+
     from gaia.store.proposals import list_proposals
 
     status = None if args.all else "pending"
@@ -51,7 +60,9 @@ def _cmd_list(args) -> int:
         print(f"#{item['id']} {item['status']} {item['kind']} "
               f"project={item['project'] or '(none)'} contract={item['contract_id']} "
               f"{_summary(item)}")
-    print(f"{len(items)} proposal(s)")
+    kinds = Counter(item["kind"] for item in items)
+    by_kind = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+    print(f"{len(items)} proposal(s)" + (f": {by_kind}" if by_kind else ""))
     return 0
 
 

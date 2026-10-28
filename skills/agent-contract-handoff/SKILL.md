@@ -243,6 +243,22 @@ minted, `approval_id`, copied verbatim from the request's output.
   entry or key (`gaia/store/writer.py::record_update_contracts_outcome`), and
   the dispatch result names them to the orchestrator beside the proposal
   notice (`hooks/modules/agents/proposal_notices.py::proposal_notice`).
+  A drift correction (`agent-protocol` principle 3) adds `drift: {key_path,
+  old, new, command, observed_at}` to the entry. At the close it is applied
+  without the orchestrator only when every guard holds
+  (`gaia/context_drift.py::auto_apply_refusal`): it touches HOW keys only --
+  until keys carry a WHAT/HOW mark, the whole `project_identity` and
+  `environment` sections and any key path through `environment(s)`,
+  `cluster(s)`, `cluster_name`, `context`, `kube_context`, `project`,
+  `project_id`, `gcp_project` or `namespace(s)` are WHAT (`WHAT_SECTIONS`,
+  `WHAT_KEYS`); the turn record holds a run of `drift.command` that exited 0
+  and classifies T0; and every cluster, context, project or namespace that
+  command names explicitly is named in the goal. An applied proposal is
+  marked accepted by `auto:<agent_id>` with its evidence in the decision
+  note, and announced in the "changed" signal line as `project context
+  <identity>`. Anything else stays pending with the failed guard in
+  `gaia contract proposals list`; a proposal whose dispatch project did not
+  resolve keeps the goal's project token there.
 
 ## The evidence clause of `update_contracts`
 

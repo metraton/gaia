@@ -2139,6 +2139,13 @@ def cmd_finalize(args) -> int:
             print(f"Rejected: {msg}", file=sys.stderr)
         return 1
 
+    from gaia.context_drift import stale_context_warning
+
+    drift_warning = stale_context_warning(envelope)
+    if drift_warning:
+        envelope.setdefault("content_checks", {})["warnings"] = [drift_warning]
+        print(f"Warning: {drift_warning}", file=sys.stderr)
+
     from gaia.store.writer import finalize_agent_contract_handoff
 
     try:
@@ -2175,6 +2182,8 @@ def cmd_finalize(args) -> int:
         }
         if alias_used:
             payload["conclusion_alias"] = LEGACY_CONCLUSION_FIELD
+        if drift_warning:
+            payload["warnings"] = [drift_warning]
         print(json.dumps(payload))
     else:
         if created:

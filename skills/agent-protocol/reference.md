@@ -290,16 +290,20 @@ and as an on-disk draft -- before you run anything.
 | `role` / `surface` | The turn's relationship to the task, and the surface that owns it. |
 | `project` | The project this turn is about, as `name (/abs/path)`. Dispatch data first (the orchestrator's `project=<name>` token), cwd resolution only as fallback. A name the substrate does not know yet appears bare, with no path suffix. Absent when the dispatch named no project and the cwd matched none. |
 | `workflow` | Indented under `project`: how work lands in that project -- integration, target branch, channel -- as the `workflow` key of its `project_identity` entry declares it (`gaia/identity_shape.py::DECLARED_WORKFLOW_KEY`). A value to obey, not to rediscover. Present only when the entry declares one; a project that declares nothing gets no line and no guessed default. |
-| `can_read` / `can_write` | The menu of project-knowledge sections this turn may pull on demand and cite, and the ones it may propose updates to. Nothing from the menu arrives preloaded. |
+| `can_read` / `can_write` | The menu of project-knowledge sections this turn may pull on demand and cite, and the ones it may propose updates to. The `can_read` sections the dispatch project holds also arrive in `# Project context`: whole when they fit the budget, else one `gaia context get-contract` pointer per section. |
 | `plan_task_id` + `acceptance` | Present only on a plan-task-bound turn: the binding and the verifiable floor the increment must clear -- the assertions principle 7 loops against. Such a turn cannot self-`COMPLETE`; it closes `NEEDS_VERIFICATION`. |
 
-Four blocks follow `# Your Contract`, in this order. `# How the user works`
+Five blocks follow `# Your Contract`, in this order. `# How the user works`
 carries the user's standing rows with their bodies, only those whose audience is
 `executor` (`hooks/modules/context/kernel_builder.py::build_memory_block`); when
 the kernel would pass the host's cap, whole rows are left out, stalest first, and
 one line names them for `gaia memory show`.
 `# Standing notes` is one line per live anchor of the dispatch project, absent
-when it has none. `# Environment` is one capped line: the OS, the gaia CLI path
+when it has none. `# Project context` carries the dispatch project's `can_read`
+sections: whole when they fit what the budget leaves, else one pointer line per
+section naming its `gaia context get-contract` verb, else a single count line
+(`hooks/modules/context/kernel_builder.py::_readable_project_sections`).
+`# Environment` is one capped line: the OS, the gaia CLI path
 and the tools on PATH, the user's own executables among them
 (`session_manifest.build_environment_line`). `# Your CLI` is the index of what
 the turn can look up on its own, last because `gaia --help` rebuilds it. Beyond
@@ -321,13 +325,19 @@ The floor gates what an agent may mint for a NEW turn. Historical rows keyed by
 a shorter handle are read back by exact string and never re-validated, so no
 grandfathering window exists or is needed.
 
-### Project knowledge is pulled, not preloaded
+### Project knowledge arrives as far as the budget allows, the rest is pulled
 
-The kernel deliberately carries data about the turn, not about the project.
-`can_read` is a menu of section names, and nothing behind it arrives with the
-dispatch -- the turn pulls what the goal needs. Which verb reaches those
-sections, why its sibling with the same `--section` flag does not, and what each
-returns: `read-map.md`, "Project knowledge -- two namespaces".
+`can_read` is a menu of section names. The kernel's `# Project context` block
+injects the ones the dispatch project holds, whole when they fit and as
+`gaia context get-contract` pointers when they do not; a pointer, and any
+section of another project, is pulled when the goal needs it. Which verb reaches
+those sections, why its sibling with the same `--section` flag does not, and
+what each returns: `read-map.md`, "Project knowledge -- two namespaces".
+
+An injected or pulled value is a claim about the world, not the world. When a
+read this turn ran shows a different value, the turn proposes the correction
+(principle 3); a guarded subset of those proposals is applied at the close
+without the orchestrator, as `agent-contract-handoff` states.
 
 ## Storage and recovery
 

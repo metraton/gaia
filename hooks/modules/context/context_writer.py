@@ -100,6 +100,34 @@ def _merge_section_payload(stored: Any, delta: dict) -> dict:
     return merge_section_payload(stored, delta)
 
 
+def merge_into_section(
+    con: sqlite3.Connection,
+    owner: dict,
+    contract_name: str,
+    delta: dict,
+    now: str,
+    agent_name: str,
+    proposed_by: Optional[str],
+) -> str:
+    """Deep-merge ``delta`` into ``owner``'s section inside the caller's transaction; return the write mode."""
+    from gaia.store.project_context import project_sections, write_section
+
+    seen = project_sections(con, owner).get(contract_name)
+    stored = None
+    write_mode = "insert"
+    if seen is not None:
+        stored = seen["payload"] if isinstance(seen["payload"], dict) else None
+        if stored is not None and contract_name == "project_identity":
+            stored = {k: v for k, v in stored.items() if k in delta}
+        write_mode = "merge" if stored is not None else "replace"
+    merged_payload = _merge_section_payload(stored, delta)
+    write_section(
+        con, owner["identity"], contract_name, json.dumps(merged_payload), now,
+        agent_name, proposed_by,
+    )
+    return write_mode
+
+
 def apply_update(
     update: dict,
     agent_name: str,
@@ -203,31 +231,16 @@ def apply_update(
         owner, entry = targets[0]
         audit["workspace"], audit["project"] = owner["workspace"], owner["identity"]
 
-        from gaia.store.project_context import project_sections, write_section
-
-        seen = project_sections(con, owner).get(contract_name)
-        stored = None
-        write_mode = "insert"
-        if seen is not None:
-            stored = seen["payload"] if isinstance(seen["payload"], dict) else None
-            if stored is not None and contract_name == "project_identity":
-                stored = {k: v for k, v in stored.items() if k in entry["payload"]}
-            write_mode = "merge" if stored is not None else "replace"
-
-        merged_payload = _merge_section_payload(stored, entry["payload"])
-        payload_json = json.dumps(merged_payload)
-        write_section(
-            con, owner["identity"], contract_name, payload_json, now,
-            agent_name, proposed_by,
+        write_mode = merge_into_section(
+            con, owner, contract_name, entry["payload"], now, agent_name, proposed_by,
         )
         con.execute("COMMIT")
 
         audit["success"] = True
         audit["write_mode"] = write_mode
         logger.info(
-            "Context updated by %s: project=%s contract=%s mode=%s keys=%d",
+            "Context updated by %s: project=%s contract=%s mode=%s",
             agent_name, owner["identity"], contract_name, write_mode,
-            len(merged_payload) if isinstance(merged_payload, dict) else 0,
         )
         return audit
 

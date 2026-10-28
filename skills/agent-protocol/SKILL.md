@@ -19,6 +19,8 @@ The gate validates only your persisted contract: one found unfinalized -- or no 
 
 Ask what already governs this, in precedence: injected context -> memory, queryable past the sample you were sent -> the code, which outranks any description of it -> the skills -> outside. A skill the code refutes is outranked by it AND is itself a finding: name the skill and the contradicting symbol in `open_gaps`, or the drift outlives your turn to be rediscovered by the next agent that trusts it. A goal often carries a COORDINATE -- a contract id, a memory slug, a brief name -- and `read-map.md`, beside this file, is the verb that opens it. Announce no tool sequence and claim no reach in advance.
 
+Injected context is also something your reads can refute. When a value you observed contradicts a section injected into your kernel or read with `gaia context get-contract`, propose the correction in `update_contracts` -- the section, a payload holding the new value, and a `drift` object `{key_path, old, new, command, observed_at}` whose `command` is the T0 read that observed it -- and a memory row it contradicts in `memory_delta`. Calling the context stale only in prose loses the correction: finalize warns when `report_prose` or `open_gaps` say so while `update_contracts` is empty.
+
 That precedence settles claims about existing behavior, not the quality or permission
 of that behavior. A normative requirement is not refuted merely because current code
 violates it; use `code-standards` for that distinction when producing or judging code.
