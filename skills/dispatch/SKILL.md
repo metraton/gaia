@@ -85,12 +85,12 @@ two-writer wave, end to end, is in `examples.md`.
    its context mid-work cannot. Sizing names the model too: the lightest one
    the turn's difficulty allows, through the Agent tool's model override, and
    a resumed turn keeps the model it was born with. When the previous turn was
-   cut near its close, implementing and integrating split into two turns. A turn is fresh when it
-   must not know something -- a review, a blind check -- and resumed when it
-   executes what it already knows, because rebuilding known state is pure cost.
-   Its acceptance names the checks that fit inside it, and it declares only the
-   runs it completed: the whole-tree suite is the shared branch's CI (principle
-   5), never a step a turn carries forward to the next.
+   cut near its close, implementing and integrating split into two turns. A
+   turn is fresh when it must not know something -- a review, a blind check --
+   and resumed when it executes what it already knows, because rebuilding known
+   state is pure cost. Its acceptance names the checks that fit inside it, and
+   it declares only the runs it completed: the whole-tree suite is the shared
+   branch's CI (principle 5), never a step a turn carries forward to the next.
 
 8. **Steering in flight is a channel, not a return.** A turn heading the wrong
    way can be messaged mid-flight, continued once it closes, or replaced by a
