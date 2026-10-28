@@ -4108,9 +4108,6 @@ class TestGaiaCliDispatcherReDispatch:
         (self.install / "bin").mkdir(parents=True)
         (self.install / "bin" / "gaia").write_text((HOOKS_DIR.parent / "bin" / "gaia").read_text())
         monkeypatch.setattr(mv, "_HOOK_ROOT", self.install)
-        mv._hook_root_is_install.cache_clear()
-        yield
-        mv._hook_root_is_install.cache_clear()
 
     def _dispatcher(self, tmp_path, name="gaia", body=None):
         if body is None:

@@ -46,10 +46,8 @@ def _redispatched(root: Path) -> list:
 def hook_root(monkeypatch: pytest.MonkeyPatch):
     def point_at(root: Path) -> None:
         monkeypatch.setattr(mv, "_HOOK_ROOT", root)
-        mv._hook_root_is_install.cache_clear()
 
-    yield point_at
-    mv._hook_root_is_install.cache_clear()
+    return point_at
 
 
 def test_the_installed_gaia_the_hook_runs_from_is_re_dispatched(tmp_path, hook_root):
@@ -68,6 +66,28 @@ def test_an_install_nested_in_a_project_checkout_is_still_the_install(tmp_path, 
 def test_another_install_than_the_hook_one_is_judged_by_content(tmp_path, hook_root):
     hook_root(_copy_cli(tmp_path / "install"))
     assert _redispatched(_copy_cli(tmp_path / "elsewhere")) == [False, False]
+
+
+def test_an_unanswered_git_judges_by_content_and_is_not_remembered(tmp_path, hook_root, monkeypatch):
+    install = _copy_cli(tmp_path / "install")
+    hook_root(install)
+    no_git = tmp_path / "no-git"
+    no_git.mkdir()
+    with monkeypatch.context() as without_git:
+        without_git.setenv("PATH", str(no_git))
+        assert _redispatched(install) == [False, False]
+        assert mv._hook_root_is_install() is False
+    assert mv._hook_root_is_install() is True
+
+
+def test_a_checkout_classified_while_git_is_unavailable_still_asks_once_git_returns(monkeypatch, tmp_path):
+    no_git = tmp_path / "no-git"
+    no_git.mkdir()
+    with monkeypatch.context() as without_git:
+        without_git.setenv("PATH", str(no_git))
+        assert mv._hook_root_is_install() is False
+    mv._detect_mutative_command.cache_clear()
+    assert _redispatched(_REPO_ROOT) == [False, False]
 
 
 @pytest.fixture

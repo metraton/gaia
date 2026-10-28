@@ -514,7 +514,7 @@ def _isolate_target_configuration(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_mutative_classification_cache():
-    """Drop the classifier's verdict cache after each test.
+    """Drop the classifier's verdict and install-root caches after each test.
 
     The cache is keyed on command and cwd, not on file content, and
     tmp_path_retention_policy deletes a passed test's directory so the next
@@ -523,8 +523,9 @@ def _fresh_mutative_classification_cache():
     """
     yield
     try:
-        from modules.security.mutative_verbs import _detect_mutative_command
+        from modules.security.mutative_verbs import _detect_mutative_command, _root_is_install
         _detect_mutative_command.cache_clear()
+        _root_is_install.cache_clear()
     except ImportError:
         pass
 

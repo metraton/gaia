@@ -7706,11 +7706,26 @@ _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_pl
 _HOOK_ROOT = Path(__file__).resolve().parents[3]
 
 
-@functools.lru_cache(maxsize=1)
+class _GitUnanswered(Exception):
+    """git could not run or did not finish, so whether a root is a checkout is unknown."""
+
+
+@functools.lru_cache(maxsize=8)
+def _root_is_install(root: Path) -> bool:
+    """True when git says *root* is not the top of a checkout; raises _GitUnanswered, which lru_cache never stores, when git gives no answer."""
+    ran = _git_run(str(root), "rev-parse", "--show-toplevel")
+    if ran is None:
+        raise _GitUnanswered(root)
+    code, top = ran
+    return code != 0 or os.path.realpath(top) != os.path.realpath(root)
+
+
 def _hook_root_is_install() -> bool:
-    """True when the Gaia this hook runs from is an install, not the root of a git checkout anyone can edit; an npm install nested in a project's checkout still counts."""
-    top = _git_read(str(_HOOK_ROOT), "rev-parse", "--show-toplevel")
-    return top is None or os.path.realpath(top) != os.path.realpath(_HOOK_ROOT)
+    """True when the Gaia this hook runs from is an install, not the root of a git checkout anyone can edit; an npm install nested in a project's checkout still counts, and an unanswered git counts as a checkout."""
+    try:
+        return _root_is_install(_HOOK_ROOT)
+    except _GitUnanswered:
+        return False
 
 
 def _gaia_shipped_script(script: Path) -> bool:
