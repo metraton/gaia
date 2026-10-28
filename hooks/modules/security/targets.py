@@ -814,7 +814,7 @@ def command_targets(
     inline = {*(inherited or {}), *(_ASSIGNMENT.fullmatch(w).group(1) for w in assignments)}
     found += [Target("setting", UNREADABLE) for name in sorted(inline) if name.startswith(_PROGRAM_ENV_PREFIXES.get(
         program, ())) and name not in _PROGRAM_SELECTORS.get(program, frozenset()) | _HARMLESS_VARIABLES]
-    if not modelled:
+    if not modelled and (program in _PROGRAM_ENV_PREFIXES or program in _PROGRAM_TARGET_FLAGS):
         found.append(Target("environment", UNREADABLE))
     if operation in _SWITCH_WORDS.get(program, ()):
         destinations = _flag_values(args, _SWITCH_DESTINATION_FLAGS.get(program, frozenset()))[-1:]
