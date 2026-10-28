@@ -140,14 +140,21 @@ SCOPE_DENIED = [
     ("absent-then-escaped-dev", _absent, _kube_escaped),
     ("absent-then-anchor-elsewhere", _absent, _kube_anchor_elsewhere),
     ("unset-then-absent", _kube_unset, None),
-    ("escaped-dev-then-same", _kube_escaped, _kube_escaped),
-    ("anchor-elsewhere-then-same", _kube_anchor_elsewhere, _kube_anchor_elsewhere),
 ]
+
+
+@pytest.mark.parametrize("state", [_kube_escaped, _kube_anchor_elsewhere], ids=["escaped-dev", "anchor-elsewhere"])
+def test_r7_undeterminable_target_matches_only_the_same_content(state, env):
+    command = "kubectl apply -f x.yaml"
+    state(env, "dev-a")
+    _mint(command, env["work"])
+    state(env, "dev-a")
+    assert _validate(command, env["work"]).allowed
 
 
 @pytest.mark.parametrize("case", SCOPE_DENIED, ids=[c[0] for c in SCOPE_DENIED])
 def test_r7_empty_target_matches_only_absent(case, env):
-    """Absent never matches present or undeterminable, and undeterminable never matches anything."""
+    """Absent never matches present or undeterminable."""
     _, at_mint, at_lookup = case
     command = "kubectl apply -f x.yaml"
     at_mint(env, "dev-a")

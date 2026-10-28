@@ -405,7 +405,8 @@ def test_a_malformed_configuration_file_is_undeterminable_and_never_raises(sourc
     well_formed_kubeconfig = source == "kube" and junk in ("subscriptions-number", "subscriptions-junk", "default-typed-oddly")
     gcloud_unreadable = source.startswith("gcloud") and junk in ("bad-encoding", "deep")
     if source == "azure" or (source == "kube" and not well_formed_kubeconfig) or gcloud_unreadable:
-        assert targets.grant_target(command, cwd=cwd) == targets.UNDETERMINED
+        bound = targets.grant_target(command, cwd=cwd)
+        assert bound == targets.UNDETERMINED or bound.startswith(f"{targets.UNREADABLE}:"), bound
         assert escalated is not None and "could not be determined" in escalated.reason
 
 
