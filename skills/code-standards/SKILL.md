@@ -168,6 +168,13 @@ fixture. For non-behavioral changes, show preservation of behavior rather than
 manufacturing tests for prose. State what ran, what it establishes, and what remains
 unverified; loading this skill or passing a linter is not evidence of its application.
 
+### 10. Write everything versioned in English
+
+Identifiers, comments, docstrings, CHANGELOG entries, commit messages, pull request
+titles and bodies, and branch names are written in English. A concept a brief names in
+Spanish enters the code as its English term. A client project that declares another
+language wins.
+
 ## Traps
 
 | Trap | Why it fails |

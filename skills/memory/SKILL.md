@@ -64,6 +64,8 @@ host-scoped by `gaia/store/writer.py::apply_host_scope` (a project anchor is
 refused); a decision to build or change Gaia is project-scoped
 `initiative=gaia`.
 
+An initiative key is a group key (`bildwiz`) or a project key (`bildwiz_iac`).
+
 ## Other home first
 
 Before saving, ask: **does this already have a canonical home?** The harness is
@@ -131,7 +133,8 @@ list. The first yes wins:
    - Otherwise, one concern with no work object: a thread in that project's
      initiative.
 2. **A short fixed rule an agent on one project must obey** (how it integrates,
-   reviews, releases): that project's `workflow` value, not memory.
+   reviews, releases): a key of that project's `project_identity.workflow`, not
+   memory.
 3. **His difference, true in any project:** `type=user`. One that bends a
    harness default is written once he has agreed to the bend.
 4. **A decision, fact, lesson or dead end about one project:** an anchor in that
@@ -165,7 +168,8 @@ there>."
    a row. `any` and
    `orchestrator` stay with the orchestrator, and a new `--type user` row
    defaults to `orchestrator`; existing rows are not migrated by code, you
-   re-mark them as you curate. A specialist also gets one environment line
+   re-mark them as you curate. A `class=log` row never reaches a birth or a
+   kernel, whatever its audience. A specialist also gets one environment line
    (OS/WSL, gaia CLI path, tools on PATH), so a machine fact needs no row.
    Project memory — anchors, threads, their bodies —
    never loads at birth: a count is a signal to ask, not the corpus. A
@@ -198,7 +202,11 @@ there>."
    caller's workspace plus `_gaia_host` and `_gaia_user`
    (`bin/cli/memory.py::_reader_workspaces`), so an empty search or a missing
    row without a project is a scoping hypothesis — confirm with the right
-   `--workspace` before trusting it.
+   `--workspace` before trusting it. Before writing a user preference, search
+   across owners -- his rows and the project's decisions -- and link a match
+   with `relates_to` instead of copying it. A preference he restates is a
+   delivery failure first: read the existing row's class, audience and
+   `last_injected_at`, and relocate or promote it before adding a new row.
 3. **Choose the home.** Run *Other home first* and *Where it goes*, and
    continue only for genuinely curated value.
 4. **Write one thing per row, in the shape a reader decides on.** The
