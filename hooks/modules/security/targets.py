@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import stat
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -121,6 +122,11 @@ _PULUMI_PROJECT_FILES = ("Pulumi.yaml", "Pulumi.yml")
 _CONFIGURATION_NAME = re.compile(r"[A-Za-z0-9][\w.-]*")
 _SUBSCRIPTION_ID = re.compile(r"(?=[^0-9]*[0-9])[0-9A-Fa-f-]+")
 _HELP_PROGRAMS = frozenset(_OPTION_ARITY) | frozenset(_PROGRAM_TARGET_FLAGS) | _KUBE_PROGRAMS | _SWITCHER_PROGRAMS
+_SELECTOR_VARIABLES = tuple(sorted(_NAMING_VARIABLES | {
+    "HOME", "KUBECONFIG", "CLOUDSDK_CONFIG", "CLOUDSDK_ACTIVE_CONFIG_NAME", "DOCKER_CONFIG", "DOCKER_CONTEXT",
+    "CONTAINER_CONNECTION", "AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID", "PULUMI_HOME",
+}))
+_CONFIG_READS: ContextVar[Optional[list]] = ContextVar("target_config_reads", default=None)
 
 
 @dataclass(frozen=True)
@@ -183,25 +189,37 @@ def _named(value: str) -> str:
 
 def _read_text(path: Path) -> Optional[str]:
     """The text of the regular file *path* resolves to, "" when nothing is there, None when it is anything else (FIFO,
-    device, directory, over _READ_LIMIT bytes, not UTF-8): checked before opening, opened without blocking, read capped."""
+    device, directory, over _READ_LIMIT bytes, not UTF-8); recorded with its content hash while grant_target listens."""
+    real, text, data = _read_file(path)
+    reads = _CONFIG_READS.get()
+    if reads is not None:
+        digest = None if text is None else "absent" if data is None else hashlib.sha256(data).hexdigest()
+        reads.append([str(path), real, digest])
+    return text
+
+
+def _read_file(path: Path) -> Tuple[Optional[str], Optional[str], Optional[bytes]]:
+    """(resolved path, text as _read_text returns it, bytes read): checked before opening, opened without blocking,
+    read capped."""
+    real = None
     try:
         real = os.path.realpath(path)
         if not stat.S_ISREG(os.stat(real).st_mode):
-            return None
+            return real, None, None
         descriptor = os.open(real, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except (FileNotFoundError, NotADirectoryError):
-        return None if os.path.lexists(path) else ""
+        return real, None if os.path.lexists(path) else "", None
     except (OSError, ValueError):
-        return None
+        return real, None, None
     try:
         status, data = os.fstat(descriptor), b""
         if not stat.S_ISREG(status.st_mode) or status.st_size > _READ_LIMIT:
-            return None
+            return real, None, None
         while len(data) <= _READ_LIMIT and (chunk := os.read(descriptor, _READ_LIMIT + 1 - len(data))):
             data += chunk
-        return None if len(data) > _READ_LIMIT else data.decode("utf-8")
+        return (real, None, None) if len(data) > _READ_LIMIT else (real, data.decode("utf-8"), data)
     except (OSError, ValueError):
-        return None
+        return real, None, None
     finally:
         os.close(descriptor)
 
@@ -711,14 +729,30 @@ def declaration_for(cwd: Optional[str]) -> Dict:
 
 
 def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
-    """The resolved targets a grant for *command* binds to, as one string; UNDETERMINED when any of them cannot be read."""
+    """The resolved targets a grant for *command* binds to, as one string; UNDETERMINED when the shell computes one.
+
+    A target a config file names without certainty binds to UNREADABLE plus a fingerprint of what would decide it: the
+    command, *cwd*, the selector variables, the targets, and each file read with its content hash. Equal only while all
+    of that is; UNDETERMINED when a file could not be hashed.
+    """
+    reads: list = []
+    listening = _CONFIG_READS.set(reads)
     try:
         targets = command_targets(command, cwd=cwd)
     except Exception:
         return UNDETERMINED
-    if any(t.name in (UNDETERMINED, UNREADABLE) for t in targets):
+    finally:
+        _CONFIG_READS.reset(listening)
+    if any(t.name == UNDETERMINED for t in targets):
         return UNDETERMINED
-    return json.dumps(sorted([t.kind, t.name] for t in targets)) if targets else ""
+    found = sorted([t.kind, t.name] for t in targets)
+    if not any(t.name == UNREADABLE for t in targets):
+        return json.dumps(found) if found else ""
+    if not reads or any(digest is None for _, _, digest in reads):
+        return UNDETERMINED
+    selectors = {name: os.environ.get(name) for name in _SELECTOR_VARIABLES}
+    inputs = json.dumps([command, cwd, selectors, found, reads], sort_keys=True)
+    return f"{UNREADABLE}:{hashlib.sha256(inputs.encode('utf-8')).hexdigest()}"
 
 
 def _pushed_branch(words: Sequence[str], cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:

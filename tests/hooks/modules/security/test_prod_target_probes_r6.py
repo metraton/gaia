@@ -336,12 +336,12 @@ def test_r6_activated_grant_is_single_use(case, rewrite_same, env):
 
 
 @pytest.mark.parametrize("case", UNDETERMINABLE, ids=[c[0] for c in UNDETERMINABLE])
-def test_r6_undeterminable_target_matches_no_grant(case, env):
+def test_r6_undeterminable_target_same_content_retry_runs(case, env):
     _, command, switch = case
     switch(env, "dev-a")
-    minted = _mint(command, env["work"])
+    _mint(command, env["work"])
     retry = _validate(command, env["work"])
-    assert not retry.allowed and retry.approval_id and retry.approval_id != minted, (retry.reason or "")[:160]
+    assert retry.allowed, (retry.reason or "")[:160]
 
 
 @pytest.mark.parametrize("case", SWITCHES, ids=[c[0] for c in SWITCHES])

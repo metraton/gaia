@@ -15,10 +15,15 @@ for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "hooks")):
 from modules.security import tiers as tiers_module  # noqa: E402
 from modules.security.approval_grants import activate_db_pending_by_id  # noqa: E402
 from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
+from modules.security.targets import UNREADABLE, grant_target  # noqa: E402
 from modules.tools.bash_validator import BashValidator  # noqa: E402
 
 COMMAND = "kubectl apply -f x"
 SESSION, AGENT = "s-grant-target", "agranttarget01"
+UNDETERMINABLE = (
+    "apiVersion: v1\ncurrent-context: shop-dev\nkind: Config\nusers:\n- name: u\n  user:\n    exec:\n"
+    "      command: kubelogin\n      installHint: |2\n\n        kubelogin is not installed.\n"
+)
 
 
 @pytest.fixture
@@ -71,6 +76,43 @@ def test_grant_target_scope_follows_the_resolved_context(cluster):
 
     cluster["switch"]("dev-a")
     assert _run(cluster["cwd"]).allowed
+
+
+def _asks_again(cluster, minted: str) -> None:
+    retry = _run(cluster["cwd"])
+    assert not retry.allowed and retry.approval_id and retry.approval_id != minted, retry.reason
+
+
+def test_grant_target_scope_undeterminable_retry_with_the_same_content_runs(cluster):
+    cluster["kubeconfig"].write_text(UNDETERMINABLE, encoding="utf-8")
+    assert grant_target(COMMAND, cwd=cluster["cwd"]).startswith(f"{UNREADABLE}:")
+    _mint(cluster["cwd"])
+    cluster["kubeconfig"].write_text(UNDETERMINABLE, encoding="utf-8")
+    retry = _run(cluster["cwd"])
+    assert retry.allowed, retry.reason
+
+
+def test_grant_target_scope_undeterminable_one_byte_changed_matches_nothing(cluster):
+    cluster["kubeconfig"].write_text(UNDETERMINABLE, encoding="utf-8")
+    minted = _mint(cluster["cwd"])
+    cluster["kubeconfig"].write_text(UNDETERMINABLE.replace("shop-dev", "shop-deW"), encoding="utf-8")
+    _asks_again(cluster, minted)
+
+
+def test_grant_target_scope_undeterminable_selector_changed_matches_nothing(cluster, monkeypatch):
+    cluster["kubeconfig"].write_text(UNDETERMINABLE, encoding="utf-8")
+    minted = _mint(cluster["cwd"])
+    twin = cluster["tmp"] / "kubeconfig-twin"
+    twin.write_text(UNDETERMINABLE, encoding="utf-8")
+    monkeypatch.setenv("KUBECONFIG", str(twin))
+    _asks_again(cluster, minted)
+
+
+def test_grant_target_scope_undeterminable_file_deleted_matches_nothing(cluster):
+    cluster["kubeconfig"].write_text(UNDETERMINABLE, encoding="utf-8")
+    minted = _mint(cluster["cwd"])
+    cluster["kubeconfig"].unlink()
+    _asks_again(cluster, minted)
 
 
 def test_grant_target_scope_refuses_an_unreadable_kubeconfig_at_lookup(cluster):
