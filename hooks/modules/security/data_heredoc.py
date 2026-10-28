@@ -9,8 +9,9 @@ The exemption is deliberately narrow, and each condition below is what keeps
 it from reaching text the shell would run:
 
 - the delimiter is QUOTED, so the body cannot expand ``$(...)`` or backticks;
-- the receiver is ``is_gaia_cli`` and a ``--<name>-file`` flag takes ``-``, which is how
-  the plan/task/brief/ac/memory commands read content from stdin -- or a bare
+- the receiver is ``is_gaia_cli`` (the unquoted bare word ``gaia``, or an absolute path whose realpath is the
+  ``bin/gaia`` of the installed Gaia this hook runs from) and reads the body through an unquoted ``--<name>-file -``,
+  as the plan/task/brief/ac/memory commands read content from stdin -- or a bare
   ``cat`` with no argument, which only echoes the body (the
   ``"$(cat <<'EOF' ... EOF)"`` idiom that passes a value to a CLI). Interpreters
   (``bash``, ``python3 -``, ``ssh``, ``kubectl exec``) are never receivers;
