@@ -27,6 +27,7 @@ CLEARED = ("GAIA_CLI_ALIASES", "KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG",
            "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME", "AWS_PROFILE", "TF_WORKSPACE",
            "CONTAINER_HOST", "CONTAINER_CONNECTION", "PULUMI_HOME", "GIT_DIR", "GIT_WORK_TREE",
            "AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID")
+TARGET_PREFIXES = ("KUBE", "HELM_", "TF_", "PULUMI_", "CLOUDSDK_", "AZURE_", "AWS_", "DOCKER_", "CONTAINER")
 ASK = ("SIGNED", "UNKNOWN")
 KUBECTL_READS = json.loads((Path(__file__).parent / "data" / "kubeconfig_r6_kubectl.json").read_text(encoding="utf-8"))
 
@@ -56,7 +57,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
     monkeypatch.setenv("GAIA_DB", str(tmp_path / "gaia-data" / "gaia.db"))
-    for name in CLEARED:
+    for name in [*CLEARED, *(n for n in os.environ if n.startswith(TARGET_PREFIXES))]:
         monkeypatch.delenv(name, raising=False)
     from gaia.paths import ensure_layout
 

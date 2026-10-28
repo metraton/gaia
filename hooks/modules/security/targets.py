@@ -44,6 +44,38 @@ _PROGRAM_NAMING_VARIABLES: Dict[str, frozenset] = {
 }
 _NAMING_VARIABLES = frozenset().union(*_PROGRAM_NAMING_VARIABLES.values())
 _KUBE_PROGRAMS = frozenset({"kubectl", "oc", "helm", "flux", "kustomize", "k9s"})
+_PROGRAM_ENV_PREFIXES: Dict[str, Tuple[str, ...]] = {
+    **dict.fromkeys(_KUBE_PROGRAMS | {"kubectx", "kubens"}, ("KUBE",)), "helm": ("HELM_", "KUBECONFIG"),
+    "terraform": ("TF_",), "pulumi": ("PULUMI_",), "gcloud": ("CLOUDSDK_",), "az": ("AZURE_",), "aws": ("AWS_",),
+    "docker": ("DOCKER_",), "podman": ("CONTAINER_", "CONTAINERS_"),
+}
+_TARGET_PREFIXES = tuple(sorted(set().union(*_PROGRAM_ENV_PREFIXES.values())))
+_HELM_SELECTORS = {
+    "HELM_KUBECONTEXT": ("kube-context", frozenset({"--kube-context"})),
+    "HELM_KUBEAPISERVER": ("kube-apiserver", frozenset({"--kube-apiserver"})),
+    "HELM_NAMESPACE": ("namespace", frozenset({"-n", "--namespace"})),
+}
+_AWS_SELECTORS = {
+    "AWS_PROFILE": ("profile", "--profile"), "AWS_DEFAULT_PROFILE": ("profile", "--profile"),
+    "AWS_REGION": ("region", "--region"), "AWS_DEFAULT_REGION": ("region", "--region"),
+    "AWS_CONFIG_FILE": ("aws-config", None), "AWS_SHARED_CREDENTIALS_FILE": ("aws-credentials", None),
+}
+_PROGRAM_SELECTORS: Dict[str, frozenset] = {
+    **dict.fromkeys(_KUBE_PROGRAMS | {"kubectx", "kubens"}, frozenset({"KUBECONFIG"})),
+    "helm": frozenset({"KUBECONFIG", *_HELM_SELECTORS}), "terraform": frozenset({"TF_WORKSPACE", "TF_DATA_DIR"}),
+    "pulumi": frozenset({"PULUMI_BACKEND_URL", "PULUMI_HOME"}), "aws": frozenset(_AWS_SELECTORS),
+    "gcloud": frozenset({"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_CONFIG"}),
+    "az": frozenset({"AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID"}),
+    "docker": frozenset({"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"}),
+    "podman": frozenset({"CONTAINER_HOST", "CONTAINER_CONNECTION"}),
+}
+_HARMLESS_VARIABLES = frozenset({
+    "HELM_DEBUG", "HELM_CACHE_HOME", "HELM_PLUGINS", "HELM_NO_PLUGINS", "TF_LOG", "TF_LOG_CORE", "TF_LOG_PROVIDER",
+    "TF_LOG_PATH", "TF_IN_AUTOMATION", "TF_INPUT", "TF_PLUGIN_CACHE_DIR", "PULUMI_SKIP_UPDATE_CHECK",
+    "CLOUDSDK_CORE_VERBOSITY", "CLOUDSDK_CORE_DISABLE_PROMPTS", "CLOUDSDK_CORE_DISABLE_USAGE_REPORTING",
+    "AZURE_CORE_OUTPUT", "AZURE_CORE_ONLY_SHOW_ERRORS", "AZURE_CORE_COLLECT_TELEMETRY", "AZURE_CORE_NO_COLOR",
+    "AWS_PAGER", "AWS_DEFAULT_OUTPUT", "DOCKER_CLI_HINTS", "DOCKER_BUILDKIT",
+})
 _KUBE_OPTIONS = {
     **dict.fromkeys((
         "-n", "--namespace", "--kubeconfig", "--user", "-s", "--server", "--request-timeout", "-v", "--v",
@@ -424,20 +456,41 @@ def _azure_subscriptions(value: str, profile, fetching: bool) -> List[str]:
     return [UNDETERMINED if fetching and _SUBSCRIPTION_ID.fullmatch(value) else value]
 
 
-def _pulumi_stack(args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> str:
-    """The stack selected for the nearest directory holding a pulumi project file; UNREADABLE when it holds both and
-    their stacks differ."""
+def _pulumi_projects(args: Sequence[str], cwd: Optional[str]) -> Optional[List[Path]]:
+    """The pulumi project files of the nearest directory holding one; None when the shell computes the directory."""
     chosen = _flag_values(args, frozenset({"-C", "--cwd"}))
     start = _in_directory(chosen[-1] if chosen else ".", cwd)
     if start is None or (chosen and _DYNAMIC.search(chosen[-1])):
-        return UNDETERMINED
+        return None
     start = start.absolute()
     for directory in (start, *start.parents):
         projects = [directory / name for name in _PULUMI_PROJECT_FILES if (directory / name).exists()]
         if projects:
-            stacks = {_pulumi_project_stack(project, environment, cwd) for project in projects}
-            return stacks.pop() if len(stacks) == 1 else UNREADABLE
-    return ""
+            return projects
+    return []
+
+
+def _pulumi_stack(projects: List[Path], environment: Dict[str, str], cwd: Optional[str]) -> str:
+    """The stack selected for *projects*; UNREADABLE when there are two and their stacks differ."""
+    stacks = {_pulumi_project_stack(project, environment, cwd) for project in projects}
+    return "" if not stacks else stacks.pop() if len(stacks) == 1 else UNREADABLE
+
+
+def _pulumi_backend(projects: List[Path], environment: Dict[str, str], cwd: Optional[str]) -> str:
+    """The backend PULUMI_BACKEND_URL, a project's ``backend`` or the credentials file's ``current`` names, in pulumi's order."""
+    if environment.get("PULUMI_BACKEND_URL"):
+        return _literal(environment["PULUMI_BACKEND_URL"])
+    for project in projects:
+        text = _read_text(project)
+        if text is None or _yaml_value(text, "backend") is not None:
+            return UNREADABLE
+    home = _config_root(environment, "PULUMI_HOME", (".pulumi",), cwd)
+    if home is None:
+        return UNDETERMINED
+    text = _read_text(home / "credentials.json")
+    if not text:
+        return "" if text == "" else UNREADABLE
+    return _certified(_json_value(text, str, "current", fold=True), text, "current")
 
 
 def _pulumi_project_stack(project: Path, environment: Dict[str, str], cwd: Optional[str]) -> str:
@@ -469,13 +522,17 @@ def _leading_option_values(program: str, args: Sequence[str], option: str) -> Li
 def _ambient(
     program: str, args: Sequence[str], environment: Dict[str, str], cwd: Optional[str], fetching: bool,
 ) -> List[Target]:
-    if program in _KUBE_PROGRAMS and not _flag_values(args, _KUBE_CONTEXT_FLAGS):
+    if program in _KUBE_PROGRAMS:
+        found = [Target(kind, _literal(environment[name])) for name, (kind, flags) in _HELM_SELECTORS.items()
+                 if program == "helm" and environment.get(name) and not _flag_values(args, flags)]
+        if _flag_values(args, _KUBE_CONTEXT_FLAGS) or any(t.kind == "kube-context" for t in found):
+            return found
         for value in _flag_values(args, frozenset({"--kubeconfig"})):
             path = _in_directory(value, cwd)
             if path is None or _DYNAMIC.search(value):
                 return [Target("kube-context", UNDETERMINED)]
             environment["KUBECONFIG"] = str(path)
-        return [Target("kube-context", _kube_context(environment, cwd))]
+        return found + [Target("kube-context", _kube_context(environment, cwd))]
     if program == "gcloud":
         for value in _flag_values(args, frozenset({"--configuration"})):
             environment["CLOUDSDK_ACTIVE_CONFIG_NAME"] = value
@@ -504,19 +561,31 @@ def _ambient(
             found += [Target("subscription", name)
                       for name in _azure_subscriptions(environment["AZURE_SUBSCRIPTION_ID"], profile, fetching)]
         return found
-    if program == "pulumi" and not _flag_values(args, _PROGRAM_TARGET_FLAGS["pulumi"]):
-        return [Target("stack", _pulumi_stack(args, environment, cwd))]
-    if program == "aws" and not _flag_values(args, frozenset({"--profile"})):
-        return [Target("profile", _literal(environment["AWS_PROFILE"]) if environment.get("AWS_PROFILE") else "")]
+    if program == "pulumi":
+        projects = _pulumi_projects(args, cwd)
+        if projects is None:
+            return [Target("stack", UNDETERMINED)]
+        found = [] if _flag_values(args, _PROGRAM_TARGET_FLAGS["pulumi"]) else [
+            Target("stack", _pulumi_stack(projects, environment, cwd))]
+        return found + [Target("backend", _pulumi_backend(projects, environment, cwd))]
+    if program == "aws":
+        return [Target(kind, _literal(environment[name])) for name, (kind, flag) in _AWS_SELECTORS.items()
+                if environment.get(name) and not (flag and _flag_values(args, frozenset({flag})))]
     if program == "terraform":
         if environment.get("TF_WORKSPACE"):
             return [Target("workspace", _literal(environment["TF_WORKSPACE"]))]
-        directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd)
-        if directory is None:
-            return [Target("workspace", UNDETERMINED)]
-        text = _read_text(directory / ".terraform" / "environment")
-        return [Target("workspace", UNREADABLE if text is None else text.strip())]
+        located = _terraform_environment(args, environment, cwd)
+        text = None if located is None else _read_text(located)
+        return [Target("workspace", UNDETERMINED if located is None else UNREADABLE if text is None else text.strip())]
     return []
+
+
+def _terraform_environment(args: Sequence[str], environment: Dict[str, str], cwd: Optional[str]) -> Optional[Path]:
+    directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd)
+    data = environment.get("TF_DATA_DIR") or ".terraform"
+    if directory is None or _DYNAMIC.search(data):
+        return None
+    return _in_directory(data, str(directory)) / "environment"
 
 
 def _gcloud_configuration_targets(name: str, environment: Dict[str, str], cwd: Optional[str]) -> List[Target]:
@@ -622,11 +691,12 @@ def _consultable(program: str, args: Sequence[str], environment: Dict[str, str],
             return [_file_state(root / "azureProfile.json"), _file_state(root / "config")]
         if program in ("docker", "podman"):
             return _states([_file_state(root / "config.json")], _tree_state(root / "contexts"))
-        return _states(_pulumi_project_files(args, cwd), _tree_state(root / "workspaces"))
+        return _states(_pulumi_project_files(args, cwd), [_file_state(root / "credentials.json")],
+                       _tree_state(root / "workspaces"))
     if program == "terraform":
-        directory = _in_directory(next((a.partition("=")[2] for a in args if a.startswith("-chdir=")), "."), cwd)
-        return None if directory is None else [_file_state(directory / ".terraform" / "environment")]
-    return None
+        located = _terraform_environment(args, environment, cwd)
+        return None if located is None else [_file_state(located)]
+    return [] if program in _PROGRAM_ENV_PREFIXES else None
 
 
 def _states(*groups: Optional[list]) -> Optional[list]:
@@ -667,6 +737,9 @@ def command_targets(
         found = [Target(kind, _literal(value)) for value in flagged]
     found += [Target("variable", _literal(environment[name])) for name in sorted(_naming_variables(program))
               if name in environment and (name in (inherited or {}) or any(w.startswith(f"{name}=") for w in assignments))]
+    inline = {*(inherited or {}), *(_ASSIGNMENT.fullmatch(w).group(1) for w in assignments)}
+    found += [Target("setting", UNREADABLE) for name in sorted(inline) if name.startswith(_PROGRAM_ENV_PREFIXES.get(
+        program, ())) and name not in _PROGRAM_SELECTORS.get(program, frozenset()) | _HARMLESS_VARIABLES]
     if operation in _SWITCH_WORDS.get(program, ()):
         destinations = _flag_values(args, _SWITCH_DESTINATION_FLAGS.get(program, frozenset()))[-1:]
         if not destinations and operands:
@@ -755,7 +828,7 @@ def _is_read(operation: Optional[str]) -> bool:
 
 
 def naming_variables_on_line(line: str) -> Dict[str, str]:
-    """The naming variables (``DOCKER_CONTEXT``, ``CLOUDSDK_CORE_PROJECT``...) a literal assignment on *line* sets, with their values."""
+    """The target variables (``DOCKER_CONTEXT``, ``TF_DATA_DIR``...) a literal assignment on *line* sets, with their values."""
     from ..tools.shell_parser import parse_command, shell_split
 
     assigned: Dict[str, str] = {}
@@ -770,7 +843,7 @@ def naming_variables_on_line(line: str) -> Dict[str, str]:
             continue
         for word in words:
             match = _ASSIGNMENT.fullmatch(word)
-            if match and match.group(1) in _NAMING_VARIABLES:
+            if match and (match.group(1) in _NAMING_VARIABLES or match.group(1).startswith(_TARGET_PREFIXES)):
                 assigned[match.group(1)] = match.group(2)
     return assigned
 
@@ -817,10 +890,10 @@ def declaration_for(cwd: Optional[str]) -> Dict:
 
 
 def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
-    """The resolved targets a grant for *command* binds to, as one string; UNDETERMINED when the shell computes one.
+    """The targets and the hashed prefixed variables a grant for *command* binds to; UNDETERMINED when the shell computes one.
 
     A target a config file names without certainty binds to UNREADABLE plus a fingerprint of what would decide it: the
-    command, *cwd*, the selector variables, the targets, and every file the tool could consult (_consultable) with its
+    command, *cwd*, the selector and prefixed variables, the targets, and every file the tool could consult (_consultable) with its
     content hash. UNDETERMINED when that set is not known or a file in it cannot be hashed.
     """
     reads: list = []
@@ -834,17 +907,23 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
     if any(t.name == UNDETERMINED for t in targets):
         return UNDETERMINED
     found = sorted([t.kind, t.name] for t in targets)
-    if not any(t.name == UNREADABLE for t in targets):
-        return json.dumps(found) if found else ""
     try:
         context = _command_context(command, cwd, None)
+    except Exception:
+        return UNDETERMINED
+    prefixes = _PROGRAM_ENV_PREFIXES.get(context[0], ()) if context else ()
+    settings = sorted([name, value] for name, value in context[2].items() if name.startswith(prefixes)) if prefixes else []
+    if not any(t.name == UNREADABLE for t in targets):
+        bound = json.dumps(found) if found else ""
+        return f"{bound}#{hashlib.sha256(json.dumps(settings).encode('utf-8')).hexdigest()}" if settings else bound
+    try:
         consulted = None if context is None else _consultable(*context[:4])
     except Exception:
         return UNDETERMINED
     if consulted is None or any(digest is None for _, _, digest in reads + consulted):
         return UNDETERMINED
     selectors = {name: context[2].get(name) for name in _SELECTOR_VARIABLES}
-    inputs = json.dumps([command, cwd, selectors, found, reads, consulted], sort_keys=True)
+    inputs = json.dumps([command, cwd, selectors, settings, found, reads, consulted], sort_keys=True)
     return f"{UNREADABLE}:{hashlib.sha256(inputs.encode('utf-8')).hexdigest()}"
 
 
