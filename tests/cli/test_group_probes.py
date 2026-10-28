@@ -107,6 +107,42 @@ def test_group_in_two_workspaces_without_workspace_reads_both_and_says_so(db, ca
     assert captured.err == ""
 
 
+def test_unknown_group_under_json_prints_the_error_body_and_fails(db, capsys):
+    _seed(db, [(WS, "x-tool", "github.com/acme/x-tool", "bildwiz")], [])
+    rc = memory_mod._cmd_get_relevant(_relevant(group="buildwiz", json=True))
+    assert rc == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "not_found", "name": "buildwiz",
+        "candidates": [{"workspace": WS, "name": "bildwiz"}],
+    }
+
+
+def test_workspace_given_and_group_elsewhere_names_that_workspace(db, capsys):
+    _seed(db, [("other", "b-iac", "github.com/other/b-iac", "only-other")], [])
+    rc = memory_mod._cmd_get_relevant(_relevant(group="only-other", workspace=WS, json=False))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "no group named 'only-other' in workspace acme" in err
+    assert "It exists in workspace other." in err
+
+
+def test_workspace_narrows_members_but_the_group_key_is_read_everywhere(db, capsys):
+    _seed(db, [(WS, "a-iac", "github.com/acme/a-iac", "shared"),
+               ("other", "b-iac", "github.com/other/b-iac", "shared")],
+          [(WS, "t_key_in_acme", "shared"), ("other", "t_key_in_other", "shared"),
+           (WS, "t_a", "a_iac"), ("other", "t_b", "b_iac")])
+    assert memory_mod._cmd_get_relevant(_relevant(group="shared", workspace="other")) == 0
+    assert _names(capsys.readouterr().out) == {"t_key_in_acme", "t_key_in_other", "t_b"}
+
+
+def test_a_memory_initiative_no_folder_carries_points_at_initiative(db, capsys):
+    _seed(db, [(WS, "x-tool", "github.com/acme/x-tool", "bildwiz")], [(WS, "t_logical", "branchkinect")])
+    rc = memory_mod._cmd_get_relevant(_relevant(group="branchkinect", json=False))
+    captured = capsys.readouterr()
+    assert rc == 1 and captured.out == ""
+    assert "use --initiative branchkinect" in captured.err
+
+
 def test_group_member_keys_include_folder_and_remote_spellings(db, capsys):
     _seed(db, [(WS, "folder-name", "github.com/acme/remote-name", "g")],
           [(WS, "t_folder", "folder_name"), (WS, "t_remote", "remote_name")])

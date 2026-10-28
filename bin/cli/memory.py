@@ -2225,41 +2225,67 @@ def _project_mode_item(row: dict, label: str, section: str) -> dict:
     }
 
 
-def _group_memory_keys(group: str, workspace: str | None) -> list[str] | None:
-    """The group's key and each active member's folder and remote keys; None, after saying why on stderr, when no project has that group."""
+def _group_memory_keys(group: str, workspace: str | None) -> list[str] | dict:
+    """The group's key and each active member's folder and remote keys, or the not-found payload when no member is in scope."""
     import difflib
 
     from gaia.store.writer import _connect, initiative_from_project_ref, normalize_initiative
 
+    key = normalize_initiative(group)
     con = _connect()
     try:
         grouped = con.execute(
             "SELECT workspace, name, project_identity, group_name FROM projects "
             "WHERE status = 'active' AND group_name IS NOT NULL"
         ).fetchall()
+        is_initiative = con.execute(
+            "SELECT 1 FROM memory WHERE deleted_at IS NULL AND initiative = ? LIMIT 1", (key,),
+        ).fetchone() is not None
     finally:
         con.close()
     named = [r for r in grouped if r[3].lower() == group.strip().lower()]
     members = [r for r in named if not workspace or r[0] == workspace]
     if not members:
-        where = f" in workspace {workspace}" if workspace else ""
-        print(f"gaia memory get-relevant: no group named {group!r}{where}.", file=sys.stderr)
-        elsewhere = sorted({r[0] for r in named})
         closest = difflib.get_close_matches(group.strip().lower(), sorted({r[3] for r in grouped}), n=5)
+        miss = {
+            "error": "not_found", "name": group,
+            "candidates": [
+                {"workspace": ws, "name": g}
+                for g in closest for ws in sorted({r[0] for r in grouped if r[3] == g})
+            ],
+        }
+        elsewhere = sorted({r[0] for r in named})
         if elsewhere:
-            print(f"It exists in workspace {', '.join(elsewhere)}.", file=sys.stderr)
-        elif closest:
-            print(f"Closest groups: {', '.join(closest)}", file=sys.stderr)
-        return None
+            miss["hint"] = f"It exists in workspace {', '.join(elsewhere)}."
+        elif is_initiative:
+            miss["hint"] = (f"{group!r} is a memory initiative no folder group carries: "
+                            f"use --initiative {key}.")
+        return miss
     workspaces = sorted({r[0] for r in members})
     if len(workspaces) > 1:
         print(f"gaia memory get-relevant: group {group!r} exists in workspaces "
-              f"{', '.join(workspaces)}; reading all of them (--workspace picks one).",
+              f"{', '.join(workspaces)}; reading the members of all of them "
+              f"(--workspace narrows the members; the group key is read in every "
+              f"workspace, as with --initiative).",
               file=sys.stderr)
-    keys = [normalize_initiative(group)]
+    keys = [key]
     for _, name, identity, _ in members:
         keys += [normalize_initiative(name), initiative_from_project_ref(identity)]
     return list(dict.fromkeys(k for k in keys if k))
+
+
+def _print_group_miss(miss: dict, workspace: str | None, as_json: bool) -> None:
+    """Report a --group that names no group in scope: the payload on stdout under --json, prose on stderr otherwise."""
+    if as_json:
+        print(json.dumps(miss, indent=2))
+        return
+    where = f" in workspace {workspace}" if workspace else ""
+    print(f"gaia memory get-relevant: no group named {miss['name']!r}{where}.", file=sys.stderr)
+    if "hint" in miss:
+        print(miss["hint"], file=sys.stderr)
+    elif miss["candidates"]:
+        names = dict.fromkeys(c["name"] for c in miss["candidates"])
+        print(f"Closest groups: {', '.join(names)}", file=sys.stderr)
 
 
 def _render_project_mode(args, workspace: str, initiative_arg: str | None,
@@ -2297,7 +2323,8 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     if group_arg:
         key = canonical_project_key(initiative=group_arg)
         keys = _group_memory_keys(group_arg, getattr(args, "workspace", None))
-        if keys is None:
+        if isinstance(keys, dict):
+            _print_group_miss(keys, getattr(args, "workspace", None), as_json)
             return 1
     elif initiative_arg:
         key = canonical_project_key(initiative=initiative_arg)
@@ -3931,9 +3958,13 @@ def register(subparsers):
         help="Project mode over a whole group: the group key (bildwiz) plus "
              "the key of every active project whose group it is "
              "(bildwiz_iac, ...), read at once and uncapped like --initiative. "
-             "A group in several workspaces is read in all of them, said on "
-             "stderr; --workspace narrows it to one. A group no project "
-             "carries exits 1 naming the closest groups.",
+             "--workspace narrows the members to that workspace; the group "
+             "key itself is read in every workspace, as with --initiative. "
+             "Without --workspace, a group in several workspaces takes the "
+             "members of all of them, said on stderr. A group no project "
+             "carries exits 1 naming the closest groups (an error body under "
+             "--json), or pointing at --initiative when it is a memory "
+             "initiative.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,
