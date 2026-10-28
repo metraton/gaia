@@ -273,8 +273,11 @@ def resolve_name(word: str) -> tuple[bool, list[str]]:
         close = set(difflib.get_close_matches(word.lower(), {e[0].lower() for e in index}, n=5, cutoff=0.6))
         hits = [entry for entry in index if entry[0].lower() in close]
     lines = [f"{name} -- {what}" for name, _kind, what in hits]
-    if len({kind for _name, kind, _what in hits}) > 1:
-        lines.append(f"{word!r} names more than one level: say which, or ask the user")
+    levels: dict[str, set[str]] = {}
+    for name, kind, _what in hits:
+        levels.setdefault(name.lower(), set()).add(kind)
+    lines += [f"{name!r} names more than one level: say which, or ask the user"
+              for name, kinds in levels.items() if len(kinds) > 1]
     return exact, lines
 
 

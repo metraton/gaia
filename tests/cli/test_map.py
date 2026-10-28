@@ -216,6 +216,18 @@ def test_a_misspelled_name_answers_with_the_closest_names(runtime, capsys):
     assert out.startswith("No name 'buildwiz'; closest names:") and "bildwiz -- group" in out
 
 
+def test_closest_names_at_different_levels_are_not_one_name_at_two_levels(runtime, capsys):
+    _env, db = runtime
+    _seed_names(db)
+    _exec(db, "INSERT INTO projects (workspace, name, path, group_name, status) "
+              "VALUES ('aaxis', 'bildwizz', '/w/aaxis/bildwizz', NULL, 'active')")
+
+    assert _load_map().cmd_map(type("A", (), {"intent": "buildwiz"})()) == 1
+    out = capsys.readouterr().out
+    assert "bildwiz -- group" in out and "bildwizz -- project" in out, out
+    assert "more than one level" not in out
+
+
 def _sha(db: Path) -> str:
     return hashlib.sha256(db.read_bytes()).hexdigest()
 

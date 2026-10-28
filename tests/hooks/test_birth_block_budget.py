@@ -182,9 +182,13 @@ def test_under_pressure_lists_become_counts_and_the_roster_a_pointer(corpus, mai
     assert "Open contracts: 12" in context
     assert "P-" + "0" * 32 not in context
     assert f"gaia session snapshot --session-id {SESSION}" in context
+    from modules.session.session_manifest import BIRTH_BUDGET, build_projects_section
+
     projects = context[context.index("## Projects"):]
+    room = BIRTH_BUDGET - (len(context) - len(projects))
     assert "me-project-" not in projects
-    assert "context get" in projects
+    assert projects == build_projects_section(room), "the richest index level that fits the room"
+    assert projects.rstrip().endswith("context project <nombre>")
     assert RESUME in context
 
 

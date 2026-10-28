@@ -260,7 +260,8 @@ READ -- changes nothing. The orchestrator runs these itself.
                  what is live now (due reminders, pending proposals, turns never
                  closed, unread signals, active plans) with the verb that moves
                  each, the five habits, and which capability serves an intent;
-                 `map <intent>` expands one row.
+                 `map <intent>` expands one row. A name you cannot place:
+                 `map <word>` says which workspace, group or project it is.
   signals
                  the curated changes behind a `~ changed:` line, each with the
                  command that opens it.

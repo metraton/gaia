@@ -132,4 +132,5 @@ When you modify any Gaia component (hook, skill, agent definition, routing confi
 
 - **Skills teach process. Agents teach identity. Runtime enforces contracts.** Never duplicate across these layers.
 - **Coordination before execution.** The orchestrator cannot edit code or run general commands. Its guarded Gaia CLI lane reads coordination state and persists only decisions it owns; domain evidence and execution still belong to specialists.
+- **The CLI teaches its own use.** Every help carries invariant, failure semantics and composition; a not-found answer says what the word IS (a workspace, a group, a project, a slug, a memory key) and the verb that reaches it; a map row fires on an observable event, never on a self-evaluation.
 - **Consolidation loop.** For multi-surface work, the orchestrator may dispatch multiple agent rounds, stopping when gaps are no longer actionable.
