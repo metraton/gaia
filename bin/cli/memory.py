@@ -1607,11 +1607,13 @@ def _cmd_get_relevant(args) -> int:
 
     initiative_arg = getattr(args, "initiative", None)
     project_arg = getattr(args, "project", None)
+    group_arg = getattr(args, "group", None)
     sections_arg = getattr(args, "sections", None)
 
-    if initiative_arg or project_arg:
+    if initiative_arg or project_arg or group_arg:
         return _render_project_mode(
             args, workspace, initiative_arg, as_json, project_arg=project_arg,
+            group_arg=group_arg,
         )
     if sections_arg:
         return _render_sections(args, workspace, as_json)
@@ -2223,8 +2225,72 @@ def _project_mode_item(row: dict, label: str, section: str) -> dict:
     }
 
 
+def _group_memory_keys(group: str, workspace: str | None) -> list[str] | dict:
+    """The group's key and each active member's folder and remote keys, or the not-found payload when no member is in scope."""
+    import difflib
+
+    from gaia.store.writer import _connect, initiative_from_project_ref, normalize_initiative
+
+    key = normalize_initiative(group)
+    con = _connect()
+    try:
+        grouped = con.execute(
+            "SELECT workspace, name, project_identity, group_name FROM projects "
+            "WHERE status = 'active' AND group_name IS NOT NULL"
+        ).fetchall()
+        is_initiative = con.execute(
+            "SELECT 1 FROM memory WHERE deleted_at IS NULL AND initiative = ? LIMIT 1", (key,),
+        ).fetchone() is not None
+    finally:
+        con.close()
+    named = [r for r in grouped if r[3].lower() == group.strip().lower()]
+    members = [r for r in named if not workspace or r[0] == workspace]
+    if not members:
+        closest = difflib.get_close_matches(group.strip().lower(), sorted({r[3] for r in grouped}), n=5)
+        miss = {
+            "error": "not_found", "name": group,
+            "candidates": [
+                {"workspace": ws, "name": g}
+                for g in closest for ws in sorted({r[0] for r in grouped if r[3] == g})
+            ],
+        }
+        elsewhere = sorted({r[0] for r in named})
+        if elsewhere:
+            miss["hint"] = f"It exists in workspace {', '.join(elsewhere)}."
+        elif is_initiative:
+            miss["hint"] = (f"{group!r} is a memory initiative no folder group carries: "
+                            f"use --initiative {key}.")
+        return miss
+    workspaces = sorted({r[0] for r in members})
+    if len(workspaces) > 1:
+        print(f"gaia memory get-relevant: group {group!r} exists in workspaces "
+              f"{', '.join(workspaces)}; reading the members of all of them "
+              f"(--workspace narrows the members; the group key is read in every "
+              f"workspace, as with --initiative).",
+              file=sys.stderr)
+    keys = [key]
+    for _, name, identity, _ in members:
+        keys += [normalize_initiative(name), initiative_from_project_ref(identity)]
+    return list(dict.fromkeys(k for k in keys if k))
+
+
+def _print_group_miss(miss: dict, workspace: str | None, as_json: bool) -> None:
+    """Report a --group that names no group in scope: the payload on stdout under --json, prose on stderr otherwise."""
+    if as_json:
+        print(json.dumps(miss, indent=2))
+        return
+    where = f" in workspace {workspace}" if workspace else ""
+    print(f"gaia memory get-relevant: no group named {miss['name']!r}{where}.", file=sys.stderr)
+    if miss["candidates"]:
+        names = dict.fromkeys(c["name"] for c in miss["candidates"])
+        print(f"Closest groups: {', '.join(names)}", file=sys.stderr)
+    if "hint" in miss:
+        print(miss["hint"], file=sys.stderr)
+
+
 def _render_project_mode(args, workspace: str, initiative_arg: str | None,
-                         as_json: bool, *, project_arg: str | None = None) -> int:
+                         as_json: bool, *, project_arg: str | None = None,
+                         group_arg: str | None = None) -> int:
     """Project mode: the WHOLE live-pending corpus of ONE requested project.
 
     ``--initiative=X`` and ``--project=X`` resolve X to the canonical project
@@ -2254,10 +2320,18 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     from gaia.store.reader import anchors_by_project, pending_threads_by_project
     from gaia.store.writer import canonical_project_key
 
-    if initiative_arg:
+    if group_arg:
+        key = canonical_project_key(initiative=group_arg)
+        keys = _group_memory_keys(group_arg, getattr(args, "workspace", None))
+        if isinstance(keys, dict):
+            _print_group_miss(keys, getattr(args, "workspace", None), as_json)
+            return 1
+    elif initiative_arg:
         key = canonical_project_key(initiative=initiative_arg)
+        keys = [key]
     else:
         key = canonical_project_key(project_ref=project_arg)
+        keys = [key]
 
     sections_arg = getattr(args, "sections", None)
     requested = (
@@ -2269,13 +2343,13 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
         if section in requested
     }
 
-    if key == _OTHERS_BUCKET or key is None:
+    if not group_arg and (key == _OTHERS_BUCKET or key is None):
         rows = _fetch_pending_vivo(workspace, "  AND initiative IS NULL ")
         anchors: list[dict] = []
         label = _OTHERS_BUCKET
     else:
-        rows = pending_threads_by_project([key])
-        anchors = anchors_by_project([key]) if "anchor" in requested else []
+        rows = pending_threads_by_project(keys)
+        anchors = anchors_by_project(keys) if "anchor" in requested else []
         label = key
     rows = [r for r in rows if r.get("status") in statuses]
 
@@ -3684,12 +3758,11 @@ def register(subparsers):
     add_p.add_argument(
         "--initiative", default=None, metavar="KEY",
         help=(
-            "Canonical project/initiative grouping key (memory.initiative). "
-            "Use for a LOGICAL initiative that is NOT a git repo (branchkinect, "
-            "buildwiz, axisio, ...) -- normalized to lowercase_snake. When "
-            "--project / --project-ref anchors a git project, initiative is "
-            "auto-derived from the repo basename (gaia, balance); pass this only "
-            "to set a key with no git anchor or to override the derived one."
+            "The memory.initiative key, normalized to lowercase_snake: the "
+            "group key (bildwiz) for a row true of a whole group, or, when "
+            "--project / --project-ref anchors a git project, the project key "
+            "derived from its folder (bildwiz_iac), filled in for you. Pass "
+            "it to write at group level or to override the derived key."
         ),
     )
     add_p.add_argument(
@@ -3879,6 +3952,19 @@ def register(subparsers):
         help="Project mode by project: a name, git path or remote identity "
              "(github.com/owner/repo) resolved to the same canonical key as "
              "--initiative; same output.",
+    )
+    rel_project.add_argument(
+        "--group", default=None, metavar="NAME",
+        help="Project mode over a whole group: the group key (bildwiz) plus "
+             "the key of every active project whose group it is "
+             "(bildwiz_iac, ...), read at once and uncapped like --initiative. "
+             "--workspace narrows the members to that workspace; the group "
+             "key itself is read in every workspace, as with --initiative. "
+             "Without --workspace, a group in several workspaces takes the "
+             "members of all of them, said on stderr. A group no project "
+             "carries exits 1 naming the closest groups (an error body under "
+             "--json), or pointing at --initiative when it is a memory "
+             "initiative.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,

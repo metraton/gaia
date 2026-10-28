@@ -200,6 +200,39 @@ def _render_human(report, *, dry_run: bool) -> None:
 
     if not dry_run:
         print(f"{prefix}marked_missing     : {report.marked_missing}")
+    _render_summary(report, dry_run=dry_run)
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _render_summary(report, *, dry_run: bool) -> None:
+    """Close with the workspace as groups of projects and the three words that name the levels."""
+    own = [p for p in report.projects if p["workspace"] == report.resolved_workspace]
+    if not own:
+        return
+    first = own[0]
+    depth = len(first["container"].split("/")) + 1 if first["container"] else 1
+    root = Path(first["path"]).parents[depth - 1]
+    groups: dict[str, list[str]] = {}
+    for p in own:
+        groups.setdefault(p["container"] or "", []).append(p["project"])
+    ungrouped = groups.pop("", [])
+    verb = "would index " if dry_run else ""
+    print()
+    print(f"Workspace {report.resolved_workspace} ({root}): {verb}"
+          f"{_plural(len(own), 'project')} in {_plural(len(groups), 'group')}.")
+    for name in sorted(groups):
+        print(f"  {name} ({len(groups[name])}): {', '.join(sorted(groups[name]))}")
+    if ungrouped:
+        print(f"  ungrouped ({len(ungrouped)}): {', '.join(sorted(ungrouped))}")
+    print("A workspace is the folder you declared. Each folder inside it is a group: "
+          "the name of a product or client. Each git repository inside a group is a "
+          "project, named after its folder.")
+    print("To rename a group, rename the folder and run gaia scan again.")
+    print("One project: gaia context project NAME. "
+          "Memory for a group: gaia memory get-relevant --group NAME.")
 
 
 # ---------------------------------------------------------------------------

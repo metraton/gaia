@@ -117,6 +117,46 @@ def test_partial_words_resolve_to_nothing(db, capsys, name):
     assert "group of" not in capsys.readouterr().out
 
 
+@pytest.fixture()
+def aos(db):
+    con = sqlite3.connect(db)
+    try:
+        for name in ("aos", "aos-iac"):
+            con.execute(
+                "INSERT INTO projects (workspace, name, path, project_identity, group_name, status) "
+                "VALUES (?, ?, ?, ?, 'aos', 'active')", (WS, name, f"/work/aos/{name}", f"github.com/acme/{name}"),
+            )
+        con.commit()
+    finally:
+        con.close()
+    return db
+
+
+def test_a_name_both_group_and_project_shows_the_group_then_the_project(aos, capsys):
+    assert _cmd_project(_Args("aos")) == 0
+    out = capsys.readouterr().out
+
+    assert out.startswith(
+        "aos is both a group and a project. The group aos holds 2 projects in "
+        "workspace acme: aos, aos-iac. Below is the project aos.\n"
+    )
+    assert "name             : aos\n" in out
+    assert "path             : /work/aos/aos\n" in out
+
+
+def test_a_name_both_group_and_project_carries_the_group_in_json(aos, capsys):
+    assert _cmd_project(_Args("aos", json_output=True)) == 0
+    out = json.loads(capsys.readouterr().out)
+
+    assert out["project"]["name"] == "aos"
+    assert out["group_of_same_name"] == {"group": "aos", "workspace": WS, "members": ["aos", "aos-iac"]}
+
+
+def test_a_project_named_unlike_any_group_carries_no_group_note(aos, capsys):
+    assert _cmd_project(_Args("aos-iac", json_output=True)) == 0
+    assert "group_of_same_name" not in json.loads(capsys.readouterr().out)
+
+
 def test_group_json_carries_members_and_sections(db, capsys):
     rc = _cmd_project(_Args("grp", json_output=True))
     out = json.loads(capsys.readouterr().out)
