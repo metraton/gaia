@@ -1607,11 +1607,13 @@ def _cmd_get_relevant(args) -> int:
 
     initiative_arg = getattr(args, "initiative", None)
     project_arg = getattr(args, "project", None)
+    group_arg = getattr(args, "group", None)
     sections_arg = getattr(args, "sections", None)
 
-    if initiative_arg or project_arg:
+    if initiative_arg or project_arg or group_arg:
         return _render_project_mode(
             args, workspace, initiative_arg, as_json, project_arg=project_arg,
+            group_arg=group_arg,
         )
     if sections_arg:
         return _render_sections(args, workspace, as_json)
@@ -2223,8 +2225,25 @@ def _project_mode_item(row: dict, label: str, section: str) -> dict:
     }
 
 
+def _group_memory_keys(group: str, workspace: str | None) -> list[str]:
+    """The group's own key, then each active member's keys by folder name and by remote identity."""
+    from gaia.store.project_context import resolve_group
+    from gaia.store.writer import _connect, initiative_from_project_ref, normalize_initiative
+
+    con = _connect()
+    try:
+        members = resolve_group(con, group, workspace)
+    finally:
+        con.close()
+    keys = [normalize_initiative(group)]
+    for member in members:
+        keys += [normalize_initiative(member["name"]), initiative_from_project_ref(member["identity"])]
+    return list(dict.fromkeys(k for k in keys if k))
+
+
 def _render_project_mode(args, workspace: str, initiative_arg: str | None,
-                         as_json: bool, *, project_arg: str | None = None) -> int:
+                         as_json: bool, *, project_arg: str | None = None,
+                         group_arg: str | None = None) -> int:
     """Project mode: the WHOLE live-pending corpus of ONE requested project.
 
     ``--initiative=X`` and ``--project=X`` resolve X to the canonical project
@@ -2254,10 +2273,15 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     from gaia.store.reader import anchors_by_project, pending_threads_by_project
     from gaia.store.writer import canonical_project_key
 
-    if initiative_arg:
+    if group_arg:
+        key = canonical_project_key(initiative=group_arg)
+        keys = _group_memory_keys(group_arg, getattr(args, "workspace", None))
+    elif initiative_arg:
         key = canonical_project_key(initiative=initiative_arg)
+        keys = [key]
     else:
         key = canonical_project_key(project_ref=project_arg)
+        keys = [key]
 
     sections_arg = getattr(args, "sections", None)
     requested = (
@@ -2269,13 +2293,13 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
         if section in requested
     }
 
-    if key == _OTHERS_BUCKET or key is None:
+    if not group_arg and (key == _OTHERS_BUCKET or key is None):
         rows = _fetch_pending_vivo(workspace, "  AND initiative IS NULL ")
         anchors: list[dict] = []
         label = _OTHERS_BUCKET
     else:
-        rows = pending_threads_by_project([key])
-        anchors = anchors_by_project([key]) if "anchor" in requested else []
+        rows = pending_threads_by_project(keys)
+        anchors = anchors_by_project(keys) if "anchor" in requested else []
         label = key
     rows = [r for r in rows if r.get("status") in statuses]
 
@@ -3684,12 +3708,11 @@ def register(subparsers):
     add_p.add_argument(
         "--initiative", default=None, metavar="KEY",
         help=(
-            "Canonical project/initiative grouping key (memory.initiative). "
-            "Use for a LOGICAL initiative that is NOT a git repo (branchkinect, "
-            "buildwiz, axisio, ...) -- normalized to lowercase_snake. When "
-            "--project / --project-ref anchors a git project, initiative is "
-            "auto-derived from the repo basename (gaia, balance); pass this only "
-            "to set a key with no git anchor or to override the derived one."
+            "The memory.initiative key, normalized to lowercase_snake: the "
+            "group key (bildwiz) for a row true of a whole group, or, when "
+            "--project / --project-ref anchors a git project, the project key "
+            "derived from its folder (bildwiz_iac), filled in for you. Pass "
+            "it to write at group level or to override the derived key."
         ),
     )
     add_p.add_argument(
@@ -3879,6 +3902,14 @@ def register(subparsers):
         help="Project mode by project: a name, git path or remote identity "
              "(github.com/owner/repo) resolved to the same canonical key as "
              "--initiative; same output.",
+    )
+    rel_project.add_argument(
+        "--group", default=None, metavar="NAME",
+        help="Project mode over a whole group: the group key (bildwiz) plus "
+             "the key of every active project whose group it is "
+             "(bildwiz_iac, ...), read at once and uncapped like --initiative. "
+             "When two workspaces hold a group of that name, --workspace "
+             "picks one.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,

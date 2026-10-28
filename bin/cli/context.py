@@ -133,6 +133,11 @@ def _render_context_tabular(ctx: dict, section: str | None = None) -> None:
     for key, rows in workspace.items():
         count = len(rows) if isinstance(rows, list) else "?"
         print(f"  {key:<28}  {count} row(s)")
+    if workspace.get("projects"):
+        print()
+        print("projects:")
+        for project in workspace["projects"]:
+            print(f"  {project.get('name'):<28}  group: {project.get('group') or '(none)'}")
 
 
 def _cmd_show(args) -> int:
@@ -883,6 +888,13 @@ def _cmd_project(args) -> int:
         r_workspace = row["workspace"]
         r_name = row["name"]
 
+        from gaia.store.project_context import resolve_group
+
+        same_name_group = [
+            m["name"] for m in resolve_group(con, name, r_workspace)
+            if m["workspace"] == r_workspace
+        ]
+
         from gaia.store.workspace_curation import is_dangling_facet
 
         facets = [
@@ -954,9 +966,19 @@ def _cmd_project(args) -> int:
                 )
             if footer:
                 out["pending_footer"] = footer
+            if same_name_group:
+                out["group_of_same_name"] = {
+                    "group": name, "workspace": r_workspace, "members": same_name_group,
+                }
             print(json.dumps(out, indent=2, default=str))
             return 0
 
+        if same_name_group:
+            print(
+                f"{name} is both a group and a project. The group {name} holds "
+                f"{len(same_name_group)} projects in workspace {r_workspace}: "
+                f"{', '.join(same_name_group)}. Below is the project {r_name}.\n"
+            )
         print(f"workspace        : {r_workspace}")
         print(f"name             : {r_name}")
         print(f"resolved_via     : {resolved_via}")
