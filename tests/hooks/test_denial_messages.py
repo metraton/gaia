@@ -201,7 +201,8 @@ def test_gh_auth_switch_denial_suggestions_classify_free():
     suggested = re.findall(r"`([^`]+)`", message)
     assert any(c.startswith("GH_TOKEN=") for c in suggested), f"message names no per-process form: {message!r}"
 
-    for command in suggested:
+    assert classify_command_tier("gh auth login") == SecurityTier.T3_BLOCKED
+    for command in (c for c in suggested if c != "gh auth login"):
         assert classify_command_tier(command) == SecurityTier.T0_READ_ONLY, (
             f"suggested {command!r} is not free: {classify_command_tier(command)}"
         )
