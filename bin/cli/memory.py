@@ -2281,11 +2281,11 @@ def _print_group_miss(miss: dict, workspace: str | None, as_json: bool) -> None:
         return
     where = f" in workspace {workspace}" if workspace else ""
     print(f"gaia memory get-relevant: no group named {miss['name']!r}{where}.", file=sys.stderr)
-    if "hint" in miss:
-        print(miss["hint"], file=sys.stderr)
-    elif miss["candidates"]:
+    if miss["candidates"]:
         names = dict.fromkeys(c["name"] for c in miss["candidates"])
         print(f"Closest groups: {', '.join(names)}", file=sys.stderr)
+    if "hint" in miss:
+        print(miss["hint"], file=sys.stderr)
 
 
 def _render_project_mode(args, workspace: str, initiative_arg: str | None,

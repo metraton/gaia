@@ -143,6 +143,23 @@ def test_a_memory_initiative_no_folder_carries_points_at_initiative(db, capsys):
     assert "use --initiative branchkinect" in captured.err
 
 
+def test_a_misspelled_group_that_is_also_a_stray_initiative_shows_both(db, capsys):
+    _seed(db, [(WS, f"bildwiz-{n}", f"github.com/acme/bildwiz-{n}", "bildwiz") for n in ("iac", "web")],
+          [(WS, "t_stray", "buildwiz")])
+    assert memory_mod._cmd_get_relevant(_relevant(group="buildwiz", json=False)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines()[1:] == [
+        "Closest groups: bildwiz",
+        "'buildwiz' is a memory initiative no folder group carries: use --initiative buildwiz.",
+    ]
+
+    assert memory_mod._cmd_get_relevant(_relevant(group="buildwiz", json=True)) == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["candidates"] == [{"workspace": WS, "name": "bildwiz"}]
+    assert "use --initiative buildwiz" in body["hint"]
+
+
 def test_group_member_keys_include_folder_and_remote_spellings(db, capsys):
     _seed(db, [(WS, "folder-name", "github.com/acme/remote-name", "g")],
           [(WS, "t_folder", "folder_name"), (WS, "t_remote", "remote_name")])
