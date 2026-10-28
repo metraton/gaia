@@ -299,19 +299,20 @@ def _route(
     defaulted to ``workspace``: a section about a project that lands in the
     session's workspace is invisible to every reader of that project.
     """
-    from gaia.store.project_context import resolve_project
+    from gaia.store.project_context import resolve_group, resolve_project
 
     contract_name = entry["contract"]
-    if entry.get("project"):
-        owner = resolve_project(con, entry["project"], workspace)
-        if owner is None:
+    if entry.get("project") or contract_name != "project_identity":
+        named = entry.get("project") or dispatch_project
+        owner = resolve_project(con, named, workspace)
+        if owner is not None:
+            return [(owner, entry)], []
+        members = resolve_group(con, named, workspace)
+        if members:
+            return [], [_group_error(contract_name, str(named), members)]
+        if entry.get("project"):
             return [], [_unowned_error(contract_name, [str(entry["project"])])]
-        return [(owner, entry)], []
-    if contract_name != "project_identity":
-        owner = resolve_project(con, dispatch_project, workspace)
-        if owner is None:
-            return [], [_no_project_error(contract_name, dispatch_project)]
-        return [(owner, entry)], []
+        return [], [_no_project_error(contract_name, dispatch_project)]
     by_owner: dict = {}
     unowned: list = []
     for key, value in entry["payload"].items():
@@ -348,6 +349,14 @@ def _unowned_error(contract_name: str, unowned: list) -> str:
         "so nothing was routed for it. Repair: key the entry by a project the "
         "substrate knows (see `gaia context project <name>`; underscore and "
         "hyphen spellings are both tried) and propose it again."
+    )
+
+
+def _group_error(contract_name: str, group: str, members: list) -> str:
+    return (
+        f"update_contracts '{contract_name}': {group!r} is a group "
+        f"({', '.join(m['name'] for m in members)}), so it was written nowhere. Repair: add "
+        "\"project\": \"<member>\" to the entry, naming the member it is about, and propose it again."
     )
 
 

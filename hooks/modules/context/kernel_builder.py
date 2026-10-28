@@ -593,6 +593,54 @@ def _readable_project_sections(row: Mapping[str, Any], *, db_path=None) -> tuple
     return (project if readable else {}), readable
 
 
+def _readable_group_sections(row: Mapping[str, Any], *, db_path=None) -> list:
+    """``[(member, [(section, chars)])]`` of each member of the group the dispatch names, over the ``can_read`` sections it holds itself."""
+    group = str(row.get("dispatch_project") or "")
+    sections = _parse_json_field(row.get("kernel_sections"))
+    can_read = sections.get("can_read") if isinstance(sections, dict) else None
+    if not group or not can_read:
+        return []
+    try:
+        from ..core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from gaia.store.project_context import held_sections, resolve_group
+
+        con = _connect(db_path)
+        try:
+            members = resolve_group(con, group, str(row.get("workspace") or "") or None)
+            held = [(member, held_sections(con, member)) for member in members]
+        finally:
+            con.close()
+    except Exception:
+        logger.debug("group context read failed (non-fatal)", exc_info=True)
+        return []
+    readable = [
+        (member, [(str(name), len(json.dumps(stored[name]["payload"], ensure_ascii=False)))
+                  for name in can_read if name in stored and stored[name]["payload"]])
+        for member, stored in held
+    ]
+    return [(member, pairs) for member, pairs in readable if pairs]
+
+
+def build_group_context_block(group: str, members: list, *, max_chars: int) -> str:
+    """Render ``# Project context`` for a group as one pointer per member section, else one line naming the group's ficha."""
+    if not members:
+        return ""
+    head = [PROJECT_CONTEXT_HEADING, "", f"{group} is a group; the sections its members hold:"]
+    pointers = [
+        f"- {member['name']} / {name}, {chars:,} chars: "
+        + _section_pointer(shlex.quote(name), member["workspace"], member["identity"])
+        for member, pairs in members for name, chars in pairs
+    ]
+    block = "\n".join(head + pointers)
+    if len(block) <= max_chars:
+        return block
+    return "\n".join(head[:2] + [
+        f"{group} is a group of {len(members)} projects with context — `gaia context project {shlex.quote(group)}`",
+    ])
+
+
 def build_project_context_block(workspace: str, project: str, sections: list, *, max_chars: int) -> str:
     """Render ``# Project context`` as whole sections, then pointers, then one count line that ignores ``max_chars``."""
     if not sections:
@@ -658,6 +706,9 @@ def build_kernel_context(
     context_room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 4 - memory_size
     context = build_project_context_block(
         project.get("workspace", ""), project.get("identity", ""), sections, max_chars=context_room,
+    ) or build_group_context_block(
+        str(row.get("dispatch_project") or ""), _readable_group_sections(row, db_path=db_path),
+        max_chars=context_room,
     )
 
     def over() -> bool:

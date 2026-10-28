@@ -31,8 +31,52 @@ def _project(row) -> Optional[dict]:
     return {"identity": key, "workspace": workspace, "name": name} if key else None
 
 
+def _single(rows: list, workspace: Optional[str]) -> Optional[dict]:
+    if len(rows) > 1:
+        rows = [r for r in rows if r[0] == workspace]
+    return _project(rows[0]) if len(rows) == 1 else None
+
+
+def _slug_rows(con: sqlite3.Connection, name: str) -> list:
+    if not _has_table(con, "project_context"):
+        return []
+    wanted = {variant.lower() for variant in name_variants(name)}
+    rows = con.execute(
+        "SELECT p.workspace, p.name, p.path, p.project_identity, pc.payload FROM project_context pc "
+        "JOIN projects p ON COALESCE(p.project_identity, p.path) = pc.project_identity "
+        "WHERE pc.contract_name = 'project_identity' AND p.status = 'active'",
+    ).fetchall()
+    return [row[:4] for row in rows if _holds_slug(_decode(row[4]), wanted)]
+
+
+def _holds_slug(payload: Any, wanted: set) -> bool:
+    return isinstance(payload, dict) and any(
+        str(slug).lower() in wanted
+        or (isinstance(entry, dict) and str(entry.get("name") or "").lower() in wanted)
+        for slug, entry in payload.items()
+    )
+
+
+def resolve_group(con: sqlite3.Connection, ref: Optional[str], workspace: Optional[str] = None) -> list:
+    """``{identity, workspace, name}`` of each active member of the group ``ref`` names, by name; [] when none."""
+    if not ref or not str(ref).strip():
+        return []
+    rows = con.execute(
+        "SELECT workspace, name, path, project_identity FROM projects "
+        "WHERE group_name = ? COLLATE NOCASE AND status = 'active' ORDER BY name",
+        (str(ref).strip(),),
+    ).fetchall()
+    if len({r[0] for r in rows}) > 1:
+        rows = [r for r in rows if r[0] == workspace]
+    return [project for project in map(_project, rows) if project]
+
+
 def resolve_project(con: sqlite3.Connection, ref: Optional[str], workspace: Optional[str] = None) -> Optional[dict]:
-    """``{identity, workspace, name}`` of the active project an identity, display, path or name names."""
+    """``{identity, workspace, name}`` of the active project an identity, display, path, name or slug names.
+
+    A group name resolves to None, never to one of its members, even when a
+    member's slug spells it: callers that take a group use ``resolve_group``.
+    """
     if not ref or not str(ref).strip():
         return None
     ref = str(ref).strip()
@@ -44,15 +88,21 @@ def resolve_project(con: sqlite3.Connection, ref: Optional[str], workspace: Opti
             ("name = ? COLLATE NOCASE", variant) for variant in name_variants(name)
         ]
     for where, value in lookups:
-        rows = con.execute(
+        found = _single(con.execute(
             "SELECT workspace, name, path, project_identity FROM projects "
             f"WHERE {where} AND status = 'active'", (value,),
-        ).fetchall()
-        if len(rows) > 1:
-            rows = [r for r in rows if r[0] == workspace]
-        if len(rows) == 1:
-            return _project(rows[0])
-    return None
+        ).fetchall(), workspace)
+        if found:
+            return found
+    if rest.endswith(")") or resolve_group(con, name, workspace):
+        return None
+    return _single(_slug_rows(con, name), workspace)
+
+
+def held_sections(con: sqlite3.Connection, project: dict) -> dict:
+    """:func:`project_sections` without the workspace fallback: only the sections ``project`` holds itself."""
+    own = f"project:{project['identity']}"
+    return {name: s for name, s in project_sections(con, project).items() if s["source"] == own}
 
 
 def _decode(raw: Optional[str]) -> Any:

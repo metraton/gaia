@@ -29,8 +29,8 @@ HABITS = (
      "offer a reminder in one line; on their yes, Skill reminders"),
     ("ids arrive in a return (contract, handoff, plan, slug)",
      "append them to the project's thread row before answering"),
-    ("a project's depth is needed, or a (N) count sits by its name",
-     "gaia context project <name>"),
+    ("the user names a project or a part of one, or a (N) count sits by its name",
+     "gaia context project <name> before answering or dispatching, once per subject per session"),
     ("the intent needs a capability the user did not name",
      "offer it in one line after the answer, at most one per turn; act only on their yes"),
 )

@@ -360,6 +360,8 @@ def resolve_project_by_name(
     entry = _project_entry(row, db_path) if row else None
     if entry and entry.get("name"):
         return _project_display(entry)
+    if row is None and _names_group(workspace, wanted, db_path):
+        return wanted
     for entry in _project_identity_entries(workspace, db_path=db_path).values():
         if not isinstance(entry, dict):
             continue
@@ -367,6 +369,20 @@ def resolve_project_by_name(
         if entry_name and str(entry_name).lower() == wanted.lower():
             return _project_display(entry)
     return wanted
+
+
+def _names_group(workspace: str, name: str, db_path: Optional[Path] = None) -> bool:
+    """Whether ``name`` is a project group, which a dispatch keeps whole rather than one member's entry."""
+    from gaia.store.project_context import resolve_group
+
+    try:
+        con = _db_connect(db_path)
+        try:
+            return bool(resolve_group(con, name, workspace))
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
 
 
 def resolve_dispatch_project(

@@ -405,8 +405,13 @@ def _cmd_get_contract(args) -> int:
     try:
         project = resolve_project(con, project_ref, workspace) if project_ref else None
         if project_ref and project is None:
-            print(f"gaia context get-contract: no active project '{project_ref}' "
-                  "(see `gaia context project <name>`)", file=sys.stderr)
+            from gaia.store.project_context import resolve_group
+
+            members = [m["name"] for m in resolve_group(con, project_ref, workspace)]
+            what = (f"'{project_ref}' is a group ({', '.join(members)}); pass --project <member>"
+                    if members else f"no active project '{project_ref}'")
+            print(f"gaia context get-contract: {what} "
+                  f"(see `gaia context project {project_ref}`)", file=sys.stderr)
             return 1
         sections = project_sections(con, project) if project else workspace_sections(con, workspace)
     finally:
@@ -723,6 +728,38 @@ def _resolve_project(
     }
 
 
+def _print_group(con, group: str, members: list, as_json: bool) -> int:
+    """Print a group as its members, each with the sections it holds and the verb that reads one; exit 0."""
+    from gaia.store.project_context import held_sections, project_sections
+
+    listed, fallback = [], set()
+    for member in members:
+        held = held_sections(con, member)
+        fallback |= set(project_sections(con, member)) - set(held)
+        listed.append({
+            "name": member["name"],
+            "identity": member["identity"],
+            "sections": [{"name": s, "updated_at": held[s]["updated_at"]} for s in sorted(held)],
+            "read_command": f"gaia context get-contract --project {member['identity']} --section <s>",
+        })
+    workspace = members[0]["workspace"]
+    if as_json:
+        print(json.dumps({"group": group, "workspace": workspace, "members": listed,
+                          "workspace_fallback_sections": sorted(fallback)}, indent=2, default=str))
+        return 0
+    print(f"{group}: group of {len(listed)} projects in workspace {workspace}")
+    for member in listed:
+        print(f"\n{member['name']}")
+        for s in member["sections"]:
+            print(f"  {s['name']:<28}  {s['updated_at']}")
+        if not member["sections"]:
+            print("  (no sections of its own)")
+        print(f"  read one: {member['read_command']}")
+    if fallback:
+        print(f"\nworkspace {workspace} sections a member without its own reads: {', '.join(sorted(fallback))}")
+    return 0
+
+
 def _cmd_project(args) -> int:
     """Handle `gaia context project NAME [--workspace W] [--json]`.
 
@@ -803,6 +840,11 @@ def _cmd_project(args) -> int:
             return 1
 
         if resolution["status"] == "not_found":
+            from gaia.store.project_context import resolve_group
+
+            members = resolve_group(con, name, workspace)
+            if members:
+                return _print_group(con, name, members, as_json)
             candidates = resolution["candidates"]
             hint = resolution.get("hint")
             if as_json:
