@@ -1667,8 +1667,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         What a freshly dispatched subagent receives is the KERNEL
         rendered from its claimed born row (# Your Contract / # Your CLI /
         # How the user works) plus, when present, the cached session-events
-        digest. Project context is NOT preloaded (pulled on demand via the
-        CLI) and surface routing is neither computed nor injected.
+        digest. The kernel carries # Project context, the dispatch project's
+        can_read sections; surface routing is neither computed nor injected.
 
         Contributions, all optional, joined when present:
         1. Cache hit (normal start via Task/Agent tool): PreToolUse:Agent

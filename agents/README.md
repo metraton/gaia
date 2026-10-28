@@ -45,8 +45,9 @@ agent's .md frontmatter and spawns the subagent with:
         |
 [subagent_start.py] claims the born row, injects the dispatch KERNEL
 (# Your Contract incl. can_read/can_write menu, # How the user works,
-# Standing notes, # Environment, # Your CLI). Project context is NOT preloaded here either -- the
-agent pulls sections on demand within its can_read menu.
+# Project context, # Standing notes, # Environment, # Your CLI). # Project context carries the
+dispatch project's can_read sections: whole when they fit, else one get-contract pointer per
+section, else a single count line; the agent pulls what the block only points at on demand.
         |
 Agent executes, closing its agent_contract_handoffs row with
 `gaia contract finalize`; the orchestrator reads that row

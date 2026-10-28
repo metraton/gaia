@@ -77,7 +77,11 @@ with exactly one verb.
   `--section` is required; `--project` reads that project's section and falls back to the workspace
   row; `--workspace` when the workspace is not the cwd's; `--text` for the human form. It returns
   the contract payload; an unknown name exits 1 listing the available ones.
-- `gaia context project <name>` returns the complete project sheet by name or basename, read-only.
+- `gaia context project <name>` returns one project's sheet by name or basename, read-only: its
+  `projects` row and facets, its `project_identity` entry, and an index (slug and description) of at
+  most 10 memory rows anchored to it. It prints no other section; read those with
+  `get-contract --project <name> --section <s>`. Both verbs are in the orchestrator's lane, so the
+  orchestrator reads any project's sections itself.
 - `gaia context get --section <s>` and `gaia context show` resolve against the workspace SHAPE
   (`apps`, `services`, `stack`, `git`, ...). The names OVERLAP without meaning the same thing:
   `gaia context get --section stack` returns the scanner placeholder `{}` while the real `stack`
