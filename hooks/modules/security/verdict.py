@@ -67,7 +67,7 @@ COMPOSITION_RULES: Dict[str, str] = {
 
 _DESTROY_WORDS: FrozenSet[str] = frozenset({
     "rm", "rmdir", "rmtree", "unlink", "delete", "destroy", "remove", "purge", "drop", "truncate",
-    "wipe", "shred", "clean", "reset", "terminate", "uninstall", "force", "force-with-lease",
+    "wipe", "shred", "clean", "reset", "terminate", "uninstall", "force", "force-with-lease", "seal",
 })
 _SPEAK_WORDS: FrozenSet[str] = frozenset({
     "approve", "review", "comment", "note", "close", "ready", "draft", "abandoned", "rerun",

@@ -183,12 +183,7 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gcloud-config-list", FREE, "gcloud config list", False, T0),
     ("read-git-config-list", FREE, "git config --list", False, T0),
     ("read-git-config-get", FREE, "git config --get user.email", False, T0),
-    # ---- OPEN: redirection the read-only noun does NOT shadow ----
-    # Recorded rather than closed: `activate` and `use` are absent from the verb
-    # taxonomy, so the short-circuit is not what holds these at T0 and removing
-    # it would not move them. Both redirect as hard as the three forms above --
-    # one switches project and account together, the other switches the cluster
-    # every later kubectl reaches -- and each needs a decision of its own.
+    # ---- OPEN: `activate` is absent from the effect lexicon, so this stays T0 ----
     (
         "configurations-activate",
         OPEN,
@@ -196,7 +191,7 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
-    ("context-switch", OPEN, "kubectl config use-context prod", False, T0),
+    ("context-switch", GATED, "kubectl config use-context prod", True, T3),
     # ---- CLOSED: indirect trigger and live workload ----
     # These four were recorded OPEN (False, T0). None carries a verb in
     # MUTATIVE_VERBS -- `run` is deliberately excluded ("safe by elimination"),

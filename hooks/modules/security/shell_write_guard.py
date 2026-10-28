@@ -181,6 +181,90 @@ def _tokenize(component: str) -> List[str]:
         return component.split()
 
 
+_DOWNLOADERS = frozenset({"curl", "wget", "http", "https"})
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def _attached_paths(option: str) -> List[str]:
+    """Every tail of a short-option bundle that could be an attached path (-sSLo/x, -osettings.json)."""
+    tails = [option[i:] for i in range(2, len(option))]
+    return [t for t in tails if not t.startswith("-") and ("/" in t or "." in t or t[0] in "~$")]
+
+
+def _writes_default_name(base: str, tokens: List[str]) -> bool:
+    """Whether the downloader saves under the URL's own file name (curl -O, httpie --download, wget without -O)."""
+    bundles = [t for t in tokens[1:] if t.startswith("-") and not t.startswith("--")]
+    longs = [t.split("=", 1)[0] for t in tokens[1:] if t.startswith("--")]
+    if base == "curl":
+        return any("O" in b for b in bundles) or any(o.startswith("--remote-name") for o in longs)
+    if base == "wget":
+        return not any("O" in b for b in bundles) and not any(o.startswith("--output-d") for o in longs)
+    return any("d" in b for b in bundles) or "--download" in longs
+
+
+_URL_GLOB = re.compile(r"\{([^{}]*)\}|\[([^\[\]]*)\]")
+_GLOB_REFERENCE = re.compile(r"#(\d)")
+
+
+def _unwrapped(tokens: List[str]) -> Tuple[List[str], List[str]]:
+    """The command the line's run wrappers start, read as the verb classifier reads them, and every directory env -C moves it to."""
+    from .mutative_verbs import _peel_wrapper_readings
+
+    remainder = _tokenize(_peel_wrapper_readings(shlex.join(tokens))[0][0])
+    prefix = tokens[:max(len(tokens) - len(remainder), 0)]
+    chdirs: List[str] = []
+    if any(command_name(t) == "env" for t in prefix):
+        for option, value in zip(prefix, prefix[1:] + [""]):
+            if option in ("-C", "--chdir"):
+                chdirs.append(value)
+            elif option.startswith("--chdir="):
+                chdirs.append(option.split("=", 1)[1])
+            elif re.fullmatch(r"-[a-zA-Z]*C.+", option):
+                chdirs.append(option[option.index("C") + 1:])
+    return remainder, chdirs
+
+
+def _glob_names(words: List[str], urls: List[str]) -> List[str]:
+    """Each output name curl makes by putting a URL glob's values in place of #N."""
+    values = [
+        (braces.split(",") if braces is not None else [ranged.split("-", 1)[0]])
+        for url in urls for braces, ranged in _URL_GLOB.findall(url)
+    ]
+    names = []
+    for word in words:
+        for n in {int(m) for m in _GLOB_REFERENCE.findall(word)}:
+            for value in values[n - 1] if 0 < n <= len(values) else []:
+                names.append(word.replace(f"#{n}", value))
+    return names
+
+
+def downloader_paths(tokens: List[str]) -> List[str]:
+    """Every path a downloader line names, each joined under every named directory: the line, not its options, says where it can write."""
+    tokens, chdirs = _unwrapped(tokens)
+    base = command_name(tokens[0]) if tokens else ""
+    if base not in _DOWNLOADERS:
+        return []
+    words: List[str] = list(chdirs)
+    urls: List[str] = []
+    for token in tokens[1:]:
+        if _URL.match(token):
+            urls.append(token)
+        elif not token.startswith("-"):
+            words.append(token)
+        elif "=" in token:
+            words.append(token.split("=", 1)[1])
+        elif not token.startswith("--"):
+            words += _attached_paths(token)
+    words = [w for w in words if w and w != "-"]
+    words += _glob_names(words, urls)
+    names = []
+    if _writes_default_name(base, tokens):
+        locations = [u.split("://", 1)[1].split("?", 1)[0].split("#", 1)[0] for u in urls]
+        names = [loc.rsplit("/", 1)[1] for loc in locations if "/" in loc and loc.rsplit("/", 1)[1]]
+    relative = [n for n in words + names if not n.startswith(("/", "~", "$"))]
+    return words + names + [os.path.join(d, n) for d in words for n in relative if d != n]
+
+
 def _writer_targets(component: str) -> List[str]:
     """Return every destination this component writes, shell-authored only."""
     targets = _redirect_targets(component)

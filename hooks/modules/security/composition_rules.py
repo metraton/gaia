@@ -351,7 +351,7 @@ def classify_stage(command: str) -> StageType:
     #    real executable at tokens[0] (e.g. "curl -X POST ..." not "sudo curl ...").
     stripped_command = " ".join(tokens)
     if exe in _NETWORK_EXECUTABLES:
-        flag_result = classify_by_flags(stripped_command)
+        flag_result = classify_by_flags(stripped_command, wrapped=len(tokens) != len(_tokenize_safe(command)))
         if flag_result is not None:
             if flag_result.outcome == OUTCOME_MUTATIVE:
                 return StageType.NETWORK_WRITE

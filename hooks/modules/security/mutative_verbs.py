@@ -172,7 +172,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Lifecycle
     "start", "restart", "reboot", "reload", "refresh", "resume",
     "uncordon", "unsuspend", "enable", "disable", "suspend", "pause",
-    "stop", "shutdown", "halt", "abort",
+    "stop", "shutdown", "halt", "abort", "up", "seal", "unseal",
     # Movement / transfer
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
@@ -202,7 +202,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "push", "merge", "rebase",
     "rollback",
     # Access control
-    "grant", "assign", "revoke",
+    "grant", "assign", "revoke", "login", "select", "get-credentials",
     # Reconciliation
     "reconcile", "rsync",
     # Deletion / removal (approvable via nonce -- blocked_commands.py catches
@@ -253,6 +253,169 @@ READ_ONLY_VERBS: FrozenSet[str] = frozenset({
 COMPOUND_READ_ONLY_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "merge-base",
 })
+
+COMPOUND_HEAD_MUTATIVE_VERBS: FrozenSet[str] = frozenset({
+    "run", "add", "use", "report", "associate", "disassociate", "schedule",
+})
+GROUP_PATH_HYPHEN_DEPTH = 3
+GROUP_READ_WORDS: FrozenSet[str] = frozenset({"auth", "config"})
+LIVE_SIMULATION_VERBS: Dict[str, FrozenSet[str]] = {"test": frozenset({"iac", "k8s"})}
+VERB_DESTROYING_FLAGS: Dict[str, FrozenSet[str]] = {
+    "down": frozenset({"-v", "--volumes", "--rmi"}),
+    "prune": frozenset({"-a", "--all", "--volumes"}),
+}
+APPLYING_PROGRAMS: Dict[str, FrozenSet[str]] = {
+    "ansible-playbook": frozenset({"--check", "-C", "--syntax-check", "--list-tasks", "--list-hosts", "--list-tags"}),
+}
+LOCAL_CACHE_PATHS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+    "helm": (("repo", "update"),),
+    "apt": (("update",),),
+    "apt-get": (("update",),),
+    "act": (("push",),),
+}
+LOCAL_CACHE_SAFE_FLAGS: FrozenSet[str] = frozenset({"-q", "-qq", "--quiet", "-y", "--yes"})
+_PUSHING_OUTPUT_RE = re.compile(r"(?:^|,)(?:type=registry|push=true)(?:,|$)")
+
+
+def _names_operation(token: str) -> bool:
+    """Return True when a head token, whole or by its head fragment, is a word of the effect lexicon."""
+    head = token.split("-", 1)[0]
+    tables = (MUTATIVE_VERBS, SIMULATION_VERBS, READ_ONLY_VERBS)
+    return head in COMPOUND_HEAD_MUTATIVE_VERBS or any(word in table for word in (token, head) for table in tables)
+
+
+def _hyphen_candidate(token: str, is_group: bool = False) -> Tuple[str, bool]:
+    """Return the fragment naming a hyphenated subcommand's effect (only the head for a group name) and whether it is a compound-only change verb."""
+    head, *rest = token.split("-")
+    if not rest or head in SIMULATION_VERBS or head in MUTATIVE_VERBS or head in READ_ONLY_VERBS:
+        return head, False
+    if head in COMPOUND_HEAD_MUTATIVE_VERBS and rest != ["all"]:
+        return head, True
+    if not is_group:
+        for fragment in rest:
+            if fragment in MUTATIVE_VERBS:
+                return fragment, False
+    return head, False
+
+
+def _head_token_mutates(token: str) -> bool:
+    """Return True when a head token, whole or by its effect fragment, names a change."""
+    candidate, compound_change = _hyphen_candidate(token) if _is_subcommand_identifier(token) else (token, False)
+    return compound_change or token in MUTATIVE_VERBS or candidate in MUTATIVE_VERBS
+
+
+def _later_head_mutates(
+    head_tokens: Tuple[str, ...], index: int, hyphen_depth: int, values: FrozenSet[int] = frozenset(),
+) -> bool:
+    """Return True when a command word after *index* names a change: any whole verb, or a compound within the path depth."""
+    return any(
+        position not in values
+        and (token in MUTATIVE_VERBS or (position <= hyphen_depth and _head_token_mutates(token)))
+        for position, token in enumerate(head_tokens[index + 1:], start=index + 1)
+    )
+
+
+def _option_value_positions(semantics: "CommandSemantics") -> FrozenSet[int]:
+    """Return the semantic head positions that hold an option's value, never a command word."""
+    positions, index, previous = set(), 0, ""
+    for token in semantics.args:
+        expected = semantics.non_flag_tokens_raw
+        if index < len(expected) and token == expected[index]:
+            index += 1
+            if previous.startswith("-") and "=" not in previous and (previous.startswith("--") or len(previous) == 2):
+                positions.add(index)
+        previous = token
+    return frozenset(positions)
+
+
+# Global options of the cloud CLIs and how many words each takes. They hold no command word, so they are read
+# away before the command path is classified; an option missing here may take a value, so it is read both ways.
+_CLOUD_GLOBAL_OPTIONS: Dict[str, Dict[str, int]] = {
+    "aws": {
+        "--profile": 1, "--region": 1, "--output": 1, "--query": 1, "--endpoint-url": 1, "--color": 1,
+        "--ca-bundle": 1, "--cli-read-timeout": 1, "--cli-connect-timeout": 1, "--cli-binary-format": 1,
+        "--debug": 0, "--no-verify-ssl": 0, "--no-paginate": 0, "--no-sign-request": 0, "--no-cli-pager": 0,
+    },
+    "az": {"--subscription": 1, "--output": 1, "-o": 1, "--query": 1, "--debug": 0, "--verbose": 0, "--only-show-errors": 0},
+    "gcloud": {
+        "--project": 1, "--account": 1, "--configuration": 1, "--format": 1, "--verbosity": 1,
+        "--billing-project": 1, "--trace-token": 1, "--quiet": 0, "--log-http": 0,
+    },
+}
+
+
+_CLOUD_SESSION_WORDS: FrozenSet[str] = frozenset({"ssh", "scp", "connect", "tunnel"})
+
+
+def _cloud_command_readings(base_cmd: str, tokens: List[str]) -> Tuple[List[str], bool]:
+    """Return the command without its global options and whether that reading is exact; an unknown option before the operation word is read both ways."""
+    arity = _CLOUD_GLOBAL_OPTIONS.get(base_cmd)
+    start = next((i for i, t in enumerate(tokens) if program_identity(t) == base_cmd), None) if arity else None
+    if start is None:
+        return [], True
+    kept, rest, index, operation_seen = tokens[:start + 1], tokens[start + 1:], 0, False
+    while index < len(rest):
+        token = rest[index]
+        name = token.split("=", 1)[0]
+        if token == "--":
+            kept += rest[index:]
+            break
+        if name in arity:
+            index += 1 + (0 if "=" in token else arity[name])
+            continue
+        if token.startswith("-") and "=" not in token and not operation_seen:
+            after = rest[index + 1:]
+            return [shlex.join(kept + after), shlex.join(kept + after[1:])], False
+        operation_seen = operation_seen or (not token.startswith("-") and (
+            _names_operation(token) or _is_known_verb(token) or token in _CLOUD_SESSION_WORDS
+        ))
+        kept.append(token)
+        index += 1
+    return ([shlex.join(kept)] if len(kept) < len(tokens) else []), True
+
+
+# Reads that take the resource they read as an operand: a config after one is that operand, not the verb.
+_OPERAND_READ_VERBS: FrozenSet[str] = frozenset({"get", "list", "describe", "show", "read", "view", "inspect", "ls"})
+
+
+def _configure_position(head_tokens: Tuple[str, ...], values: FrozenSet[int]) -> int:
+    """Return where a group-path command ends on the verb ``config`` (az webapp log config), or 0 when a read names it."""
+    for position, token in enumerate(head_tokens):
+        if position in values:
+            continue
+        if token.split("-", 1)[0] in _OPERAND_READ_VERBS:
+            return 0
+        if token == "config" and position >= 2:
+            later = [t for p, t in enumerate(head_tokens[position + 1:], start=position + 1) if p not in values]
+            return 0 if any(_names_operation(t) for t in later) else position
+    return 0
+
+
+def _local_cache_refresh(base_cmd: str, semantics: "CommandSemantics") -> str:
+    """Return the head path of a command that only refreshes a local cache and carries no option that loads code, or ""."""
+    if not set(semantics.flag_tokens) <= LOCAL_CACHE_SAFE_FLAGS:
+        return ""
+    for path in LOCAL_CACHE_PATHS.get(base_cmd, ()):
+        if semantics.non_flag_tokens == path:
+            return " ".join(path)
+    return ""
+
+
+def _output_pushes(tokens: Tuple[str, ...]) -> bool:
+    """Return True when an output option sends the build to a registry."""
+    for flag, value in zip(tokens, tokens[1:]):
+        if flag in ("-o", "--output") and _PUSHING_OUTPUT_RE.search(value):
+            return True
+    return any(t.startswith("--output=") and _PUSHING_OUTPUT_RE.search(t[len("--output="):]) for t in tokens)
+
+
+def _simulation_flag_holds(tokens: Tuple[str, ...]) -> bool:
+    """Return True when a simulation flag is present and no later dry-run spelling turns it off."""
+    lowered = [t.lower() for t in tokens]
+    dry_runs = [t for t in lowered if t.startswith(("--dry-run", "--dryrun"))]
+    if dry_runs and dry_runs[-1] not in SIMULATION_FLAGS:
+        return False
+    return any(t in SIMULATION_FLAGS for t in lowered)
 
 
 # ============================================================================
@@ -483,6 +646,7 @@ CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # alter message content, send mail, or delete anything.  Safe as T0 unless
     # it may remove INBOX (archive), which _may_archive_gmail carves back out.
     ("workspace", "modify"): CATEGORY_READ_ONLY,
+    ("docker", "up"): CATEGORY_READ_ONLY,
 }
 
 
@@ -1187,6 +1351,7 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         _terraform_fmt_anchor(),
     ),
     "tofu": (_terraform_fmt_anchor(),),
+    "helm": (MutativeAnchor(path=("repo", "add")),),
     "terragrunt": (
         MutativeAnchor(
             path=("init",),
@@ -4163,6 +4328,10 @@ DANGEROUS_FLAGS: Dict[str, str] = {
     "--cascade": "ALWAYS",
     "--grace-period=0": "ALWAYS",
     "--now": "ALWAYS",
+    "--push": "ALWAYS",
+    "--auto-approve": "ALWAYS",
+    "-auto-approve": "ALWAYS",
+    "--admin": "ALWAYS",
     "-f": "CONTEXT",
     "-r": "CONTEXT",
     "-R": "CONTEXT",
@@ -5111,7 +5280,8 @@ def _component_verdict(component: str, *, cwd: "Optional[str]", _depth: int) -> 
     result = detect_mutative_command(component, cwd=cwd, _depth=_depth)
     if result.is_mutative:
         return result
-    flagged = classify_by_flags(_peel_wrapper_readings(component)[0][0])
+    readings, peeled = _peel_wrapper_readings(component)
+    flagged = classify_by_flags(readings[0], wrapped=peeled)
     if flagged is None or flagged.command_family.startswith("git_"):
         return result
     if flagged.outcome == OUTCOME_READ_ONLY:
@@ -5189,7 +5359,7 @@ def _check_nested_executor(
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
 # CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
-_GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil"})
+_GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil", "oci"})
 _SHARED_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS | {"ls", "ps", "rm", "cp", "mv"}
 
 
@@ -5602,7 +5772,7 @@ def detect_mutative_command(
     if sync is not None:
         return sync
 
-    result = _detect_mutative_command(command, from_source_code, cwd, _depth, caller)
+    result = _detect_mutative_command(command, from_source_code, cwd, _depth, caller, _in_prefix)
 
     declared = declared_wrapper(command)
     if declared is not None:
@@ -5648,7 +5818,7 @@ def detect_mutative_command(
 @functools.lru_cache(maxsize=128)
 def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step per lane
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
-    _depth: int = 0, caller: "Optional[LocalWorkCaller]" = None,
+    _depth: int = 0, caller: "Optional[LocalWorkCaller]" = None, _in_prefix: bool = False,
 ) -> MutativeResult:
     """Analyze a shell command and return a structured mutative assessment.
 
@@ -5850,6 +6020,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             reason=f"the word {dynamic_word!r} naming what runs could not be determined",
             rule="unknown.dynamic-span",
         )
+    spellings, exact = _cloud_command_readings(base_cmd, tokens)
+    readings = [_detect_mutative_command(s, from_source_code, cwd, _depth, caller, _in_prefix) for s in spellings]
+    changed = next((reading for reading in readings if reading.is_mutative), None)
+    if changed is not None or (readings and exact):
+        return changed or readings[0]
     if unlisted_subcommand and "-" in first_word and _verb_word_effect(first_word) == CATEGORY_MUTATIVE:
         return MutativeResult(
             is_mutative=True,
@@ -6150,7 +6325,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # instead inside the script-file lane by ``_script_honored_simulation_flag``,
     # which frees the invocation only when the script's own executable text
     # references the flag that was passed.
-    if any(t.lower() in SIMULATION_FLAGS for t in tokens):
+    if _simulation_flag_holds(tokens):
         # Find the first non-flag token after base_cmd for the verb
         verb, _ = _find_first_non_flag(semantics.semantic_head_tokens)
         return MutativeResult(
@@ -6614,6 +6789,45 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     ),
                 )
 
+    if base_cmd in APPLYING_PROGRAMS and not APPLYING_PROGRAMS[base_cmd] & set(tokens):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=base_cmd,
+            dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+            cli_family=family,
+            confidence="high",
+            reason=f"'{base_cmd}' applies its configuration to the hosts it names",
+        )
+    if _output_pushes(tuple(tokens)):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="push",
+            cli_family=family,
+            confidence="high",
+            reason="An output option sends the build to a registry",
+        )
+    local_cache_path = "" if _in_prefix else _local_cache_refresh(base_cmd, semantics)
+    if local_cache_path and not _scan_dangerous_flags(tokens, base_cmd):
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb=local_cache_path.split()[-1],
+            cli_family=family,
+            confidence="high",
+            reason=f"'{base_cmd} {local_cache_path}' only refreshes a local cache",
+        )
+    hyphen_depth = GROUP_PATH_HYPHEN_DEPTH if base_cmd in _GROUP_PATH_CLIS else 2
+    option_values = _option_value_positions(semantics)
+    configure_at = (
+        _configure_position(semantics.semantic_head_tokens, option_values) if base_cmd in _GROUP_PATH_CLIS else 0
+    )
+    path_anchored = any(
+        semantics.non_flag_tokens[:len(anchor.path)] == anchor.path
+        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ())
+    )
+
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
@@ -6662,28 +6876,57 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # or camelCase-split and the inner fragments match mutative verbs.
         is_subcmd_shape = _is_subcommand_identifier(stripped_token)
 
-        # Split hyphenated tokens: "delete-stack" -> check "delete"
-        # IMPORTANT: only apply hyphen-split at subcommand positions
-        # (semantic_index <= 2).  At deeper positions (index >= 3), tokens are
-        # typically argument values or slugs like "remove-live-state-from-context"
-        # or "some-name-with-delete-in-it".  Splitting those produces false
-        # positives -- the first fragment matches a mutative verb even though
-        # the token is not a CLI subcommand.  The camelCase guard already applies
-        # the same constraint (semantic_index == 1).
-        if semantic_index <= 2 and "-" in stripped_token and is_subcmd_shape:
-            candidate = stripped_token.split("-", 1)[0]
+        # Deeper than the subcommand path, a hyphenated token is an argument
+        # slug ("some-name-with-delete-in-it"), never split.
+        if semantic_index <= hyphen_depth and "-" in stripped_token and is_subcmd_shape:
+            is_group = any(
+                _names_operation(t)
+                for p, t in enumerate(semantics.semantic_head_tokens[:hyphen_depth + 1])
+                if p > semantic_index and p not in option_values
+            )
+            candidate, compound_change = _hyphen_candidate(stripped_token, is_group)
         else:
-            candidate = stripped_token
+            candidate, compound_change = stripped_token, False
 
-        # Also check full token for exact matches (e.g., "force-delete")
         full_lower = stripped_token
-
-        # Determine confidence from position
         confidence = "high" if semantic_index <= 2 else "medium"
 
-        # Check verb taxonomy in priority order
+        if configure_at and semantic_index == configure_at:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="config",
+                dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+                cli_family=family,
+                confidence=confidence,
+                reason=f"'{base_cmd} {' '.join(semantics.non_flag_tokens[:configure_at])}' configures the group it ends",
+            )
+
+        destroying_flags = VERB_DESTROYING_FLAGS.get(full_lower, frozenset()) & frozenset(semantics.flag_tokens)
+        if destroying_flags:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=full_lower,
+                dangerous_flags=tuple(sorted(destroying_flags)),
+                cli_family=family,
+                confidence="high",
+                reason=f"'{full_lower}' with {', '.join(sorted(destroying_flags))} destroys what it held",
+                rule="sign.destroys",
+            )
+
         if candidate in SIMULATION_VERBS or full_lower in SIMULATION_VERBS:
             verb = candidate if candidate in SIMULATION_VERBS else full_lower
+            if family in LIVE_SIMULATION_VERBS.get(verb, frozenset()):
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=verb,
+                    dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+                    cli_family=family,
+                    confidence=confidence,
+                    reason=f"'{verb}' runs against live state on a {family} CLI",
+                )
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_SIMULATION,
@@ -6693,8 +6936,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 reason=f"Simulation verb '{verb}'",
             )
 
-        if candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
-            verb = candidate if candidate in MUTATIVE_VERBS else full_lower
+        if compound_change or candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
+            verb = candidate if compound_change or candidate in MUTATIVE_VERBS else full_lower
 
             # git tag is dual-mode: a listing form (`git tag`, `-l`,
             # `--points-at`, `--contains`, ...) is read-only (T0), while a
@@ -6853,6 +7096,19 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
         if candidate in READ_ONLY_VERBS or full_lower in READ_ONLY_VERBS:
             verb = candidate if candidate in READ_ONLY_VERBS else full_lower
+            next_head = semantics.semantic_head_tokens[semantic_index + 1:semantic_index + 2]
+            group_word_defers = (
+                verb in GROUP_READ_WORDS
+                and semantic_index < hyphen_depth
+                and next_head
+                and _head_token_mutates(next_head[0])
+            )
+            group_path_defers = base_cmd in _GROUP_PATH_CLIS and (
+                configure_at > semantic_index
+                or _later_head_mutates(semantics.semantic_head_tokens, semantic_index, hyphen_depth, option_values)
+            )
+            if not path_anchored and (group_word_defers or group_path_defers):
+                continue
             # An ALWAYS-dangerous flag escalates even a read-only verb: the
             # Step 5 flag scan below never runs for a read-only verb because
             # this early-return fires first, so `terraform state list --prune`

@@ -77,6 +77,7 @@ from .protected_paths import (
 from .sensitive_paths import expand_home
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
+from .shell_write_guard import downloader_paths
 
 # ---------------------------------------------------------------------------
 # Write-capability sets
@@ -472,7 +473,7 @@ def _line_names_install_root_unread(command: str, cwd: Optional[str]) -> Optiona
             writes_root = any(_install_root_spelling(target, running_cwd) for target in redirects)
             read_only = read_only and not writes_root and _is_read_only(tokens)
             programs += _program_words(tokens)
-            words += _named_words(tokens)
+            words += _named_words(tokens) + downloader_paths(tokens)
             if command_name(tokens[0]) not in ("cd", "pushd", "popd") and running_cwd \
                     and running_cwd != UNKNOWN_CWD and is_install_root_path(running_cwd):
                 named.append(running_cwd)
@@ -508,7 +509,7 @@ def _component_writes_protected_path(component: str, cwd: Optional[str] = None) 
     subcommand = operands.pop(0) if base == "git" and operands else ""
     writer = subcommand in _GIT_WRITE_SUBCOMMANDS if base == "git" else base in _FILESYSTEM_WRITE_COMMANDS
 
-    for target in redirects + (operands if writer else []):
+    for target in redirects + (operands if writer else []) + downloader_paths(tokens):
         hit = _protected_spelling(target, cwd)
         if hit:
             return hit
@@ -558,17 +559,18 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
     if hit is not None:
         return hit
 
-    running_cwd = cwd
     seen_cwds = [cwd]
-    for component in _OPERATOR_SPLIT.split(command):
-        component = component.strip()
-        if not component:
-            continue
-        hit = _component_writes_protected_path(component, running_cwd)
-        if hit is not None:
-            return hit
-        running_cwd = _fold_cwd(component, running_cwd)
-        seen_cwds.append(running_cwd)
+    for line in _substituted_lines(command):
+        running_cwd = cwd
+        for component in _OPERATOR_SPLIT.split(line):
+            component = component.strip()
+            if not component:
+                continue
+            hit = _component_writes_protected_path(component, running_cwd)
+            if hit is not None:
+                return hit
+            running_cwd = _fold_cwd(component, running_cwd)
+            seen_cwds.append(running_cwd)
 
     # A command substitution runs BEFORE the command that contains it, so
     # ``echo $(cp payload.py .claude/hooks/pre_tool_use.py)`` overwrites the

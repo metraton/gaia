@@ -743,14 +743,107 @@ def _classify_find(tokens: List[str]) -> Optional[FlagClassifierResult]:
 # 13. curl
 # HTTP methods that write data to a remote server
 _CURL_WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+_CURL_QUERY_DATA_FLAGS = frozenset({"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode"})
 
-def _classify_curl(tokens: List[str]) -> Optional[FlagClassifierResult]:
-    if not tokens or tokens[0] != "curl":
-        return None
-    args = tokens[1:]
+
+_CURL_GET_SAFE_SWITCHES = frozenset({
+    "-G", "--get", "-s", "-S", "-sS", "-Ss", "-L", "-sL", "-sSL", "-f", "-fsSL", "--fail", "--silent",
+    "--show-error", "--location", "--compressed", "-v", "--verbose", "-i", "--include", "-k", "--insecure",
+    "-g", "--globoff",
+})
+_CURL_GET_SAFE_VALUE_FLAGS = frozenset({
+    "-H", "--header", "-A", "--user-agent", "-e", "--referer", "-m", "--max-time",
+    "--connect-timeout", "-u", "--user", "-w", "--write-out", "--retry", "-x", "--proxy",
+})
+_SHELL_RESOLVED = re.compile(r"[$`*?\[\]{}]")
+
+
+def _curl_get_sends_only_literals(args: List[str]) -> bool:
+    """Return True when curl's own option walk meets -G as an option and every option is a known read option or literal query data.
+
+    Nothing that writes a file and nothing the shell or curl's URL globbing resolves may appear.
+    """
+    if any(_SHELL_RESOLVED.search(a) for a in args):
+        return False
+    get_seen = False
     i = 0
     while i < len(args):
         a = args[i]
+        if a in _CURL_QUERY_DATA_FLAGS or a in _CURL_GET_SAFE_VALUE_FLAGS:
+            if i + 1 >= len(args):
+                return False
+            value = args[i + 1]
+            if a in _CURL_QUERY_DATA_FLAGS and _curl_data_reads_file(a, value):
+                return False
+            if a in ("-H", "--header") and ("method" in value.lower() or value.startswith("@")):
+                return False
+            i += 2
+            continue
+        if a.startswith("-") and a not in _CURL_GET_SAFE_SWITCHES:
+            return False
+        get_seen = get_seen or a in ("-G", "--get")
+        i += 1
+    return get_seen
+
+
+_CURL_SHORT_DATA_LETTERS = frozenset("dFT")
+_CURL_SHORT_VALUE_LETTERS = frozenset("AbcCDeEHKmoPQrtuUwxXyYz")
+
+
+def _curl_bundle_sends_data(option: str) -> bool:
+    """Return True when a short-option bundle (-Gd) reaches a data letter before a letter that takes the rest as its value."""
+    if option.startswith("--") or len(option) < 3 or not option[1:].isalpha():
+        return False
+    for letter in option[1:]:
+        if letter in _CURL_SHORT_DATA_LETTERS:
+            return True
+        if letter in _CURL_SHORT_VALUE_LETTERS:
+            return False
+    return False
+
+
+def _curl_data_reads_file(flag: str, value: str) -> bool:
+    """Return True when a curl data value names a file or stdin whose contents curl sends."""
+    if flag == "--data-raw":
+        return False
+    if flag == "--data-urlencode":
+        name, at, _ = value.partition("@")
+        return bool(at) and "=" not in name
+    return value.startswith("@")
+
+def _classify_curl(tokens: List[str], wrapped: bool = False) -> Optional[FlagClassifierResult]:
+    """Classify curl by the data and method its options send; -G reads only on a bare, fully literal line."""
+    if not tokens or tokens[0] != "curl":
+        return None
+    args = tokens[1:]
+    get_query = not wrapped and _curl_get_sends_only_literals(args)
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if get_query and a in _CURL_QUERY_DATA_FLAGS:
+            i += 2
+            continue
+        if _curl_bundle_sends_data(a):
+            return FlagClassifierResult(
+                outcome=OUTCOME_MUTATIVE,
+                reason=f"curl {a} bundles an option that sends data to the server",
+                matched_pattern=a,
+                command_family="curl",
+            )
+        if a[:2] in ("-d", "-F", "-T") and len(a) > 2:
+            return FlagClassifierResult(
+                outcome=OUTCOME_MUTATIVE,
+                reason=f"curl {a[:2]} with an attached value sends data to the server",
+                matched_pattern=a[:2],
+                command_family="curl",
+            )
+        if a.startswith("-X") and len(a) > 2 and a[2:].upper() in _CURL_WRITE_METHODS:
+            return FlagClassifierResult(
+                outcome=OUTCOME_MUTATIVE,
+                reason=f"curl {a} sends a write request",
+                matched_pattern=a,
+                command_family="curl",
+            )
         # -X / --request METHOD
         if a in ("-X", "--request"):
             if i + 1 < len(args) and args[i + 1].upper() in _CURL_WRITE_METHODS:
@@ -982,7 +1075,9 @@ _CLASSIFIER_REGISTRY: Dict[str, Callable[[List[str]], Optional[FlagClassifierRes
 # Public API
 # ---------------------------------------------------------------------------
 
-def classify_by_flags(command: str, caller: "Optional[LocalWorkCaller]" = None) -> Optional[FlagClassifierResult]:
+def classify_by_flags(
+    command: str, caller: "Optional[LocalWorkCaller]" = None, wrapped: bool = False,
+) -> Optional[FlagClassifierResult]:
     """Classify a command based on flags and sub-commands.
 
     This is the primary entry point.  Call this BEFORE detect_mutative_command()
@@ -995,6 +1090,8 @@ def classify_by_flags(command: str, caller: "Optional[LocalWorkCaller]" = None) 
             caller, and only a blocked or mutative verdict is adopted.
         caller: Who runs the command and from where; tar's local-work relief
             needs it.
+        wrapped: The command is a reading peeled from behind a wrapper, so no
+            relief that needs the bare line applies (curl -G).
 
     Returns:
         FlagClassifierResult if the command belongs to a known family, else None.
@@ -1010,7 +1107,7 @@ def classify_by_flags(command: str, caller: "Optional[LocalWorkCaller]" = None) 
     if classifier is None:
         from .mutative_verbs import _peel_wrapper_readings
         readings, peeled = _peel_wrapper_readings(command)
-        wrapped = [classify_by_flags(r) for r in readings if peeled and r.strip() != command.strip()]
+        wrapped = [classify_by_flags(r, wrapped=True) for r in readings if peeled and r.strip() != command.strip()]
         for outcome in (OUTCOME_BLOCKED, OUTCOME_MUTATIVE):
             for result in wrapped:
                 if result is not None and result.outcome == outcome:
@@ -1018,4 +1115,6 @@ def classify_by_flags(command: str, caller: "Optional[LocalWorkCaller]" = None) 
         return None
     if classifier is _classify_tar:
         return _classify_tar(tokens, caller)
+    if classifier is _classify_curl:
+        return _classify_curl(tokens, wrapped)
     return classifier(tokens)
