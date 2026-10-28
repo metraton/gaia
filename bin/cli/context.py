@@ -976,7 +976,8 @@ def _cmd_project(args) -> int:
         if same_name_group:
             print(
                 f"{name} is both a group and a project. The group {name} holds "
-                f"{len(same_name_group)} projects in workspace {r_workspace}: "
+                f"{len(same_name_group)} project{'' if len(same_name_group) == 1 else 's'} "
+                f"in workspace {r_workspace}: "
                 f"{', '.join(same_name_group)}. Below is the project {r_name}.\n"
             )
         print(f"workspace        : {r_workspace}")

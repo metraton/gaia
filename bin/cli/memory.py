@@ -2225,19 +2225,40 @@ def _project_mode_item(row: dict, label: str, section: str) -> dict:
     }
 
 
-def _group_memory_keys(group: str, workspace: str | None) -> list[str]:
-    """The group's own key, then each active member's keys by folder name and by remote identity."""
-    from gaia.store.project_context import resolve_group
+def _group_memory_keys(group: str, workspace: str | None) -> list[str] | None:
+    """The group's key and each active member's folder and remote keys; None, after saying why on stderr, when no project has that group."""
+    import difflib
+
     from gaia.store.writer import _connect, initiative_from_project_ref, normalize_initiative
 
     con = _connect()
     try:
-        members = resolve_group(con, group, workspace)
+        grouped = con.execute(
+            "SELECT workspace, name, project_identity, group_name FROM projects "
+            "WHERE status = 'active' AND group_name IS NOT NULL"
+        ).fetchall()
     finally:
         con.close()
+    named = [r for r in grouped if r[3].lower() == group.strip().lower()]
+    members = [r for r in named if not workspace or r[0] == workspace]
+    if not members:
+        where = f" in workspace {workspace}" if workspace else ""
+        print(f"gaia memory get-relevant: no group named {group!r}{where}.", file=sys.stderr)
+        elsewhere = sorted({r[0] for r in named})
+        closest = difflib.get_close_matches(group.strip().lower(), sorted({r[3] for r in grouped}), n=5)
+        if elsewhere:
+            print(f"It exists in workspace {', '.join(elsewhere)}.", file=sys.stderr)
+        elif closest:
+            print(f"Closest groups: {', '.join(closest)}", file=sys.stderr)
+        return None
+    workspaces = sorted({r[0] for r in members})
+    if len(workspaces) > 1:
+        print(f"gaia memory get-relevant: group {group!r} exists in workspaces "
+              f"{', '.join(workspaces)}; reading all of them (--workspace picks one).",
+              file=sys.stderr)
     keys = [normalize_initiative(group)]
-    for member in members:
-        keys += [normalize_initiative(member["name"]), initiative_from_project_ref(member["identity"])]
+    for _, name, identity, _ in members:
+        keys += [normalize_initiative(name), initiative_from_project_ref(identity)]
     return list(dict.fromkeys(k for k in keys if k))
 
 
@@ -2276,6 +2297,8 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     if group_arg:
         key = canonical_project_key(initiative=group_arg)
         keys = _group_memory_keys(group_arg, getattr(args, "workspace", None))
+        if keys is None:
+            return 1
     elif initiative_arg:
         key = canonical_project_key(initiative=initiative_arg)
         keys = [key]
@@ -3908,8 +3931,9 @@ def register(subparsers):
         help="Project mode over a whole group: the group key (bildwiz) plus "
              "the key of every active project whose group it is "
              "(bildwiz_iac, ...), read at once and uncapped like --initiative. "
-             "When two workspaces hold a group of that name, --workspace "
-             "picks one.",
+             "A group in several workspaces is read in all of them, said on "
+             "stderr; --workspace narrows it to one. A group no project "
+             "carries exits 1 naming the closest groups.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,
