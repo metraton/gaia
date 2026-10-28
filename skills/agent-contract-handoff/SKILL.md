@@ -265,7 +265,10 @@ minted, `approval_id`, copied verbatim from the request's output.
   classifies T0 and is one command with nothing written before it, built
   only from an allowlist: `kubectl`/`oc` `get` or `describe`, at most a
   resource and a name, `--context`, `-n`/`--namespace` and `-o`/`--output`
-  `json|yaml|wide|name`; `gcloud` with a `describe` or `list` verb path,
+  `json|yaml|wide|name`; `gcloud` in a project-scoped group (`run`,
+  `container`, `compute`, `sql`, `functions`, `pubsub`, `storage`; `config`,
+  `auth`, `projects`, `alpha`, `beta` and any other group stay pending) with
+  a `describe` or `list` verb path,
   `--project`, `--format json|yaml`, `--region` and `--zone`. Any other
   option keeps it pending. It names exactly one context and namespace
   (kube) or project (gcloud), and each is named in the goal. An applied proposal is

@@ -23,6 +23,7 @@ _DIMENSIONS = {"kubectl": _KUBE_DIMENSIONS, "oc": _KUBE_DIMENSIONS, "gcloud": ((
 _KUBE_OPTIONS = frozenset({"--context", "-n", "--namespace", "-o", "--output"})
 _READ_OPTIONS = {"kubectl": _KUBE_OPTIONS, "oc": _KUBE_OPTIONS,
                  "gcloud": frozenset({"--project", "--format", "--region", "--zone"})}
+_GCLOUD_PROJECT_GROUPS = frozenset({"run", "container", "compute", "sql", "functions", "pubsub", "storage"})
 _KUBE_READ = (frozenset({"get", "describe"}), 2)
 _READ_VERBS = {"kubectl": _KUBE_READ, "oc": _KUBE_READ, "gcloud": (frozenset({"describe", "list"}), None)}
 _KUBE_FORMAT = (("-o", "--output"), frozenset({"json", "yaml", "wide", "name"}))
@@ -169,7 +170,8 @@ def _output_refusal(command: str, payload: Any, records: list) -> Optional[str]:
 def _target_refusal(command: str, goal: str) -> Optional[str]:
     from modules.security.canonical_path import command_name
     from modules.security.targets import (
-        UNDETERMINED, UNREADABLE, _attached_short, _flag_values, _literal, _operation, _split, command_targets,
+        UNDETERMINED, UNREADABLE, _attached_short, _flag_values, _literal, _operation, _positionals, _split,
+        command_targets,
     )
     from modules.tools.shell_parser import parse_command
 
@@ -199,6 +201,9 @@ def _target_refusal(command: str, goal: str) -> Optional[str]:
         return f"drift.command is not a {' or '.join(sorted(verbs))} read"
     if most_operands is not None and len(operands) > most_operands:
         return f"drift.command names more than {most_operands} operands after {operation}"
+    group = next((word for word, _, _ in _positionals(words)), None)
+    if program == "gcloud" and group not in _GCLOUD_PROJECT_GROUPS:
+        return f"drift.command reads gcloud {group}, which is not a project-scoped resource group"
     names = []
     for dimension, flags in _DIMENSIONS[program]:
         values = set(map(_literal, _flag_values(args, frozenset(flags))))

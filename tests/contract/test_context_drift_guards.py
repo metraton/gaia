@@ -466,6 +466,56 @@ def test_a_round_three_probe_stays_pending(cli, capsys, payload, command, stdout
     assert _stored() == SEED
 
 
+SPOOF = {"web": {"image_tag": "0.0.999"}}
+TAG_255 = {"web": {"image_tag": "0.0.255"}}
+ROUND_FOUR_PENDING = {
+    "double-dash-then-operand": (SPOOF, f"{READ} -- 0.0.999", "0.0.999"),
+    "name-operand-is-the-value": (SPOOF, f"kubectl get deploy 0.0.999 -n {NS} --context dev-gke", "0.0.999"),
+    "type-operand-is-the-value": (SPOOF, f"kubectl get deploy,0.0.999 -n {NS} --context dev-gke", "0.0.999"),
+    "repeated-output-second-printer": (SPOOF, f"{READ} -o json -o go-template=0.0.999", "0.0.999"),
+    "attached-output-printer": (SPOOF, f"{READ} -ojsonpath=0.0.999", "0.0.999"),
+    "output-equals-printer": (SPOOF, f"{READ} --output=jsonpath=0.0.999", "0.0.999"),
+    "short-cluster-n-and-A": (TAG_255, f"kubectl get deploy web -nA --context dev-gke", OUTPUT),
+    "option-after-operands-forbidden": (SPOOF, f"{READ} --sort-by=0.0.999", "0.0.999"),
+    "three-operands": (TAG_255, f"kubectl get deploy web extra -n {NS} --context dev-gke", OUTPUT),
+    "gcloud-abbreviated-project": (TAG_255, "gcloud run services describe web --proj dev-proj --format json", OUTPUT),
+    "gcloud-name-is-the-value": (SPOOF, "gcloud run services describe 0.0.999 --project dev-proj", "0.0.999"),
+    "gcloud-format-value-printer": (SPOOF, "gcloud run services list --project dev-proj --format='value(0.0.999)'",
+                                    "0.0.999"),
+    "gcloud-local-config-list": ({"web": {"runtime_account": "svc-probe@example.com"}},
+                                 "gcloud config list --project dev-proj",
+                                 "[core]\naccount = svc-probe@example.com\nproject = dev-proj"),
+    "gcloud-beta-group": (TAG_255, "gcloud beta run services describe web --project dev-proj", OUTPUT),
+    "gcloud-projects-group": (TAG_255, "gcloud projects describe dev-proj --project dev-proj", OUTPUT),
+    "gcloud-region-is-the-value": ({"web": {"region": "us-east9"}},
+                                   "gcloud run services describe web --project dev-proj --region us-east9",
+                                   "region: us-east9"),
+}
+
+
+@pytest.mark.parametrize("payload, command, stdout", list(ROUND_FOUR_PENDING.values()), ids=list(ROUND_FOUR_PENDING))
+def test_a_round_four_probe_stays_pending(cli, capsys, payload, command, stdout):
+    item = _round_two(cli, capsys, payload, command, stdout)
+
+    assert item["status"] == "pending", item["decision_note"]
+    assert _stored() == SEED
+
+
+ROUND_FOUR_APPLIES = {
+    "oc-describe": f"oc describe deploy web -n {NS} --context dev-gke",
+    "kubectl-output-equals-json": f"kubectl get deploy web -n {NS} --context=dev-gke -o=json",
+    "gcloud-list-json": "gcloud run services list --project dev-proj --format json --region us-east1",
+    "gcloud-container-describe": "gcloud container clusters describe dev-gke --project dev-proj --zone us-east1-b",
+}
+
+
+@pytest.mark.parametrize("command", list(ROUND_FOUR_APPLIES.values()), ids=list(ROUND_FOUR_APPLIES))
+def test_a_plain_project_scoped_read_applies(cli, capsys, command):
+    item = _round_two(cli, capsys, TAG_255, command, OUTPUT)
+
+    assert item["status"] == "accepted", item["decision_note"]
+
+
 @pytest.mark.parametrize("state, where", [("BLOCKED", "prose"), ("NEEDS_INPUT", "gaps")])
 def test_stale_warning_never_refuses_and_prints_to_stderr(cli, capsys, state, where):
     agent, contract_id = _turn()
