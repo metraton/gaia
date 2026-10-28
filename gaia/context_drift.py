@@ -7,20 +7,27 @@ import re
 import shlex
 import sqlite3
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
-WHAT_ROOTS = ("environment", "cluster", "context", "project", "namespace")
-WHAT_ABBREVIATIONS = frozenset({"env", "envs", "ns"})
+WHAT_ROOTS = ("environment", "cluster", "context", "project", "namespace", "ctx")
+WHAT_ABBREVIATIONS = frozenset({"env", "envs", "ns", "kubens", "proj", "projs", "cl", "cls"})
 
 _STALE = re.compile(r"\b(stale|outdated|out of date|contradict\w*|no longer (?:true|matches|accurate))\b",
                     re.IGNORECASE)
 _WORD_BREAK = re.compile(r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])")
 _KUBE_DIMENSIONS = (("context", ("--context",)), ("namespace", ("-n", "--namespace")))
 _DIMENSIONS = {"kubectl": _KUBE_DIMENSIONS, "oc": _KUBE_DIMENSIONS, "gcloud": (("project", ("--project",)),)}
-_KUBE_REPOINTING = ("--kubeconfig", "--cluster", "-s", "--server", "-A", "--all-namespaces")
+_KUBE_REPOINTING = ("--kubeconfig", "--cluster", "-s", "--server", "-A", "--all-namespaces", "-f", "--filename",
+                    "-k", "--kustomize")
 _REPOINTING = {"kubectl": _KUBE_REPOINTING, "oc": _KUBE_REPOINTING, "gcloud": ("--configuration",)}
+_KUBE_FORMAT = (("-o", "--output"), frozenset({"json", "yaml", "wide", "name"}))
+_FORMATS = {"kubectl": _KUBE_FORMAT, "oc": _KUBE_FORMAT, "gcloud": (("--format",), frozenset({"json", "yaml"}))}
+_UNPROVEN_OUTPUT = ("[REDACTED]", "...[truncated]")
+_NUMERIC = re.compile(r"[+-]?\d+(?:\.\d+)?")
+_MIN_VALUE_LENGTH = 4
 
 
 def _hooks_on_path() -> None:
@@ -55,11 +62,13 @@ def stale_context_warning(envelope: Any) -> Optional[str]:
 
 
 def _words(name: Any) -> list:
-    return [word.casefold() for word in _WORD_BREAK.split(str(name)) if word]
+    return [word.casefold() for word in _WORD_BREAK.split(unicodedata.normalize("NFKC", str(name))) if word]
 
 
 def is_what_key(name: Any) -> bool:
-    """Whether a key or section name, split at case, hyphen and underscore changes, names an environment, cluster, context, project or namespace."""
+    """Whether a key or section name, NFKC-folded and split at case, hyphen and underscore changes, is not ASCII or names an environment, cluster, context, project or namespace."""
+    if not unicodedata.normalize("NFKC", str(name)).isascii():
+        return True
     return any(word in WHAT_ABBREVIATIONS or any(root in word for root in WHAT_ROOTS) for word in _words(name))
 
 
@@ -134,7 +143,15 @@ def _output_refusal(command: str, payload: Any, records: list) -> Optional[str]:
     if not runs:
         return "the turn record holds no successful run of drift.command"
     excerpt = runs[-1].get("excerpt") or ""
-    missing = [value for value in dict.fromkeys(_leaves(payload)) if not value or value not in excerpt]
+    values = list(dict.fromkeys(_leaves(payload)))
+    unproven = [value for value in values if any(marker in value for marker in _UNPROVEN_OUTPUT)]
+    if unproven:
+        return f"value {', '.join(map(repr, unproven))} is redacted or truncated output"
+    weak = [value for value in values if len(value) < _MIN_VALUE_LENGTH or _NUMERIC.fullmatch(value)]
+    if weak:
+        return f"value {', '.join(map(repr, weak))} is too short or numeric to tie to the output"
+    missing = [value for value in values
+               if not re.search(rf"(?<![\w.-]){re.escape(value)}(?![\w.-])", excerpt)]
     if missing:
         return f"value {', '.join(map(repr, missing))} does not appear in the recorded output of drift.command"
     return None
@@ -160,9 +177,14 @@ def _target_refusal(command: str, goal: str) -> Optional[str]:
         return f"drift.command runs {program}, whose target is not modelled"
     options = args[:args.index("--")] if "--" in args else args
     repointing = frozenset(_REPOINTING[program])
-    used = [word for word in options if word.partition("=")[0] in repointing or _attached_short(word, repointing)]
+    used = [word for word in options if word.partition("=")[0] in repointing or _attached_short(word, repointing)
+            or (word.startswith("--") and word.partition("=")[0].endswith("-file"))]
     if used:
         return f"drift.command passes {', '.join(used)}"
+    format_flags, plain = _FORMATS[program]
+    printed = [value for value in _flag_values(args, frozenset(format_flags)) if value.lower() not in plain]
+    if printed:
+        return f"drift.command prints with {', '.join(printed)}, which can print any literal"
     operation, _, known = _operation(words)
     if operation is None or not known:
         return "drift.command has an unknown option before its operation"

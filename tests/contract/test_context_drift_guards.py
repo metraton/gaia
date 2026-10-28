@@ -314,7 +314,7 @@ def test_every_failed_guard_is_listed(cli, capsys):
     agent, contract_id = _turn()
     _bash(agent, command, stdout="")
 
-    _finalize(cli, capsys, contract_id, update=[_correction({"web": {"namespace": "x"}}, command)])
+    _finalize(cli, capsys, contract_id, update=[_correction({"web": {"namespace": "other-ns"}}, command)])
 
     note = _proposal(contract_id)["decision_note"]
     for reason in ("WHAT keys (web.namespace)", "does not appear in the recorded output", "no explicit context"):
@@ -347,6 +347,90 @@ def test_failed_guard_is_shown_in_the_pending_list(cli, capsys):
 
     assert args.func(args) == 0
     assert "[not auto-applied: the turn record holds no successful run of drift.command]" in capsys.readouterr().out
+
+
+GCP_GOAL = GOAL + " in gcp project dev-proj"
+ROUND_TWO_PENDING = {
+    "jsonpath-literal-prints-the-value": ({"web": {"image_tag": "0.0.999"}}, f"{READ} -o jsonpath=0.0.999",
+                                          "0.0.999", "prints with"),
+    "go-template-literal": ({"web": {"image_tag": "0.0.999"}}, f"{READ} -o go-template=0.0.999", "0.0.999",
+                            "prints with"),
+    "custom-columns-header": ({"web": {"image_tag": "0.0.999"}}, f"{READ} -o custom-columns=0.0.999:.metadata.name",
+                              "0.0.999\nweb", "prints with"),
+    "jsonpath-split-value": ({"web": {"image_tag": "0.0.999"}}, READ + ' -o jsonpath={"0.0.9"}{"99"}', "0.0.999",
+                             "prints with"),
+    "gcloud-custom-format": ({"web": {"image_tag": "0.0.255"}},
+                             "gcloud run services describe web --project dev-proj --format='value(0.0.255)'", OUTPUT,
+                             "prints with"),
+    "substring-1.2-in-1.23": ({"web": {"image_tag": "1.2"}}, READ, "web   1/1    registry/web:1.23", "1.2"),
+    "token-inside-longer-version": ({"web": {"image_tag": "0.0.25"}}, READ, OUTPUT, "does not appear"),
+    "digit-0-in-any-version": ({"web": {"port": 0}}, READ, OUTPUT, "too short or numeric"),
+    "redaction-placeholder": ({"web": {"db_password": "[REDACTED]"}}, READ, "DB_PASSWORD=hunter2secretvalue",
+                              "redacted or truncated"),
+    "unicode-lookalike-namespace-key": ({"web": {"namеspace": "prod"}}, READ, "prod", "WHAT"),
+    "fullwidth-namespace-key": ({"web": {"ｎamespace": "prod-ns"}}, READ, "prod-ns", "WHAT"),
+    "abbrev-kubeCtx": ({"web": {"kubeCtx": "prod-gke"}}, READ, "prod-gke", "WHAT"),
+    "abbrev-proj-id": ({"web": {"proj_id": "prod-proj"}}, READ, "prod-proj", "WHAT"),
+    "abbrev-cl": ({"web": {"cl": "prod-gke"}}, READ, "prod-gke", "WHAT"),
+    "two-commands-semicolon": ({"web": {"image_tag": "0.0.255"}}, f"{READ}; kubectl get deploy web", OUTPUT,
+                               "not auto-applied"),
+    "two-commands-newline": ({"web": {"image_tag": "0.0.255"}}, f"{READ}\nkubectl get deploy web", OUTPUT,
+                             "not auto-applied"),
+    "two-commands-and": ({"web": {"image_tag": "0.0.255"}}, f"kubectl get deploy web && {READ}", OUTPUT,
+                         "not auto-applied"),
+    "substituted-context": ({"web": {"image_tag": "0.0.255"}},
+                            f"kubectl get deploy web -n {NS} --context $(echo dev-gke)", OUTPUT, "not auto-applied"),
+    "env-wrapper-kubeconfig": ({"web": {"image_tag": "0.0.255"}}, f"env KUBECONFIG=/x/prod {READ}", OUTPUT,
+                               "written before the program"),
+    "gcloud-flags-file": ({"web": {"image_tag": "0.0.255"}},
+                          "gcloud run services describe web --project dev-proj --region r --flags-file=/x/f.yaml",
+                          OUTPUT, "--flags-file"),
+    "kubectl-filename": ({"web": {"image_tag": "0.0.255"}}, f"{READ} -f /x/prod.yaml", OUTPUT, "-f"),
+}
+
+
+def _round_two(cli, capsys, payload, command, stdout) -> dict:
+    _seed()
+    agent, contract_id = _turn(goal=GCP_GOAL)
+    _bash(agent, command, stdout=stdout)
+    assert _finalize(cli, capsys, contract_id, update=[_correction(payload, command)]) == 0
+    return _proposal(contract_id)
+
+
+@pytest.mark.parametrize("payload, command, stdout, reason", list(ROUND_TWO_PENDING.values()),
+                         ids=list(ROUND_TWO_PENDING))
+def test_a_round_two_probe_stays_pending(cli, capsys, payload, command, stdout, reason):
+    item = _round_two(cli, capsys, payload, command, stdout)
+
+    assert item["status"] == "pending", item["decision_note"]
+    assert reason in item["decision_note"], item["decision_note"]
+    assert _stored() == SEED
+
+
+@pytest.mark.xfail(strict=True, reason="accepted residual: a WHAT value under a HOW key name needs key-path marking")
+def test_a_cluster_name_stored_under_a_how_key_stays_pending(cli, capsys):
+    item = _round_two(cli, capsys, {"web": {"runs_on": "prod-gke"}}, READ, "prod-gke")
+
+    assert item["status"] == "pending", item["decision_note"]
+
+
+ROUND_TWO_APPLIES = {
+    "gcloud-project-equals": "gcloud run services describe web --project=dev-proj --region us-east1",
+    "gcloud-project-space": "gcloud run services describe web --project dev-proj --region us-east1",
+    "gcloud-project-before-operation": "gcloud --project=dev-proj run services describe web --region us-east1",
+    "gcloud-format-json": "gcloud run services describe web --project dev-proj --format json",
+    "kubectl-context-equals": f"kubectl get deploy web --namespace={NS} --context=dev-gke",
+    "kubectl-flags-before-operation": f"kubectl --context dev-gke -n {NS} get deploy web",
+    "kubectl-output-yaml": f"{READ} -o yaml",
+    "kubectl-output-wide-attached": f"{READ} -owide",
+}
+
+
+@pytest.mark.parametrize("command", list(ROUND_TWO_APPLIES.values()), ids=list(ROUND_TWO_APPLIES))
+def test_an_explicit_spelling_with_a_plain_output_format_applies(cli, capsys, command):
+    item = _round_two(cli, capsys, {"web": {"image_tag": "0.0.255"}}, command, OUTPUT)
+
+    assert item["status"] == "accepted", item["decision_note"]
 
 
 @pytest.mark.parametrize("state, where", [("BLOCKED", "prose"), ("NEEDS_INPUT", "gaps")])

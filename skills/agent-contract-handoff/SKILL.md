@@ -248,18 +248,23 @@ minted, `approval_id`, copied verbatim from the request's output.
   without the orchestrator only when every guard holds
   (`gaia/context_drift.py::auto_apply_refusals`). Its project is the
   dispatch's resolved project. It touches HOW keys only: a section or key
-  whose name, split at case, hyphen and underscore changes, names an
-  environment, cluster, context, project or namespace is WHAT
-  (`is_what_key`), and so is the `targets` section; keys inside lists count,
+  that is not ASCII after NFKC, or whose name, split at case, hyphen and
+  underscore changes, names an environment, cluster, context, project or
+  namespace (or `ctx`, `proj`, `cl`, `ns`, `env`) is WHAT (`is_what_key`),
+  and so is the `targets` section; keys inside lists count,
   and so does every key of the STORED subtree a null, a list or a scalar
   replaces. It deletes or replaces no stored value, and its section name is
   spelled as the stored one. The harness's own record of the turn (never the
   agent's `commands_run` or `harness_record`) holds a run of `drift.command`
-  that exited 0, and every value it applies appears literally in that run's
-  recorded output excerpt (redacted, at most 500 characters). The command
-  classifies T0, is one `kubectl`/`oc` or `gcloud` command with nothing
-  written before it, no `--kubeconfig`, `--cluster`, `--server`, `-A` or
-  `--configuration`, no unknown option before its operation, exactly one
+  that exited 0, and every value it applies appears as a whole token in that
+  run's recorded output excerpt (redacted, at most 500 characters); a value
+  shorter than 4 characters, numeric, or carrying `[REDACTED]` or
+  `...[truncated]` never applies. The command classifies T0, is one
+  `kubectl`/`oc` or `gcloud` command with nothing written before it, no
+  `--kubeconfig`, `--cluster`, `--server`, `-A`, `-f`, `-k`,
+  `--configuration` or `--*-file` option, an output format of the default,
+  `json` or `yaml` (kube also `wide` and `name`), no unknown option before
+  its operation, exactly one
   explicit context and namespace (kube) or project (gcloud), and each of them
   is named in the goal. An applied proposal is
   marked accepted by `auto:<agent_id>` with its evidence in the decision
