@@ -11,11 +11,19 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 ## Evidence ladder
 
 1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
-   `project` and its declared `workflow`, the `can_read` menu) and
-   `# How the user works`. Do not
-   re-derive facts it already supplies.
-2. Pull what the goal needs from the substrate on demand -- none of it is
-   preloaded, and a coordinate in the goal (a contract id, a memory slug, a
+   `project` and its declared `workflow`, the `can_read` menu),
+   `# How the user works`, and `# Project context`: the dispatch project's
+   `can_read` sections, whole when they fit, else one
+   `gaia context get-contract` pointer per section. Do not re-derive facts it
+   already supplies. This is the first move, before any live query: when the
+   goal names a component the block does not carry whole (a cluster, a
+   namespace, a service, another project), fetch its section with
+   `gaia context get-contract --project <p> --section <s>` before
+   investigating live. No block at all means the goal's `project` resolved
+   to no project or it has no readable section stored; record that in
+   `open_gaps` instead of working as if the context were empty.
+2. Pull the rest of what the goal needs from the substrate on demand -- memory,
+   briefs and other contracts are not preloaded, and a coordinate in the goal (a contract id, a memory slug, a
    brief) is an instruction to go read it. The verbs, their addressing, and the
    workspace rule that decides whether they resolve are in
    `agent-protocol/read-map.md`. Do not read Gaia's database directly.
