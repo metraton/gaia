@@ -228,3 +228,21 @@ def test_user_rows_over_their_share_still_arrive_whole_with_a_visible_excess_lin
     from modules.context.user_sections import overflow_line
     assert overflow_line(sum(map(len, bodies))) in user_part
     assert len(block) <= 9_500
+
+
+def test_after_user_rows_are_trimmed_the_index_takes_the_richest_level_that_fits(birth):
+    con = sqlite3.connect(birth.db)
+    try:
+        for i in range(8):
+            _user(con, f"user_pref_bulk_{i}", f"Preferencia: bulk standing rule {i}. " * 40)
+        con.commit()
+    finally:
+        con.close()
+
+    block = session_manifest.build_session_context()
+    projects = block[block.index(session_manifest.PROJECTS_HEADER):]
+    room = 9_500 - (len(block) - len(projects))
+
+    assert len(block) <= 9_500
+    assert "### " in projects, projects
+    assert projects == session_manifest.build_projects_section(room)

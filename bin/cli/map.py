@@ -231,12 +231,13 @@ def render_intent(intent: Intent) -> str:
 
 
 def _name_index() -> list[tuple[str, str, str]]:
-    """Every workspace, group and active project as (name, kind, what it is with the verb that reads it)."""
+    """Every active declared workspace, its groups and active projects as (name, kind, what it is with the verb that reads it)."""
     from gaia.store.reader import _read_only_rows
 
     projects = _read_only_rows(
         "SELECT workspace, name, group_name FROM projects WHERE status = 'active' ORDER BY workspace, name", ())
-    workspaces = _read_only_rows("SELECT name FROM workspaces ORDER BY name", ())
+    workspaces = _read_only_rows(
+        "SELECT name FROM workspaces WHERE status = 'active' AND root_path IS NOT NULL ORDER BY name", ())
     index = []
     for ws in workspaces:
         members = [p for p in projects if p["workspace"] == ws["name"]]

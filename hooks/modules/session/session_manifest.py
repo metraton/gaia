@@ -530,13 +530,11 @@ def _extract_projects_from_identity(
     by_basename: dict = path_lookup.get("by_basename", {})
 
     def _resolve(name: str) -> str:
-        p = by_name.get((workspace, name))
-        if p:
-            return p
-        # Directory-name match, unique across all workspaces (see docstring).
-        p = by_basename.get(name)
-        if p:
-            return p
+        spellings = dict.fromkeys((name, name.replace("_", "-"), name.replace("-", "_")))
+        for spelling in spellings:
+            p = by_name.get((workspace, spelling)) or by_basename.get(spelling)
+            if p:
+                return p
         # Single-project workspace: the one path we have is unambiguous.
         ws_paths = by_ws.get(workspace) or []
         if len(ws_paths) == 1:
@@ -1023,7 +1021,8 @@ def build_session_context(
         if len(_joined(*prefix, user, resume, environment, floor)) > BIRTH_BUDGET:
             room = BIRTH_BUDGET - len(_joined(*prefix, resume, environment, floor)) - 2
             user, kept = fit_user_sections(rows, room)
-            head, projects = _joined(*prefix, user, resume, environment), floor
+            head = _joined(*prefix, user, resume, environment)
+            projects = roster(BIRTH_BUDGET - len(head) - 2)
         text = _joined(head, projects)
         if text == heading:
             return ""

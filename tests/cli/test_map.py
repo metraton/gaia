@@ -162,7 +162,7 @@ def test_intent_expands_one_row_and_unknown_intent_fails(runtime, capsys):
 
 
 def _seed_names(db):
-    _exec(db, "INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('aaxis', 'aaxis')")
+    _exec(db, "INSERT OR IGNORE INTO workspaces (name, identity, root_path) VALUES ('aaxis', 'aaxis', '/w/aaxis')")
     for name, path, group in (("bildwiz-iac", "/w/aaxis/bildwiz/bildwiz-iac", "bildwiz"),
                               ("newco-pitot", "/w/aaxis/bildwiz/newco-pitot", "bildwiz"),
                               ("aos", "/w/aaxis/aos/aos", "aos")):
@@ -192,6 +192,19 @@ def test_a_name_at_two_levels_is_named_as_both(runtime, capsys):
     out = capsys.readouterr().out
     assert "aos -- group of 1 projects" in out and "aos -- project in workspace aaxis, group aos" in out
     assert "names more than one level" in out
+
+
+def test_retired_and_undeclared_workspaces_are_not_names(runtime, capsys):
+    _env, db = runtime
+    _seed_names(db)
+    _exec(db, "INSERT INTO workspaces (name, identity, status) VALUES ('rnd', 'rnd', 'retired')")
+    _exec(db, "INSERT INTO workspaces (name, identity) VALUES ('bildwiz', 'bildwiz')")
+    mod = _load_map()
+
+    assert mod.cmd_map(type("A", (), {"intent": "bildwiz"})()) == 0
+    out = capsys.readouterr().out
+    assert "workspace of" not in out and "more than one level" not in out, out
+    assert mod.cmd_map(type("A", (), {"intent": "rnd"})()) == 2
 
 
 def test_a_misspelled_name_answers_with_the_closest_names(runtime, capsys):

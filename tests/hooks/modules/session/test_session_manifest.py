@@ -740,6 +740,20 @@ class TestProjectsSectionDeduplicatesAtTheSource:
         block = session_manifest.build_projects_section(_ROOMY)
         assert "bildwiz-iac" not in block
 
+    def test_an_underscore_spelling_resolves_to_its_hyphenated_directory(self, monkeypatch):
+        promoted = {"bildwiz_2": {"name": "bildwiz-2", "local_path": "/ws/aaxis/bildwiz/bildwiz-iac"}}
+        legacy = {"name": "w", "workspace_repos": [{"name": "bildwiz_iac", "path": "bildwiz_iac"}]}
+        _patch_connect(
+            monkeypatch,
+            [
+                {"workspace": "aaxis", "payload": json.dumps(promoted)},
+                {"workspace": "legacy", "payload": json.dumps(legacy)},
+            ],
+            self._PROJ_ROWS,
+        )
+        block = session_manifest.build_projects_section(_ROOMY)
+        assert "unresolved" not in block and "bildwiz_iac" not in block, block
+
     def test_ambiguous_basename_is_not_guessed(self, monkeypatch):
         """Two repos sharing a directory name make the basename useless as a
         key; the legacy entry must stay unresolved rather than bind to one."""
