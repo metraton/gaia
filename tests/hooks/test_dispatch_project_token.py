@@ -84,6 +84,27 @@ def test_the_project_token_stands_alone_not_as_the_tail_of_a_word(prompt, expect
     assert binding["project"] == expected
 
 
+@pytest.mark.parametrize("prompt, expected", [
+    ("Look at https://console.cloud.google.com/logs?project=aaxis-bildwiz-project", None),
+    ("Look at https://x/logs?a=1&project=aaxis-bildwiz-project", None),
+    ("see /logs/project=aaxis-bildwiz-project", None),
+    ("Look at https://x/logs?project=aaxis-bildwiz-project project=none", "none"),
+    ("Look at https://x/logs?project=aaxis-bildwiz-project then do it. project=bildwiz-iac", "bildwiz-iac"),
+    ("gcloud logging read --project=aaxis-bildwiz-project project=none", "none"),
+    ("Two real: project=gaia and project=bildwiz-iac", "gaia"),
+    ("project=gaia at the start", "gaia"),
+    ("line one\nproject=gaia", "gaia"),
+    ("a\tproject=gaia", "gaia"),
+    ("{project=gaia}", "gaia"),
+    ("`project=gaia`", "gaia"),
+    ("'project=gaia'", "gaia"),
+    ('"project=gaia"', "gaia"),
+])
+def test_the_project_token_is_not_read_out_of_a_url_or_path(prompt, expected):
+    binding = extract_dispatch_binding({"prompt": prompt, "subagent_type": "developer"})
+    assert binding["project"] == expected
+
+
 def test_project_token_of_only_punctuation_is_none():
     binding = extract_dispatch_binding({"prompt": "project=. next", "subagent_type": "developer"})
     assert binding["project"] is None

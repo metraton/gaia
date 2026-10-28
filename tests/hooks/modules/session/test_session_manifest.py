@@ -624,7 +624,7 @@ class TestProjectsSectionIsAnIndexOfNames:
         payload = {"p": {"name": "p", "local_path": "/p"}}
         block = self._run_with_rows(monkeypatch, payload)
         assert block.rstrip().endswith(
-            "Ficha de un proyecto: gaia context project <nombre>"
+            "A project's card: gaia context project <name>"
         )
 
     def test_pointer_uses_the_resolved_cli_path_when_available(self, monkeypatch):
@@ -637,7 +637,7 @@ class TestProjectsSectionIsAnIndexOfNames:
         payload = {"p": {"name": "p", "local_path": "/p"}}
         block = self._run_with_rows(monkeypatch, payload)
         assert block.rstrip().endswith(
-            "Ficha de un proyecto: /abs/bin/gaia context project <nombre>"
+            "A project's card: /abs/bin/gaia context project <name>"
         )
 
     def test_vanished_entry_is_not_injected_at_all(self, monkeypatch):
@@ -654,6 +654,18 @@ class TestProjectsSectionIsAnIndexOfNames:
         block = self._run_with_rows(monkeypatch, payload)
         assert "ghost" not in block
         assert "curated blurb" not in block
+
+    def test_a_copy_of_another_project_is_not_indexed(self, monkeypatch):
+        payload = {
+            "auto_claude_sleep": {"name": "auto-claude-sleep", "local_path": "/x/auto-claude-sleep"},
+            "auto_claude_sleep_2": {
+                "name": "auto-claude-sleep-2",
+                "local_path": "/x/_duplicados/auto-claude-sleep",
+                "copy_of": "auto_claude_sleep",
+            },
+        }
+        block = self._run_with_rows(monkeypatch, payload)
+        assert block.count("auto-claude-sleep") == 1
 
     def test_a_workspace_of_only_vanished_entries_renders_no_group(self, monkeypatch):
         payload = {
@@ -821,7 +833,7 @@ class TestProjectsSectionNeverOutgrowsItsShare:
 
             assert block, f"cap={cap} produced an empty section"
             assert len(block) <= cap, f"cap={cap}: section is {len(block)} chars"
-            assert block.rstrip().endswith("context project <nombre>"), f"cap={cap}"
+            assert block.rstrip().endswith("context project <name>"), f"cap={cap}"
 
     def test_the_whole_roster_lands_when_there_is_room(self, monkeypatch):
         self._ten_projects(monkeypatch)
@@ -863,16 +875,16 @@ class TestProjectsSectionNamesWorkspacesGroupsAndProjects:
 
     def test_the_map_fallback_line_gives_way_before_any_name(self):
         roomy = session_manifest.build_projects_section(_ROOMY)
-        assert "\nUn nombre que no está aquí: gaia map <palabra>\nFicha de un proyecto" in roomy
+        assert "\nA name that is not listed here: gaia map <word>\nA project's card" in roomy
 
         block = session_manifest.build_projects_section(len(roomy) - 1)
 
-        fallback = next(line for line in roomy.splitlines() if "map <palabra>" in line)
+        fallback = next(line for line in roomy.splitlines() if "map <word>" in line)
         assert block == roomy.replace(fallback + "\n", ""), block
 
     def test_a_tighter_cap_keeps_one_line_per_workspace_naming_its_groups(self):
         roomy = session_manifest.build_projects_section(_ROOMY)
-        fallback = next(line for line in roomy.splitlines() if "map <palabra>" in line)
+        fallback = next(line for line in roomy.splitlines() if "map <word>" in line)
 
         block = session_manifest.build_projects_section(len(roomy) - len(fallback) - 2)
 

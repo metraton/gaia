@@ -2962,7 +2962,7 @@ def _cmd_reclassify(args) -> int:
         )
 
     try:
-        from gaia.store.writer import reclassify_memory
+        from gaia.store.writer import get_memory, reclassify_memory
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
@@ -2979,14 +2979,24 @@ def _cmd_reclassify(args) -> int:
         # MemoryWriteForbidden -- T3 enforcement layer.
         return _err(str(exc), as_json)
 
+    warnings = []
+    row = get_memory(workspace, name)
+    if res["class"] == "log" and row and row["type"] == "user":
+        warnings.append(_warning(
+            "user_log_reaches_no_session",
+            "a user row of class log reaches no session: neither the birth "
+            "block nor the kernel carries it.",
+        ))
+
     if as_json:
-        print(json.dumps(res, indent=2, default=str))
+        print(json.dumps({**res, **({"warnings": warnings} if warnings else {})},
+                         indent=2, default=str))
     else:
         print(
             f"Reclassified {name}: class={res['class']}, "
             f"status={res['memory_status']} in workspace {workspace}"
         )
-    _emit_write_warnings([], as_json)
+    _emit_write_warnings(warnings, as_json)
     return 0
 
 
