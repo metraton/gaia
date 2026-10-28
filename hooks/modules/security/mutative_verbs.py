@@ -838,13 +838,14 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 }
 
 
-# Actions exempted by name under a group whose other actions stay gated: the
-# verbs proven not to write. Every other verb under the group, including one
-# added later, still falls to the scan.
+# Actions exempted by name under a group whose other actions stay gated: verbs proven not to write, or (approvals)
+# only to store a request for the user's decision; the stored command is judged when it runs. Every other verb,
+# including one added later, still falls to the scan, which reads option values such as --what as words.
 #
 # Key:   (base_cmd, group)  -- group is non_flag_tokens[0].
 # Value: {verb: category}.
 SUBCOMMAND_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
+    ("gaia", "approvals"): dict.fromkeys(("request-set", "request-file-write", "question", "show"), CATEGORY_READ_ONLY),
     ("gaia", "migrate"): {"plan": CATEGORY_SIMULATION},
     ("gh", "label"): {"list": CATEGORY_READ_ONLY},
 }
