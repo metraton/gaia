@@ -564,8 +564,8 @@ def _patch_connect(monkeypatch, identity_rows, proj_rows=()):
             "VALUES (?, 'project_identity', ?)", (row["workspace"], row["payload"]),
         )
     for row in proj_rows:
-        con.execute("INSERT INTO projects (workspace, name, path) VALUES (?, ?, ?)",
-                    (row["workspace"], row["name"], row["path"]))
+        con.execute("INSERT INTO projects (workspace, name, path, group_name) VALUES (?, ?, ?, ?)",
+                    (row["workspace"], row["name"], row["path"], row.get("group_name")))
     monkeypatch.setattr(_writer, "_connect", lambda: _Unclosed(con))
 
 
@@ -585,9 +585,8 @@ class _Unclosed:
 _ROOMY = 10_000
 
 
-class TestProjectsSectionIsARosterWithCuratedDescriptions:
-    """One line per project: its name, its pending count and its curated
-    description, keyed by the name the user calls it (the directory basename)."""
+class TestProjectsSectionIsAnIndexOfNames:
+    """Names only, keyed by the name the user calls a project (the directory basename)."""
 
     def _run_with_rows(self, monkeypatch, payload, max_chars=_ROOMY):
         _patch_connect(
@@ -596,7 +595,7 @@ class TestProjectsSectionIsARosterWithCuratedDescriptions:
         )
         return session_manifest.build_projects_section(max_chars)
 
-    def test_curated_description_kept_type_dropped(self, monkeypatch):
+    def test_names_only_neither_type_nor_description(self, monkeypatch):
         payload = {
             "aos_iac": {
                 "name": "aos-iac",
@@ -606,24 +605,15 @@ class TestProjectsSectionIsARosterWithCuratedDescriptions:
             },
         }
         block = self._run_with_rows(monkeypatch, payload)
-        assert "### me — /home/x" in block
-        assert "- aos-iac: Terraform IaC for AOS GCP infra" in block
-        assert "(terraform)" not in block
-
-    def test_a_long_description_is_cut_to_one_short_line(self, monkeypatch):
-        payload = {"p": {"name": "p", "local_path": "/p", "description": "word " * 100}}
-
-        block = self._run_with_rows(monkeypatch, payload)
-
-        line = next(l for l in block.splitlines() if l.startswith("- p"))
-        assert len(line) < 130 and line.endswith("…")
+        assert "### me — /home/x\naos-iac" in block
+        assert "Terraform IaC" not in block and "(terraform)" not in block
 
     def test_basename_shown_when_it_differs_from_the_stored_name(self, monkeypatch):
         payload = {"p": {"name": "plainproj", "local_path": "/p"}}
         block = self._run_with_rows(monkeypatch, payload)
         # The user calls the project by its real directory name; the legacy
         # stored slot name is not what `gaia context project` should be handed.
-        assert "- p" in block.splitlines()
+        assert "p" in block.splitlines()
         assert "plainproj" not in block
 
     def test_pointer_footer_names_the_ficha_verb(self, monkeypatch):
@@ -715,19 +705,18 @@ class TestProjectsSectionDeduplicatesAtTheSource:
         )
         block = session_manifest.build_projects_section(_ROOMY)
 
-        assert [l for l in block.splitlines() if l.startswith("- ")] == ["- bildwiz-iac"]
+        assert block.count("bildwiz-iac") == 1, block
         assert "bildwiz-2" not in block
         # It lands under the workspace that owns the projects row, not under the
         # legacy contract's own workspace key.
         assert "### aaxis" in block
         assert "### bildwiz" not in block
 
-    def test_merge_keeps_metadata_carried_by_only_one_side(self, monkeypatch):
+    def test_a_vanished_mark_on_either_side_hides_the_merged_entry(self, monkeypatch):
         promoted = {
             "bildwiz_2": {
                 "name": "bildwiz-2",
                 "local_path": "/ws/aaxis/bildwiz/bildwiz-iac",
-                "type": "application",
             },
         }
         legacy = {
@@ -736,7 +725,7 @@ class TestProjectsSectionDeduplicatesAtTheSource:
                 {
                     "name": "bildwiz-iac",
                     "path": "bildwiz-iac",
-                    "description": "only the legacy row has this",
+                    "missing_since": "2026-07-01T00:00:00+00:00",
                 }
             ],
         }
@@ -749,7 +738,7 @@ class TestProjectsSectionDeduplicatesAtTheSource:
             self._PROJ_ROWS,
         )
         block = session_manifest.build_projects_section(_ROOMY)
-        assert "- bildwiz-iac: only the legacy row has this" in block
+        assert "bildwiz-iac" not in block
 
     def test_ambiguous_basename_is_not_guessed(self, monkeypatch):
         """Two repos sharing a directory name make the basename useless as a
@@ -825,4 +814,53 @@ class TestProjectsSectionNeverOutgrowsItsShare:
 
         block = session_manifest.build_projects_section(_ROOMY)
 
-        assert len(re.findall(r"^- project-name-number-\d", block, re.M)) == 10
+        assert len(re.findall(r"project-name-number-\d", block)) == 10
+
+
+class TestProjectsSectionNamesWorkspacesGroupsAndProjects:
+    """Each workspace renders as its groups (projects.group_name) with their projects."""
+
+    _PROJECTS = (
+        ("aaxis", "bildwiz-iac", "/ws/aaxis/bildwiz/bildwiz-iac", "bildwiz"),
+        ("aaxis", "newco-pitot", "/ws/aaxis/bildwiz/newco-pitot", "bildwiz"),
+        ("aaxis", "aos", "/ws/aaxis/aos/aos", "aos"),
+        ("aaxis", "solo", "/ws/aaxis/solo", None),
+        ("me", "gaia", "/ws/me/gaia", None),
+    )
+
+    @pytest.fixture(autouse=True)
+    def _rows(self, monkeypatch):
+        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
+        by_ws: dict = {}
+        for ws, name, path, _group in self._PROJECTS:
+            by_ws.setdefault(ws, {})[name] = {"name": name, "local_path": path}
+        _patch_connect(
+            monkeypatch,
+            [{"workspace": ws, "payload": json.dumps(payload)} for ws, payload in by_ws.items()],
+            [{"workspace": ws, "name": n, "path": p, "group_name": g} for ws, n, p, g in self._PROJECTS],
+        )
+
+    def test_each_workspace_lists_its_groups_then_the_ungrouped(self):
+        block = session_manifest.build_projects_section(_ROOMY)
+
+        assert ("### aaxis — /ws/aaxis\naos (1): aos\nbildwiz (2): bildwiz-iac, newco-pitot\n"
+                "ungrouped: solo") in block, block
+        assert "### me — /ws/me\ngaia" in block, block
+
+    def test_a_tighter_cap_keeps_one_line_per_workspace_naming_its_groups(self):
+        roomy = session_manifest.build_projects_section(_ROOMY)
+
+        block = session_manifest.build_projects_section(len(roomy) - 1)
+
+        assert "### aaxis — /ws/aaxis: 4 projects; groups: aos (1), bildwiz (2)" in block, block
+        assert "newco-pitot" not in block
+
+    def test_the_census_line_still_names_the_groups_when_it_fits(self):
+        block = session_manifest.build_projects_section(150)
+
+        assert "5 projects in 2 groups in 2 workspaces — aaxis: aos, bildwiz" in block, block
+
+    def test_the_smallest_fallback_counts_groups(self):
+        block = session_manifest.build_projects_section(0)
+
+        assert "5 projects in 2 groups in 2 workspaces; list them with `gaia context get`" in block

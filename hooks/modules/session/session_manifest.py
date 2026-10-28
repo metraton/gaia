@@ -603,9 +603,9 @@ def _workspace_root(paths: list[str]) -> str:
 
 
 def _collect_projects() -> Optional[dict]:
-    """The projects with active project context, grouped by owning workspace.
+    """The projects with active project context, keyed by owning workspace and group.
 
-    Returns ``{"live", "unresolved", "group_order", "roots"}``, or None when
+    Returns ``{"live", "unresolved", "workspace_order", "roots"}``, or None when
     there is nothing to index or the database cannot be read.
 
     This is NOT an index of every git repo on disk. The source is the set of
@@ -631,9 +631,10 @@ def _collect_projects() -> Optional[dict]:
     what ``gaia context project`` resolves against as its second-priority match,
     so showing it is what makes the index actually useful for lookup.
 
-    A project's group is the workspace that owns its ``projects`` row (the
+    A project's workspace is the one that owns its ``projects`` row (the
     scan-verified physical truth), falling back to the contract's own workspace
-    key for a hand-authored entry with no row.
+    key for a hand-authored entry with no row; its group is that row's
+    ``group_name``, and an entry with no row has none.
 
     Two defects of the older flat list are fixed at the source rather than in
     the render:
@@ -683,7 +684,7 @@ def _collect_projects() -> Optional[dict]:
             # Path resolution sources: include missing rows -- the on-disk path
             # may still be valid even if the scanner marked the repo missing.
             proj_rows = con.execute(
-                "SELECT workspace, name, path FROM projects WHERE path IS NOT NULL"
+                "SELECT workspace, name, path, group_name FROM projects WHERE path IS NOT NULL"
             ).fetchall()
         finally:
             con.close()
@@ -697,6 +698,7 @@ def _collect_projects() -> Optional[dict]:
     by_name: dict = {}
     by_ws: dict = {}
     ws_of_path: dict = {}
+    group_of_path: dict = {}
     basename_hits: dict = {}
     for r in proj_rows:
         d = dict(r)
@@ -706,6 +708,7 @@ def _collect_projects() -> Optional[dict]:
         by_name[(d["workspace"], d["name"])] = p
         by_ws.setdefault(d["workspace"], []).append(p)
         ws_of_path.setdefault(p, d["workspace"])
+        group_of_path.setdefault(p, d.get("group_name") or "")
         basename_hits.setdefault(os.path.basename(p), set()).add(p)
     # A basename is only a usable key while it identifies exactly ONE path;
     # two repos sharing a directory name are left unresolved, never guessed.
@@ -735,38 +738,30 @@ def _collect_projects() -> Optional[dict]:
             continue
         if not isinstance(payload, dict):
             continue
-        for name, path, ptype, desc, gone in _extract_projects_from_identity(
+        for name, path, _type, _desc, gone in _extract_projects_from_identity(
             payload, contract_ws, path_lookup
         ):
             key = path or f"name:{name.lower()}"
-            # The owning workspace is the one holding this path's projects row;
-            # a hand-authored entry with no row keeps its contract's workspace.
-            group = ws_of_path.get(path) or contract_ws
             prev = merged.get(key)
             if prev is None:
                 merged[key] = {
-                    "name": name, "path": path, "type": ptype,
-                    "desc": desc, "gone": gone, "ws": group,
+                    "name": name, "path": path, "gone": gone,
+                    "ws": ws_of_path.get(path) or contract_ws,
+                    "group": group_of_path.get(path, ""),
                     "is_ws_identity": not path and name.lower() == contract_ws.lower(),
                 }
                 order.append(key)
-                continue
-            # Same project reached twice: keep every field either side carries.
-            for field, value in (
-                ("type", ptype), ("desc", desc), ("gone", gone),
-            ):
-                if not prev[field] and value:
-                    prev[field] = value
+            elif gone and not prev["gone"]:
+                prev["gone"] = gone
 
     if not merged:
         return None
 
-    # Split live from vanished, and pin the per-workspace group order. Roots are
-    # computed from the LIVE paths only: a vanished repo's path should not widen
-    # (or, as the sole member, define) the root every sibling renders against.
+    # Roots are computed from the LIVE paths only: a vanished repo's path should
+    # not widen (or, as the sole member, define) the root every sibling renders against.
     live: list[dict] = []
     unresolved: list[str] = []
-    group_order: list[str] = []
+    workspace_order: list[str] = []
     for key in order:
         e = merged[key]
         ws = e["ws"]
@@ -783,25 +778,18 @@ def _collect_projects() -> Optional[dict]:
             # whole record, and nothing here deletes it. Injecting the names
             # every session spent budget on a question almost nobody asks.
             continue
-        if ws and ws not in group_order:
-            group_order.append(ws)
+        if ws and ws not in workspace_order:
+            workspace_order.append(ws)
         if not e["path"]:
             unresolved.append(e["name"])
         else:
             live.append(e)
 
     roots: dict = {}
-    for ws in group_order:
+    for ws in workspace_order:
         roots[ws] = _workspace_root([e["path"] for e in live if e["ws"] == ws])
 
-    return {"live": live, "unresolved": unresolved, "group_order": group_order, "roots": roots}
-
-
-# A workspace holding more projects than this is one line in the roster: past
-# a screenful of names nobody scans the list, and the group's size is the
-# signal worth its line.
-_LARGE_GROUP = 12
-_PROJECT_LINE_MAX = 120
+    return {"live": live, "unresolved": unresolved, "workspace_order": workspace_order, "roots": roots}
 
 
 def _display_name(e: dict) -> str:
@@ -816,21 +804,25 @@ def _display_name(e: dict) -> str:
     return e["name"]
 
 
-def _one_line(text: str) -> str:
-    """``text`` flattened to one line of at most ``_PROJECT_LINE_MAX`` chars."""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= _PROJECT_LINE_MAX else flat[: _PROJECT_LINE_MAX - 1] + "…"
+def _groups_of(members: list[dict]) -> list[tuple[str, list[dict]]]:
+    """``members`` split by group, named groups alphabetically and the ungrouped ("") last."""
+    by_group: dict[str, list[dict]] = {}
+    for e in members:
+        by_group.setdefault(e["group"], []).append(e)
+    named = sorted(g for g in by_group if g)
+    return [(g, by_group[g]) for g in named] + ([("", by_group[""])] if "" in by_group else [])
 
 
 def build_projects_section(max_chars: int) -> str:
     """Render the Projects section within ``max_chars``, or "" when there is nothing to index.
 
-    Each project is its name, its live-pending count when it has one, and one
-    line about it. The count is taken by canonical project key over every
-    workspace (``gaia.store.reader.count_pending_by_initiative``), so it
-    equals what ``gaia memory get-relevant --initiative <name>`` returns.
-    When the roster does not fit it degrades in steps -- names without their
-    lines, then every group as one line, then a pointer that only counts --
+    The index carries names only: each workspace as its groups, each group as
+    its projects, a project with its live-pending count when it has one. The
+    count is taken by canonical project key over every workspace
+    (``gaia.store.reader.count_pending_by_initiative``), so it equals what
+    ``gaia memory get-relevant --initiative <name>`` returns. When the index
+    does not fit it degrades in steps -- each workspace as one line naming its
+    groups, then one line naming every group, then a line that only counts --
     and the pointer always lands, whatever ``max_chars`` is.
     """
     return projects_renderer()(max_chars)
@@ -846,7 +838,7 @@ def projects_renderer():
         from gaia.store.writer import normalize_initiative
 
         live = collected["live"]
-        group_order = collected["group_order"]
+        workspace_order = collected["workspace_order"]
         roots = collected["roots"]
         unresolved = collected["unresolved"]
         keys = {normalize_initiative(_display_name(e)) for e in live} - {None}
@@ -865,25 +857,32 @@ def projects_renderer():
             root = roots.get(ws)
             return f"### {ws} — {root}" if root else f"### {ws}"
 
-        def group(ws: str, members: list[dict], detail: str) -> str:
-            if detail == "groups" or len(members) > _LARGE_GROUP:
-                pending = [label(e) for e in members if label(e) != _display_name(e)]
-                line = f"{title(ws)}: {len(members)} projects"
-                return line + (f"; pending: {', '.join(pending)}" if pending else "")
-            if detail == "names":
+        def names_block(ws: str, members: list[dict]) -> str:
+            groups = _groups_of(members)
+            if groups == [("", members)]:
                 return f"{title(ws)}\n{', '.join(label(e) for e in members)}"
             return "\n".join([title(ws)] + [
-                f"- {label(e)}: {_one_line(e['desc'])}" if e["desc"] else f"- {label(e)}"
-                for e in members
+                f"{g} ({len(projects)}): {', '.join(label(e) for e in projects)}" if g
+                else f"ungrouped: {', '.join(label(e) for e in projects)}"
+                for g, projects in groups
             ])
 
-        def render(detail: str) -> str:
-            parts = [PROJECTS_HEADER]
-            for ws in group_order:
-                members = [e for e in live if e["ws"] == ws]
-                if members:
-                    parts.append(group(ws, members, detail))
-            if unresolved and detail != "groups":
+        def summary_line(ws: str, members: list[dict]) -> str:
+            named = [f"{g} ({len(projects)})" for g, projects in _groups_of(members) if g]
+            pending = [label(e) for e in members if label(e) != _display_name(e)]
+            line = f"{title(ws)}: {len(members)} projects"
+            line += f"; groups: {', '.join(named)}" if named else ""
+            return line + (f"; pending: {', '.join(pending)}" if pending else "")
+
+        by_workspace = [(ws, [e for e in live if e["ws"] == ws]) for ws in workspace_order]
+        by_workspace = [(ws, members) for ws, members in by_workspace if members]
+        group_count = sum(1 for _, members in by_workspace for g, _ in _groups_of(members) if g)
+        census = (f"{len(live)} projects in {group_count} groups in "
+                  f"{len(workspace_order)} workspaces")
+
+        def render(block) -> str:
+            parts = [PROJECTS_HEADER, *(block(ws, members) for ws, members in by_workspace)]
+            if unresolved and block is names_block:
                 parts.append(
                     f"unresolved ({len(unresolved)}): {', '.join(unresolved)} "
                     f"— no path on disk; 'gaia context get'"
@@ -891,11 +890,16 @@ def projects_renderer():
             parts.append(pointer)
             return "\n\n".join(parts)
 
-        rendered = [render(detail) for detail in ("lines", "names", "groups")]
+        every_group = "; ".join(
+            f"{ws}: {', '.join(g for g, _ in _groups_of(members) if g)}"
+            for ws, members in by_workspace if any(e["group"] for e in members)
+        )
+        rendered = [render(names_block), render(summary_line)]
+        if every_group:
+            rendered.append("\n\n".join([PROJECTS_HEADER, f"{census} — {every_group}", pointer]))
         floor = "\n\n".join([
             PROJECTS_HEADER,
-            f"{len(live)} projects in {len(group_order)} workspaces; list them with "
-            f"`{cli} context get`",
+            f"{census}; list them with `{cli} context get`",
             pointer,
         ])
 
