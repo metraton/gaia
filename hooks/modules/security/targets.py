@@ -32,7 +32,7 @@ _GENERIC_TARGET_FLAGS = frozenset({
 _KUBE_TARGET_FLAGS = frozenset({"--context", "--cluster"})
 _PROGRAM_TARGET_FLAGS: Dict[str, frozenset] = {
     "kubectl": _KUBE_TARGET_FLAGS, "oc": _KUBE_TARGET_FLAGS, "k9s": _KUBE_TARGET_FLAGS,
-    "helm": frozenset({"--kube-context"}), "flux": frozenset({"--context"}),
+    "helm": frozenset({"--kube-context", "--kube-apiserver", "-n", "--namespace"}), "flux": frozenset({"--context"}),
     "docker": frozenset({"--context", "-c"}), "podman": frozenset({"--connection", "-c"}),
     "gcloud": frozenset({"--project", "--account"}), "aws": frozenset({"--profile"}),
     "az": frozenset({"--subscription"}), "pulumi": frozenset({"--stack", "-s"}),
@@ -70,7 +70,7 @@ _PROGRAM_SELECTORS: Dict[str, frozenset] = {
     "podman": frozenset({"CONTAINER_HOST", "CONTAINER_CONNECTION"}),
 }
 _HARMLESS_VARIABLES = frozenset({
-    "HELM_DEBUG", "HELM_CACHE_HOME", "HELM_PLUGINS", "HELM_NO_PLUGINS", "TF_LOG", "TF_LOG_CORE", "TF_LOG_PROVIDER",
+    "HELM_DEBUG", "HELM_CACHE_HOME", "HELM_NO_PLUGINS", "TF_LOG", "TF_LOG_CORE", "TF_LOG_PROVIDER",
     "TF_LOG_PATH", "TF_IN_AUTOMATION", "TF_INPUT", "TF_PLUGIN_CACHE_DIR", "PULUMI_SKIP_UPDATE_CHECK",
     "CLOUDSDK_CORE_VERBOSITY", "CLOUDSDK_CORE_DISABLE_PROMPTS", "CLOUDSDK_CORE_DISABLE_USAGE_REPORTING",
     "AZURE_CORE_OUTPUT", "AZURE_CORE_ONLY_SHOW_ERRORS", "AZURE_CORE_COLLECT_TELEMETRY", "AZURE_CORE_NO_COLOR",
@@ -160,6 +160,8 @@ _SELECTOR_VARIABLES = tuple(sorted(_NAMING_VARIABLES | {
 }))
 _ENGINE_HOST_VARIABLES = {"docker": "DOCKER_HOST", "podman": "CONTAINER_HOST"}
 _TREE_LIMIT = 512
+_ENV_SIGNAL_OPTIONS = frozenset({"--ignore-signal", "--default-signal", "--block-signal", "--list-signal-handling"})
+_ENV_RESETTING_WRAPPERS = frozenset({"sudo", "doas", "su", "runuser", "pkexec"})
 _CONFIG_READS: ContextVar[Optional[list]] = ContextVar("target_config_reads", default=None)
 
 
@@ -624,8 +626,78 @@ def _wrapper_cwd(prefix: Sequence[str], cwd: Optional[str]) -> Optional[str]:
     return cwd
 
 
+def _env_options(words: Sequence[str], environment: Dict[str, str]) -> Optional[int]:
+    """Apply the options ``env`` reads from *words* to *environment*; how many words they take, None for one not modelled."""
+    index = 0
+    while index < len(words) and words[index].startswith("-"):
+        word, index = words[index], index + 1
+        name, equals, value = word.partition("=")
+        if word == "--":
+            return index
+        if word in ("-", "-i", "--ignore-environment"):
+            environment.clear()
+        elif word in ("-0", "--null", "-v", "--debug") or name in _ENV_SIGNAL_OPTIONS:
+            continue
+        elif name in ("--unset", "--chdir", "--split-string"):
+            value = value if equals else (words[index] if index < len(words) else None)
+            index += 0 if equals else 1
+            if value is None or not _env_valued(name[2], value, environment):
+                return None
+        elif word[1] != "-":
+            flags = word[1:]
+            for position, flag in enumerate(flags):
+                if flag in "uCS":
+                    value = flags[position + 1:] or (words[index] if index < len(words) else None)
+                    index += 0 if flags[position + 1:] else 1
+                    if value is None or not _env_valued(flag.lower(), value, environment):
+                        return None
+                    break
+                if flag == "i":
+                    environment.clear()
+                elif flag not in "0v":
+                    return None
+        else:
+            return None
+    return index
+
+
+def _env_valued(flag: str, value: str, environment: Dict[str, str]) -> bool:
+    from ..tools.shell_parser import shell_split
+
+    if flag == "u":
+        environment.pop(value, None)
+        return not _DYNAMIC.search(value)
+    if flag == "s":
+        try:
+            split = shell_split(value)
+        except ValueError:
+            return False
+        return _env_options(split, environment) is not None
+    return True
+
+
+def _edited_environment(prefix: Sequence[str], environment: Dict[str, str]) -> Optional[Dict[str, str]]:
+    """*environment* after the assignments and ``env`` options written before the program, in order; None when a word
+    there edits it in a way not modelled."""
+    environment, index = dict(environment), 0
+    while index < len(prefix):
+        word, index = prefix[index], index + 1
+        assignment = _ASSIGNMENT.fullmatch(word)
+        if assignment:
+            environment[assignment.group(1)] = assignment.group(2)
+        elif command_name(word) == "env":
+            taken = _env_options(prefix[index:], environment)
+            if taken is None:
+                return None
+            index += taken
+        elif command_name(word) in _ENV_RESETTING_WRAPPERS or (command_name(word) == "exec" and "-c" in prefix[index:]):
+            return None
+    return environment
+
+
 def _command_context(command: str, cwd: Optional[str], inherited: Optional[Dict[str, str]]):
-    """(program, args, environment, cwd, assignments, words) *command* runs with; None when it runs no program."""
+    """(program, args, environment, cwd, assignments, words, modelled) *command* runs with; None when it runs no
+    program. *modelled* is False when a word before the program edits the environment in a way not modelled."""
     from .mutative_verbs import _peel_leading_cd
 
     cwd, command, _ = _peel_leading_cd(command, cwd)
@@ -633,11 +705,13 @@ def _command_context(command: str, cwd: Optional[str], inherited: Optional[Dict[
     if split is None or not split[1]:
         return None
     assignments, words, prefix = split
-    environment = {**os.environ, **(inherited or {})}
-    for word in assignments:
-        name, value = _ASSIGNMENT.fullmatch(word).groups()
-        environment[name] = value
-    return command_name(words[0]), words[1:], environment, _wrapper_cwd(prefix, cwd), assignments, words
+    base = {**os.environ, **(inherited or {})}
+    edited = _edited_environment(prefix, base)
+    environment = base if edited is None else edited
+    if edited is None:
+        environment.update(_ASSIGNMENT.fullmatch(word).groups() for word in assignments)
+    return (command_name(words[0]), words[1:], environment, _wrapper_cwd(prefix, cwd), assignments, words,
+            edited is not None)
 
 
 def _file_state(path: Path) -> list:
@@ -726,7 +800,7 @@ def command_targets(
     context = _command_context(command, cwd, inherited)
     if context is None:
         return []
-    program, args, environment, cwd, assignments, words = context
+    program, args, environment, cwd, assignments, words, modelled = context
     operation, operands, _ = _operation(words)
     fetching = operation is not None and _CREDENTIAL_FETCHERS.get(program) == operation
     kind, flagged = "switch" if fetching else "flag", _flag_values(args, _target_flags(program))
@@ -740,6 +814,8 @@ def command_targets(
     inline = {*(inherited or {}), *(_ASSIGNMENT.fullmatch(w).group(1) for w in assignments)}
     found += [Target("setting", UNREADABLE) for name in sorted(inline) if name.startswith(_PROGRAM_ENV_PREFIXES.get(
         program, ())) and name not in _PROGRAM_SELECTORS.get(program, frozenset()) | _HARMLESS_VARIABLES]
+    if not modelled:
+        found.append(Target("environment", UNREADABLE))
     if operation in _SWITCH_WORDS.get(program, ()):
         destinations = _flag_values(args, _SWITCH_DESTINATION_FLAGS.get(program, frozenset()))[-1:]
         if not destinations and operands:
@@ -904,7 +980,7 @@ def grant_target(command: str, *, cwd: Optional[str] = None) -> str:
         return UNDETERMINED
     finally:
         _CONFIG_READS.reset(listening)
-    if any(t.name == UNDETERMINED for t in targets):
+    if any(t.name == UNDETERMINED or t.kind == "environment" for t in targets):
         return UNDETERMINED
     found = sorted([t.kind, t.name] for t in targets)
     try:
