@@ -16,6 +16,9 @@ description: Use when committing, squashing, merging, rebasing, or preparing cha
 | Body | Optional, blank line after subject, 72 char line wrap |
 | Footers | `BREAKING CHANGE:`, `Refs:`, `Closes:`, `Fixes:`, `Implements:`, `See:` |
 
+Commit messages, PR titles and branch names follow the language rule of
+`code-standards` Rule 10.
+
 ## Examples
 
 ```

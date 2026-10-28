@@ -99,7 +99,7 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 
 ## How it is used
 
-Gaia reaches your host through one of three channels. The folder you install in is where the host loads Gaia; it is not a workspace until you declare one (see [Workspaces and projects](#workspaces-and-projects)).
+Gaia reaches your host through one of three channels. The folder you install in is where the host loads Gaia; it is not a workspace until you declare one (see [Workspaces, groups and projects](#workspaces-groups-and-projects)).
 
 | Channel | Host | What you install | Where `gaia` runs from |
 |---|---|---|---|
@@ -138,7 +138,11 @@ npx gaia scan --workspace <name> <path>
 
 On the plugin, `gaia` is on the Bash tool's `PATH` inside a Claude Code session in the install folder, so the same two commands run there without `npx`.
 
-### Workspaces and projects
+### Workspaces, groups and projects
+
+- **Workspace**: the folder declared with `gaia workspace declare`.
+- **Group**: a folder inside it holding the projects of one product, client or theme, computed by `gaia scan`.
+- **Project**: one git repository, named by its folder and identified by its `origin` remote.
 
 Gaia is installed once. That one install, and its one database at `~/.gaia/gaia.db`, serves every workspace you declare.
 

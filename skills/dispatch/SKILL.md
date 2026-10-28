@@ -82,13 +82,15 @@ two-writer wave, end to end, is in `examples.md`.
 7. **A turn is sized before it starts, and is fresh or resumed by what it must
    know.** A tool-call ceiling fixed in advance, with permission to close
    partially, is what lets a turn report that it ran out; a turn that exhausts
-   its context mid-work cannot. When the previous turn was cut near its close,
-   implementing and integrating split into two turns. A turn is fresh when it
-   must not know something -- a review, a blind check -- and resumed when it
-   executes what it already knows, because rebuilding known state is pure cost.
-   Its acceptance names the checks that fit inside it, and it declares only the
-   runs it completed: the whole-tree suite is the shared branch's CI (principle
-   5), never a step a turn carries forward to the next.
+   its context mid-work cannot. Sizing names the model too: the lightest one
+   the turn's difficulty allows, through the Agent tool's model override, and
+   a resumed turn keeps the model it was born with. When the previous turn was
+   cut near its close, implementing and integrating split into two turns. A
+   turn is fresh when it must not know something -- a review, a blind check --
+   and resumed when it executes what it already knows, because rebuilding known
+   state is pure cost. Its acceptance names the checks that fit inside it, and
+   it declares only the runs it completed: the whole-tree suite is the shared
+   branch's CI (principle 5), never a step a turn carries forward to the next.
 
 8. **Steering in flight is a channel, not a return.** A turn heading the wrong
    way can be messaged mid-flight, continued once it closes, or replaced by a
@@ -156,7 +158,8 @@ at a time); the craft of the rest is here.
   correction, the cleanup after a Reject, a signature that stayed pending is a
   resume of that same specialist, never a fresh dispatch; a granted T3 survives
   the resume, so requesting and executing belong in one turn. Claude Code
-  resumes with `SendMessage` to the agent id; OpenCode with the `task` tool
+  resumes with `SendMessage` to the harness id the dispatch notice prints,
+  never a row's `agent_id`; OpenCode with the `task` tool
   carrying `task_id`, the session id its last result or Gaia's notice printed.
 
 ## Anti-patterns

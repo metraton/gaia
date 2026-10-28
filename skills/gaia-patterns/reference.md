@@ -122,6 +122,12 @@ The package ships a single `gaia` entry point (`bin/gaia`, mapped by the `bin` f
 | `surface:` agent frontmatter | Surface a dispatch is born with when the agent owns no `surface_routing` row (e.g. `gaia-verifier: verification`); read by `tools/context/context_provider.py::_declared_surface` |
 | `gaia contract fill-rate` | Share of clean closes (no cut, not DISPATCHED) carrying a surface and a `conclusion` over `--since`; `--min` makes it a gate (exit 1 below the rate or on an empty window) |
 
+### Glossary
+
+| Term | Meaning |
+|------|---------|
+| Workspace, group, project | Workspace: the folder declared with `gaia workspace declare` (`workspaces` table). Group: a folder inside it holding one product's, client's or theme's projects, computed by `gaia scan` into `projects.group_name`. Project: one git repository, named by its folder and identified by its `origin` remote. |
+
 ---
 
 ## 2. Plugin Packaging

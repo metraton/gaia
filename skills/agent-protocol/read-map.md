@@ -11,6 +11,8 @@ one place that vocabulary is written down; everywhere else points here.
 ## Two rules that decide whether any of it resolves
 
 **A read by slug starts from a WORKSPACE, and the workspace comes from the current directory.** A
+workspace is a folder the user declared, a group is a folder inside it holding
+one product's, client's or theme's projects, and a project is one git repository. A
 memory slug verb (`show`, `story`, `append`, `reclassify`, `delete`, `link`) looks in your
 workspace, then in the user and host scopes, then in whichever workspace holds the slug as a row of
 a project (`bin/cli/memory.py::_workspace_holding`): a project's memory follows the project, so a
