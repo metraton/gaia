@@ -129,16 +129,10 @@ _CLI_BASE_LINES = (
     "  gaia --help                      # todo lo demás",
 )
 
-# Rendered right after the get-contract base line when the dispatch workspace
-# is known: the workspace-scoped, concrete form of `gaia context get-contract`
-# -- the actual command that reaches can_read/can_write, not `get` (which
-# never resolves a contract name; see the base-lines comment above). NOTE
-# deliberately --workspace, not --project: the CLI has no --project flag --
-# contracts live per WORKSPACE in project_context_contracts, the default
-# workspace resolves from the caller's current directory
-# (gaia.project.current()), and projects are entries inside the workspace's
-# project_identity contract. can_read (in # Your Contract) is the menu of
-# contract names the turn may pull with this exact command.
+# Rendered when the dispatch workspace is known: the workspace row of
+# `gaia context get-contract`, the only verb that reaches can_read (`get` never
+# resolves a contract name). A project's own sections are read with --project,
+# through the pointers `# Project context` prints (`_section_pointer`).
 _CLI_WORKSPACE_LINE = (
     "  gaia context get-contract --section <s> --workspace {workspace}"
     "   # tus secciones legibles: can_read"
@@ -435,8 +429,8 @@ def build_cli_block(
 
     When ``workspace`` is known (the row's own column), the workspace-scoped
     ``get-contract`` example is rendered concrete right after the generic
-    ``get``/``get-contract`` pair -- the REAL syntax for scoping a pull,
-    since the CLI has no ``--project`` flag (see ``_CLI_WORKSPACE_LINE``).
+    ``get``/``get-contract`` pair; a project's own sections are read with
+    ``--project`` through the ``# Project context`` pointers.
     """
     lines = [CLI_HEADING, "", _CLI_BASE_LINES[0], _CLI_BASE_LINES[1]]
     if workspace:
