@@ -1,13 +1,14 @@
 """Per context section, the key paths that name what a request is about (WHAT); the rest of a section is HOW.
 
 Path grammar: dot-separated steps; `*` any key; `name[]` each item of a list; a trailing `{}` keeps the selected keys without their values, `{dict}` only those holding an object.
+A step may end in `~lead` (keep the text up to the first space) or `~basename` (keep the last path segment), and in `!key` guards: the step is skipped when the entry holds that sibling key.
 """
 
 from __future__ import annotations
 
 import copy
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple, Optional
 
 WHAT_KEYS: Mapping[str, tuple] = {
     "cluster_details": (
@@ -21,7 +22,7 @@ WHAT_KEYS: Mapping[str, tuple] = {
         "active_cluster.project",
         "live_demo.namespace",
         "live_demo.host",
-        "live_demo.workloads",
+        "live_demo.workloads~lead",
         "scaled_to_zero_namespaces.*{}",
         "cluster_name",
         "provider",
@@ -38,11 +39,11 @@ WHAT_KEYS: Mapping[str, tuple] = {
     ),
     "gitops_configuration": (
         "git_remote",
-        "cluster_entrypoint",
+        "cluster_entrypoint~lead",
         "environments",
         "namespaces",
         "*.repo",
-        "*.cluster_entrypoint",
+        "*.cluster_entrypoint~lead",
         "*.namespaces",
     ),
     "infrastructure": ("*.project_id", "*.project"),
@@ -52,13 +53,17 @@ WHAT_KEYS: Mapping[str, tuple] = {
         "*.environments.*.project_id",
         "*.seed_project",
         "*.factory_project.project_id",
-        "*.target_project",
+        "*.target_project~lead",
         "*.github_slug",
         "*.remote",
         "*.instance",
         "*.affected_services.*{}",
     ),
-    "project_identity": ("*.remote_url", "*.local_path", "*.apps.*{}"),
+    "project_identity": (
+        "*.remote_url!missing_since",
+        "*.local_path~basename!remote_url!missing_since",
+        "*.apps.*{}",
+    ),
     "git": ("repos[].name", "repos[].remote_url"),
     "static_ips": ("*{}",),
     "stack": (),
@@ -67,14 +72,28 @@ WHAT_KEYS: Mapping[str, tuple] = {
     "workspace_repos": (),
     "operational_guidelines": (),
     "releases": (),
-    "terraform_infrastructure": (),
+    "terraform_infrastructure": ("*{dict}",),
     "monitoring_observability": (),
     "orchestration": (),
 }
 
-_STEP = re.compile(r"(?P<name>[^\[\]{}]+)(?P<each>\[\])?(?P<keys_only>\{\}|\{dict\})?")
+_STEP = re.compile(
+    r"(?P<name>[^\[\]{}~!]+)(?P<each>\[\])?(?P<keys_only>\{\}|\{dict\})?(?:~(?P<transform>\w+))?(?P<guards>(?:![^!]+)*)"
+)
 _PATH_TOKEN = re.compile(r"\[(\d+)\]|([^.\[\]]+)")
 _NOTHING = object()
+_TRANSFORMS = {
+    "lead": lambda text: text.split()[0] if text.split() else "",
+    "basename": lambda text: re.split(r"[\\/]+", text.rstrip("/\\"))[-1],
+}
+
+
+class _Step(NamedTuple):
+    name: str
+    each: bool
+    keys_only: Optional[str]
+    transform: Optional[str]
+    guards: tuple
 
 
 def what_keys(section: str) -> tuple:
@@ -84,7 +103,25 @@ def what_keys(section: str) -> tuple:
 
 def _steps(path: str) -> list:
     parsed = [_STEP.fullmatch(step) for step in path.split(".")]
-    return [(m["name"], bool(m["each"]), m["keys_only"]) for m in parsed]
+    return [
+        _Step(m["name"], bool(m["each"]), m["keys_only"], m["transform"], tuple(m["guards"].split("!")[1:]))
+        for m in parsed
+    ]
+
+
+def _present(entry: dict, key: str) -> bool:
+    return entry.get(key) not in (None, "")
+
+
+def _apply(value: Any, transform: Optional[str]) -> Any:
+    if transform is None:
+        return value
+    if isinstance(value, str):
+        return _TRANSFORMS[transform](value) or _NOTHING
+    if isinstance(value, list):
+        shaped = [item for item in (_apply(item, transform) for item in value) if item is not _NOTHING]
+        return shaped or _NOTHING
+    return _NOTHING
 
 
 def _select(value: Any, steps: list) -> Any:
@@ -92,13 +129,15 @@ def _select(value: Any, steps: list) -> Any:
         return value
     if not isinstance(value, dict):
         return _NOTHING
-    (name, each, keys_only), rest = steps[0], steps[1:]
+    step, rest = steps[0], steps[1:]
     picked = {}
-    for key in value if name == "*" else [name] if name in value else []:
-        if keys_only:
-            if keys_only == "{}" or isinstance(value[key], dict):
+    if any(_present(value, guard) for guard in step.guards):
+        return _NOTHING
+    for key in value if step.name == "*" else [step.name] if step.name in value else []:
+        if step.keys_only:
+            if step.keys_only == "{}" or isinstance(value[key], dict):
                 picked[key] = {}
-        elif each:
+        elif step.each:
             if not isinstance(value[key], list):
                 continue
             items = [_select(item, rest) for item in value[key]]
@@ -106,6 +145,7 @@ def _select(value: Any, steps: list) -> Any:
                 picked[key] = [{} if item is _NOTHING else item for item in items]
         else:
             chosen = _select(value[key], rest)
+            chosen = _apply(chosen, step.transform) if not rest else chosen
             if chosen is not _NOTHING:
                 picked[key] = chosen
     return picked or _NOTHING
@@ -136,16 +176,23 @@ def _walk(value: Any, tokens: list) -> Any:
 
 
 def _path_matches(steps: list, tokens: list, payload: Any) -> bool:
-    wanted = [token for name, each, _ in steps for token in [name] + [int] * each]
-    if len(tokens) < len(wanted):
-        return False
-    for want, got in zip(wanted, tokens):
-        if not (isinstance(got, int) if want is int else isinstance(got, str) and want in ("*", got)):
+    position = 0
+    for step in steps:
+        if position >= len(tokens) or not isinstance(tokens[position], str) or step.name not in ("*", tokens[position]):
             return False
-    keys_only = steps[-1][2]
+        if payload is not None and step.guards:
+            parent = _walk(payload, tokens[:position])
+            if not isinstance(parent, dict) or any(_present(parent, guard) for guard in step.guards):
+                return False
+        position += 1
+        if step.each:
+            if position >= len(tokens) or not isinstance(tokens[position], int):
+                return False
+            position += 1
+    keys_only = steps[-1].keys_only
     if not keys_only:
         return True
-    if len(tokens) != len(wanted):
+    if position != len(tokens):
         return False
     return keys_only == "{}" or payload is None or isinstance(_walk(payload, tokens), dict)
 

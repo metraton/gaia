@@ -36,7 +36,7 @@ BILDWIZ_CLUSTER = {
     "live_demo": {
         "namespace": "bildwiz-demo-stage",
         "host": "bildwiz-demo-stage.aaxisdev.net",
-        "workloads": ["bildwiz-frontend", "redis"],
+        "workloads": ["bildwiz-frontend", "bildwiz-service (image bildwiz-backend)", "redis"],
         "database": "Cloud SQL bildwiz-dev-db via bildwiz-db-secret",
         "lb_logging": "backend logConfig enable=true sampleRate=1.0",
     },
@@ -86,7 +86,7 @@ BILDWIZ_GITOPS = {
     "git_remote": "git@bitbucket.org:aaxisdigital/bildwiz-gitops-gcp-dev.git",
     "operative_branch": "master",
     "controller": "flux",
-    "cluster_entrypoint": "clusters/dev-gke-standard",
+    "cluster_entrypoint": "clusters/dev-gke-standard (kustomization.yaml -> flux-system, releases.yaml)",
     "environments": ["dev", "demo", "demo-stage", "livekit"],
     "secrets_mechanism": "external-secrets-operator",
     "namespaces": ["bildwiz-dev", "bildwiz-demo"],
@@ -96,7 +96,7 @@ NONPROD_GITOPS = {
     "branchkinect_nonprod": {
         "repo": "century-inc/branchkinect-gitops-nonprod",
         "default_branch": "main",
-        "cluster_entrypoint": "clusters/nonprod",
+        "cluster_entrypoint": "argocd/bootstrap/root.yaml recursing argocd/apps",
         "namespaces": ["demo", "dev"],
         "app_count": 14,
         "image_automation": "off",
@@ -141,7 +141,7 @@ CENTURY_TOPOLOGY = {
         "iac_repo_path": "/home/jorge/ws/century-inc/branchkinect-artifacts",
         "github_slug": "century-inc/branchkinect-artifacts",
         "visibility": "private",
-        "target_project": "branchkinect-artifacts (org-root 145362834906)",
+        "target_project": "branchkinect-artifacts (org-root 145362834906, billing 012858-140391-C81803)",
         "state_bucket_planned": "branchkinect-platform-tfstate",
     },
     "century_iac": {
@@ -181,6 +181,33 @@ AAXIS_IDENTITY = {
         "package_manager": "pnpm@10.15.1",
         "apps": {"@aos/web": "apps/web", "@aos/server": "apps/server"},
     },
+}
+
+CENTURY_IDENTITY = {
+    "century_skill_hub": {
+        "local_path": "/home/jorge/ws/century-inc/century-skill-hub",
+        "remote_url": "https://github.com/century-inc/century-skill-hub.git",
+        "name": "century-skill-hub",
+    },
+    "branchkinect_iac": {
+        "local_path": "/home/jorge/ws/century-inc/branchkinect-iac",
+        "remote_url": "https://github.com/century-inc/branchkinect-iac.git",
+        "missing_since": "2026-07-28T07:51:52Z",
+    },
+    "branchkinect_modelb_fixture": {
+        "local_path": "/home/jorge/ws/century-inc/branchkinect-modelb-fixture",
+        "name": "branchkinect-modelb-fixture",
+        "missing_since": "2026-07-26T19:58:00Z",
+    },
+}
+
+AAXIS_TERRAFORM = {
+    "newco_pitot_bootstrap": {
+        "path": "/home/jorge/ws/aaxis/bildwiz/newco-pitot/infra/terraform/00-bootstrap",
+        "files": ["versions.tf", "apis.tf"],
+        "applied": False,
+        "note": "Declarative documentation of resources provisioned via gcloud in Step 1.",
+    }
 }
 
 AAXIS_GIT = {
@@ -255,7 +282,7 @@ def test_cluster_details_keeps_the_named_things_and_drops_the_how():
         "live_demo": {
             "namespace": "bildwiz-demo-stage",
             "host": "bildwiz-demo-stage.aaxisdev.net",
-            "workloads": ["bildwiz-frontend", "redis"],
+            "workloads": ["bildwiz-frontend", "bildwiz-service", "redis"],
         },
         "scaled_to_zero_namespaces": {"bildwiz-demo": {}, "bildwiz-dev": {}},
     }
@@ -309,7 +336,7 @@ def test_gitops_configuration_covers_both_stored_shapes():
     assert project_what("gitops_configuration", NONPROD_GITOPS) == {
         "branchkinect_nonprod": {
             "repo": "century-inc/branchkinect-gitops-nonprod",
-            "cluster_entrypoint": "clusters/nonprod",
+            "cluster_entrypoint": "argocd/bootstrap/root.yaml",
             "namespaces": ["demo", "dev"],
         }
     }
@@ -358,22 +385,37 @@ def test_a_repo_or_project_the_user_names_is_what_and_a_local_path_is_how():
         "branchkinect_artifacts_repo": {"remote": "century-inc/branchkinect-artifacts"},
         "branchkinect_platform": {
             "github_slug": "century-inc/branchkinect-artifacts",
-            "target_project": "branchkinect-artifacts (org-root 145362834906)",
+            "target_project": "branchkinect-artifacts",
         },
         "century_iac": {"seed_project": "branchkinect-century-core"},
         "branchkinect_factory": {"factory_project": {"project_id": "branchkinect-factory-gcp"}},
     }
 
 
-def test_project_identity_names_a_repo_by_its_remote_or_folder_never_by_scanner_alias():
+def test_a_project_value_carrying_a_billing_account_projects_only_the_project_id():
+    flat = repr(project_what("infrastructure_topology", CENTURY_TOPOLOGY))
+    for leaked in ("billing", "012858-140391-C81803", "org-root", "145362834906"):
+        assert leaked not in flat
+
+
+def test_project_identity_names_a_repo_by_its_remote_never_by_alias_or_absolute_path():
     projected = project_what("project_identity", AAXIS_IDENTITY)
-    assert projected["rnd_2"] == {
-        "local_path": "/home/jorge/ws/aaxis/rnd/ai-project-guidance",
-        "remote_url": "git@bitbucket.org:aaxisdigital/ai-project-guidance.git",
-    }
-    assert projected["ai_ways_of_working"] == {"local_path": "/home/jorge/ws/aaxis/rnd/ai-ways-of-working"}
+    assert projected["rnd_2"] == {"remote_url": "git@bitbucket.org:aaxisdigital/ai-project-guidance.git"}
+    assert projected["bildwiz_7"] == {"remote_url": "https://github.com/gpalagan-aaxis/newco-pitot"}
     assert projected["aos"]["apps"] == {"@aos/web": {}, "@aos/server": {}}
     assert all("name" not in entry for entry in projected.values())
+    assert "/home/" not in repr(projected)
+
+
+def test_a_project_without_a_remote_is_named_by_its_folder_alone():
+    assert project_what("project_identity", AAXIS_IDENTITY)["ai_ways_of_working"] == {
+        "local_path": "ai-ways-of-working"
+    }
+
+
+def test_a_project_whose_checkout_is_gone_is_left_out():
+    projected = project_what("project_identity", CENTURY_IDENTITY)
+    assert projected == {"century_skill_hub": {"remote_url": "https://github.com/century-inc/century-skill-hub.git"}}
 
 
 def test_git_repos_are_named_by_their_folder_name_and_remote():
@@ -387,9 +429,13 @@ def test_git_repos_are_named_by_their_folder_name_and_remote():
 
 def test_static_ips_name_the_gateways_and_the_scanner_sections_are_declared_how():
     assert project_what("static_ips", AAXIS_STATIC_IPS) == {key: {} for key in AAXIS_STATIC_IPS}
-    for section in ("terraform_infrastructure", "monitoring_observability", "orchestration", "stack"):
+    for section in ("monitoring_observability", "orchestration", "stack"):
         assert WHAT_KEYS[section] == ()
     assert project_what("stack", AAXIS_STACK) == {}
+
+
+def test_terraform_infrastructure_names_its_units_and_nothing_inside_them():
+    assert project_what("terraform_infrastructure", AAXIS_TERRAFORM) == {"newco_pitot_bootstrap": {}}
 
 
 @pytest.mark.parametrize(
@@ -419,6 +465,14 @@ def test_is_what_path_answers_for_a_concrete_path(section, path, expected):
     assert is_what_path(section, path) is expected
 
 
+def test_a_guarded_key_needs_the_payload_to_know_its_siblings():
+    assert is_what_path("project_identity", "rnd_2.local_path") is True
+    assert is_what_path("project_identity", "rnd_2.local_path", AAXIS_IDENTITY) is False
+    assert is_what_path("project_identity", "ai_ways_of_working.local_path", AAXIS_IDENTITY) is True
+    assert is_what_path("project_identity", "rnd_2.remote_url", AAXIS_IDENTITY) is True
+    assert is_what_path("project_identity", "branchkinect_iac.remote_url", CENTURY_IDENTITY) is False
+
+
 def test_an_object_only_key_needs_the_payload_to_tell_an_app_from_a_scalar():
     assert is_what_path("application_services", "base_path") is True
     assert is_what_path("application_services", "base_path", AAXIS_APPS) is False
@@ -438,6 +492,8 @@ def test_an_object_only_key_needs_the_payload_to_tell_an_app_from_a_scalar():
         ("infrastructure_topology", AOS_TOPOLOGY),
         ("infrastructure_topology", CENTURY_TOPOLOGY),
         ("project_identity", AAXIS_IDENTITY),
+        ("project_identity", CENTURY_IDENTITY),
+        ("terraform_infrastructure", AAXIS_TERRAFORM),
         ("git", AAXIS_GIT),
     ],
 )
