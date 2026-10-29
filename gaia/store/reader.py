@@ -220,6 +220,20 @@ def dispatched_handoffs(session_id: str, db_path: Path | None = None) -> list[di
     )
 
 
+def dispatch_counts_by_project(days: int, db_path: Path | None = None) -> dict[str, int]:
+    """Turns dispatched in the last ``days`` days, counted per ``dispatch_project`` display ("name (/abs/path)").
+
+    One grouped read; turns that named no project are left out. ``{}`` on any DB error.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = _read_only_rows(
+        "SELECT dispatch_project, COUNT(*) AS turns FROM agent_contract_handoffs "
+        "WHERE created_at >= ? AND dispatch_project IS NOT NULL GROUP BY dispatch_project",
+        (since,), db_path,
+    )
+    return {row["dispatch_project"]: row["turns"] for row in rows}
+
+
 def active_plan_heads(workspace: str | None = None, db_path: Path | None = None) -> list[dict[str, Any]]:
     """Each active, unpaused plan with its brief and lowest-ordered pending task, limited to ``workspace`` and its aliases."""
     try:

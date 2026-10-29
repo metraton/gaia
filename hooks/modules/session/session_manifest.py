@@ -364,7 +364,7 @@ def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
 # Builders
 # ---------------------------------------------------------------------------
 
-PROJECTS_HEADER = "## Projects"
+PROJECTS_HEADER = "## Workspaces I manage"
 ENVIRONMENT_HEADER = "## Environment"
 RESUME_HEADER = "## Resume point"
 BIRTH_SECTION_HEADERS = (USER_HEADER, PREFERENCES_HEADER, ENVIRONMENT_HEADER, PROJECTS_HEADER)
@@ -481,109 +481,6 @@ def build_environment_section(session_id: str = "") -> str:
         return ""
 
 
-def _extract_projects_from_identity(
-    payload: dict, workspace: str, path_lookup: dict
-) -> list[tuple[str, str, str, str, str]]:
-    """Pull ``(name, path, type, description, missing_since)`` tuples out of one payload.
-
-    The contract stores two distinct shapes, and this normalizes both:
-
-    * **Map shape** (hand-authored, e.g. the ``me`` workspace's AOS entry):
-      a dict keyed by project slug, each value a dict with ``name`` and an
-      absolute ``local_path``. Detected by the absence of a top-level ``name``
-      and all values being dicts.
-    * **Scanner shape** (e.g. bildwiz/nfi/qxo/rnd): a top-level ``name`` plus an
-      optional ``workspace_repos`` list whose entries carry only a *relative*
-      ``path``. The absolute path is not in the contract, so it is resolved
-      from the ``projects`` table via ``path_lookup``.
-
-    ``path_lookup`` resolves a name to an absolute path through three indexes,
-    tried in descending strictness:
-
-    1. ``by_name`` -- ``(workspace, name)`` -> path, an exact hit.
-    2. ``by_basename`` -- the last path component -> path, and ONLY when that
-       basename is unique across the whole ``projects`` table. This is what
-       reunites a legacy contract (which names the repo by its DIRECTORY, e.g.
-       ``bildwiz-iac``) with the current scan-promoted row (which names the same
-       repo by its uniquified SLUG, e.g. ``bildwiz_2``). Ambiguous basenames are
-       left unresolved rather than guessed.
-    3. ``by_ws`` -- a per-workspace single-path fallback, so a name mismatch
-       (contract says ``nfi`` but the project row is ``nfi-oro-com``) still
-       resolves when the workspace holds exactly one project.
-
-    Entries that cannot resolve a path are still returned (name only) -- the
-    caller decides how to present them.
-
-    ``type`` and ``description`` are carried alongside name and path when the
-    payload holds them (both shapes expose these fields), so the rendered
-    Projects block can label each entry (e.g. "aos-iac (terraform) — Terraform
-    IaC for AOS GCP infra"). Either may be an empty string when absent.
-
-    ``missing_since`` carries the vanished mark that promotion stamps on an
-    entry whose repo left the disk (``tools/scan/promote.py``). The entry is
-    still returned -- a repo that vanished is signal, so the block SHOWS the
-    mark rather than filtering the entry out. Empty string when absent.
-    """
-    out: list[tuple[str, str, str, str, str]] = []
-    by_name: dict = path_lookup.get("by_name", {})
-    by_ws: dict = path_lookup.get("by_ws", {})
-    by_basename: dict = path_lookup.get("by_basename", {})
-
-    def _resolve(name: str) -> str:
-        spellings = dict.fromkeys((name, name.replace("_", "-"), name.replace("-", "_")))
-        for spelling in spellings:
-            p = by_name.get((workspace, spelling)) or by_basename.get(spelling)
-            if p:
-                return p
-        # Single-project workspace: the one path we have is unambiguous.
-        ws_paths = by_ws.get(workspace) or []
-        if len(ws_paths) == 1:
-            return ws_paths[0]
-        return ""
-
-    from gaia.identity_shape import (
-        COPY_MARK_KEY,
-        MISSING_MARK_KEY,
-        classify_identity_shape,
-        is_reserved_slug,
-    )
-
-    if classify_identity_shape(payload) == "map":
-        for slug, v in payload.items():
-            if is_reserved_slug(slug) or not isinstance(v, dict):
-                continue
-            if v.get(COPY_MARK_KEY):
-                continue
-            name = v.get("name") or slug
-            path = v.get("local_path") or _resolve(slug) or _resolve(name)
-            ptype = (v.get("type") or "").strip()
-            desc = (v.get("description") or "").strip()
-            gone = (v.get(MISSING_MARK_KEY) or "").strip()
-            out.append((name, path, ptype, desc, gone))
-        return out
-
-    repos = payload.get("workspace_repos")
-    if isinstance(repos, list) and repos:
-        for r in repos:
-            if not isinstance(r, dict):
-                continue
-            name = r.get("name") or ""
-            if not name:
-                continue
-            ptype = (r.get("type") or "").strip()
-            desc = (r.get("description") or "").strip()
-            gone = (r.get(MISSING_MARK_KEY) or "").strip()
-            out.append((name, _resolve(name), ptype, desc, gone))
-        return out
-
-    name = payload.get("name") or workspace
-    ptype = (payload.get("type") or "").strip()
-    desc = (payload.get("description") or "").strip()
-    gone = (payload.get(MISSING_MARK_KEY) or "").strip()
-    out.append((name, _resolve(name), ptype, desc, gone))
-    return out
-
-
 def _workspace_root(paths: list[str]) -> str:
     """Longest common directory of *paths*, or "" when it cannot be derived.
 
@@ -603,313 +500,170 @@ def _workspace_root(paths: list[str]) -> str:
     return root
 
 
-def _collect_projects() -> Optional[dict]:
-    """The projects with active project context, keyed by owning workspace and group.
+_DISPATCH_WINDOW_DAYS = 30
+_FULL_GROUP_CAP = 5
+_NARROW_GROUP_CAP = 3
 
-    Returns ``{"live", "unresolved", "workspace_order", "roots"}``, or None when
-    there is nothing to index or the database cannot be read.
 
-    This is NOT an index of every git repo on disk. The source is the set of
-    projects that have **active project context** -- a ``project_identity``
-    section in a workspace's view (``workspace_sections``). That filter is the point: it includes
-    AOS (which lives only in the ``me`` workspace's hand-authored contract,
-    with absolute ``local_path``) and, since the scan-promotion stage
-    (``tools/scan/promote.py::promote_workspace``), also includes any scanned
-    repo under ``me`` that passed the promotion gate (resolvable
-    ``project_identity``, absolute path, ``status='active'``) and was merged
-    into the contract as a scan-owned entry -- a cloned reference repo is only
-    excluded here if it was never scanned or failed the gate. A flat or scanner
-    (non-map) contract with more than one promotable project is auto-converted
-    to a map (its old top-level metadata preserved under a reserved key), so
-    those projects are included rather than held back. No path-prefix filtering
-    is used.
+def _home_relative(path: str) -> str:
+    """*path* with the user's home directory shown as ``~``."""
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
 
-    The name shown per project is the ON-DISK BASENAME when it differs from the
-    contract's stored name, not the stored name itself (see ``_display_name``).
-    A legacy hand-authored slot (e.g. the ``aaxis`` workspace's map names a repo
-    ``bildwiz-2``) can diverge from the directory the repo actually lives in
-    (``bildwiz-iac``) -- the basename is what the user calls the project and
-    what ``gaia context project`` resolves against as its second-priority match,
-    so showing it is what makes the index actually useful for lookup.
 
-    A project's workspace is the one that owns its ``projects`` row (the
-    scan-verified physical truth), falling back to the contract's own workspace
-    key for a hand-authored entry with no row; its group is that row's
-    ``group_name``, and an entry with no row has none.
+def _display_name(row: dict) -> str:
+    """The name the user calls a project: its directory's basename, else the stored name."""
+    return os.path.basename(row["path"] or "") or row["name"]
 
-    Two defects of the older flat list are fixed at the source rather than in
-    the render:
 
-    * **Duplicates.** Two generations of contract rows coexist -- the current
-      scan-promoted map (keyed by uniquified slug, e.g. ``bildwiz_2``) and legacy
-      per-directory scanner/flat rows (keyed by the repo's directory name, e.g.
-      ``bildwiz-iac``, with no ``projects`` row under that workspace at all). The
-      old ``(name, path)`` dedup key could not see the collision because BOTH
-      components differed: one side had the slug and a path, the other the
-      directory name and no path. Dedup is now keyed on the RESOLVED ABSOLUTE
-      PATH -- a project's actual identity -- and the basename index in
-      ``_extract_projects_from_identity`` is what lets the legacy side resolve
-      to that path in the first place. Colliding entries are MERGED field by
-      field, so metadata carried by only one of the two survives.
-    * **Vanished repos.** An entry marked ``missing_since`` is not rendered at
-      all. Nothing is deleted -- not from the ``projects`` table, not from the
-      contract -- so the full record (path, type, description, exact timestamp)
-      stays one ``gaia context project`` away for the rare turn that asks about a
-      removed project. It is not worth a line of every session's context.
+def _read_roster() -> list[dict]:
+    """The managed workspaces, each with its root and its active projects; ``[]`` on any error.
+
+    A workspace is managed while it holds a root or a project and has not been
+    retired. A project is its ``projects`` row unless it vanished from disk
+    or is a second clone another project's contract entry marks ``copy_of``.
     """
-    # Ensure the package root (which holds the `gaia/` package) is importable.
-    # At real SessionStart, session_start.py already inserts it; this self-heal
-    # makes the builder robust when called from other entry points or tests.
+    from gaia.identity_shape import COPY_MARK_KEY, classify_identity_shape, is_reserved_slug
+    from gaia.store.project_context import workspace_sections, workspaces_with_section
+    from gaia.store.writer import _connect
+
+    con = _connect()
     try:
-        _pkg_root = str(Path(__file__).resolve().parents[3])
-        if _pkg_root not in sys.path:
-            sys.path.insert(0, _pkg_root)
-    except Exception:
-        pass
+        workspaces = con.execute(
+            "SELECT name, root_path FROM workspaces WHERE status != 'retired' ORDER BY name"
+        ).fetchall()
+        projects = con.execute(
+            "SELECT workspace, name, path, group_name FROM projects WHERE status = 'active'"
+        ).fetchall()
+        copies = set()
+        for ws in workspaces_with_section(con, "project_identity"):
+            payload = workspace_sections(con, ws)["project_identity"]["payload"]
+            if isinstance(payload, dict) and classify_identity_shape(payload) == "map":
+                copies.update(
+                    os.path.normpath(entry["local_path"]) for slug, entry in payload.items()
+                    if not is_reserved_slug(slug) and isinstance(entry, dict)
+                    and entry.get(COPY_MARK_KEY) and entry.get("local_path")
+                )
+    finally:
+        con.close()
 
-    try:
-        from gaia.store.project_context import workspace_sections, workspaces_with_section
-        from gaia.store.writer import _connect
-    except Exception as exc:
-        logger.debug("project collection import failed: %s", exc)
-        return None
+    members: dict = {}
+    for row in projects:
+        project = {"name": row["name"], "path": row["path"], "group": row["group_name"] or "",
+                   "pending": 0, "dispatches": 0}
+        if not (project["path"] and os.path.normpath(project["path"]) in copies):
+            members.setdefault(row["workspace"], []).append(project)
+    roster = []
+    for ws in workspaces:
+        held = members.get(ws["name"], [])
+        if ws["root_path"] or held:
+            root = ws["root_path"] or _workspace_root([p["path"] for p in held if p["path"]])
+            roster.append({"name": ws["name"], "path": _home_relative(root) if root else "",
+                           "projects": held})
+    return roster
 
-    try:
-        con = _connect()
-        try:
-            identity_rows = [
-                {"workspace": ws,
-                 "payload": json.dumps(workspace_sections(con, ws)["project_identity"]["payload"])}
-                for ws in workspaces_with_section(con, "project_identity")
-            ]
-            # Path resolution sources: include missing rows -- the on-disk path
-            # may still be valid even if the scanner marked the repo missing.
-            proj_rows = con.execute(
-                "SELECT workspace, name, path, group_name FROM projects WHERE path IS NOT NULL"
-            ).fetchall()
-        finally:
-            con.close()
-    except Exception as exc:
-        logger.debug("project collection query failed: %s", exc)
-        return None
 
-    if not identity_rows:
-        return None
+def _count_dispatches(roster: list[dict]) -> None:
+    """Add to each project the turns dispatched to it in the window, matching by path, else by a unique name."""
+    from gaia.store.reader import dispatch_counts_by_project
 
+    every = [p for ws in roster for p in ws["projects"]]
+    by_path = {os.path.normpath(p["path"]): p for p in every if p["path"]}
     by_name: dict = {}
-    by_ws: dict = {}
-    ws_of_path: dict = {}
-    group_of_path: dict = {}
-    basename_hits: dict = {}
-    for r in proj_rows:
-        d = dict(r)
-        p = d.get("path")
-        if not p:
-            continue
-        by_name[(d["workspace"], d["name"])] = p
-        by_ws.setdefault(d["workspace"], []).append(p)
-        ws_of_path.setdefault(p, d["workspace"])
-        group_of_path.setdefault(p, d.get("group_name") or "")
-        basename_hits.setdefault(os.path.basename(p), set()).add(p)
-    # A basename is only a usable key while it identifies exactly ONE path;
-    # two repos sharing a directory name are left unresolved, never guessed.
-    by_basename = {
-        base: next(iter(paths))
-        for base, paths in basename_hits.items()
-        if len(paths) == 1
-    }
-    path_lookup = {
-        "by_name": by_name,
-        "by_ws": by_ws,
-        "by_basename": by_basename,
-    }
-
-    # Dedup on the RESOLVED PATH -- a project's real identity. Two contract
-    # generations name the same repo differently (promoted slug vs. directory
-    # name), so a name-based key cannot see the collision. Path-less entries
-    # fall back to a name key; they cannot collide with a path-keyed entry.
-    merged: dict = {}
-    order: list = []
-    for r in identity_rows:
-        d = dict(r)
-        contract_ws = d.get("workspace") or ""
-        try:
-            payload = json.loads(d.get("payload") or "{}")
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        for name, path, _type, _desc, gone in _extract_projects_from_identity(
-            payload, contract_ws, path_lookup
-        ):
-            key = path or f"name:{name.lower()}"
-            prev = merged.get(key)
-            if prev is None:
-                merged[key] = {
-                    "name": name, "path": path, "gone": gone,
-                    "ws": ws_of_path.get(path) or contract_ws,
-                    "group": group_of_path.get(path, ""),
-                    "is_ws_identity": not path and name.lower() == contract_ws.lower(),
-                }
-                order.append(key)
-            elif gone and not prev["gone"]:
-                prev["gone"] = gone
-
-    if not merged:
-        return None
-
-    # Roots are computed from the LIVE paths only: a vanished repo's path should
-    # not widen (or, as the sole member, define) the root every sibling renders against.
-    live: list[dict] = []
-    unresolved: list[str] = []
-    workspace_order: list[str] = []
-    for key in order:
-        e = merged[key]
-        ws = e["ws"]
-        if e["is_ws_identity"]:
-            # A flat contract whose name IS its own workspace key, with no path
-            # resolvable anywhere in the projects table, is the workspace-identity
-            # form of the contract (see gaia.identity_shape), not a project. It is
-            # skipped as a misclassification rather than reported as a project
-            # whose path was lost -- the contract row itself is untouched.
-            continue
-        if e["gone"]:
-            # A vanished repo is not injected at all. It is asked for, on the
-            # rare occasion someone wants one: `gaia context get` still has the
-            # whole record, and nothing here deletes it. Injecting the names
-            # every session spent budget on a question almost nobody asks.
-            continue
-        if ws and ws not in workspace_order:
-            workspace_order.append(ws)
-        if not e["path"]:
-            unresolved.append(e["name"])
-        else:
-            live.append(e)
-
-    roots: dict = {}
-    for ws in workspace_order:
-        roots[ws] = _workspace_root([e["path"] for e in live if e["ws"] == ws])
-
-    return {"live": live, "unresolved": unresolved, "workspace_order": workspace_order, "roots": roots}
-
-
-def _display_name(e: dict) -> str:
-    """The identifier shown in the roster -- the on-disk basename, else the stored name.
-
-    See ``_collect_projects`` for why the basename wins when the two differ.
-    """
-    if e["path"]:
-        base = os.path.basename(e["path"])
-        if base:
-            return base
-    return e["name"]
-
-
-def _groups_of(members: list[dict]) -> list[tuple[str, list[dict]]]:
-    """``members`` split by group, named groups alphabetically and the ungrouped ("") last."""
-    by_group: dict[str, list[dict]] = {}
-    for e in members:
-        by_group.setdefault(e["group"], []).append(e)
-    named = sorted(g for g in by_group if g)
-    return [(g, by_group[g]) for g in named] + ([("", by_group[""])] if "" in by_group else [])
+    for p in every:
+        by_name.setdefault(_display_name(p).lower(), []).append(p)
+    for display, turns in dispatch_counts_by_project(_DISPATCH_WINDOW_DAYS).items():
+        name, _, rest = display.partition(" (")
+        target = by_path.get(os.path.normpath(rest[:-1])) if rest.endswith(")") else None
+        named = by_name.get(name.lower(), [])
+        if target is None and len(named) == 1:
+            target = named[0]
+        if target is not None:
+            target["dispatches"] += turns
 
 
 def build_projects_section(max_chars: int) -> str:
-    """Render the Projects section within ``max_chars``, or "" when there is nothing to index.
+    """Render the Workspaces I manage section within ``max_chars``, or "" when there are none.
 
-    The index carries names only: each workspace as its groups, each group as
-    its projects, a project with its live-pending count when it has one. The
-    count is taken by canonical project key over every workspace
-    (``gaia.store.reader.count_pending_by_initiative``), so it equals what
-    ``gaia memory get-relevant --initiative <name>`` returns. When the index
-    does not fit it degrades in steps -- each workspace as one line naming its
-    groups, then one line naming every group, then a line that only counts --
-    and the pointer always lands, whatever ``max_chars`` is.
+    Every workspace with its path, counts and groups; each group lists its
+    projects busiest first (turns dispatched in the window, then live-pending
+    count, then name). When the full section does not fit it degrades in
+    order: three projects per group, only the projects with pending work,
+    group names with counts, one line per workspace. The two pointer lines
+    land whatever ``max_chars`` is.
     """
     return projects_renderer()(max_chars)
 
 
 def projects_renderer():
-    """``build_projects_section`` as a function of ``max_chars`` over one read of the projects."""
+    """``build_projects_section`` as a function of ``max_chars`` over one read of the database."""
     try:
-        collected = _collect_projects()
-        if not collected:
+        roster = _read_roster()
+        if not roster:
             return lambda max_chars: ""
         from gaia.store.reader import count_pending_by_initiative
         from gaia.store.writer import normalize_initiative
 
-        live = collected["live"]
-        workspace_order = collected["workspace_order"]
-        roots = collected["roots"]
-        unresolved = collected["unresolved"]
-        keys = {normalize_initiative(_display_name(e)) for e in live} - {None}
-        counts = count_pending_by_initiative(sorted(keys))
-        # The first command a newborn orchestrator tries: never the bare
-        # `gaia` token the trust guard rejects.
-        cli = _resolve_gaia_cli_path() or "gaia"
-        pointer = f"A project's card: {cli} context project <name>"
-
-        def label(e: dict) -> str:
-            name = _display_name(e)
-            count = counts.get(normalize_initiative(name), 0)
-            return f"{name} ({count})" if count else name
-
-        def title(ws: str) -> str:
-            root = roots.get(ws)
-            return f"### {ws} — {root}" if root else f"### {ws}"
-
-        def names_block(ws: str, members: list[dict]) -> str:
-            groups = _groups_of(members)
-            if groups == [("", members)]:
-                return f"{title(ws)}\n{', '.join(label(e) for e in members)}"
-            return "\n".join([title(ws)] + [
-                f"{g} ({len(projects)}): {', '.join(label(e) for e in projects)}" if g
-                else f"ungrouped: {', '.join(label(e) for e in projects)}"
-                for g, projects in groups
-            ])
-
-        def summary_line(ws: str, members: list[dict]) -> str:
-            named = [f"{g} ({len(projects)})" for g, projects in _groups_of(members) if g]
-            pending = [label(e) for e in members if label(e) != _display_name(e)]
-            line = f"{title(ws)}: {len(members)} projects"
-            line += f"; groups: {', '.join(named)}" if named else ""
-            return line + (f"; pending: {', '.join(pending)}" if pending else "")
-
-        by_workspace = [(ws, [e for e in live if e["ws"] == ws]) for ws in workspace_order]
-        by_workspace = [(ws, members) for ws, members in by_workspace if members]
-        group_count = sum(1 for _, members in by_workspace for g, _ in _groups_of(members) if g)
-        census = (f"{len(live)} projects in {group_count} groups in "
-                  f"{len(workspace_order)} workspaces")
-
-        def body(block) -> list[str]:
-            parts = [block(ws, members) for ws, members in by_workspace]
-            if unresolved and block is names_block:
-                parts.append(
-                    f"unresolved ({len(unresolved)}): {', '.join(unresolved)} "
-                    f"— no path on disk; 'gaia context get'"
-                )
-            return parts
-
-        every_group = "; ".join(
-            f"{ws}: {', '.join(g for g, _ in _groups_of(members) if g)}"
-            for ws, members in by_workspace if any(e["group"] for e in members)
+        _count_dispatches(roster)
+        every = [p for ws in roster for p in ws["projects"]]
+        pending = count_pending_by_initiative(
+            sorted({normalize_initiative(_display_name(p)) for p in every} - {None})
         )
-        census_floor = [f"{census}; list them with `{cli} context get`"]
-        bodies = [body(names_block), body(summary_line)]
-        if every_group:
-            bodies.append([f"{census} — {every_group}"])
-        bodies.append(census_floor)
-        # Each level is tried with the map fallback line, then without it: a
-        # richer index level outranks the fallback line.
-        fallback = f"A name that is not listed here: {cli} map <word>\n{pointer}"
-        rendered = [
-            "\n\n".join([PROJECTS_HEADER, *parts, tail])
-            for parts in bodies for tail in (fallback, pointer)
-        ]
-        floor = rendered.pop()
+        for p in every:
+            p["pending"] = pending.get(normalize_initiative(_display_name(p)), 0)
+        cli = _resolve_gaia_cli_path() or "gaia"
+        footer = (f"A name that is not listed here: {cli} map <word>\n"
+                  f"A project's card: {cli} context project <name>")
+
+        def busiest_first(members: list[dict]) -> list[dict]:
+            return sorted(members, key=lambda p: (-p["dispatches"], -p["pending"], _display_name(p)))
+
+        def listing(members: list[dict], cap: int) -> str:
+            ordered = busiest_first(members)
+            shown = [p for i, p in enumerate(ordered) if i < cap or p["pending"]]
+            items = [f"{_display_name(p)}({p['pending']})" if p["pending"] else _display_name(p)
+                     for p in shown]
+            if len(ordered) > len(shown):
+                items.append(f"+{len(ordered) - len(shown)}")
+            return "[" + ", ".join(items) + "]"
+
+        def groups_of(ws: dict) -> list[tuple[str, list[dict]]]:
+            named: dict = {}
+            for p in ws["projects"]:
+                named.setdefault(p["group"], []).append(p)
+            return [(g, named[g]) for g in sorted(named) if g] + (
+                [("", named[""])] if "" in named else [])
+
+        group_total = sum(1 for ws in roster for g, _ in groups_of(ws) if g)
+        total = (f"Total: {len(roster)} workspaces · {group_total} groups · "
+                 f"{len(every)} projects")
+
+        def workspace_line(ws: dict) -> str:
+            groups = sum(1 for g, _ in groups_of(ws) if g)
+            location = f" path={ws['path']}" if ws["path"] else ""
+            return f"workspace={ws['name']}{location} groups={groups} projects={len(ws['projects'])}"
+
+        def lines_of(ws: dict, level: str, cap: int) -> list[str]:
+            if level == "workspaces":
+                return []
+            groups = groups_of(ws)
+            if level == "counts":
+                named = [f"{g}={len(members)}" for g, members in groups if g]
+                return [f"  {', '.join(named)}"] if named else []
+            return [f"  {g}={listing(members, cap)}" if g else f"  {listing(members, cap)}"
+                    for g, members in groups]
+
+        def render(level: str, cap: int = 0) -> str:
+            body = [line for ws in roster for line in (workspace_line(ws), *lines_of(ws, level, cap))]
+            return "\n\n".join(["\n".join([PROJECTS_HEADER, total, *body]), footer])
+
+        levels = [render("projects", _FULL_GROUP_CAP), render("projects", _NARROW_GROUP_CAP),
+                  render("projects"), render("counts"), render("workspaces")]
 
         def fit(max_chars: int) -> str:
-            return next((text for text in rendered if len(text) <= max_chars), floor)
+            return next((text for text in levels if len(text) <= max_chars), levels[-1])
         return fit
     except Exception as exc:
         logger.debug("build_projects_section failed (non-fatal): %s", exc)

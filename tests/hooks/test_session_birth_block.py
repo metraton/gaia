@@ -179,20 +179,21 @@ def test_project_memory_never_loads_at_birth_only_its_counts(birth):
     assert PROJECT_ANCHOR not in block
     assert THREAD_TEXT not in block
     projects = _sections(block)[session_manifest.PROJECTS_HEADER]
-    assert re.search(r"\bgaia \(3\)", projects), "the count must add the threads of both workspaces"
+    assert re.search(r"\bgaia\(3\)", projects), "the count must add the threads of both workspaces"
 
 
-def test_a_large_workspace_is_named_whole_then_degrades_to_one_line_with_its_count(birth):
+def test_a_large_workspace_lists_five_projects_then_narrows_and_ends_as_one_counted_line(birth):
     block = session_manifest.build_session_context()
     projects = _sections(block)[session_manifest.PROJECTS_HEADER]
-    assert len(re.findall(r"\brepo\d\d\b", projects)) == 30
+    assert re.search(r"(?m)^  \[repo00, repo01, repo02, repo03, repo04, \+25\]$", projects)
 
     roomy = session_manifest.build_projects_section(sys.maxsize)
-    fallback = next(line for line in roomy.splitlines() if "map <word>" in line)
-    tight = session_manifest.build_projects_section(len(roomy) - len(fallback) - 2)
-    lines = [line for line in tight.splitlines() if "github-repos" in line]
-    assert len(lines) == 1 and lines[0].endswith(": 30 projects"), tight
-    assert not re.search(r"\brepo\d\d\b", tight)
+    narrow = session_manifest.build_projects_section(len(roomy) - 1)
+    assert re.search(r"(?m)^  \[repo00, repo01, repo02, \+27\]$", narrow), narrow
+
+    floor = session_manifest.build_projects_section(0)
+    assert re.search(r"(?m)^workspace=github-repos path=\S+/ws/gh groups=0 projects=30$", floor)
+    assert not re.search(r"\brepo\d\d\b", floor)
 
 
 def test_the_environment_names_the_real_data_home_and_its_database(birth):
@@ -245,5 +246,5 @@ def test_after_user_rows_are_trimmed_the_index_takes_the_richest_level_that_fits
     room = 9_500 - (len(block) - len(projects))
 
     assert len(block) <= 9_500
-    assert "### " in projects, projects
-    assert projects == session_manifest.build_projects_section(room)
+    assert "workspace=" in projects, projects
+    assert projects ==session_manifest.build_projects_section(room)

@@ -139,7 +139,7 @@ def _assert_rows_whole_or_named(context: str, bodies: dict) -> list[str]:
 
 
 BIRTH_ORDER = ("## Database upgrade", "## The user", "## User preferences",
-               "## Resume point", "## Environment", "## Projects")
+               "## Resume point", "## Environment", "## Workspaces I manage")
 
 
 @pytest.mark.parametrize("source", ["startup", "resume", "compact"])
@@ -175,7 +175,7 @@ def test_a_compaction_is_the_same_birth_as_a_start(corpus, maintenance):
     assert _without_source(compact) == _without_source(startup)
 
 
-def test_under_pressure_lists_become_counts_and_the_roster_a_pointer(corpus, maintenance):
+def test_under_pressure_lists_become_counts_and_the_roster_keeps_its_pointers(corpus, maintenance):
     context = _claude("compact").context
 
     assert "Pending signatures: 12" in context
@@ -184,10 +184,10 @@ def test_under_pressure_lists_become_counts_and_the_roster_a_pointer(corpus, mai
     assert f"gaia session snapshot --session-id {SESSION}" in context
     from modules.session.session_manifest import BIRTH_BUDGET, build_projects_section
 
-    projects = context[context.index("## Projects"):]
+    projects = context[context.index("## Workspaces I manage"):]
     room = BIRTH_BUDGET - (len(context) - len(projects))
-    assert "me-project-" not in projects
     assert projects == build_projects_section(room), "the richest index level that fits the room"
+    assert projects == build_projects_section(sys.maxsize), "the compact roster needs no degrading here"
     assert projects.rstrip().endswith("context project <name>")
     assert RESUME in context
 
