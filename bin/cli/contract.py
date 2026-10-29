@@ -1361,6 +1361,30 @@ def _other_identifier_hint(value: str) -> str:
     return "".join(hints)
 
 
+def _open_other_identifier(value: str, as_json: bool) -> Optional[tuple]:
+    """Open the row that a value names as its handoff id, harness id or
+    agent_id, through the ``contract:`` resolver of ``gaia.refs``.
+
+    Returns ``(contract_id, resume_harness_id, opened_from)``; ``opened_from``
+    says which row opened. Prints why and returns None when nothing opens.
+    """
+    from gaia.refs import Ref, RefError, resolve
+
+    try:
+        resolution = resolve(Ref("contract", "", value))
+    except RefError as exc:
+        _print_error(f"{exc}.{_other_identifier_hint(value)}", as_json)
+        return None
+    contract_id = resolution.ids.get("contract")
+    resume_id = resolution.ids.get("resume")
+    opened_from = (
+        f"opened handoff {resolution.ids.get('handoff')}, "
+        f"contract_id={contract_id or 'none'}, "
+        f"resume harness id {resume_id or 'none'} ({resolution.notes[0]})"
+    )
+    return contract_id, resume_id, opened_from
+
+
 def _dispatch_row(row: dict) -> dict:
     """The dispatch columns of one row: what the turn was asked, by whom, where, and how it stands."""
     return {
@@ -1507,6 +1531,26 @@ def cmd_view(args) -> int:
         return _view_by_harness_id(args, harness_id)
 
     as_json = bool(getattr(args, "json", False))
+    opened_from = None
+    requested = getattr(args, "draft_id", None)
+    if (
+        requested
+        and "." not in requested
+        and not _draft_exists(requested)
+        and _lookup_handoff_row_by_contract_id(requested) is None
+    ):
+        opened = _open_other_identifier(requested, as_json)
+        if opened is None:
+            return 1
+        contract_id, resume_id, opened_from = opened
+        print(opened_from, file=sys.stderr)
+        if not contract_id:
+            if not resume_id:
+                _print_error(f"{opened_from}: the row has no id to read it by.", as_json)
+                return 1
+            return _view_by_harness_id(args, resume_id)
+        args = argparse.Namespace(**{**vars(args), "draft_id": contract_id})
+
     if getattr(args, "row", False):
         contract_id = getattr(args, "draft_id", None)
         if not contract_id:
@@ -1516,7 +1560,10 @@ def cmd_view(args) -> int:
         if row is None:
             _print_error(f"no contract row carries contract_id={contract_id!r}.", as_json)
             return 1
-        print(json.dumps(_dispatch_row(row), indent=2))
+        dispatch = _dispatch_row(row)
+        if opened_from:
+            dispatch["opened_from"] = opened_from
+        print(json.dumps(dispatch, indent=2))
         return 0
     draft_id = _resolve_target_draft_id(args, as_json)
     if draft_id is None:
@@ -1577,6 +1624,8 @@ def cmd_view(args) -> int:
         return 0
 
     payload = {"draft_id": draft_id, "envelope": envelope}
+    if opened_from:
+        payload["opened_from"] = opened_from
     if source != "draft":
         # Recovered from the persisted row's raw_handoff_json, not the live
         # draft file -- labelled so a consumer can tell "the in-flight
@@ -2649,7 +2698,11 @@ def _build_subcommands(sub) -> None:
     _add_common_draft_arg(p_view)
     p_view.add_argument(
         "--contract-id", dest="draft_id", metavar="ID", default=None,
-        help="Same as --draft-id: the row's contract_id",
+        help=(
+            "Same as --draft-id: the row's contract_id. A value that is "
+            "none is read as the row's handoff id, harness id or agent_id; "
+            "the output says which row it opened"
+        ),
     )
     p_view.add_argument(
         "--row", action="store_true", default=False,
