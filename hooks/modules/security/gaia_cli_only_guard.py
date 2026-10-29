@@ -784,9 +784,20 @@ def match_allowed_phrase(
 _UNQUOTED_PUNCTUATION = frozenset(" \t\n_./:=@,+%-")
 
 
-def _unquoted_character_hazard(ch: str, nxt: str) -> Optional[str]:
-    """Name an unquoted character outside the lane's allowlist, or None."""
-    if ch.isalnum() or ch in _UNQUOTED_PUNCTUATION:
+def _is_literal_unquoted(ch: str) -> bool:
+    return ch.isalnum() or ch in _UNQUOTED_PUNCTUATION
+
+
+def _unquoted_character_hazard(prev: str, ch: str, nxt: str) -> Optional[str]:
+    """Name an unquoted character outside the lane's allowlist, or None.
+
+    ``#`` is literal mid-word, after a literal non-whitespace character; bash
+    reads it as a comment only at a word start, and the banned backslash means
+    no escaped space can fake one.
+    """
+    if _is_literal_unquoted(ch):
+        return None
+    if ch == "#" and prev and not prev.isspace() and _is_literal_unquoted(prev):
         return None
     if ch in "<>":
         if nxt == "(":
@@ -815,7 +826,7 @@ def _find_composition_hazard(command: str) -> Optional[str]:
     invocation, or None when every character is literal to bash.
 
     An allowlist, not a scan for shell forms: unquoted text may hold only
-    letters, digits, whitespace and ``_ . / : = @ , + % -``; single quotes hold
+    letters, digits, whitespace, ``_ . / : = @ , + % -`` and a mid-word ``#``; single quotes hold
     anything; double quotes hold anything but a backtick, a backslash or an
     expanding ``$``; an unterminated quote is refused.
     """
@@ -829,7 +840,7 @@ def _find_composition_hazard(command: str) -> Optional[str]:
         elif ch in "'\"":
             hazard = None
         else:
-            hazard = _unquoted_character_hazard(ch, nxt)
+            hazard = _unquoted_character_hazard(command[i - 1:i], ch, nxt)
         if hazard is not None:
             return hazard
         if ch in "'\"" and quote in ("", ch):
