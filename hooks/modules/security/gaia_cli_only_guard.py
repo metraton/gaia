@@ -194,10 +194,12 @@ the phrase-matching step below, because that step only checks a PREFIX of the
 non-flag tokens and does not care what comes after. Modifying
 ``stage_decomposer.py`` to close that gap is out of this module's scope (this
 task creates one file and touches nothing else), so this module carries its
-own small, quote-and-substitution-aware scan for a bare ``&`` (and for a
-process-substitution opener) and denies the whole command outright if either
-is found -- duplicated logic, deliberately, rather than a shared file edited
-under a task that forbids editing it.
+own small, quote-and-substitution-aware scan for a bare ``&`` and denies the
+whole command outright if one is found -- duplicated logic, deliberately,
+rather than a shared file edited under a task that forbids editing it. The
+same scan refuses every redirect (fd forms and heredocs included) and every
+expansion that makes gaia receive words other than those written (``$``,
+globs, braces, a leading ``~``): the lane is one invocation, not a shell.
 
 Design decision 4 -- flag-level policy, because a phrase cannot express it
 --------------------------------------------------------------------------------
@@ -209,7 +211,9 @@ are this guard's business, in two layers applied in ``_check_stage``:
   * ``_KNOWN_SAFE_FLAGS`` lists, per admitted phrase, the only options the
     orchestrator may pass (``_validate_known_safe_flags``, after the write
     shape). Anything else is refused, so the lane is closed by default at
-    flag level as it is at verb level.
+    flag level as it is at verb level. A flag that takes no value is refused
+    with one (``--json=1``), and a phrase whose positional count is fixed
+    (``_FIXED_POSITIONALS``) is refused an extra positional.
   * ``_READ_PHRASE_FORBIDDEN_FLAGS`` names a flag that makes an admitted verb
     write -- ``gaia doctor --fix`` rewrites the settings file and rebuilds
     the memory FTS index -- and is applied BEFORE the write-shape gate, so
@@ -777,20 +781,16 @@ def match_allowed_phrase(
 # (Design decision 3 -- see module docstring)
 # ---------------------------------------------------------------------------
 
+_GLOB_OR_BRACE = frozenset("*?[{")
+
+
 def _find_composition_hazard(command: str) -> Optional[str]:
-    """Scan *command* for a bare background ``&`` or a process-substitution
-    opener (``<(`` / ``>(``), outside quotes and outside ``$(...)``/backtick
-    substitution bodies (those are already denied separately by their mere
-    presence -- this scan exists for the hazards a substitution check does
-    NOT cover).
+    """Name the first shell form in *command* that is more than one plain
+    invocation -- background ``&``, a redirect, process substitution, or an
+    expansion that changes the words gaia receives -- or None when clean.
 
-    Returns a short reason string naming the hazard, or None when clean.
-
-    This duplicates the quote/paren/backtick tracking in
-    ``StageDecomposer._split_with_operators`` rather than extending that
-    shared file -- this task creates exactly one new file and edits nothing
-    else, so a real gap in a shared parser (it does not split on a bare
-    ``&``) is closed here, locally, instead of there.
+    Quoting is read as bash reads it. ``$(...)``/backtick bodies are skipped
+    because ``check`` refuses a substitution by its presence alone.
     """
     in_single = False
     in_double = False
@@ -816,13 +816,20 @@ def _find_composition_hazard(command: str) -> Optional[str]:
             i += 1
             continue
 
-        if in_single or in_double:
+        if in_single:
             i += 1
             continue
 
         if ch == "$" and i + 1 < n and command[i + 1] == "(":
             paren_depth += 1
             i += 2
+            continue
+
+        if ch == "$" and paren_depth == 0 and backtick_depth == 0:
+            return "shell expansion (`$`) detected"
+
+        if in_double:
+            i += 1
             continue
 
         if ch == "(" and paren_depth > 0:
@@ -844,24 +851,26 @@ def _find_composition_hazard(command: str) -> Optional[str]:
             i += 1
             continue
 
-        if ch in ("<", ">") and i + 1 < n and command[i + 1] == "(":
-            return "process substitution (`<(` / `>(`) detected"
+        nxt = command[i + 1] if i + 1 < n else ""
+
+        if ch in ("<", ">"):
+            if nxt == "(":
+                return "process substitution (`<(` / `>(`) detected"
+            return f"shell redirect (`{ch}`) detected"
 
         if ch == "&":
-            prev = command[i - 1] if i > 0 else ""
-            nxt = command[i + 1] if i + 1 < n else ""
-            if prev == ">":
-                # File-descriptor duplication (`>&`, e.g. `2>&1`), not
-                # background execution -- mirrors the same exclusion in
-                # `bash_validator._FD_DUP_RE` and the lookbehind/lookahead in
-                # `cloud_pipe_validator.UNIVERSAL_VIOLATIONS`'s "background"
-                # entry (`(?<![>&])&(?!&)`).
-                i += 1
-                continue
             if nxt == "&":
                 i += 2
                 continue
+            if nxt == ">":
+                return "shell redirect (`&>`) detected"
             return "bare background operator (`&`) detected"
+
+        if ch in _GLOB_OR_BRACE:
+            return f"glob or brace expansion (`{ch}`) detected"
+
+        if ch == "~" and (i == 0 or command[i - 1] in " \t\n="):
+            return "tilde expansion (`~`) detected"
 
         i += 1
 
@@ -922,10 +931,11 @@ def check(
     hazard = _find_composition_hazard(command)
     if hazard is not None:
         return False, (
-            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator "
-            f"may run only single, trusted invocations of the gaia CLI -- "
-            f"background execution and process substitution both run more "
-            f"than the gaia CLI and are denied outright, not approvable."
+            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator's "
+            f"Bash runs one gaia invocation, not a shell: gaia must receive "
+            f"exactly the words written, and its output already returns "
+            f"through the tool, so no redirect is needed. Denied outright, "
+            f"not approvable."
         )
 
     decomposed = StageDecomposer().decompose(command)
@@ -1010,6 +1020,9 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
         if invalid is not None:
             return False, invalid
         invalid = _validate_known_safe_flags(candidate, allowed_phrase, leading_flags)
+        if invalid is not None:
+            return False, invalid
+        invalid = _validate_positional_count(candidate, allowed_phrase)
         if invalid is not None:
             return False, invalid
         return True, None
@@ -1173,8 +1186,11 @@ def _validate_read_flags(
     return None
 
 
-def _flags(spec: str) -> FrozenSet[str]:
-    return frozenset(spec.split())
+_FlagGrammar = Tuple[FrozenSet[str], FrozenSet[str]]
+
+
+def _flags(valued: str, valueless: str = "") -> _FlagGrammar:
+    return frozenset(valued.split()), frozenset(valueless.split())
 
 
 # Every option an admitted phrase may carry; a flag absent here is refused, so a
@@ -1184,124 +1200,169 @@ def _flags(spec: str) -> FrozenSet[str]:
 # task set-status --override/--reason, notifications ack --all-workspaces.
 # tests/hooks/modules/security/test_orchestrator_flag_lane.py pins this table
 # against the live parsers, so a drift in either direction fails there.
-_KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
-    ("approvals", "history"): _flags("--limit --status --json"),
-    ("approvals", "list"): _flags("--json --session --orphans-only --all-sessions --include-stale"),
-    ("approvals", "pending"): _flags("--json --session --all-sessions --include-stale"),
-    ("approvals", "question"): _flags("--details"),
-    ("approvals", "reject"): _flags("--reason --json"),
-    ("approvals", "revoke"): _flags("--yes --reason"),
-    ("approvals", "show"): _flags("--json --consent-surface"),
-    ("approvals", "stats"): _flags("--json"),
+_FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
+    ("approvals", "history"): _flags("--limit --status", "--json"),
+    ("approvals", "list"): _flags("--session", "--json --orphans-only --all-sessions --include-stale"),
+    ("approvals", "pending"): _flags("--session", "--json --all-sessions --include-stale"),
+    ("approvals", "question"): _flags("", "--details"),
+    ("approvals", "reject"): _flags("--reason", "--json"),
+    ("approvals", "revoke"): _flags("--reason", "--yes"),
+    ("approvals", "show"): _flags("", "--json --consent-surface"),
+    ("approvals", "stats"): _flags("", "--json"),
     ("brief", "ac", "add"): _flags(
         "--id --description --description-file --evidence-type --evidence-shape "
-        "--evidence-shape-file --artifact --workspace --json"),
+        "--evidence-shape-file --artifact --workspace", "--json"),
     ("brief", "ac", "edit"): _flags(
         "--id --description --description-file --evidence-type --evidence-shape "
-        "--evidence-shape-file --artifact --workspace --json"),
-    ("brief", "ac", "remove"): _flags("--id --workspace --json"),
+        "--evidence-shape-file --artifact --workspace", "--json"),
+    ("brief", "ac", "remove"): _flags("--id --workspace", "--json"),
     ("brief", "close"): _flags("--workspace"),
-    ("brief", "decision", "add"): _flags("--text --rationale --supersedes --workspace --json"),
-    ("brief", "decision", "list"): _flags("--workspace --json"),
-    ("brief", "deps"): _flags("--json --workspace"),
+    ("brief", "decision", "add"): _flags("--text --rationale --supersedes --workspace", "--json"),
+    ("brief", "decision", "list"): _flags("--workspace", "--json"),
+    ("brief", "deps"): _flags("--workspace", "--json"),
     ("brief", "edit"): _flags(
-        "--workspace --headless --field --content --content-file --append --json"),
-    ("brief", "history"): _flags("--workspace --json"),
-    ("brief", "list"): _flags("--status --format --json --workspace"),
+        "--workspace --field --content --content-file", "--headless --append --json"),
+    ("brief", "history"): _flags("--workspace", "--json"),
+    ("brief", "list"): _flags("--status --format --workspace", "--json"),
     ("brief", "new"): _flags(
-        "--workspace --project --headless --title --objective --objective-file "
+        "--workspace --project --title --objective --objective-file "
         "--context --context-file --approach --approach-file --out-of-scope "
-        "--out-of-scope-file --status --surface-type --json"),
-    ("brief", "search"): _flags("--limit --json --workspace"),
-    ("brief", "set-project"): _flags("--clear --force --workspace --dry-run --json"),
-    ("brief", "set-status"): _flags("--workspace --json"),
-    ("brief", "show"): _flags("--json --workspace"),
-    ("brief", "verify"): _flags("--workspace --json"),
-    ("context", "accept"): _flags("--workspace --dry-run --json"),
-    ("context", "get"): _flags("--workspace --section --json --text --include-missing"),
-    ("context", "get-contract"): _flags("--workspace --project --section --json --text"),
-    ("context", "project"): _flags("--workspace --json"),
-    ("context", "scan"): _flags("--dry-run --json"),
-    ("context", "show"): _flags("--section --json"),
+        "--out-of-scope-file --status --surface-type", "--headless --json"),
+    ("brief", "search"): _flags("--limit --workspace", "--json"),
+    ("brief", "set-project"): _flags("--workspace", "--clear --force --dry-run --json"),
+    ("brief", "set-status"): _flags("--workspace", "--json"),
+    ("brief", "show"): _flags("--workspace", "--json"),
+    ("brief", "verify"): _flags("--workspace", "--json"),
+    ("context", "accept"): _flags("--workspace", "--dry-run --json"),
+    ("context", "get"): _flags("--workspace --section", "--json --text --include-missing"),
+    ("context", "get-contract"): _flags("--workspace --project --section", "--json --text"),
+    ("context", "project"): _flags("--workspace", "--json"),
+    ("context", "scan"): _flags("", "--dry-run --json"),
+    ("context", "show"): _flags("--section", "--json"),
     ("contract", "list"): _flags(
         "--plan-task --brief --agent-id --agent --state --cut --session --contract-id "
-        "--harness-id --workspace --since --until --limit --grep --agent-name --task --json"),
-    ("contract", "validate"): _flags("--draft-id --agent-id --json"),
-    ("contract", "proposals", "list"): _flags("--all --kind --contract-id --json"),
-    ("contract", "proposals", "accept"): _flags("--project --workspace --json"),
-    ("contract", "proposals", "dismiss"): _flags("--reason --json"),
+        "--harness-id --workspace --since --until --limit --grep --agent-name --task", "--json"),
+    ("contract", "validate"): _flags("--draft-id --agent-id", "--json"),
+    ("contract", "proposals", "list"): _flags("--kind --contract-id", "--all --json"),
+    ("contract", "proposals", "accept"): _flags("--project --workspace", "--json"),
+    ("contract", "proposals", "dismiss"): _flags("--reason", "--json"),
     ("contract", "view"): _flags(
-        "--field --draft-id --agent-id --harness-id --row --contract-id --json"),
+        "--field --draft-id --agent-id --harness-id --contract-id", "--row --json"),
     ("defects",): _flags(
-        "--origin --type --severity --agent --since --until --limit --workspace --count --json"),
-    ("doctor",): _flags("--json --workspace"),
-    ("evidence", "list"): _flags("--brief --ac --workspace --json"),
-    ("evidence", "show"): _flags("--json"),
-    ("history",): _flags("--today -t --blocked -b --agent -a --limit -n --workspace --json"),
+        "--origin --type --severity --agent --since --until --limit --workspace", "--count --json"),
+    ("doctor",): _flags("--workspace", "--json"),
+    ("evidence", "list"): _flags("--brief --ac --workspace", "--json"),
+    ("evidence", "show"): _flags("", "--json"),
+    ("history",): _flags("--agent -a --limit -n --workspace", "--today -t --blocked -b --json"),
     ("memory", "add"): _flags(
         "--name --type --body --body-file --description --project --project-ref "
-        "--initiative --class --status --audience --measured-at --method --workspace --json"),
-    ("memory", "append"): _flags("--body --body-file --workspace --json"),
+        "--initiative --class --status --audience --measured-at --method --workspace", "--json"),
+    ("memory", "append"): _flags("--body --body-file --workspace", "--json"),
     ("memory", "checkpoint"): _flags(
-        "--file --project --project-ref --initiative --workspace --json"),
-    ("memory", "conflicts"): _flags("--threshold --owner --exclude-class --limit --json"),
-    ("memory", "episode-show"): _flags("--json"),
+        "--file --project --project-ref --initiative --workspace", "--json"),
+    ("memory", "conflicts"): _flags("--threshold --owner --exclude-class --limit", "--json"),
+    ("memory", "episode-show"): _flags("", "--json"),
     ("memory", "get-relevant"): _flags(
-        "--workspace --limit --max-chars --types --sections --initiative --project --group "
+        "--workspace --limit --max-chars --types --sections --initiative --project --group",
         "--json --no-pointer"),
-    ("memory", "link"): _flags("--kind --workspace --json"),
+    ("memory", "link"): _flags("--kind --workspace", "--json"),
     ("memory", "list"): _flags(
-        "--type --audience --class --status --sort --order --include-superseded --workspace "
-        "--limit --format --json"),
-    ("memory", "reclassify"): _flags("--class --status --workspace --json"),
-    ("memory", "search"): _flags("--limit --scope --type --class --all --include-superseded --workspace --json"),
-    ("memory", "show"): _flags("--workspace --links --history --json"),
-    ("memory", "stats"): _flags("--json"),
-    ("memory", "story"): _flags("--max-depth --workspace --json"),
-    ("metrics",): _flags("--agent --workspace --range --since --until --json"),
-    ("notifications", "ack"): _flags("--all --workspace --json"),
+        "--type --audience --class --status --sort --order --workspace --limit --format",
+        "--include-superseded --json"),
+    ("memory", "reclassify"): _flags("--class --status --workspace", "--json"),
+    ("memory", "search"): _flags(
+        "--limit --scope --type --class --workspace", "--all --include-superseded --json"),
+    ("memory", "show"): _flags("--workspace", "--links --history --json"),
+    ("memory", "stats"): _flags("", "--json"),
+    ("memory", "story"): _flags("--max-depth --workspace", "--json"),
+    ("metrics",): _flags("--agent --workspace --range --since --until", "--json"),
+    ("notifications", "ack"): _flags("--workspace", "--all --json"),
     ("notifications", "add"): _flags(
         "--kind --task --headline --body --session-id --at --cron --every --skill "
-        "--memory --project --workspace --json"),
-    ("notifications", "cancel"): _flags("--json"),
+        "--memory --project --workspace", "--json"),
+    ("notifications", "cancel"): _flags("", "--json"),
     ("notifications", "list"): _flags(
-        "--unread --upcoming --all-workspaces --limit --workspace --json"),
-    ("notifications", "show"): _flags("--json"),
-    ("notifications", "snooze"): _flags("--for --until --json"),
-    ("lint", "comments"): _flags("--repo --head --base --json"),
-    ("now",): _flags("--json"),
-    ("open",): _flags("--line --json"),
+        "--limit --workspace", "--unread --upcoming --all-workspaces --json"),
+    ("notifications", "show"): _flags("", "--json"),
+    ("notifications", "snooze"): _flags("--for --until", "--json"),
+    ("lint", "comments"): _flags("--repo --head --base", "--json"),
+    ("now",): _flags("", "--json"),
+    ("open",): _flags("", "--line --json"),
     ("map",): _flags(""),
     ("paths",): _flags(""),
-    ("plan", "change", "approve"): _flags("--workspace --json"),
-    ("plan", "change", "list"): _flags("--workspace --json"),
-    ("plan", "change", "request"): _flags("--reason --workspace --json"),
-    ("plan", "history"): _flags("--content --workspace --json"),
-    ("plan", "list"): _flags("--brief --status --format --json --workspace"),
-    ("plan", "pause"): _flags("--reason --workspace --json"),
-    ("plan", "resume"): _flags("--workspace --json"),
-    ("plan", "set-status"): _flags("--workspace --json"),
-    ("plan", "show"): _flags("--workspace --json"),
+    ("plan", "change", "approve"): _flags("--workspace", "--json"),
+    ("plan", "change", "list"): _flags("--workspace", "--json"),
+    ("plan", "change", "request"): _flags("--reason --workspace", "--json"),
+    ("plan", "history"): _flags("--workspace", "--content --json"),
+    ("plan", "list"): _flags("--brief --status --format --workspace", "--json"),
+    ("plan", "pause"): _flags("--reason --workspace", "--json"),
+    ("plan", "resume"): _flags("--workspace", "--json"),
+    ("plan", "set-status"): _flags("--workspace", "--json"),
+    ("plan", "show"): _flags("--workspace", "--json"),
     ("query",): _flags(
         "--surface --workspace --since --until --last --agent --type --command-like "
-        "--failed --group-by --count --snippets --metrics --format --json"),
-    ("scan",): _flags("--workspace --dry-run --json"),
+        "--group-by --format", "--failed --count --snippets --metrics --json"),
+    ("scan",): _flags("--workspace", "--dry-run --json"),
     ("session", "preview"): _flags("--session-id"),
     ("session", "resume-point", "set"): _flags("--session-id --text"),
-    ("session", "snapshot"): _flags("--session-id --json"),
-    ("signals",): _flags("--since --limit --json"),
-    ("status",): _flags("--json"),
-    ("task", "gate", "list"): _flags("--workspace --json"),
-    ("task", "gate", "reverify"): _flags("--reason --workspace --json"),
-    ("task", "list"): _flags("--status --format --json --workspace --plan"),
-    ("task", "set-status"): _flags("--workspace --json"),
-    ("task", "show"): _flags("--id --workspace --json"),
-    ("usage", "show"): _flags("--plan --session --since --until --json"),
+    ("session", "snapshot"): _flags("--session-id", "--json"),
+    ("signals",): _flags("--since --limit", "--json"),
+    ("status",): _flags("", "--json"),
+    ("task", "gate", "list"): _flags("--workspace", "--json"),
+    ("task", "gate", "reverify"): _flags("--reason --workspace", "--json"),
+    ("task", "list"): _flags("--status --format --workspace --plan", "--json"),
+    ("task", "set-status"): _flags("--workspace", "--json"),
+    ("task", "show"): _flags("--id --workspace", "--json"),
+    ("usage", "show"): _flags("--plan --session --since --until", "--json"),
     ("workspace", "current"): _flags(""),
     ("workspace", "info"): _flags(""),
-    ("worktree", "list"): _flags("--repo --json"),
-    ("worktree", "show"): _flags("--json"),
-    ("worktree", "show-capture"): _flags("--diff --json"),
+    ("worktree", "list"): _flags("--repo", "--json"),
+    ("worktree", "show"): _flags("", "--json"),
+    ("worktree", "show-capture"): _flags("", "--diff --json"),
+}
+_KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    phrase: valued | valueless for phrase, (valued, valueless) in _FLAG_GRAMMAR.items()
+}
+_VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    phrase: valueless for phrase, (_, valueless) in _FLAG_GRAMMAR.items()
+}
+
+# The positional count argparse demands exactly, for the phrases where it is
+# fixed; the test that pins _FLAG_GRAMMAR pins this table too.
+_FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
+    **dict.fromkeys([
+        ("approvals", "list"), ("approvals", "pending"), ("approvals", "stats"),
+        ("brief", "list"), ("context", "get"), ("context", "get-contract"),
+        ("context", "scan"), ("context", "show"), ("contract", "proposals", "list"),
+        ("contract", "validate"), ("contract", "view"), ("defects",), ("doctor",),
+        ("evidence", "list"), ("history",), ("lint", "comments"), ("memory", "add"),
+        ("memory", "checkpoint"), ("memory", "conflicts"), ("memory", "get-relevant"),
+        ("memory", "list"), ("memory", "stats"), ("metrics",), ("notifications", "add"),
+        ("notifications", "list"), ("now",), ("plan", "list"), ("query",),
+        ("session", "preview"), ("session", "resume-point", "set"),
+        ("session", "snapshot"), ("signals",), ("status",), ("usage", "show"),
+        ("workspace", "current"), ("workspace", "info"), ("worktree", "list"),
+    ], 0),
+    **dict.fromkeys([
+        ("approvals", "revoke"), ("approvals", "show"), ("brief", "ac", "add"),
+        ("brief", "ac", "edit"), ("brief", "ac", "remove"), ("brief", "close"),
+        ("brief", "decision", "add"), ("brief", "decision", "list"), ("brief", "deps"),
+        ("brief", "edit"), ("brief", "history"), ("brief", "search"), ("brief", "show"),
+        ("brief", "verify"), ("context", "accept"), ("context", "project"),
+        ("contract", "proposals", "accept"), ("contract", "proposals", "dismiss"),
+        ("evidence", "show"), ("memory", "append"), ("memory", "episode-show"),
+        ("memory", "reclassify"), ("memory", "search"), ("memory", "show"),
+        ("memory", "story"), ("notifications", "cancel"), ("notifications", "show"),
+        ("notifications", "snooze"), ("open",), ("plan", "change", "list"),
+        ("plan", "change", "request"), ("plan", "history"), ("plan", "pause"),
+        ("plan", "resume"), ("plan", "show"), ("worktree", "show"),
+        ("worktree", "show-capture"),
+    ], 1),
+    **dict.fromkeys([
+        ("brief", "set-status"), ("plan", "change", "approve"), ("plan", "set-status"),
+        ("task", "gate", "list"),
+    ], 2),
+    **dict.fromkeys([("task", "gate", "reverify"), ("task", "set-status")], 3),
 }
 
 # The root parser's own options: --json may precede the subcommand, --version
@@ -1340,12 +1401,19 @@ def _validate_known_safe_flags(
     vetted. Returns None when every option is known safe, else the denial.
     """
     safe = _KNOWN_SAFE_FLAGS.get(phrase, frozenset())
-    scanned = [(t, _KNOWN_SAFE_LEADING_FLAGS) for t in leading_flags]
-    scanned += [(t, safe) for t in candidate[len(phrase):]]
-    for token, known in scanned:
+    valueless = _VALUELESS_FLAGS.get(phrase, frozenset())
+    scanned = [(t, _KNOWN_SAFE_LEADING_FLAGS, _KNOWN_SAFE_LEADING_FLAGS) for t in leading_flags]
+    scanned += [(t, safe, valueless) for t in candidate[len(phrase):]]
+    for token, known, takes_no_value in scanned:
         if not _is_option_like(token):
             continue
-        name = token.split("=", 1)[0]
+        name, eq, _ = token.partition("=")
+        if eq and name in takes_no_value:
+            return (
+                f"GAIA CLI ONLY: '{name}' takes no value on 'gaia {' '.join(phrase)}', "
+                f"so '{token}' is refused. Pass the flag alone. Denied outright, "
+                f"not approvable."
+            )
         if name in known:
             continue
         return (
@@ -1356,6 +1424,37 @@ def _validate_known_safe_flags(
             f"specialist or a signed operation. Denied outright, not approvable."
         )
     return None
+
+
+def _positional_count(args: Tuple[str, ...], valueless: FrozenSet[str]) -> int:
+    """Count *args* argparse would bind to positionals, skipping each flag's value."""
+    count = 0
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if not _is_option_like(token):
+            count += 1
+        elif "=" not in token and token not in valueless:
+            i += 1
+        i += 1
+    return count
+
+
+def _validate_positional_count(
+    candidate: Tuple[str, ...], phrase: Tuple[str, ...]
+) -> Optional[str]:
+    """Deny more positionals than an admitted *phrase* with a fixed count takes."""
+    expected = _FIXED_POSITIONALS.get(phrase)
+    if expected is None:
+        return None
+    found = _positional_count(candidate[len(phrase):], _VALUELESS_FLAGS[phrase])
+    if found <= expected:
+        return None
+    return (
+        f"GAIA CLI ONLY: 'gaia {' '.join(phrase)}' takes {expected} positional "
+        f"argument(s) and was given {found}. Run one invocation per reference. "
+        f"Denied outright, not approvable."
+    )
 
 
 _BRIEF_STATUSES = frozenset({"draft", "open", "in-progress", "closed", "archived"})

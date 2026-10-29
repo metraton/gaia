@@ -1,21 +1,7 @@
-"""Fd-dup false-positive fix: ``_find_composition_hazard`` must not flag
-``>&`` (file-descriptor duplication, e.g. ``2>&1``) as a bare background
-operator.
+"""``_find_composition_hazard``: every shell form beyond one plain invocation is named.
 
-Before this fix, the character-by-character scan in
-``_find_composition_hazard`` inspected only the character AFTER an ``&`` to
-rule out ``&&``, never the character BEFORE it to rule out ``>&`` -- so
-`gaia doctor 2>&1` was denied outright with "GAIA CLI ONLY: bare background
-operator (`&`) detected", even though `2>&1` duplicates a file descriptor and
-runs nothing in the background. No prior test covered this function at all
-(confirmed by search); this file is that coverage.
-
-The negative cases matter more than the positive one: they are the proof
-that loosening the fd-dup exclusion did not open a hole for real background
-execution or defeat `&&` composition. See the precedents this fix mirrors:
-``bash_validator._FD_DUP_RE`` (``r"\\d+>&\\d+"``) and
-``cloud_pipe_validator.UNIVERSAL_VIOLATIONS``'s "background" entry
-(``r'(?<![>&])&(?!&)'``).
+``2>&1`` is a redirect like any other: the orchestrator's lane refuses every
+fd form, and the tool already returns stderr.
 """
 
 from __future__ import annotations
@@ -50,31 +36,46 @@ def _check(command: str):
     return guard.check(command, _ORCHESTRATOR_PAYLOAD)
 
 
-# ---------------------------------------------------------------------------
-# Positive: fd duplication is not a composition hazard
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "command,hazard",
+    [
+        ("gaia doctor 2>&1", "shell redirect (`>`) detected"),
+        ("gaia doctor 1>&2", "shell redirect (`>`) detected"),
+        ("gaia doctor >&2", "shell redirect (`>`) detected"),
+        ("gaia doctor &> x", "shell redirect (`&>`) detected"),
+        ("gaia doctor < x", "shell redirect (`<`) detected"),
+        ("gaia memory show $SLUG", "shell expansion (`$`) detected"),
+        ('gaia memory search "${Q}"', "shell expansion (`$`) detected"),
+        ("gaia memory show x*", "glob or brace expansion (`*`) detected"),
+        ("gaia doctor {--fix,--json}", "glob or brace expansion (`{`) detected"),
+        ("gaia memory show ~", "tilde expansion (`~`) detected"),
+        ("gaia memory show --workspace=~/x", "tilde expansion (`~`) detected"),
+    ],
+)
+def test_shell_forms_are_named(command, hazard):
+    assert _hazard(command) == hazard
+
 
 @pytest.mark.parametrize(
     "command",
     [
-        "gaia doctor 2>&1",
-        "gaia doctor 1>&2",
-        "gaia doctor >&2",
+        "gaia memory search 'a > b | c & d'",
+        "gaia memory search 'x*' --json",
+        'gaia memory search "{a,b} ~ x?"',
+        "gaia memory search 'cost $5'",
+        "gaia memory show a~b",
+        r"gaia memory search a\>b",
     ],
 )
-def test_fd_duplication_is_not_flagged_as_hazard(command):
+def test_quoted_or_escaped_shell_characters_are_words(command):
     assert _hazard(command) is None
 
 
-def test_fd_duplication_allowed_end_to_end_through_check():
+def test_fd_duplication_denied_end_to_end_through_check():
     allowed, reason = _check(f"{_GAIA} doctor 2>&1")
-    assert allowed is True
-    assert reason is None
+    assert allowed is False
+    assert "not approvable" in reason
 
-
-# ---------------------------------------------------------------------------
-# Negative: everything else that must still be denied stays denied
-# ---------------------------------------------------------------------------
 
 def test_trailing_bare_background_still_flagged():
     assert _hazard("gaia doctor &") == "bare background operator (`&`) detected"
