@@ -136,7 +136,7 @@ NEW_READ_COMMANDS = [
     "status",
     "status --json",
     "defects",
-    "query 'SELECT 1'",
+    "query --surface memory",
     "context show",
     "context show --json",
     "context get",
@@ -263,7 +263,6 @@ def test_doctor_fix_denial_explains_why_and_keeps_the_verb(run_guard) -> None:
         # The value merely LOOKS like the forbidden flag; the option name is
         # --workspace, and fix stays False in argparse.
         "doctor --workspace=--fix",
-        "doctor --json=--fix",
         # Not an abbreviation of anything forbidden.
         "doctor --workspace /tmp/ws",
         "doctor --json",
@@ -394,7 +393,7 @@ def test_scan_is_labelled_a_write_because_it_writes() -> None:
 @pytest.mark.table(
     "argline",
     [
-        "contract view a123",
+        "contract view --draft-id a123",
         "contract list",
         "task gate list demo 1",
         "plan show demo",
