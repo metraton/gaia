@@ -101,7 +101,7 @@ def test_trusted_binary_is_provenance_not_a_stub():
         "task show demo 1",
         "task list demo",
         "task gate list demo 1",
-        "contract view abc123",
+        "contract view --draft-id abc123",
         "contract list",
         "memory search topic",
         "memory show m1",

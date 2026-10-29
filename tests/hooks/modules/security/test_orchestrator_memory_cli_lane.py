@@ -273,6 +273,12 @@ def test_flag_scan_does_not_false_positive_on_lookalikes(run_guard, argline) -> 
     assert allowed is True, reason
 
 
+def test_a_value_on_valueless_json_is_refused_even_when_it_looks_like_fix(run_guard) -> None:
+    allowed, reason = run_guard("doctor --json=--fix")
+    assert allowed is False
+    assert "takes no value" in reason
+
+
 def test_single_dash_fix_is_refused_as_an_unknown_flag(run_guard) -> None:
     """`-fix` is no abbreviation of `--fix` and argparse rejects it, but the
     lane no longer leans on that: a flag outside the verb's known-safe set is

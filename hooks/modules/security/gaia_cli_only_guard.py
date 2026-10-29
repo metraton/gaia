@@ -782,25 +782,30 @@ def match_allowed_phrase(
 # ---------------------------------------------------------------------------
 
 _GLOB_OR_BRACE = frozenset("*?[{")
+_WORD_START = " \t\n;&|()"
+
+
+def _expands_in_double_quotes(nxt: str) -> bool:
+    """True iff a ``$`` followed by *nxt* expands inside double quotes."""
+    return nxt.isalnum() or nxt in "_{(?$!#@*-"
 
 
 def _find_composition_hazard(command: str) -> Optional[str]:
     """Name the first shell form in *command* that is more than one plain
-    invocation -- background ``&``, a redirect, process substitution, or an
+    invocation -- background ``&``, a redirect, a substitution, or an
     expansion that changes the words gaia receives -- or None when clean.
 
-    Quoting is read as bash reads it. ``$(...)``/backtick bodies are skipped
-    because ``check`` refuses a substitution by its presence alone.
+    Quoting is read as bash reads it, and a comment is skipped only up to its
+    newline, so nothing it opens can hide what follows.
     """
     in_single = False
     in_double = False
-    paren_depth = 0
-    backtick_depth = 0
     i = 0
     n = len(command)
 
     while i < n:
         ch = command[i]
+        nxt = command[i + 1] if i + 1 < n else ""
 
         if ch == "\\" and not in_single and i + 1 < n:
             i += 2
@@ -820,38 +825,20 @@ def _find_composition_hazard(command: str) -> Optional[str]:
             i += 1
             continue
 
-        if ch == "$" and i + 1 < n and command[i + 1] == "(":
-            paren_depth += 1
-            i += 2
-            continue
+        if ch == "`" or (ch == "$" and nxt == "("):
+            return "command substitution detected"
 
-        if ch == "$" and paren_depth == 0 and backtick_depth == 0:
+        if ch == "$" and (not in_double or _expands_in_double_quotes(nxt)):
             return "shell expansion (`$`) detected"
 
         if in_double:
             i += 1
             continue
 
-        if ch == "(" and paren_depth > 0:
-            paren_depth += 1
-            i += 1
+        if ch == "#" and (i == 0 or command[i - 1] in _WORD_START):
+            newline = command.find("\n", i)
+            i = n if newline < 0 else newline
             continue
-
-        if ch == ")" and paren_depth > 0:
-            paren_depth -= 1
-            i += 1
-            continue
-
-        if ch == "`":
-            backtick_depth = 0 if backtick_depth else 1
-            i += 1
-            continue
-
-        if paren_depth > 0 or backtick_depth > 0:
-            i += 1
-            continue
-
-        nxt = command[i + 1] if i + 1 < n else ""
 
         if ch in ("<", ">"):
             if nxt == "(":
@@ -928,16 +915,6 @@ def check(
     if not command or not command.strip():
         return False, "Empty command is not an allowlisted gaia CLI invocation."
 
-    hazard = _find_composition_hazard(command)
-    if hazard is not None:
-        return False, (
-            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator's "
-            f"Bash runs one gaia invocation, not a shell: gaia must receive "
-            f"exactly the words written, and its output already returns "
-            f"through the tool, so no redirect is needed. Denied outright, "
-            f"not approvable."
-        )
-
     decomposed = StageDecomposer().decompose(command)
 
     if decomposed.substitutions:
@@ -949,6 +926,16 @@ def check(
             "the orchestrator may run only the gaia CLI, exclusively, with "
             "nothing else executing to feed it. Denied outright, not "
             "approvable."
+        )
+
+    hazard = _find_composition_hazard(command)
+    if hazard is not None:
+        return False, (
+            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator's "
+            f"Bash runs one gaia invocation, not a shell: gaia must receive "
+            f"exactly the words written, and its output already returns "
+            f"through the tool, so no redirect is needed. Denied outright, "
+            f"not approvable."
         )
 
     if not decomposed.stages:
