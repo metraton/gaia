@@ -3,8 +3,8 @@
 SUBCOMMANDS = {
     '': (
         'ac approvals brief cleanup context contract defects dev doctor evidence history '
-        'install lint login map memory metrics migrate milestone notifications now paths plan '
-        'project query release scan session signals status task uninstall update usage '
+        'install lint login map memory metrics migrate milestone notifications now open paths '
+        'plan project query release scan session signals status task uninstall update usage '
         'workspace worktree'
     ),
     'ac': 'add edit remove set-status',
@@ -243,6 +243,7 @@ OPTIONS = {
     'notifications show': '--help --json -h',
     'notifications snooze': '--for --help --json --until -h',
     'now': '--help --json -h',
+    'open': '--help --json --line -h',
     'paths': '--help -h',
     'paths data': '--help -h',
     'paths db': '--help -h',
