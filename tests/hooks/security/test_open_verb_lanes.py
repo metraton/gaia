@@ -102,6 +102,17 @@ def _argline(ref: str, shape: tuple[str, ...]) -> str:
     return " ".join(("open", ref, *shape))
 
 
+def _quoted_if_fragment(ref: str) -> str:
+    return f"'{ref}'" if "#" in ref else ref
+
+
+@pytest.mark.parametrize("ref", [r for r in REFERENCES if "#" in r])
+def test_orchestrator_quotes_a_fragment_because_bare_hash_is_outside_its_allowlist(ref):
+    result = _orchestrator(_argline(ref, ()))
+    assert not result.allowed
+    assert "outside quotes" in result.reason
+
+
 def test_real_binary_is_trusted_so_orchestrator_checks_are_live():
     assert guard.is_trusted_gaia_binary(str(_GAIA_BIN))
 
@@ -115,7 +126,7 @@ def test_open_is_an_orchestrator_read_with_only_line_and_json():
 @pytest.mark.parametrize("shape", SHAPES, ids=lambda s: " ".join(s) or "bare")
 @pytest.mark.parametrize("ref", REFERENCES)
 def test_reference_is_t0_for_the_orchestrator(ref, shape):
-    result = _orchestrator(_argline(ref, shape))
+    result = _orchestrator(_argline(_quoted_if_fragment(ref), shape))
     assert result.allowed, result.reason
     assert result.tier is SecurityTier.T0_READ_ONLY, (result.tier, result.reason)
 

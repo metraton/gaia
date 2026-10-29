@@ -196,10 +196,10 @@ non-flag tokens and does not care what comes after. Modifying
 task creates one file and touches nothing else), so this module carries its
 own small, quote-and-substitution-aware scan for a bare ``&`` and denies the
 whole command outright if one is found -- duplicated logic, deliberately,
-rather than a shared file edited under a task that forbids editing it. The
-same scan refuses every redirect (fd forms and heredocs included) and every
-expansion that makes gaia receive words other than those written (``$``,
-globs, braces, a leading ``~``): the lane is one invocation, not a shell.
+rather than a shared file edited under a task that forbids editing it. That
+scan is an allowlist of literal characters, not a list of shell forms: the lane
+is one invocation, not a shell, so redirects, comments, escapes and expansions
+are impossible by construction rather than recognized one by one.
 
 Design decision 4 -- flag-level policy, because a phrase cannot express it
 --------------------------------------------------------------------------------
@@ -781,86 +781,61 @@ def match_allowed_phrase(
 # (Design decision 3 -- see module docstring)
 # ---------------------------------------------------------------------------
 
-_GLOB_OR_BRACE = frozenset("*?[{")
-_WORD_START = " \t\n;&|()"
+_UNQUOTED_PUNCTUATION = frozenset(" \t\n_./:=@,+%-")
 
 
-def _expands_in_double_quotes(nxt: str) -> bool:
-    """True iff a ``$`` followed by *nxt* expands inside double quotes."""
-    return nxt.isalnum() or nxt in "_{(?$!#@*-"
+def _unquoted_character_hazard(ch: str, nxt: str) -> Optional[str]:
+    """Name an unquoted character outside the lane's allowlist, or None."""
+    if ch.isalnum() or ch in _UNQUOTED_PUNCTUATION:
+        return None
+    if ch in "<>":
+        if nxt == "(":
+            return "process substitution (`<(` / `>(`) detected"
+        return f"shell redirect (`{ch}`) detected"
+    if ch == "&" and nxt == ">":
+        return "shell redirect (`&>`) detected"
+    if ch == "&" and nxt != "&":
+        return "bare background operator (`&`) detected"
+    return f"shell character (`{ch}`) outside quotes detected"
+
+
+def _double_quoted_hazard(ch: str, nxt: str) -> Optional[str]:
+    """Name what bash would run or expand inside double quotes, or None."""
+    if ch == "`" or (ch == "$" and nxt == "("):
+        return "command substitution detected"
+    if ch == "\\":
+        return "backslash inside double quotes detected"
+    if ch == "$" and (nxt.isalnum() or nxt in "_{[?$!#@*-"):
+        return "shell expansion (`$`) detected"
+    return None
 
 
 def _find_composition_hazard(command: str) -> Optional[str]:
-    """Name the first shell form in *command* that is more than one plain
-    invocation -- background ``&``, a redirect, a substitution, or an
-    expansion that changes the words gaia receives -- or None when clean.
+    """Name the first character of *command* that makes it more than one plain
+    invocation, or None when every character is literal to bash.
 
-    Quoting is read as bash reads it, and a comment is skipped only up to its
-    newline, so nothing it opens can hide what follows.
+    An allowlist, not a scan for shell forms: unquoted text may hold only
+    letters, digits, whitespace and ``_ . / : = @ , + % -``; single quotes hold
+    anything; double quotes hold anything but a backtick, a backslash or an
+    expanding ``$``; an unterminated quote is refused.
     """
-    in_single = False
-    in_double = False
-    i = 0
-    n = len(command)
-
-    while i < n:
-        ch = command[i]
-        nxt = command[i + 1] if i + 1 < n else ""
-
-        if ch == "\\" and not in_single and i + 1 < n:
-            i += 2
-            continue
-
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            i += 1
-            continue
-
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            i += 1
-            continue
-
-        if in_single:
-            i += 1
-            continue
-
-        if ch == "`" or (ch == "$" and nxt == "("):
-            return "command substitution detected"
-
-        if ch == "$" and (not in_double or _expands_in_double_quotes(nxt)):
-            return "shell expansion (`$`) detected"
-
-        if in_double:
-            i += 1
-            continue
-
-        if ch == "#" and (i == 0 or command[i - 1] in _WORD_START):
-            newline = command.find("\n", i)
-            i = n if newline < 0 else newline
-            continue
-
-        if ch in ("<", ">"):
-            if nxt == "(":
-                return "process substitution (`<(` / `>(`) detected"
-            return f"shell redirect (`{ch}`) detected"
-
-        if ch == "&":
-            if nxt == "&":
-                i += 2
-                continue
-            if nxt == ">":
-                return "shell redirect (`&>`) detected"
-            return "bare background operator (`&`) detected"
-
-        if ch in _GLOB_OR_BRACE:
-            return f"glob or brace expansion (`{ch}`) detected"
-
-        if ch == "~" and (i == 0 or command[i - 1] in " \t\n="):
-            return "tilde expansion (`~`) detected"
-
-        i += 1
-
+    quote = ""
+    for i, ch in enumerate(command):
+        nxt = command[i + 1:i + 2]
+        if quote == "'":
+            hazard = None
+        elif quote == '"':
+            hazard = None if ch == '"' else _double_quoted_hazard(ch, nxt)
+        elif ch in "'\"":
+            hazard = None
+        else:
+            hazard = _unquoted_character_hazard(ch, nxt)
+        if hazard is not None:
+            return hazard
+        if ch in "'\"" and quote in ("", ch):
+            quote = "" if quote else ch
+    if quote:
+        return "unterminated quote detected"
     return None
 
 

@@ -86,6 +86,30 @@ def test_tight_and_odd_shell_forms_are_refused(cmd):
     assert_categorical(cmd)
 
 
+ADMITTED_BY_ROUND_2 = [
+    "gaia contract list x\\ #>/tmp/p", "gaia contract list --grep a\\ #>/tmp/p",
+    "gaia approvals history x\\ #>/tmp/p", "gaia contract list x\\\n#>/tmp/p",
+    "gaia contract list x\\\t#>/tmp/p", "gaia memory search x\\ #>/tmp/p",
+    "gaia memory search \"$[1+1]\"", "gaia memory search \"a$[x]b\"",
+]
+
+
+@pytest.mark.parametrize("cmd", ADMITTED_BY_ROUND_2 + [
+    "gaia contract list a#>/tmp/p", "gaia contract list --grep=#>/tmp/p",
+    "gaia memory search \"\\$x\"", "gaia memory search 'unterminated",
+    "gaia doctor && gaia status", "gaia open plan:94 \\> /tmp/p",
+    "gaia memory search 'a'#>/tmp/p", "gaia memory search \"a\"#>/tmp/p",
+    "gaia memory search a'#'>/tmp/p", "gaia open 'plan:94'#x>/tmp/p",
+])
+def test_characters_outside_the_allowlist_are_refused(cmd):
+    assert_categorical(cmd)
+
+
+def test_a_trailing_comment_is_refused_by_the_guard_itself():
+    ok, reason = head("gaia memory list # trailing note")
+    assert not ok and "not approvable" in reason
+
+
 LITERAL_PASS = [
     "gaia memory search 'a>b'", "gaia memory search \"a >> b 2>&1\"",
     "gaia memory search 'x <<EOF'", "gaia memory search '<(id)'",
@@ -94,7 +118,7 @@ LITERAL_PASS = [
     "gaia memory search '2>&1'", "gaia memory search '{a,b} *.py ~'",
     "gaia memory search \"{a,b} *.py ~\"", "gaia memory search \"price $\"",
     "gaia memory search \"cost 5$\"", "gaia memory search 'price $5'",
-    "gaia memory search \"a $ b\"", "gaia memory list # trailing note",
+    "gaia memory search \"a $ b\"",
 ]
 
 
@@ -106,7 +130,6 @@ def test_operator_inside_quotes_stays_t0(cmd):
 
 @pytest.mark.parametrize("cmd", [
     "gaia open plan:94 '>' /tmp/p", "gaia now '2>&1'", "gaia memory list \">\" /tmp/p",
-    "gaia open plan:94 \\> /tmp/p",
 ])
 def test_quoted_operator_word_is_refused_by_arity(cmd):
     ok, reason = head(cmd)
