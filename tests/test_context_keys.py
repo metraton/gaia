@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gaia.context_keys import WHAT_KEYS, project_what, what_keys
+from gaia.context_keys import WHAT_KEYS, is_what_path, project_what, what_keys
 
 AGENTS = Path(__file__).resolve().parents[1] / "agents"
 
@@ -101,6 +101,119 @@ NONPROD_GITOPS = {
         "app_count": 14,
         "image_automation": "off",
     }
+}
+
+
+AAXIS_APPS = {
+    "base_path": ".",
+    "services": [
+        {"name": "env-manager", "path": "bildwiz-gitops-gcp-dev/tools/env-manager", "has_dockerfile": True},
+        {"name": "bildwiz-backend", "path": "bildwiz-platform/packages/bildwiz-backend", "has_dockerfile": True},
+        {"name": "newco-pitot", "path": "newco-pitot", "has_dockerfile": True},
+    ],
+    "bildwiz-backend_runtime": {
+        "helm_chart": "acce-service",
+        "image_repository": "us-central1-docker.pkg.dev/aaxis-bildwiz-project/bildwiz-dev/bildwiz-backend",
+        "deployments": {"bildwiz-demo/bildwiz-service": {"image_tag": "demo-0.0.165"}},
+    },
+}
+
+AOS_TOPOLOGY = {
+    "aos_prod_ssl_scope": {
+        "instance": "aos-pg16-prod",
+        "ssl_mode": "ENCRYPTED_ONLY",
+        "private_ip": "10.11.0.5",
+        "affected_services": {
+            "aos-api-prod": {"db_ssl_live": "false", "iac_file": "envs/prod/runtime/cloud-run-aos.tf"},
+            "aos-keycloak-prod": {"ssl_in_url": False, "iac_line": 31},
+        },
+    },
+    "aos_dev_ssl_scope": {"instance": "aos-pg16", "note": "dev accepts unencrypted"},
+}
+
+CENTURY_TOPOLOGY = {
+    "branchkinect_artifacts_repo": {
+        "local_path": "/home/jorge/ws/century-inc/branchkinect-artifacts",
+        "remote": "century-inc/branchkinect-artifacts",
+        "structure": ["platform-iac/", "helm-charts/"],
+    },
+    "branchkinect_platform": {
+        "iac_repo_path": "/home/jorge/ws/century-inc/branchkinect-artifacts",
+        "github_slug": "century-inc/branchkinect-artifacts",
+        "visibility": "private",
+        "target_project": "branchkinect-artifacts (org-root 145362834906)",
+        "state_bucket_planned": "branchkinect-platform-tfstate",
+    },
+    "century_iac": {
+        "repo_path": "/home/jorge/ws/century-inc/branchkinect-century-iac",
+        "tool": "terragrunt",
+        "seed_project": "branchkinect-century-core",
+    },
+    "branchkinect_factory": {
+        "repo": "/home/jorge/ws/century-inc/branchkinect-factory",
+        "factory_project": {"project_id": "branchkinect-factory-gcp", "project_number": "580381776210"},
+    },
+}
+
+AAXIS_IDENTITY = {
+    "rnd_2": {
+        "local_path": "/home/jorge/ws/aaxis/rnd/ai-project-guidance",
+        "remote_url": "git@bitbucket.org:aaxisdigital/ai-project-guidance.git",
+        "platform": "bitbucket",
+        "name": "rnd-2",
+        "type": "monorepo",
+    },
+    "bildwiz_7": {
+        "local_path": "/home/jorge/ws/aaxis/bildwiz/newco-pitot",
+        "remote_url": "https://github.com/gpalagan-aaxis/newco-pitot",
+        "name": "bildwiz-7",
+        "language": "python",
+    },
+    "ai_ways_of_working": {
+        "local_path": "/home/jorge/ws/aaxis/rnd/ai-ways-of-working",
+        "name": "ai-ways-of-working",
+        "type": "application",
+    },
+    "aos": {
+        "name": "AOS -- Accounting Operating System",
+        "remote_url": "git@bitbucket.org:aaxisdigital/aos.git",
+        "local_path": "/home/jorge/ws/aaxis/aos/aos",
+        "package_manager": "pnpm@10.15.1",
+        "apps": {"@aos/web": "apps/web", "@aos/server": "apps/server"},
+    },
+}
+
+AAXIS_GIT = {
+    "_source": "scanner:git",
+    "platform": "bitbucket",
+    "workspace_type": "multi-repo",
+    "repos": [
+        {
+            "name": "bildwiz-iac",
+            "path": "bildwiz-iac",
+            "remote_url": "git@bitbucket.org:aaxisdigital/bildwiz-iac.git",
+            "default_branch": "main",
+        },
+        {
+            "name": "newco-pitot",
+            "path": "newco-pitot",
+            "remote_url": "https://github.com/gpalagan-aaxis/newco-pitot",
+            "default_branch": "main",
+        },
+    ],
+    "branch_strategy": {"detected": False, "pattern": None},
+}
+
+AAXIS_STACK = {
+    "_source": "scanner:stack",
+    "languages": [{"name": "python", "manifest": "control-tower-livekit/pyproject.toml", "primary": False}],
+    "frameworks": [{"name": "fastapi", "language": "python", "version": "0.115"}],
+    "build_tools": [{"name": "npm", "detected_by": "lock_file", "lock_file": "package-lock.json"}],
+}
+
+AAXIS_STATIC_IPS = {
+    "bildwiz-demo_gateway_external_http": "34.110.234.82",
+    "bildwiz-dev_gateway_external_http": "34.36.244.117",
 }
 
 
@@ -218,6 +331,129 @@ def test_projection_leaves_the_stored_payload_untouched():
     projected["live_demo"]["workloads"].append("intruder")
     projected["namespaces"].append("intruder")
     assert stored == BILDWIZ_CLUSTER
+
+
+def test_scanned_application_services_name_the_apps_not_the_scalar_and_list_keys():
+    assert project_what("application_services", AAXIS_APPS) == {
+        "services": [{"name": "env-manager"}, {"name": "bildwiz-backend"}, {"name": "newco-pitot"}],
+        "bildwiz-backend_runtime": {
+            "image_repository": AAXIS_APPS["bildwiz-backend_runtime"]["image_repository"],
+            "deployments": {"bildwiz-demo/bildwiz-service": {}},
+        },
+    }
+
+
+def test_a_database_instance_and_its_affected_services_are_named_things():
+    assert project_what("infrastructure_topology", AOS_TOPOLOGY) == {
+        "aos_prod_ssl_scope": {
+            "instance": "aos-pg16-prod",
+            "affected_services": {"aos-api-prod": {}, "aos-keycloak-prod": {}},
+        },
+        "aos_dev_ssl_scope": {"instance": "aos-pg16"},
+    }
+
+
+def test_a_repo_or_project_the_user_names_is_what_and_a_local_path_is_how():
+    assert project_what("infrastructure_topology", CENTURY_TOPOLOGY) == {
+        "branchkinect_artifacts_repo": {"remote": "century-inc/branchkinect-artifacts"},
+        "branchkinect_platform": {
+            "github_slug": "century-inc/branchkinect-artifacts",
+            "target_project": "branchkinect-artifacts (org-root 145362834906)",
+        },
+        "century_iac": {"seed_project": "branchkinect-century-core"},
+        "branchkinect_factory": {"factory_project": {"project_id": "branchkinect-factory-gcp"}},
+    }
+
+
+def test_project_identity_names_a_repo_by_its_remote_or_folder_never_by_scanner_alias():
+    projected = project_what("project_identity", AAXIS_IDENTITY)
+    assert projected["rnd_2"] == {
+        "local_path": "/home/jorge/ws/aaxis/rnd/ai-project-guidance",
+        "remote_url": "git@bitbucket.org:aaxisdigital/ai-project-guidance.git",
+    }
+    assert projected["ai_ways_of_working"] == {"local_path": "/home/jorge/ws/aaxis/rnd/ai-ways-of-working"}
+    assert projected["aos"]["apps"] == {"@aos/web": {}, "@aos/server": {}}
+    assert all("name" not in entry for entry in projected.values())
+
+
+def test_git_repos_are_named_by_their_folder_name_and_remote():
+    assert project_what("git", AAXIS_GIT) == {
+        "repos": [
+            {"name": "bildwiz-iac", "remote_url": "git@bitbucket.org:aaxisdigital/bildwiz-iac.git"},
+            {"name": "newco-pitot", "remote_url": "https://github.com/gpalagan-aaxis/newco-pitot"},
+        ]
+    }
+
+
+def test_static_ips_name_the_gateways_and_the_scanner_sections_are_declared_how():
+    assert project_what("static_ips", AAXIS_STATIC_IPS) == {key: {} for key in AAXIS_STATIC_IPS}
+    for section in ("terraform_infrastructure", "monitoring_observability", "orchestration", "stack"):
+        assert WHAT_KEYS[section] == ()
+    assert project_what("stack", AAXIS_STACK) == {}
+
+
+@pytest.mark.parametrize(
+    "section, path, expected",
+    [
+        ("cluster_details", "live_demo.namespace", True),
+        ("cluster_details", "live_demo.workloads[1]", True),
+        ("cluster_details", "live_demo.database", False),
+        ("cluster_details", "live_demo", False),
+        ("cluster_details", "active_cluster.current_node_count", False),
+        ("cluster_details", "scaled_to_zero_namespaces.bildwiz-demo", True),
+        ("cluster_details", "scaled_to_zero_namespaces.bildwiz-demo.replicas", False),
+        ("application_services", "services[3].name", True),
+        ("application_services", "services[3].path", False),
+        ("application_services", "bildwiz-backend_runtime", True),
+        ("application_services", "bildwiz-backend_runtime.deployments.bildwiz-demo/bildwiz-service", True),
+        ("application_services", "bildwiz-backend_runtime.deployments.bildwiz-demo/bildwiz-service.image_tag", False),
+        ("infrastructure_topology", "century_iac.repo_path", False),
+        ("infrastructure_topology", "branchkinect_platform.github_slug", True),
+        ("git", "repos[0].name", True),
+        ("git", "repos.name", False),
+        ("environment", "tools[0].name", False),
+        ("no_such_section", "cluster", False),
+    ],
+)
+def test_is_what_path_answers_for_a_concrete_path(section, path, expected):
+    assert is_what_path(section, path) is expected
+
+
+def test_an_object_only_key_needs_the_payload_to_tell_an_app_from_a_scalar():
+    assert is_what_path("application_services", "base_path") is True
+    assert is_what_path("application_services", "base_path", AAXIS_APPS) is False
+    assert is_what_path("application_services", "services", AAXIS_APPS) is False
+    assert is_what_path("application_services", "bildwiz-backend_runtime", AAXIS_APPS) is True
+    assert is_what_path("application_services", "absent", AAXIS_APPS) is False
+
+
+@pytest.mark.parametrize(
+    "section, payload",
+    [
+        ("cluster_details", BILDWIZ_CLUSTER),
+        ("cluster_details", BRANCHKINECT_CLUSTER),
+        ("application_services", AAXIS_APPS),
+        ("application_services", SKILL_HUB_APPS),
+        ("gitops_configuration", NONPROD_GITOPS),
+        ("infrastructure_topology", AOS_TOPOLOGY),
+        ("infrastructure_topology", CENTURY_TOPOLOGY),
+        ("project_identity", AAXIS_IDENTITY),
+        ("git", AAXIS_GIT),
+    ],
+)
+def test_the_projection_and_the_predicate_agree_on_every_path_it_keeps(section, payload):
+    def paths(value, prefix):
+        if isinstance(value, dict) and value:
+            for key, item in value.items():
+                yield from paths(item, f"{prefix}.{key}" if prefix else key)
+        elif isinstance(value, list) and value:
+            for index, item in enumerate(value):
+                yield from paths(item, f"{prefix}[{index}]")
+        else:
+            yield prefix
+
+    kept = list(paths(project_what(section, payload), ""))
+    assert kept and all(is_what_path(section, path) for path in kept), kept
 
 
 @pytest.mark.parametrize("section", sorted(WHAT_KEYS))

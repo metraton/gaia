@@ -1,6 +1,6 @@
 """Per context section, the key paths that name what a request is about (WHAT); the rest of a section is HOW.
 
-Path grammar: dot-separated steps; `*` any key; `name[]` each item of a list; a trailing `{}` keeps the selected keys without their values.
+Path grammar: dot-separated steps; `*` any key; `name[]` each item of a list; a trailing `{}` keeps the selected keys without their values, `{dict}` only those holding an object.
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ WHAT_KEYS: Mapping[str, tuple] = {
         "region",
     ),
     "application_services": (
-        "*{}",
+        "*{dict}",
+        "services[].name",
         "*.image_repository",
         "*.deployments.*{}",
         "*.marketplace_name",
@@ -51,18 +52,28 @@ WHAT_KEYS: Mapping[str, tuple] = {
         "*.environments.*.project_id",
         "*.seed_project",
         "*.factory_project.project_id",
+        "*.target_project",
+        "*.github_slug",
+        "*.remote",
+        "*.instance",
+        "*.affected_services.*{}",
     ),
-    "project_identity": ("*.name", "*.remote_url", "*.local_path"),
+    "project_identity": ("*.remote_url", "*.local_path", "*.apps.*{}"),
     "git": ("repos[].name", "repos[].remote_url"),
+    "static_ips": ("*{}",),
     "stack": (),
     "environment": (),
     "architecture_overview": (),
     "workspace_repos": (),
     "operational_guidelines": (),
     "releases": (),
+    "terraform_infrastructure": (),
+    "monitoring_observability": (),
+    "orchestration": (),
 }
 
-_STEP = re.compile(r"(?P<name>[^\[\]{}]+)(?P<each>\[\])?(?P<keys_only>\{\})?")
+_STEP = re.compile(r"(?P<name>[^\[\]{}]+)(?P<each>\[\])?(?P<keys_only>\{\}|\{dict\})?")
+_PATH_TOKEN = re.compile(r"\[(\d+)\]|([^.\[\]]+)")
 _NOTHING = object()
 
 
@@ -73,7 +84,7 @@ def what_keys(section: str) -> tuple:
 
 def _steps(path: str) -> list:
     parsed = [_STEP.fullmatch(step) for step in path.split(".")]
-    return [(m["name"], bool(m["each"]), bool(m["keys_only"])) for m in parsed]
+    return [(m["name"], bool(m["each"]), m["keys_only"]) for m in parsed]
 
 
 def _select(value: Any, steps: list) -> Any:
@@ -85,7 +96,8 @@ def _select(value: Any, steps: list) -> Any:
     picked = {}
     for key in value if name == "*" else [name] if name in value else []:
         if keys_only:
-            picked[key] = {}
+            if keys_only == "{}" or isinstance(value[key], dict):
+                picked[key] = {}
         elif each:
             if not isinstance(value[key], list):
                 continue
@@ -108,6 +120,40 @@ def _merge(first: Any, second: Any) -> Any:
     if isinstance(first, list) and isinstance(second, list) and len(first) == len(second):
         return [_merge(a, b) for a, b in zip(first, second)]
     return first if second == {} else second
+
+
+def _path_tokens(path: str) -> list:
+    return [int(index) if index else key for index, key in _PATH_TOKEN.findall(path)]
+
+
+def _walk(value: Any, tokens: list) -> Any:
+    for token in tokens:
+        try:
+            value = value[token]
+        except (KeyError, IndexError, TypeError):
+            return _NOTHING
+    return value
+
+
+def _path_matches(steps: list, tokens: list, payload: Any) -> bool:
+    wanted = [token for name, each, _ in steps for token in [name] + [int] * each]
+    if len(tokens) < len(wanted):
+        return False
+    for want, got in zip(wanted, tokens):
+        if not (isinstance(got, int) if want is int else isinstance(got, str) and want in ("*", got)):
+            return False
+    keys_only = steps[-1][2]
+    if not keys_only:
+        return True
+    if len(tokens) != len(wanted):
+        return False
+    return keys_only == "{}" or payload is None or isinstance(_walk(payload, tokens), dict)
+
+
+def is_what_path(section: str, path: str, payload: Any = None) -> bool:
+    """Whether a concrete path like `live_demo.workloads[1]` is, or lies inside, a WHAT key of the section; given the payload, an object-only key also checks its value."""
+    tokens = _path_tokens(path)
+    return any(_path_matches(_steps(pattern), tokens, payload) for pattern in what_keys(section))
 
 
 def project_what(section: str, payload: Any) -> dict:
