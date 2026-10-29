@@ -413,9 +413,11 @@ def test_a_project_without_a_remote_is_named_by_its_folder_alone():
     }
 
 
-def test_a_project_whose_checkout_is_gone_is_left_out():
-    projected = project_what("project_identity", CENTURY_IDENTITY)
-    assert projected == {"century_skill_hub": {"remote_url": "https://github.com/century-inc/century-skill-hub.git"}}
+def test_a_gone_checkout_with_a_remote_keeps_the_remote_and_one_without_is_left_out():
+    assert project_what("project_identity", CENTURY_IDENTITY) == {
+        "century_skill_hub": {"remote_url": "https://github.com/century-inc/century-skill-hub.git"},
+        "branchkinect_iac": {"remote_url": "https://github.com/century-inc/branchkinect-iac.git"},
+    }
 
 
 def test_git_repos_are_named_by_their_folder_name_and_remote():
@@ -470,7 +472,8 @@ def test_a_guarded_key_needs_the_payload_to_know_its_siblings():
     assert is_what_path("project_identity", "rnd_2.local_path", AAXIS_IDENTITY) is False
     assert is_what_path("project_identity", "ai_ways_of_working.local_path", AAXIS_IDENTITY) is True
     assert is_what_path("project_identity", "rnd_2.remote_url", AAXIS_IDENTITY) is True
-    assert is_what_path("project_identity", "branchkinect_iac.remote_url", CENTURY_IDENTITY) is False
+    assert is_what_path("project_identity", "branchkinect_iac.remote_url", CENTURY_IDENTITY) is True
+    assert is_what_path("project_identity", "branchkinect_modelb_fixture.local_path", CENTURY_IDENTITY) is False
 
 
 def test_an_object_only_key_needs_the_payload_to_tell_an_app_from_a_scalar():

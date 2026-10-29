@@ -60,7 +60,7 @@ WHAT_KEYS: Mapping[str, tuple] = {
         "*.affected_services.*{}",
     ),
     "project_identity": (
-        "*.remote_url!missing_since",
+        "*.remote_url",
         "*.local_path~basename!remote_url!missing_since",
         "*.apps.*{}",
     ),
