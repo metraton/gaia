@@ -136,7 +136,7 @@ NEW_READ_COMMANDS = [
     "status",
     "status --json",
     "defects",
-    "query 'SELECT 1'",
+    "query --surface memory",
     "context show",
     "context show --json",
     "context get",
@@ -263,7 +263,6 @@ def test_doctor_fix_denial_explains_why_and_keeps_the_verb(run_guard) -> None:
         # The value merely LOOKS like the forbidden flag; the option name is
         # --workspace, and fix stays False in argparse.
         "doctor --workspace=--fix",
-        "doctor --json=--fix",
         # Not an abbreviation of anything forbidden.
         "doctor --workspace /tmp/ws",
         "doctor --json",
@@ -272,6 +271,12 @@ def test_doctor_fix_denial_explains_why_and_keeps_the_verb(run_guard) -> None:
 def test_flag_scan_does_not_false_positive_on_lookalikes(run_guard, argline) -> None:
     allowed, reason = run_guard(argline)
     assert allowed is True, reason
+
+
+def test_a_value_on_valueless_json_is_refused_even_when_it_looks_like_fix(run_guard) -> None:
+    allowed, reason = run_guard("doctor --json=--fix")
+    assert allowed is False
+    assert "takes no value" in reason
 
 
 def test_single_dash_fix_is_refused_as_an_unknown_flag(run_guard) -> None:
@@ -394,7 +399,7 @@ def test_scan_is_labelled_a_write_because_it_writes() -> None:
 @pytest.mark.table(
     "argline",
     [
-        "contract view a123",
+        "contract view --draft-id a123",
         "contract list",
         "task gate list demo 1",
         "plan show demo",

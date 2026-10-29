@@ -134,24 +134,55 @@ def _live_parser():
     return module._build_parser(module._discover_plugins())
 
 
-def _live_options(parser, phrase) -> set:
+def _leaf(parser, phrase):
     for token in phrase:
         subparsers = next(
             a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
         )
         parser = subparsers.choices[token]
+    return parser
+
+
+def _option_actions(leaf):
+    return [
+        action for action in leaf._actions
+        if action.option_strings
+        and not isinstance(action, (argparse._HelpAction, argparse._SubParsersAction))
+    ]
+
+
+def _live_options(leaf) -> set:
+    return {option for action in _option_actions(leaf) for option in action.option_strings}
+
+
+def _live_valueless(leaf) -> set:
     return {
-        option
-        for action in parser._actions
-        if not isinstance(action, (argparse._HelpAction, argparse._SubParsersAction))
+        option for action in _option_actions(leaf) if action.nargs == 0
         for option in action.option_strings
     }
 
 
+def _live_fixed_positionals(leaf):
+    """The positional count argparse demands exactly, or None when it varies."""
+    if any(isinstance(a, argparse._SubParsersAction) for a in leaf._actions):
+        return None
+    if any(a.nargs not in (None, 0) for a in _option_actions(leaf)):
+        return None
+    positionals = [a for a in leaf._actions if not a.option_strings]
+    if any(a.nargs is not None for a in positionals):
+        return None
+    return len(positionals)
+
+
 @pytest.fixture(scope="module")
-def live_options():
+def live_leaves():
     parser = _live_parser()
-    return {phrase: _live_options(parser, phrase) for phrase in ALLOWED_PHRASES}
+    return {phrase: _leaf(parser, phrase) for phrase in ALLOWED_PHRASES}
+
+
+@pytest.fixture(scope="module")
+def live_options(live_leaves):
+    return {phrase: _live_options(leaf) for phrase, leaf in live_leaves.items()}
 
 
 PHRASES = sorted(ALLOWED_PHRASES)
@@ -169,11 +200,25 @@ def test_table_equals_the_live_parser_minus_the_withheld(live_options, phrase) -
 
 
 @pytest.mark.parametrize("phrase", PHRASES, ids=" ".join)
-def test_every_known_safe_flag_passes(live_options, phrase) -> None:
+def test_valueless_table_equals_the_live_parser(live_leaves, phrase) -> None:
+    live = _live_valueless(live_leaves[phrase]) & _KNOWN_SAFE_FLAGS[phrase]
+    assert guard._VALUELESS_FLAGS[phrase] == live
+
+
+@pytest.mark.parametrize("phrase", PHRASES, ids=" ".join)
+def test_fixed_positional_table_equals_the_live_parser(live_leaves, phrase) -> None:
+    live = _live_fixed_positionals(live_leaves[phrase])
+    assert guard._FIXED_POSITIONALS.get(phrase) == live
+
+
+@pytest.mark.parametrize("phrase", PHRASES, ids=" ".join)
+def test_every_known_safe_flag_passes(live_leaves, live_options, phrase) -> None:
     safe = live_options[phrase] - WITHHELD.get(phrase, set())
+    valueless = _live_valueless(live_leaves[phrase])
     for flag in sorted(safe):
         assert _validate_known_safe_flags(phrase + (flag,), phrase) is None, flag
-        assert _validate_known_safe_flags(phrase + (f"{flag}=v",), phrase) is None, flag
+        given_a_value = _validate_known_safe_flags(phrase + (f"{flag}=v",), phrase)
+        assert (given_a_value is None) is (flag not in valueless), flag
 
 
 @pytest.mark.parametrize("phrase", PHRASES, ids=" ".join)
