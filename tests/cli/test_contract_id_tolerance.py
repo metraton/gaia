@@ -33,15 +33,17 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 def _insert(tmp_db, *, agent_id=AGENT_ID, contract_id=CONTRACT_ID, harness_id=RESUME_ID,
-            session_id="sess-1", prompt="the goal") -> int:
+            session_id="sess-1", prompt="the goal", continues=None,
+            created="2026-10-28T10:00:00Z") -> int:
     con = sqlite3.connect(str(tmp_db))
     try:
         cur = con.execute(
             "INSERT INTO agent_contract_handoffs (agent_id, workspace, agent_state, "
-            "raw_handoff_json, contract_id, dispatch_prompt, harness_agent_id, session_id) "
-            "VALUES (?, 'me', 'COMPLETE', ?, ?, ?, ?, ?)",
+            "raw_handoff_json, contract_id, dispatch_prompt, harness_agent_id, session_id, "
+            "continues_handoff_id, created_at) "
+            "VALUES (?, 'me', 'COMPLETE', ?, ?, ?, ?, ?, ?, ?)",
             (agent_id, json.dumps({"conclusion": "row conclusion"}), contract_id, prompt,
-             harness_id, session_id),
+             harness_id, session_id, continues, created),
         )
         con.commit()
         return cur.lastrowid
@@ -154,6 +156,40 @@ def test_row_without_a_contract_id_opens_through_its_harness_id(tmp_db, capsys):
     row = json.loads(out)
     assert (row["handoff_id"], row["harness_agent_id"]) == (handoff, RESUME_ID)
     assert str(handoff) in err and RESUME_ID in err
+
+
+def _chain(tmp_db) -> list:
+    links = []
+    for suffix, hour in (("aaaaaaaaaaaa", "10"), ("bbbbbbbbbbbb", "11"), ("cccccccccccc", "12")):
+        links.append(_insert(
+            tmp_db, contract_id=f"{AGENT_ID}.{suffix}", continues=links[-1] if links else None,
+            created=f"2026-10-28T{hour}:00:00Z"))
+    return links
+
+
+@pytest.mark.parametrize("mode", [["--row"], []])
+@pytest.mark.parametrize("by_harness_id", [False, True])
+def test_chain_opens_the_latest_link_and_lists_every_link(tmp_db, capsys, mode, by_harness_id):
+    _chain(tmp_db)
+    value = RESUME_ID if by_harness_id else AGENT_ID
+
+    rc, out, err = _run(capsys, *mode, "--contract-id", value)
+
+    assert rc == 0, err
+    for suffix in ("aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"):
+        assert f"{AGENT_ID}.{suffix}" in out + err
+    assert f"{AGENT_ID}.cccccccccccc (opened)" in err
+    assert f"{AGENT_ID}.aaaaaaaaaaaa (opened)" not in err
+
+
+def test_chain_opened_by_its_latest_handoff_id_reports_the_same_links(tmp_db, capsys):
+    latest = _chain(tmp_db)[-1]
+
+    rc, out, err = _run(capsys, "--row", "--contract-id", str(latest))
+
+    assert rc == 0, err
+    assert f"{AGENT_ID}.cccccccccccc" in out
+    assert f"{AGENT_ID}.aaaaaaaaaaaa" in err and RESUME_ID in err
 
 
 def test_unknown_dotted_contract_id_keeps_the_draft_lane_message(tmp_db, capsys):

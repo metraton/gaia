@@ -1366,9 +1366,12 @@ def _open_other_identifier(value: str, as_json: bool) -> Optional[tuple]:
     agent_id, through the ``contract:`` resolver of ``gaia.refs``.
 
     Returns ``(contract_id, resume_harness_id, opened_from)``; ``opened_from``
-    says which row opened. Prints why and returns None when nothing opens.
+    says which row opened and, for a resumed turn, every link of its chain
+    with the opened one marked, as ``--harness-id`` lists them in ``links``.
+    Prints why and returns None when nothing opens.
     """
     from gaia.refs import Ref, RefError, resolve
+    from gaia.store.writer import ContinuationChainUnreadable, continuation_chain
 
     try:
         resolution = resolve(Ref("contract", "", value))
@@ -1382,6 +1385,17 @@ def _open_other_identifier(value: str, as_json: bool) -> Optional[tuple]:
         f"contract_id={contract_id or 'none'}, "
         f"resume harness id {resume_id or 'none'} ({resolution.notes[0]})"
     )
+    try:
+        chain = continuation_chain(contract_id)
+    except ContinuationChainUnreadable:
+        return contract_id, resume_id, f"{opened_from}; chain links unreadable"
+    if len(chain) > 1:
+        links = ", ".join(
+            f"{link.get('contract_id') or 'handoff ' + str(link.get('id'))}"
+            f"{' (opened)' if link.get('contract_id') == contract_id else ''}"
+            for link in chain
+        )
+        opened_from += f"; chain of {len(chain)} links, oldest first: {links}"
     return contract_id, resume_id, opened_from
 
 
