@@ -260,6 +260,94 @@ def test_a_reference_outside_the_safe_alphabet_is_never_printed():
         format_ref(Ref("memory", "", "#x"))
 
 
+def _rendered(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.:/#@-]", "?", text)[:60]
+
+
+@pytest.mark.parametrize("ref, fragment", [
+    ("contract:34522 ; touch pwned", "touch pwned"),
+    ("contract:$HOME", "$HOME"),
+    ("contract:$(id)", "$(id)"),
+    ("memory:ws/`id`", "`id`"),
+    ("memory:ws/*", "ws/*"),
+    ("memory:ws/{a,b}", "{a,b}"),
+    ("memory:ws/a'b", "a'b"),
+    ('memory:ws/a"b', 'a"b'),
+    ("memory:ws/a\nb", "a\nb"),
+    ("memory:ws/ñ", "ñ"),
+    ("\x1b[31mcontract:34522", "\x1b"),
+    ("#contract:34522", "#contract"),
+    ("contract:34522#conclusion;ls", ";ls"),
+    ("$(id):1", "$(id)"),
+    ("bogus$HOME:1", "$HOME"),
+    ("memory:ws/x\x1b[31m", "\x1b"),
+])
+@pytest.mark.parametrize("flag", [(), ("--line",), ("--json",)])
+def test_an_error_never_echoes_hostile_input(ref, fragment, flag):
+    result = _open(ref, *flag)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "Traceback" not in output
+    assert fragment not in output
+    assert _rendered(ref).lstrip("?#") in output
+    assert len(output) < 600
+
+
+@pytest.mark.parametrize("ref", [
+    "contract:" + "a" * 5000,
+    "memory:ws/" + "a" * 5000,
+    f"contract:{HANDOFF_ID}#" + "f" * 5000,
+    "approval:P-" + "9" * 3000,
+    "memory:" + "ws/" * 2000 + "x",
+])
+@pytest.mark.parametrize("flag", [(), ("--json",)])
+def test_an_error_truncates_a_long_input_and_names_its_length(ref, flag):
+    result = _open(ref, *flag)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert len(output) < 600
+    assert ref[60:200] not in output
+    assert f"({len(ref)} chars)" in output or f"({len(ref.split('#')[1])} chars)" in output
+
+
+def test_json_error_is_valid_json_on_stdout():
+    result = _open("memory:ws/decision_gaia_vocabulario_workspace", "--json")
+
+    assert result.returncode == 1
+    error = json.loads(result.stdout)["error"]
+    assert f"memory:ws/{MOVED_SLUG}" in error
+
+
+@pytest.mark.parametrize("ref", [
+    f"contract:{AGENT_ID}", f"memory:me/{MOVED_SLUG}", "context:ws/infrastructure#evidence_convention",
+    f"brief:{BRIEF}", "plan:94", "task:1044", f"task:{BRIEF}/16", "evidence:42",
+    f"approval:{APPROVAL_ID}", "approval:P-39e3fa64", "notification:81",
+])
+def test_json_output_is_valid_for_every_kind(ref):
+    shown = _open_json(ref)
+
+    assert SAFE_REF.match(shown["reference"])
+    assert shown["verb"].startswith("gaia ")
+
+
+def test_a_nul_byte_is_refused_cleanly(capsys):
+    import argparse
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("cli_open_under_test", _REPO_ROOT / "bin" / "cli" / "open.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    code = module.cmd_open(argparse.Namespace(ref="contract:34522\x00", line=False, json=False))
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "\x00" not in err
+    assert "contract:34522?" in err
+
+
 def test_open_never_writes_the_database(tmp_path):
     db = _db_path(tmp_path)
     before = hashlib.sha256(db.read_bytes()).hexdigest()

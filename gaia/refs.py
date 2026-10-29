@@ -12,6 +12,8 @@ from typing import Any, Optional
 
 KINDS = ("contract", "memory", "context", "brief", "plan", "task", "evidence", "approval", "notification")
 SAFE_REF = re.compile(r"[A-Za-z0-9_.:/@-][A-Za-z0-9_.:/#@-]*\Z")
+_UNSAFE_CHAR = re.compile(r"[^A-Za-z0-9_.:/#@-]")
+_ECHO_MAX = 60
 _SCOPED_KINDS = frozenset({"memory", "context", "brief"})
 _SCOPE_ALIASES = {"user": "_gaia_user", "gaia": "_gaia_host"}
 _SCOPE_SPELLINGS = {workspace: alias for alias, workspace in _SCOPE_ALIASES.items()}
@@ -50,25 +52,51 @@ def parse_ref(text: str) -> Ref:
     kind, sep, rest = text.partition(":")
     kind = kind.lower()
     if not sep or kind not in KINDS:
-        raise RefError(f"{text!r} is not KIND:ID with KIND one of {', '.join(KINDS)}")
+        raise RefError(f"{echo(text)} is not KIND:ID with KIND one of {' '.join(KINDS)}")
     if not SAFE_REF.match(text):
-        raise RefError(f"{text!r} holds characters outside [A-Za-z0-9_.:/#@-]")
+        raise RefError(f"{echo(text)} holds characters outside A-Z a-z 0-9 _ . : / # @ -")
     rest, _, field = rest.partition("#")
     scope, ident = "", rest
     if kind in _SCOPED_KINDS and "/" in rest:
         scope, _, ident = rest.partition("/")
     if not ident:
-        raise RefError(f"{text!r} names no id after {kind}:")
+        raise RefError(f"{echo(text)} names no id after {kind}:")
     return Ref(kind, scope, ident, field)
+
+
+def echo(text: str) -> str:
+    """``text`` as an error may show it: unsafe characters and a leading # become ?, cut to 60 with its length."""
+    safe = _UNSAFE_CHAR.sub("?", text)
+    if safe.startswith("#"):
+        safe = "?" + safe[1:]
+    return safe if len(text) <= _ECHO_MAX else f"{safe[:_ECHO_MAX]}... ({len(text)} chars)"
+
+
+def _spelling(ref: Ref) -> str:
+    body = f"{ref.scope}/{ref.id}" if ref.scope else ref.id
+    return f"{ref.kind}:{body}" + (f"#{ref.field}" if ref.field else "")
 
 
 def format_ref(ref: Ref) -> str:
     """The printable reference, refused when the shell guards would not pass it verbatim."""
-    body = f"{ref.scope}/{ref.id}" if ref.scope else ref.id
-    text = f"{ref.kind}:{body}" + (f"#{ref.field}" if ref.field else "")
+    text = _spelling(ref)
     if not ref.id or "#" in ref.scope + ref.id + ref.field or not SAFE_REF.match(text):
-        raise RefError(f"{text!r} is not a shell-safe reference")
+        raise RefError(f"{echo(text)} is not a shell-safe reference")
     return text
+
+
+def _shown(ref: Ref) -> str:
+    return echo(_spelling(ref))
+
+
+def _printable(refs: list) -> list:
+    printable = []
+    for ref in refs:
+        try:
+            printable.append(format_ref(ref))
+        except RefError:
+            continue
+    return printable
 
 
 def select_field(document: Any, field: str) -> Any:
@@ -77,7 +105,7 @@ def select_field(document: Any, field: str) -> Any:
     for part in field.split("."):
         if not isinstance(current, dict) or part not in current:
             present = ", ".join(sorted(current)) if isinstance(current, dict) else "(not an object)"
-            raise RefError(f"no field {field!r}: {part!r} is not among {present}")
+            raise RefError(f"no field {echo(field)}: {echo(part)} is not among {present}")
         current = current[part]
     return current
 
@@ -109,7 +137,7 @@ def _spelled(workspace: str) -> str:
 
 def _not_found(ref: Ref, nearest: list) -> RefError:
     hint = f"; nearest: {', '.join(nearest)}" if nearest else ""
-    return RefError(f"{format_ref(ref)} opens nothing{hint}")
+    return RefError(f"{_shown(ref)} opens nothing{hint}")
 
 
 def _nearest_names(wanted: str, rows: list) -> list:
@@ -128,14 +156,14 @@ def _in_scope(con: sqlite3.Connection, ref: Ref, table: str, columns: str, live:
         return here[0], []
     if len(rows) == 1:
         lives = _spelled(rows[0]["workspace"])
-        moved = [f"moved: {format_ref(ref)} now lives in {lives}"] if ref.scope else []
+        moved = [f"moved: {_shown(ref)} now lives in {lives}"] if ref.scope else []
         return rows[0], moved
     if rows:
         held = ", ".join(format_ref(Ref(ref.kind, _spelled(r["workspace"]), r["name"])) for r in rows)
-        raise RefError(f"{format_ref(ref)} is held by several workspaces: {held}")
+        raise RefError(f"{_shown(ref)} is held by several workspaces: {held}")
     pool = _rows(con, f"SELECT workspace, name FROM {table} WHERE {live}")
     nearest = [Ref(ref.kind, _spelled(r["workspace"]), r["name"]) for r in _nearest_names(ref.id, pool)]
-    raise _not_found(ref, [format_ref(r) for r in nearest])
+    raise _not_found(ref, _printable(nearest))
 
 
 def _first_sentence(text: Any) -> str:
@@ -174,7 +202,7 @@ def _contract(con: sqlite3.Connection, ref: Ref) -> Resolution:
         raise _not_found(ref, [f"contract:{row['contract_id']}" for row in nearest])
     if len(live) > 1:
         held = ", ".join(f"contract:{row['contract_id'] or row['id']}" for row in live)
-        raise RefError(f"{format_ref(ref)} matches unrelated turns: {held}")
+        raise RefError(f"{_shown(ref)} matches unrelated turns: {held}")
     row = live[-1]
     contract_id = row["contract_id"] or str(row["id"])
     notes = [] if how == "contract_id" else [f"{ident} matched as the {how} of handoff {row['id']}"]
@@ -246,7 +274,7 @@ def _plan(con: sqlite3.Connection, ref: Ref) -> Resolution:
             rows = [row for row in rows if row["workspace"] == _workspace(con, scope)]
     if len(rows) != 1:
         held = ", ".join(f"plan:{row['id']}" for row in rows)
-        raise RefError(f"{format_ref(ref)} matches several plans: {held}") if rows else _not_found(ref, [])
+        raise RefError(f"{_shown(ref)} matches several plans: {held}") if rows else _not_found(ref, [])
     row = rows[0]
     brief = format_ref(Ref("brief", _spelled(row["workspace"]), row["brief"]))
     return Resolution(
@@ -269,13 +297,13 @@ def _task(con: sqlite3.Connection, ref: Ref) -> Resolution:
         brief, _, order = ref.id.rpartition("/")
         scope, _, brief = brief.rpartition("/")
         if not (brief and order.isdigit()):
-            raise RefError(f"{format_ref(ref)} is neither task:ID nor task:BRIEF/ORDER")
+            raise RefError(f"{_shown(ref)} is neither task:ID nor task:BRIEF/ORDER")
         rows = _rows(con, _TASK_SELECT + "b.name = ? AND t.order_num = ?", brief, int(order))
         if scope:
             rows = [row for row in rows if row["workspace"] == _workspace(con, scope)]
     if len(rows) != 1:
         held = ", ".join(f"task:{row['id']}" for row in rows)
-        raise RefError(f"{format_ref(ref)} matches several tasks: {held}") if rows else _not_found(ref, [])
+        raise RefError(f"{_shown(ref)} matches several tasks: {held}") if rows else _not_found(ref, [])
     row = rows[0]
     ids = {
         "order": str(row["order_num"]),
@@ -308,7 +336,7 @@ def _approval(con: sqlite3.Connection, ref: Ref) -> Resolution:
     rows = _rows(con, "SELECT * FROM approvals WHERE substr(id, 1, ?) = ?", len(wanted), wanted)
     if len(rows) != 1:
         held = ", ".join(f"approval:{row['id']}" for row in rows)
-        raise RefError(f"{format_ref(ref)} is a prefix of several approvals: {held}") if rows else _not_found(ref, [])
+        raise RefError(f"{_shown(ref)} is a prefix of several approvals: {held}") if rows else _not_found(ref, [])
     row = rows[0]
     try:
         row["payload_json"] = json.loads(row["payload_json"] or "null")
@@ -335,20 +363,20 @@ def _context(con: sqlite3.Connection, ref: Ref) -> Resolution:
     from gaia.store.project_context import project_sections, resolve_project, workspace_sections
 
     if not ref.scope:
-        raise RefError(f"{format_ref(ref)} needs a workspace: context:WORKSPACE/[PROJECT/]SECTION")
+        raise RefError(f"{_shown(ref)} needs a workspace: context:WORKSPACE/[PROJECT/]SECTION")
     workspace = _workspace(con, ref.scope)
     project_ref, _, section = ref.id.rpartition("/")
     project = resolve_project(con, project_ref, workspace) if project_ref else None
     if project_ref and project is None:
-        raise RefError(f"{format_ref(ref)}: no active project {project_ref!r}")
+        raise RefError(f"{_shown(ref)}: no active project {echo(project_ref)}")
     sections = project_sections(con, project) if project else workspace_sections(con, workspace)
     found = sections.get(section)
     if found is None:
         nearest = difflib.get_close_matches(section, sorted(sections), n=_NEAREST, cutoff=0.5)
         prefix = f"{project_ref}/" if project_ref else ""
-        raise _not_found(ref, [format_ref(Ref("context", ref.scope, prefix + name)) for name in nearest])
+        raise _not_found(ref, _printable([Ref("context", ref.scope, prefix + name) for name in nearest]))
     holder = project["workspace"] if project else workspace
-    notes = [f"moved: {format_ref(ref)} now lives in {_spelled(holder)}"] if _spelled(holder) != ref.scope else []
+    notes = [f"moved: {_shown(ref)} now lives in {_spelled(holder)}"] if _spelled(holder) != ref.scope else []
     ident = f"{project['name']}/{section}" if project else section
     verb = f"gaia context get-contract --section {section} --workspace {holder}"
     if project:

@@ -57,7 +57,10 @@ def cmd_open(args) -> int:
         found = resolve(ref)
         document = select_field(found.document, ref.field) if ref.field else found.document
     except RefError as exc:
-        print(f"gaia open: {exc}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"gaia open: {exc}", file=sys.stderr)
         return 1
     try:
         reference = format_ref(found.ref)
