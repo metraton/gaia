@@ -821,6 +821,20 @@ def _double_quoted_hazard(ch: str, nxt: str) -> Optional[str]:
     return None
 
 
+def _quoted_program_word(command: str) -> Optional[Tuple[str, int]]:
+    """The leading double-quoted program word bash reads byte for byte, backslashes included, and the index past it."""
+    start = len(command) - len(command.lstrip())
+    end = command.find('"', start + 1) if command[start:start + 1] == '"' else -1
+    word = command[start + 1:end] if end > 0 else ""
+    if "\\" not in word or word.endswith("\\") or any(ch in word for ch in "$`\n"):
+        return None
+    if any(word[i + 1:i + 2] in ('"', "\\") for i, ch in enumerate(word) if ch == "\\"):
+        return None
+    if command[end + 1:end + 2] not in ("", " ", "\t"):
+        return None
+    return word, end + 1
+
+
 def _find_composition_hazard(command: str) -> Optional[str]:
     """Name the first character of *command* that makes it more than one plain
     invocation, or None when every character is literal to bash.
@@ -914,7 +928,12 @@ def check(
             "approvable."
         )
 
-    hazard = _find_composition_hazard(command)
+    program = _quoted_program_word(command)
+    hazard = _find_composition_hazard(command[program[1]:] if program else command)
+    if hazard is None and program and (
+        not decomposed.stages or decomposed.stages[0].args[:1] != [program[0]]
+    ):
+        hazard = "backslash inside double quotes detected"
     if hazard is not None:
         return False, (
             f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator's "

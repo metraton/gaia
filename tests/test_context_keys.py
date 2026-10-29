@@ -133,51 +133,51 @@ AOS_TOPOLOGY = {
 
 CENTURY_TOPOLOGY = {
     "branchkinect_artifacts_repo": {
-        "local_path": "/home/jorge/ws/century-inc/branchkinect-artifacts",
+        "local_path": "/home/user/ws/century-inc/branchkinect-artifacts",
         "remote": "century-inc/branchkinect-artifacts",
         "structure": ["platform-iac/", "helm-charts/"],
     },
     "branchkinect_platform": {
-        "iac_repo_path": "/home/jorge/ws/century-inc/branchkinect-artifacts",
+        "iac_repo_path": "/home/user/ws/century-inc/branchkinect-artifacts",
         "github_slug": "century-inc/branchkinect-artifacts",
         "visibility": "private",
         "target_project": "branchkinect-artifacts (org-root 145362834906, billing 012858-140391-C81803)",
         "state_bucket_planned": "branchkinect-platform-tfstate",
     },
     "century_iac": {
-        "repo_path": "/home/jorge/ws/century-inc/branchkinect-century-iac",
+        "repo_path": "/home/user/ws/century-inc/branchkinect-century-iac",
         "tool": "terragrunt",
         "seed_project": "branchkinect-century-core",
     },
     "branchkinect_factory": {
-        "repo": "/home/jorge/ws/century-inc/branchkinect-factory",
+        "repo": "/home/user/ws/century-inc/branchkinect-factory",
         "factory_project": {"project_id": "branchkinect-factory-gcp", "project_number": "580381776210"},
     },
 }
 
 AAXIS_IDENTITY = {
     "rnd_2": {
-        "local_path": "/home/jorge/ws/aaxis/rnd/ai-project-guidance",
+        "local_path": "/home/user/ws/aaxis/rnd/ai-project-guidance",
         "remote_url": "git@bitbucket.org:aaxisdigital/ai-project-guidance.git",
         "platform": "bitbucket",
         "name": "rnd-2",
         "type": "monorepo",
     },
     "bildwiz_7": {
-        "local_path": "/home/jorge/ws/aaxis/bildwiz/newco-pitot",
+        "local_path": "/home/user/ws/aaxis/bildwiz/newco-pitot",
         "remote_url": "https://github.com/gpalagan-aaxis/newco-pitot",
         "name": "bildwiz-7",
         "language": "python",
     },
     "ai_ways_of_working": {
-        "local_path": "/home/jorge/ws/aaxis/rnd/ai-ways-of-working",
+        "local_path": "/home/user/ws/aaxis/rnd/ai-ways-of-working",
         "name": "ai-ways-of-working",
         "type": "application",
     },
     "aos": {
         "name": "AOS -- Accounting Operating System",
         "remote_url": "git@bitbucket.org:aaxisdigital/aos.git",
-        "local_path": "/home/jorge/ws/aaxis/aos/aos",
+        "local_path": "/home/user/ws/aaxis/aos/aos",
         "package_manager": "pnpm@10.15.1",
         "apps": {"@aos/web": "apps/web", "@aos/server": "apps/server"},
     },
@@ -185,17 +185,17 @@ AAXIS_IDENTITY = {
 
 CENTURY_IDENTITY = {
     "century_skill_hub": {
-        "local_path": "/home/jorge/ws/century-inc/century-skill-hub",
+        "local_path": "/home/user/ws/century-inc/century-skill-hub",
         "remote_url": "https://github.com/century-inc/century-skill-hub.git",
         "name": "century-skill-hub",
     },
     "branchkinect_iac": {
-        "local_path": "/home/jorge/ws/century-inc/branchkinect-iac",
+        "local_path": "/home/user/ws/century-inc/branchkinect-iac",
         "remote_url": "https://github.com/century-inc/branchkinect-iac.git",
         "missing_since": "2026-07-28T07:51:52Z",
     },
     "branchkinect_modelb_fixture": {
-        "local_path": "/home/jorge/ws/century-inc/branchkinect-modelb-fixture",
+        "local_path": "/home/user/ws/century-inc/branchkinect-modelb-fixture",
         "name": "branchkinect-modelb-fixture",
         "missing_since": "2026-07-26T19:58:00Z",
     },
@@ -203,7 +203,7 @@ CENTURY_IDENTITY = {
 
 AAXIS_TERRAFORM = {
     "newco_pitot_bootstrap": {
-        "path": "/home/jorge/ws/aaxis/bildwiz/newco-pitot/infra/terraform/00-bootstrap",
+        "path": "/home/user/ws/aaxis/bildwiz/newco-pitot/infra/terraform/00-bootstrap",
         "files": ["versions.tf", "apis.tf"],
         "applied": False,
         "note": "Declarative documentation of resources provisioned via gcloud in Step 1.",
@@ -313,7 +313,7 @@ def test_application_services_names_each_app_and_its_deployment_targets():
 
 
 def test_application_services_keeps_the_name_of_an_app_with_nothing_else_to_name():
-    payload = {"gaia_cli_entry_point": {"file": "/home/jorge/ws/me/gaia/bin/gaia"}}
+    payload = {"gaia_cli_entry_point": {"file": "/home/user/ws/me/gaia/bin/gaia"}}
     assert project_what("application_services", payload) == {"gaia_cli_entry_point": {}}
 
 
