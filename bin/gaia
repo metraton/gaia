@@ -265,6 +265,10 @@ READ -- changes nothing. The orchestrator runs these itself.
   signals
                  the curated changes behind a `~ changed:` line, each with the
                  command that opens it.
+  open
+                 `open KIND:SCOPE/ID#FIELD` opens anything Gaia stores by one
+                 reference (any id spelling); `--line` prints only its why line,
+                 `--json` the whole resolution.
   contract       view | list | validate | proposals list
                  `contract list --state DISPATCHED` names the turns that were
                  dispatched and never came back with a contract -- the way to

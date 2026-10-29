@@ -556,6 +556,8 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("worktree", "show"),
     ("worktree", "show-capture"),
     ("lint", "comments"),
+    # gaia.refs.resolve reads every kind through gaia.store.reader._ro_connect alone.
+    ("open",),
 })
 
 ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
@@ -1268,6 +1270,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("notifications", "snooze"): _flags("--for --until --json"),
     ("lint", "comments"): _flags("--repo --head --base --json"),
     ("now",): _flags("--json"),
+    ("open",): _flags("--line --json"),
     ("map",): _flags(""),
     ("paths",): _flags(""),
     ("plan", "change", "approve"): _flags("--workspace --json"),
