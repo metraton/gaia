@@ -53,7 +53,7 @@ def two_sessions():
 
 def _write_user_preference(session):
     _gaia(session, "memory", "add", "--name", SLUG, "--type", "user",
-          "--description", "Preference: probe.", "--body", "probe")
+          "--kind", "preference", "--description", "Preference: probe.", "--body", "probe")
 
 
 def test_another_sessions_write_is_one_line_once_and_never_the_writers(two_sessions):

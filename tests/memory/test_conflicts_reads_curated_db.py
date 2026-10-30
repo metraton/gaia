@@ -48,7 +48,7 @@ def _memory(capsys, *argv: str) -> dict:
 
 
 def _add_user_row(name: str, description: str, body: str) -> None:
-    _run("add", "--type=user", f"--name={name}",
+    _run("add", "--type=user", "--kind=preference", f"--name={name}",
          f"--description={description}", f"--body={body}")
 
 

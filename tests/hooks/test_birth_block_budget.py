@@ -26,14 +26,17 @@ LEFTOVERS = "3 leftover worktrees, 12 merged branches and 40 scratch entries. " 
 RESUME = ("Resume at the birth-block budget task; the next action is the red test run. " * 30)[:1990].strip()
 
 ROWS = [
-    (f"user_row_{i:02d}", f"Preferencia {i}: " if i % 3 else f"Hecho {i}: ",
-     f"2026-09-{28 - i:02d}T00:00:00Z")
-    for i in range(14)
+    (f"user_row_{i:02d}", "preference" if i % 3 else "fact", f"2026-09-01T10:{59 - i:02d}:00Z")
+    for i in range(40)
 ]
 
 
-def _body(i: int, prefix: str) -> str:
-    return prefix + (f"standing rule {i} the user relies on in every session. " * 12).strip()
+def _title(i: int) -> str:
+    return (f"standing rule {i} the user relies on in every session. " * 6).strip()
+
+
+def _line(name: str, title: str) -> str:
+    return f'  "{title}"  ref=memory:user/{name}'
 
 
 @pytest.fixture
@@ -50,14 +53,14 @@ def corpus(tmp_path, monkeypatch, bootstrapped_db_template):
     try:
         con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
                     (USER_SCOPE, USER_SCOPE))
-        bodies = {}
-        for i, (name, prefix, updated) in enumerate(ROWS):
-            body = _body(i, prefix)
-            bodies[name] = body
+        titles = {}
+        for i, (name, kind, updated) in enumerate(ROWS):
+            titles[name] = _title(i)
+            claim = "Preference" if kind == "preference" else "Fact"
             con.execute(
-                "INSERT INTO memory (workspace, name, type, description, body, class, audience, "
-                "updated_at) VALUES (?, ?, 'user', ?, ?, 'anchor', 'executor', ?)",
-                (USER_SCOPE, name, prefix.strip(), body, updated),
+                "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
+                "updated_at) VALUES (?, ?, 'user', ?, 'the why behind the rule', 'anchor', ?, 'user', ?)",
+                (USER_SCOPE, name, f"{claim}: {titles[name]}", kind, updated),
             )
         for ws, count in (("me", 9), ("client", 8), ("lab", 8)):
             con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)", (ws, ws))
@@ -77,7 +80,7 @@ def corpus(tmp_path, monkeypatch, bootstrapped_db_template):
         con.commit()
     finally:
         con.close()
-    assert sum(map(len, bodies.values())) > 9_000
+    assert sum(len(_line(name, title)) for name, title in titles.items()) > 4_000
     monkeypatch.chdir(root / "me" / "me-project-0")
 
     from gaia import session_snapshot
@@ -92,7 +95,7 @@ def corpus(tmp_path, monkeypatch, bootstrapped_db_template):
          "agent_state": "NEEDS_INPUT", "kind": None, "plan_task_id": None}
         for n in range(12)
     ], []))
-    return bodies
+    return titles
 
 
 @pytest.fixture
@@ -124,11 +127,11 @@ def _opencode(source: str) -> str:
     return OpenCodeAdapter().adapt_session_start(raw).additional_context
 
 
-def _assert_rows_whole_or_named(context: str, bodies: dict) -> list[str]:
+def _assert_rows_whole_or_named(context: str, titles: dict) -> list[str]:
     dropped = []
-    for name, body in bodies.items():
-        if body[:40] in context:
-            assert body in context, f"{name} was cut mid-text"
+    for name, title in titles.items():
+        if title[:40] in context:
+            assert _line(name, title) in context, f"{name} was cut mid-line"
         else:
             dropped.append(name)
     if dropped:
@@ -138,8 +141,8 @@ def _assert_rows_whole_or_named(context: str, bodies: dict) -> list[str]:
     return dropped
 
 
-BIRTH_ORDER = ("## Database upgrade", "## The user", "## User preferences",
-               "## Resume point", "## Environment", "## Workspaces I manage")
+BIRTH_ORDER = ("## Database upgrade", "## User memory", "## Resume point",
+               "## Environment", "## Workspaces I manage")
 
 
 @pytest.mark.parametrize("source", ["startup", "resume", "compact"])
@@ -175,7 +178,8 @@ def test_a_compaction_is_the_same_birth_as_a_start(corpus, maintenance):
     assert _without_source(compact) == _without_source(startup)
 
 
-def test_under_pressure_lists_become_counts_and_the_roster_keeps_its_pointers(corpus, maintenance):
+def test_under_pressure_lists_become_counts_and_the_roster_takes_the_richest_level_that_fits(corpus, maintenance):
+    """Replaces "the roster keeps its pointers": the two footer pointers moved to the orchestrator identity."""
     context = _claude("compact").context
 
     assert "Pending signatures: 12" in context
@@ -187,12 +191,12 @@ def test_under_pressure_lists_become_counts_and_the_roster_keeps_its_pointers(co
     projects = context[context.index("## Workspaces I manage"):]
     room = BIRTH_BUDGET - (len(context) - len(projects))
     assert projects == build_projects_section(room), "the richest index level that fits the room"
-    assert projects == build_projects_section(sys.maxsize), "the compact roster needs no degrading here"
-    assert projects.rstrip().endswith("context project <name>")
+    assert "context project <name>" not in projects and "gaia map" not in projects
     assert RESUME in context
 
 
-def test_a_kernel_fits_the_cap_on_both_hosts_with_no_row_cut(corpus):
+def test_a_kernel_fits_the_cap_on_both_hosts_and_carries_no_user_row(corpus):
+    """Replaces "a kernel fits the cap with no row cut": the user's rows left the kernel, so none can be cut."""
     from adapters.opencode import OpenCodeAdapter
     from modules.context.kernel_builder import KERNEL_HEADING, build_kernel_context
 
@@ -208,7 +212,8 @@ def test_a_kernel_fits_the_cap_on_both_hosts_with_no_row_cut(corpus):
         assert kernel.startswith(KERNEL_HEADING)
         assert len(kernel) < HOST_CAP, len(kernel)
         assert "".join(row["dispatch_prompt"].split()) in "".join(kernel.split())
-        _assert_rows_whole_or_named(kernel, corpus)
+        assert "memory:user/" not in kernel
+        assert not any(title[:40] in kernel for title in corpus.values())
 
 
 def test_only_the_rows_the_block_carried_count_an_injection(corpus, maintenance):
@@ -222,4 +227,4 @@ def test_only_the_rows_the_block_carried_count_an_injection(corpus, maintenance)
     finally:
         con.close()
     for name, count in counted.items():
-        assert (count > 0) == (corpus[name][:40] in context), name
+        assert (count > 0) == (_line(name, corpus[name]) in context), name

@@ -37,24 +37,35 @@ class TestBuildEnvironmentSection:
         monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
         monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host (Linux/x86_64)")
+        monkeypatch.setattr(session_manifest.platform, "node", lambda: "host")
+        monkeypatch.setattr(session_manifest.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(session_manifest.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(session_manifest.platform, "release", lambda: "6.6.1-generic")
         monkeypatch.setattr(session_manifest, "_scan_live_gaia_installation", lambda: None)
         monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
         monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
         monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: [])
-        monkeypatch.setattr(session_manifest, "_recurring_work_line", lambda _ws: "")
 
-    def test_a_folder_outside_every_workspace_says_so(self):
+    def test_the_machine_and_the_folder_are_values_not_prose(self):
+        """Replaces "a folder outside every workspace says so": the section is values only, no sentence about the workspace."""
         result = build_environment_section()
 
         assert result.startswith("## Environment")
-        assert f"- Folder: {Path.cwd()} (not inside a declared workspace)" in result.splitlines()
-        assert "host (Linux/x86_64)" in result
+        assert "machine=host os=Linux arch=x86_64 wsl=no" in result.splitlines()
+        assert f"cwd={Path.cwd()}" in result.splitlines()
+        assert "not inside a declared workspace" not in result
 
-    def test_names_the_workspace_when_there_is_one(self, monkeypatch):
+    def test_the_workspace_identity_keys_the_due_section_and_is_not_an_environment_value(self, monkeypatch):
+        """Replaces "names the workspace": the identity now selects whose reminders are due."""
+        seen = []
         monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: "my-workspace")
+        monkeypatch.setattr(session_manifest, "build_due_section", lambda workspace: seen.append(workspace) or "")
+        monkeypatch.setattr(session_manifest, "orchestrator_user_rows", lambda: [])
 
-        assert "(workspace my-workspace)" in build_environment_section()
+        assert "my-workspace" not in build_environment_section()
+        session_manifest.build_session_context()
+
+        assert seen == ["my-workspace"]
 
     def test_version_comes_from_the_live_scan_not_the_package_json(self, monkeypatch):
         monkeypatch.setattr(
@@ -66,11 +77,11 @@ class TestBuildEnvironmentSection:
 
         result = build_environment_section()
 
-        assert "- Gaia: 5.5.0-rc.1, npm channel" in result
+        assert "gaia=5.5.0-rc.1 channel=npm" in result.splitlines()
         assert "5.0.0-rc.3" not in result
 
     def test_version_falls_back_to_the_package_json_when_the_scan_finds_nothing(self):
-        assert "- Gaia: 5.3.0" in build_environment_section()
+        assert "gaia=5.3.0" in build_environment_section().splitlines()
 
     def test_version_carries_the_local_dev_build_count(self):
         """A `gaia dev` build ships the base semver; the count tells it from the release."""
@@ -78,7 +89,7 @@ class TestBuildEnvironmentSection:
 
         record_build("5.3.0", "fb27693c")
 
-        assert "- Gaia: 5.3.0 (dev.1, build fb27693c)" in build_environment_section()
+        assert "gaia=5.3.0 (dev.1, build fb27693c)" in build_environment_section()
 
     def test_version_degrades_to_bare_when_the_counter_raises(self, monkeypatch):
         """SessionStart must not be breakable by the dev-build counter."""
@@ -91,55 +102,64 @@ class TestBuildEnvironmentSection:
 
         result = build_environment_section()
 
-        assert "- Gaia: 5.3.0" in result
+        assert "gaia=5.3.0" in result.splitlines()
         assert "dev." not in result
 
-    def test_gaia_root_is_the_declared_plugin_root(self, monkeypatch, tmp_path):
+    def test_the_channel_is_plugin_when_the_plugin_root_is_declared(self, monkeypatch, tmp_path):
+        """Replaces "gaia root is the declared plugin root": the root is no longer a value, its channel and the cli path are."""
         monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
+        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: str(tmp_path / "plugin" / "bin" / "gaia"))
 
-        result = build_environment_section()
+        lines = build_environment_section().splitlines()
 
-        assert f"plugin channel, at {tmp_path / 'plugin'}" in result
+        assert "gaia=5.3.0 channel=plugin" in lines
+        assert f"cli={tmp_path / 'plugin' / 'bin' / 'gaia'}" in lines
 
-    def test_gaia_root_falls_back_to_the_own_package_not_the_cwd(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "pkg")
+    def test_no_cli_line_when_no_binary_resolves(self):
+        """Replaces "falls back to the own package": the fallback lives in _resolve_gaia_cli_path, pinned below; here its absence leaves no line."""
+        assert not [line for line in build_environment_section().splitlines() if line.startswith("cli=")]
 
-        assert f"at {tmp_path / 'pkg'}" in build_environment_section()
-
-    def test_tools_on_path_are_one_line_so_a_missing_tool_can_be_refused(self, monkeypatch):
+    def test_tools_on_path_are_one_values_line_so_a_missing_tool_can_be_refused(self, monkeypatch):
         monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: ["git", "acli"])
 
-        assert "- Tools on PATH: git, acli" in build_environment_section().splitlines()
+        assert "tools=git,acli" in build_environment_section().splitlines()
 
     def test_no_tools_line_when_none_resolves(self):
-        assert "Tools on PATH" not in build_environment_section()
+        assert not [line for line in build_environment_section().splitlines() if line.startswith("tools=")]
 
-    def test_recurring_work_is_one_line_only_when_something_is_pending(self, monkeypatch):
+    def test_pending_work_is_the_due_section_and_never_an_environment_line(self, monkeypatch):
+        """Replaces "recurring work is one line": due reminders and routines are their own ``## Due`` section."""
+        monkeypatch.setattr(session_manifest, "orchestrator_user_rows", lambda: [])
         assert "Recurring work" not in build_environment_section()
+        monkeypatch.setattr(session_manifest, "build_due_section", lambda _ws: "")
+        assert "## Due" not in session_manifest.build_session_context()
 
-        monkeypatch.setattr(
-            session_manifest, "_recurring_work_line", lambda _ws: "- Recurring work pending: 1 suspended"
-        )
+        monkeypatch.setattr(session_manifest, "build_due_section", lambda _ws: "## Due\noverdue=1\n'x'  id=1")
+        context = session_manifest.build_session_context()
 
-        assert "- Recurring work pending: 1 suspended" in build_environment_section().splitlines()
+        assert "## Due\noverdue=1" in context
+        assert "## Due" not in build_environment_section()
 
-    def test_names_the_local_zone_and_gaia_now_but_never_a_time(self, monkeypatch):
+    def test_names_the_local_zone_but_never_a_time(self, monkeypatch):
         monkeypatch.setenv("TZ", "America/Santiago")
 
         result = build_environment_section()
 
         zone_lines = [line for line in result.splitlines() if "America/Santiago" in line]
-        assert len(zone_lines) == 1, result
-        assert "gaia now" in zone_lines[0]
+        assert zone_lines == ["zone=America/Santiago"], result
         assert not re.search(r"\d{1,2}:\d{2}", zone_lines[0]), zone_lines[0]
         assert len(session_manifest.build_session_context()) <= session_manifest.BIRTH_BUDGET
 
-    def test_a_failing_recurring_line_does_not_drop_the_section(self, monkeypatch):
-        def _boom(_ws):
+    def test_a_failing_due_read_does_not_drop_the_environment(self, monkeypatch):
+        """Replaces "a failing recurring line does not drop the section"."""
+        import gaia.store.reader as reader
+
+        def _boom(**_kwargs):
             raise RuntimeError("simulated scheduler failure")
 
-        monkeypatch.setattr(session_manifest, "_recurring_work_line", _boom)
+        monkeypatch.setattr(reader, "list_unread_notifications", _boom)
 
+        assert session_manifest.build_due_section("ws") == ""
         assert build_environment_section().startswith("## Environment")
 
 
@@ -328,7 +348,7 @@ class TestResolveGaiaCliPathByInstallLayout:
 
         block = build_environment_section()
 
-        assert f"- gaia CLI: {bin_path}" in block.splitlines()
+        assert f"cli={bin_path}" in block.splitlines()
 
     def test_plugin_channel_publishes_the_plugin_beside_any_workspace_copy(self, layout, monkeypatch):
         """The guard accepts every genuine copy, so it cannot be what picks the running one."""
@@ -353,7 +373,7 @@ class TestResolveGaiaCliPathByInstallLayout:
 
         block = build_environment_section()
 
-        assert "- Gaia: 5.5.0" in block
+        assert "gaia=5.5.0 channel=plugin" in block.splitlines()
         assert "5.0.0-rc.7" not in block
 
     def test_npm_only_publishes_the_workspace_alias(self, layout):
@@ -375,7 +395,7 @@ class TestResolveGaiaCliPathByInstallLayout:
         block = build_environment_section()
 
         assert session_manifest._resolve_gaia_cli_path() == str(alias_bin)
-        assert "- Gaia: 5.6.0, npm channel" in block
+        assert "gaia=5.6.0 channel=npm" in block.splitlines()
         assert "5.0.0-rc.7" not in block
 
     def test_npm_outside_every_declared_workspace_never_publishes_a_local_copy(
@@ -458,9 +478,7 @@ class TestScanAvailableTools:
 class TestBuildSessionContext:
     @pytest.fixture(autouse=True)
     def _no_user_rows_or_schema_notice(self, monkeypatch):
-        import gaia.store.reader as reader
-
-        monkeypatch.setattr(reader, "user_anchor_rows", lambda *a, **kw: [])
+        monkeypatch.setattr(session_manifest, "orchestrator_user_rows", lambda: [])
         monkeypatch.setattr(session_manifest, "build_schema_direction_block", lambda: "")
 
     def test_alarms_lead_and_empty_sections_leave_no_gap(self, monkeypatch):

@@ -174,13 +174,14 @@ def test_line_is_capped_and_keeps_the_cli_path(env, monkeypatch):
     assert "tool00" in line and "tool79" not in line
 
 
-def test_kernel_places_the_line_after_user_rows_and_before_the_cli_index(env, tmp_path):
+def test_kernel_places_the_line_after_scope_memory_and_before_the_cli_index(env, tmp_path):
+    """Replaces "after user rows": the user's rows left the kernel, the scope memory heads the same slot."""
     con = sqlite3.connect(env)
-    con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('_gaia_user', '_gaia_user')")
+    con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('me', 'me')")
     con.execute(
-        "INSERT INTO memory (workspace, name, type, description, body, class, audience, updated_at) "
-        "VALUES ('_gaia_user', 'user_pref_x', 'user', 'd', 'a standard for every artifact', "
-        "'anchor', 'executor', '2026-09-01T00:00:00Z')"
+        "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, updated_at) "
+        "VALUES ('me', 'decision_me_standard', 'decision', 'Preference: a standard for every artifact', "
+        "'the why', 'anchor', 'preference', 'workspace', '2026-09-01T00:00:00Z')"
     )
     con.commit()
     con.close()

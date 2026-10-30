@@ -23,10 +23,10 @@ for _path in (str(_ROOT), str(_ROOT / "hooks"), str(_ROOT / "opencode")):
 
 SESSION = "ses-compacted"
 USER_SCOPE = "_gaia_user"
-PREFERENCE_BODY = "Always answer the user in Spanish."
+PREFERENCE_TITLE = "Always answer the user in Spanish."
 ROWS = {
-    "user_profile": ("Jorge runs DevOps for a consultancy.", "Jorge runs DevOps for a consultancy.", "any"),
-    "user_pref_language": ("Preference: the answer language.", PREFERENCE_BODY, "orchestrator"),
+    "user_profile": ("fact", "Fact: Jorge runs DevOps for a consultancy."),
+    "user_pref_language": ("preference", f"Preference: {PREFERENCE_TITLE}"),
 }
 
 
@@ -43,11 +43,11 @@ def db(tmp_path, monkeypatch, bootstrapped_db_template):
     try:
         con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
                     (USER_SCOPE, USER_SCOPE))
-        for name, (description, body, audience) in ROWS.items():
+        for name, (kind, description) in ROWS.items():
             con.execute(
-                "INSERT INTO memory (workspace, name, type, description, body, class, audience, "
-                "updated_at) VALUES (?, ?, 'user', ?, ?, 'anchor', ?, '2026-09-01T00:00:00Z')",
-                (USER_SCOPE, name, description, body, audience),
+                "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
+                "updated_at) VALUES (?, ?, 'user', ?, 'the why', 'anchor', ?, 'user', '2026-09-01T00:00:00Z')",
+                (USER_SCOPE, name, description, kind),
             )
         con.commit()
     finally:
@@ -66,12 +66,12 @@ def _injections(db: Path) -> dict[str, int]:
 
 
 def _expected_user_sections() -> str:
-    from gaia.store.reader import user_anchor_rows
+    from gaia.store.reader import user_memory_rows
     from modules.context.user_sections import render_user_sections
 
-    sections = render_user_sections(user_anchor_rows())
-    assert f"## User preferences\n\n{PREFERENCE_BODY}" in sections
-    assert "## The user\n\nJorge runs DevOps for a consultancy." in sections
+    sections = render_user_sections(user_memory_rows())
+    assert f'kind=preference\n  "{PREFERENCE_TITLE}"  ref=memory:user/user_pref_language' in sections
+    assert 'kind=fact\n  "Jorge runs DevOps for a consultancy."  ref=memory:user/user_profile' in sections
     return sections
 
 
