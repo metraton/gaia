@@ -86,7 +86,7 @@ Trigger this only when a search (or `gaia memory conflicts`) reveals an
 actual overlap -- it is not a step every save runs. Consolidation is
 **additive**: you merge forward and link, you do not erase.
 
-1. `gaia memory search "<topic>" --scope=memory` to find overlaps.
+1. `gaia memory search "<subject>" --scope=memory` to find overlaps.
 2. Read both bodies; identify the broader scope.
 3. Write the merged content as a new row with a broader slug.
 4. Link it to each row it absorbed:
@@ -142,10 +142,11 @@ rule: that is the curator's reading, taught in `SKILL.md`.
 
 ### Splitting overgrown bodies
 
-When a body exceeds ~100 lines, split into focused subtopics:
+When a body exceeds ~100 lines, split it into focused rows:
 
 1. Identify natural section boundaries.
-2. `gaia memory add` one row per subtopic with a tightly scoped slug.
+2. `gaia memory add` one row per section with a tightly scoped slug, each
+   with its own `--kind`.
 3. Link the new rows back to the original with `--kind=derived_from`.
 4. Replace the original body with a brief index, or
    `--kind=supersedes` it from a new umbrella note.
@@ -175,24 +176,27 @@ changed is not appended to: it is a new row that supersedes the old one.
 **A changed agreement -- a new row that supersedes:**
 
 ```bash
-gaia memory add --name=<new_slug> --type=<type> --project=<p> --body-file="$HOME/.gaia/scratch/<contract_id>.md"
+gaia memory add --name=<new_slug> --type=<type> --kind=<kind> --project=<p> --body-file="$HOME/.gaia/scratch/<contract_id>.md"
 gaia memory link <new_slug> <old_slug> --kind=supersedes
 ```
 
 Memory is append-only: nobody edits a row to record that an agreement
-changed. `gaia memory edit` is retired and exits naming this path.
+changed. `gaia memory edit` is retired and exits naming this path. The new
+row keeps the old one's owner and kind, or the link is refused; a rule that
+moved to a more specific owner is a new row there, which wins by
+precedence, and the old one stays where it was true.
 
 **Correct an error -- `add --replace` (T3):**
 
 ```bash
-gaia memory add --name=<slug> --type=<type> --project=<p> --body-file="$HOME/.gaia/scratch/<contract_id>.md" --replace
+gaia memory add --name=<slug> --type=<type> --kind=<kind> --project=<p> --body-file="$HOME/.gaia/scratch/<contract_id>.md" --replace
 ```
 
 The one in-place rewrite left, for a row that is wrong rather than
 outdated: without `--replace` an `add` over an existing name is refused
 with `name_exists`. It needs a signature for every caller because it
 changes what future reads see; the prior value stays in `memory_history`.
-It also corrects `--project`/`--project-ref` and `--audience`. Use
+It also corrects `--project`/`--project-ref`. Use
 `reclassify` to change `class`/`status`; use `link` to wire the graph.
 
 **Persist a meaningful milestone -- `checkpoint` (atomic, non-mutative):**

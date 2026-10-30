@@ -118,7 +118,6 @@ first use with mode 0700.
 |-----------------|----------------|----------------------------------------|
 | `GAIA_DATA_DIR` | `~/.gaia`      | Override the root data directory (ROOT-scoped: moves the database and every sibling directory) |
 | `GAIA_DB`       | `<root>/gaia.db` | Override the database file alone (FILE-scoped: leaves scratch, evidence and logs under the root) |
-| `GAIA_CLI_ALIASES` | unset (no aliases) | Declare your own wrappers as the CLI they wrap, e.g. `mywrapper=gh` (see below) |
 
 Precedence for the database file, highest first: **`GAIA_DB`**, then
 **`GAIA_DATA_DIR`**, then `~/.gaia/gaia.db`. `GAIA_DB` outranks `GAIA_DATA_DIR`
@@ -131,7 +130,7 @@ Setting both at *different* places prints a warning to stderr naming which one
 won; setting both at the same file is the established isolation idiom and stays
 silent. The ladder is pinned by `tests/paths/test_db_path_precedence.py`.
 
-### Declaring a wrapper as another CLI (`GAIA_CLI_ALIASES`)
+### Declaring a wrapper as another CLI (a tool row)
 
 The security hooks judge a command by what it does and where it lands, not by
 the binary that runs it.
@@ -147,17 +146,17 @@ wrapper you installed around a CLI (a launcher that pins an account, for
 example) runs the same subcommands under another name, so those gates do not
 recognize it on their own.
 
-`GAIA_CLI_ALIASES` is your per-user way to point them at the wrapper. Gaia
-ships no wrapper names; declare yours in the environment the host (Claude Code,
-OpenCode) is started from:
+A user tool row in memory points them at the wrapper. Gaia ships no wrapper
+names; declare yours once, with the wrapper on PATH:
 
 ```bash
-export GAIA_CLI_ALIASES="mywrapper=gh"          # one wrapper
-export GAIA_CLI_ALIASES="mywrapper=gh,kc=kubectl" # several, comma-separated
+gaia memory add --name=user_tool_mywrapper --type=user --kind=tool \
+  --binary=mywrapper --replaces=gh \
+  --description='mywrapper pr create ...' --body='what it is and why'
 ```
 
-Each pair is `wrapper=cli`, matched against the command's base name. With the
-variable unset there is no alias.
+The hooks read every live tool row's binary and `replaces` once per process,
+matched against the command's base name. With no tool row there is no alias.
 
 A declared wrapper is also read as the CLI it wraps, and the stricter verdict
 stands. It is blocked wherever that CLI is blocked and asks wherever that CLI

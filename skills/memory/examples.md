@@ -31,8 +31,8 @@ The user used to want a daily summary and now wants it weekly. The old row is
 not edited: a new row states what holds now, and the link retires the old one.
 
 ```bash
-gaia memory add --name=user_pref_weekly_summary --type=user \
-  --description="Preference: weekly summary, not daily." --body="..."
+gaia memory add --name=user_pref_weekly_summary --type=user --kind=preference \
+  --description="Reports: send the summary weekly, on Monday." --body="..."
 gaia memory link user_pref_weekly_summary user_pref_daily_summary --kind=supersedes
 # -> user_pref_weekly_summary supersedes user_pref_daily_summary
 gaia memory reclassify user_pref_daily_summary --class=log
@@ -41,20 +41,42 @@ gaia memory reclassify user_pref_daily_summary --class=log
 The daily row leaves every injection and both stay visible in
 `gaia memory show user_pref_weekly_summary --links` and `gaia memory story`.
 The link works even when the old row still sits under the workspace it was
-first written in.
+first written in, because both are user preferences; a link from a project
+preference to a user one is refused, since the project's row already wins
+where it applies.
+
+## A tool built for him
+
+The orchestrator has a specialist build `ghx`, a launcher that runs `gh` with
+the account pinned per command. The same turn it lands on PATH, its row is
+written on the user:
+
+```bash
+gaia memory add --name=user_tool_ghx --type=user --kind=tool \
+  --binary=ghx --replaces=gh \
+  --description="ghx -C <tree> pr create --repo <owner/repo> --head <branch>" \
+  --body="Pins the GitHub account per command instead of switching it..."
+```
+
+Every session and every specialist now sees
+`tool=ghx "ghx -C <tree> pr create ..." replaces=gh ref=memory:user/user_tool_ghx`
+in Environment, and the hooks judge `ghx repo delete` exactly as
+`gh repo delete`. Saved as a preference, it would have reached the
+orchestrator alone and the hooks would not know what it wraps.
 
 ## A rule that is a bug
 
 The user asks that every goal remind specialists to load `code-standards`.
 Would that hold for any user? Yes: every user's specialists should apply the
 standard without being told, so it is no difference of his. It becomes a
-`feedback` thread under `gaia_system` naming the defect -- specialists do not
-apply `code-standards` in their first version -- with its evidence, and no user
-row.
+`kind=defect` thread under `gaia_system` naming the defect -- specialists do
+not apply `code-standards` in their first version -- with its evidence, and no
+user row.
 
 If he wants the reminder until the fix lands, that bridge is a default he has
-agreed to bend: a user row, `Preference: ...`, whose body names the bug and
-says it retires when the bug closes. It is closed with the bug thread.
+agreed to bend: a user preference written with
+`--until memory:gaia/<defect slug>`, so it is injected only while that defect
+is open and leaves the day it closes.
 
 ## Atomic milestone
 
