@@ -28,7 +28,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
     monkeypatch.setenv("GAIA_DB", str(tmp_path / "gaia-data" / "gaia.db"))
-    for name in ("GAIA_CLI_ALIASES", "KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_HOST",
+    for name in ("KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_HOST",
                  "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME", "AWS_PROFILE", "TF_WORKSPACE"):
         monkeypatch.delenv(name, raising=False)
     from gaia.paths import ensure_layout

@@ -25,7 +25,6 @@ def _clear_caches():
 
 @pytest.fixture(autouse=True)
 def _no_declared_wrapper(monkeypatch):
-    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     _clear_caches()
     yield
     _clear_caches()

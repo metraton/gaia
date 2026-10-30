@@ -49,7 +49,6 @@ def world(tmp_path_factory):
     patch = pytest.MonkeyPatch()
     patch.setenv("GAIA_DATA_DIR", str(root / "data"))
     patch.setenv("GAIA_DB", str(root / "data" / "gaia.db"))
-    patch.delenv("GAIA_CLI_ALIASES", raising=False)
     from gaia.paths import ensure_layout, scratch_dir, worktrees_dir
 
     ensure_layout()
@@ -98,7 +97,6 @@ def world(tmp_path_factory):
 def _world_environment(world, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", world["DATA"])
     monkeypatch.setenv("GAIA_DB", os.path.join(world["DATA"], "gaia.db"))
-    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     monkeypatch.chdir(world["OUT"])
 
 

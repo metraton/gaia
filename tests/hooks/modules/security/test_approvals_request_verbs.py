@@ -70,7 +70,6 @@ ABBREVIATED = {"appr", "approv", "repl", "request-se", "request", "Approve"}
 def world(tmp_path, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("GAIA_DB", str(tmp_path / "data" / "gaia.db"))
-    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     from gaia.paths import ensure_layout
 
     ensure_layout()

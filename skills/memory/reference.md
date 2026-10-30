@@ -72,8 +72,8 @@ explicit, resolvable scope.
 - `--workspace=<ws>` alone (no project flag, no `--initiative`) places the
   row on owner workspace, with `project_ref` NULL and exit 0: a fact,
   preference or decision true of everything in that workspace. The write
-  still warns `no_owner`, because most rows written this way belong to a
-  project or group the caller did not name.
+  warns `workspace_owner`, naming the flags that place it on one project or
+  group instead, since every group and project in the workspace receives it.
 
 **Errors are structured and machine-parseable** so the orchestrator can run
 the command, read the failure, and *manage* it deterministically instead of
@@ -151,9 +151,9 @@ renders the kind list and the owner matrix from
 |--------|------|--------------------|
 | `description_long` | description over `bin/cli/memory.py::_DESCRIPTION_WARN_CHARS` | listings and the birth block show only the description |
 | `body_long` | body over `bin/cli/memory.py::_BODY_WARN_CHARS` | a body is injected whole or dropped |
-| `no_owner` | a non-user row with neither a project nor an initiative | the row lands on the workspace; asks whether a project or group owns it |
+| `workspace_owner` | a non-user row with neither a project nor an initiative | the workspace owns the row and every group and project in it receives it; names `--project` and `--initiative` for a narrower owner |
 | `rewrite_in_place` | `add --replace` with another body | a change is a new row plus `link <new> <old> --kind=supersedes` |
-| `preference_or_bug` | a `type=user` row whose description opens with `Preference` (or `Preferencia`) | asks whether it is his difference or a rule any user would want, which belongs to the harness |
+| `preference_or_bug` | a `type=user` row written with `--kind=preference` | asks whether it is his difference or a rule any user would want, which belongs to the harness |
 | `tool_without_kind` | a `type=user` row of another kind whose description names an executable the user authored | a program built for him is `--kind=tool --binary=<name>` |
 | `measurement_unstamped` | a description whose first word is `Measured` (or `Medido`; `gaia/store/memory_claims.py::claims_measurement`) written without both `--measured-at` and `--method` | a measured fact says when and how it was measured; the two columns are shown by `show` and `get-relevant --initiative` |
 | `supersedes_reversed` | `link --kind=supersedes` whose dst was born after its src | the arrow goes from the new row to the old |

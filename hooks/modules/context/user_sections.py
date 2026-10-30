@@ -92,7 +92,7 @@ def fit_user_sections(rows: list[dict], max_chars: int) -> tuple[str, list[dict]
     omitted: list[str] = []
     text = render_user_sections(kept)
     while kept and len(text) > max_chars:
-        omitted.insert(0, kept.pop()["name"])
+        omitted.append(kept.pop()["name"])
         text = render_user_sections(kept, omitted)
     return text, kept
 

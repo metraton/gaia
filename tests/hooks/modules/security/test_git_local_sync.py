@@ -26,7 +26,6 @@ def _git(repo: Path, *args: str) -> None:
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
-    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     for key, value in (("NAME", "t"), ("EMAIL", "t@example.invalid")):
         monkeypatch.setenv(f"GIT_AUTHOR_{key}", value)
         monkeypatch.setenv(f"GIT_COMMITTER_{key}", value)

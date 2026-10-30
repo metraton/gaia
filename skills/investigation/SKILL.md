@@ -12,7 +12,7 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 
 1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
    `project` and its declared `workflow`, the `can_read` menu),
-   `# How the user works`, and `# Project context`: the dispatch project's
+   `# Scope memory`, and `# Project context`: the dispatch project's
    `can_read` sections, whole when they fit, else one
    `gaia context get-contract` pointer per section, else a single count
    line. Do not re-derive facts it

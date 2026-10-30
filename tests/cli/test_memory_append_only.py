@@ -160,7 +160,7 @@ def test_a_failing_step_of_replace_leaves_the_row_unchanged(tmp_db, capsys):
     _seed(capsys)
     before = _run(capsys, "show", SLUG)[1]
 
-    rc, out = _add(capsys, "daily", "--replace", "--audience=executor",
+    rc, out = _add(capsys, "daily", "--replace",
                    "--project-ref=github.com/me/right", "--status=open")
 
     assert rc == 1, out

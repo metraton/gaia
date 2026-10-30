@@ -49,7 +49,7 @@ def gaia(tmp_path):
     run.db = data / "gaia.db"
     added = run(
         "memory", "add", "--name", "user_pref_new", "--type", "user", "--class", "anchor",
-        "--audience", "executor", "--description", "Preferencia: nueva.", "--body", "nueva",
+        "--kind", "preference", "--description", "Preferencia: nueva.", "--body", "nueva",
     )
     assert added.returncode == 0, added.stderr
     con = sqlite3.connect(str(run.db))

@@ -2,8 +2,9 @@
 
 Every value is read from the database: workspaces and projects from their
 tables, pending counts from the memory threads, dispatch counts from the
-contract rows. The section degrades in a fixed order under its budget and the
-two pointer lines always land.
+contract rows. The section degrades in a fixed order under its budget; the
+pointers to `gaia map` and `gaia context project` live in the orchestrator's
+identity, not here.
 """
 
 from __future__ import annotations
@@ -26,10 +27,6 @@ from modules.session import session_manifest  # noqa: E402
 from tests.conftest import copy_bootstrapped_db  # noqa: E402
 
 ROOMY = 100_000
-FOOTER = (
-    "A name that is not listed here: gaia map <word>\n"
-    "A project's card: gaia context project <name>"
-)
 
 
 def _stamp(days_ago: float) -> str:
@@ -109,11 +106,9 @@ def _section(max_chars: int = ROOMY) -> str:
 
 
 def _body(section: str) -> list:
-    """The section without its header and footer, as lines."""
+    """The section without its header, as lines."""
     assert section.startswith(session_manifest.PROJECTS_HEADER + "\n")
-    assert section.endswith(FOOTER)
-    inner = section[len(session_manifest.PROJECTS_HEADER) + 1:-len(FOOTER)]
-    return inner.rstrip("\n").splitlines()
+    return section[len(session_manifest.PROJECTS_HEADER) + 1:].splitlines()
 
 
 def _grouped_workspace(roster) -> None:
@@ -142,7 +137,7 @@ def test_the_section_renders_the_agreed_shape(roster):
         "  aaxis-io=[aaxis-io-iac]\n"
         "  aos=[aos(5), aos-iac, aos-keycloak]\n"
         "workspace=century-inc path=~/ws/century-inc groups=0 projects=2\n"
-        "  [factory(11), platform(2)]\n\n" + FOOTER
+        "  [factory(11), platform(2)]"
     )
 
 
@@ -338,10 +333,9 @@ def test_each_level_fits_the_room_it_was_chosen_for(wide):
         assert len(smaller) < len(larger)
 
 
-def test_the_pointer_lines_land_whatever_the_room(wide):
+def test_the_header_and_total_land_whatever_the_room(wide):
     for room in (ROOMY, 1_000, 200, 50, 0):
         section = _section(room)
-        assert section.endswith(FOOTER), room
         assert section.startswith("## Workspaces I manage\nTotal: 3 workspaces"), room
 
 
@@ -353,17 +347,15 @@ def test_a_database_with_no_workspace_and_no_project_has_no_section(roster):
     assert _section() == ""
 
 
-def test_the_pointer_names_the_resolved_cli_path(roster, monkeypatch):
+def test_the_section_carries_no_pointer_lines(roster, monkeypatch):
     roster.workspace("aaxis")
     roster.project("aaxis", "one")
     monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: "/abs/bin/gaia")
 
     section = _section()
 
-    assert section.endswith(
-        "A name that is not listed here: /abs/bin/gaia map <word>\n"
-        "A project's card: /abs/bin/gaia context project <name>"
-    )
+    assert section.endswith("  [one]")
+    assert "map <word>" not in section and "context project" not in section
 
 
 def test_the_dispatch_reader_is_one_query_over_the_window(roster, monkeypatch):

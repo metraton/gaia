@@ -265,7 +265,7 @@ def test_an_index_over_the_cap_drops_whole_rows_stalest_first_and_names_them_in_
     assert len(block) <= 9_500
     assert left_out, user_part
     names = left_out.group(1).split(", ")
-    assert len(names) >= 1 and set(names) == set(stalest_first[:len(names)])
+    assert len(names) >= 1 and names == stalest_first[:len(names)]
     assert omitted_line(names) in user_part
     assert _line("user_jorge", FACT_TITLE) in user_part
     for name in names:

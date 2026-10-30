@@ -46,8 +46,9 @@ See `agent-protocol` for when in the turn's cycle this first write happens.
 The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
 role/surface, `project` with its declared `workflow` line when the project
 declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
-acceptance gates), `# How the user works` (only the user's rows marked
-`executor`), `# Standing notes` (the project's live anchors, one line each, when
+acceptance gates), `# Scope memory` (an index of the preferences, facts and
+lessons the dispatch's workspace, group and project hold, each line a title and
+its `ref=memory:...`; never the user's rows), `# Standing notes` (the project's live anchors, one line each, when
 it has any), `# Environment` (one line: OS, the gaia CLI path, the tools on
 PATH including the user's own executables), `# Project context` and
 `# Your CLI`. `# Project context` carries the dispatch project's `can_read`

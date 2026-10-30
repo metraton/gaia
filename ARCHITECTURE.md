@@ -38,7 +38,7 @@ pre_tool_use.py  (PreToolUse hook)
     v
 subagent_start.py  (SubagentStart hook)
     |  Claim the born row and inject the dispatch kernel:
-    |  # Your Contract, # How the user works, # Standing notes, # Environment, # Your CLI
+    |  # Your Contract, # Scope memory, # Project context, # Standing notes, # Environment, # Your CLI
     v
 Agent executes
     |  Pulls project context and memory on demand (gaia context, gaia memory),
@@ -160,9 +160,9 @@ which `gaia --help` can rebuild, comes last):
 # Your Contract       identity, goal, role and surface, the dispatch project and the
                       workflow it declared, can_read / can_write section scope, and the
                       acceptance gates when the turn is bound to a plan task
-# How the user works  the user's standing rows, bodies inline, only those whose
-                      audience is executor (any and orchestrator stay with the
-                      orchestrator)
+# Scope memory       an index of the preferences, facts and lessons the dispatch's
+                      workspace, group and project hold, each line scope= and ref=;
+                      never the user's rows
 # Standing notes      the dispatch project's live anchors, one line each, freshest
                       first, under PROJECT_NOTES_BUDGET; absent when the project has none
 # Environment         one capped line (ENVIRONMENT_LINE_MAX): OS (WSL named), the gaia
