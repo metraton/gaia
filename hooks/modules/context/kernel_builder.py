@@ -22,11 +22,13 @@ row:
     declaration pattern as ``routing:``) and rendered verbatim when present,
     additive to the base lines. Declaring is NOT permitting: tiers and
     guards still gate every execution.
-  * ``# How the user works`` -- the user's standing rows the session birth
-    block carries that are addressed to ``executor``, in the same sections
-    (``gaia.store.reader.user_anchor_rows`` rendered by
-    ``modules.context.user_sections``), BODY inline, not slugs: a slug cost a
-    further ``gaia memory show`` call the agent in practice never made.
+  * ``# Scope memory: <ws> > [<group> >] <project>`` -- an index (title and
+    ``ref=memory:...`` coordinate, grouped by kind, each line marked
+    ``scope=workspace|group|project``) of the live preferences, facts and
+    lessons the dispatch's workspace, group and project hold
+    (``gaia.store.reader.scope_memory_rows`` rendered by
+    ``modules.context.user_sections``). The user's own rows never reach a
+    kernel: the preferences that touch this output travel in the goal.
     Omitted entirely when no row is selected -- never an empty heading.
   * ``# Environment``    -- the OS, the gaia CLI path and the tools on PATH, one capped line.
 
@@ -74,7 +76,7 @@ logger = logging.getLogger(__name__)
 
 KERNEL_HEADING = "# Your Contract"
 CLI_HEADING = "# Your CLI"
-MEMORY_HEADING = "# How the user works"
+MEMORY_HEADING = "# Scope memory"
 SKILLS_HEADING = "# Your skills"
 PROJECT_NOTES_HEADING = "# Standing notes"
 ENVIRONMENT_HEADING = "# Environment"
@@ -444,7 +446,7 @@ def _record_kernel_telemetry(
     rows: list, *, db_path=None,
 ) -> None:
     """Best-effort kernel-axis bump for the ``(workspace, name)`` rows rendered
-    into the kernel's "How the user works" block. Reuses the same store-layer helper the
+    into the kernel's "Scope memory" block. Reuses the same store-layer helper the
     get-relevant surfaces use (``gaia.store.writer.record_memory_access``);
     never a second implementation. Bumps the ``"kernel"`` axis
     (``kernel_count``/``last_kernel_at``), NOT ``"injection"``: this block
@@ -474,30 +476,59 @@ def _record_kernel_telemetry(
             )
 
 
-def _executor_rows(db_path=None) -> list:
-    from gaia.store.reader import user_anchor_rows
+def _scope_chain(row: Mapping[str, Any], *, db_path=None) -> tuple:
+    """``(label, workspace, group_key, project_key)`` of the dispatch's scope chain; the label reads ``ws > group > project``."""
+    workspace = str(row.get("workspace") or "") or None
+    dispatch_project = str(row.get("dispatch_project") or "")
+    group_name = project_name = project_key = None
+    if dispatch_project and dispatch_project != "none":
+        try:
+            from ..core.paths import ensure_package_root_importable
 
-    return [
-        r for r in user_anchor_rows(db_path, audience="executor")
-        if (r.get("body") or "").strip()
-    ]
+            ensure_package_root_importable()
+            from gaia.store.project_context import resolve_project
+            from tools.context.context_provider import dispatch_project_key
+
+            con = _connect(db_path)
+            try:
+                project = resolve_project(con, dispatch_project, workspace)
+                if project:
+                    project_name, workspace = project["name"], project["workspace"]
+                    found = con.execute(
+                        "SELECT group_name FROM projects WHERE workspace = ? AND name = ?",
+                        (workspace, project_name),
+                    ).fetchone()
+                    group_name = found["group_name"] if found else None
+            finally:
+                con.close()
+            project_key = dispatch_project_key(workspace or "", dispatch_project, db_path=db_path)
+        except Exception:
+            logger.debug("scope chain read failed (non-fatal)", exc_info=True)
+    from gaia.store.writer import normalize_initiative
+
+    group_key = normalize_initiative(group_name) if group_name else None
+    label = " > ".join(p for p in (workspace, group_name, project_name or (dispatch_project or None)) if p)
+    return label, workspace, group_key, project_key
 
 
-def build_memory_block(*, db_path=None, max_chars: Optional[int] = None) -> str:
-    """Render ``# How the user works`` from the executor-addressed user rows, within ``max_chars`` when given, or ""."""
-    from .user_sections import fit_user_sections, render_user_sections
+def build_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars: Optional[int] = None) -> str:
+    """Render ``# Scope memory: <chain>`` -- the preferences, facts and lessons of the dispatch's workspace, group and project -- within ``max_chars`` when given, or ""."""
+    from gaia.store.reader import scope_memory_rows
 
-    rows = _executor_rows(db_path)
-    if max_chars is None:
-        sections = render_user_sections(rows)
-    else:
-        sections, rows = fit_user_sections(rows, max_chars - len(MEMORY_HEADING) - 2)
-    if not sections:
+    from .user_sections import render_scope_section
+
+    label, workspace, group_key, project_key = _scope_chain(row or {}, db_path=db_path)
+    rows = scope_memory_rows(workspace, group_key, project_key, db_path)
+    section = render_scope_section(label, rows)
+    while rows and max_chars is not None and len(section) > max_chars:
+        rows.pop()
+        section = render_scope_section(label, rows)
+    if not section:
         return ""
     _record_kernel_telemetry(
-        [(row["workspace"], row["name"]) for row in rows], db_path=db_path,
+        [(r["workspace"], r["name"]) for r in rows], db_path=db_path,
     )
-    return f"{MEMORY_HEADING}\n\n{sections}"
+    return section
 
 
 def _project_note_line(name: str, description: str) -> str:
@@ -688,10 +719,8 @@ def build_kernel_context(
     kernel = build_dispatch_kernel(row, db_path=db_path)
     if not kernel:
         return None
-    from .user_sections import render_user_sections
-
     workspace = str(row.get("workspace") or "")
-    memory_size = len(MEMORY_HEADING) + 2 + len(render_user_sections(_executor_rows(db_path)))
+    memory_size = len(build_memory_block(row, db_path=db_path))
     notes = build_project_notes_block(row, db_path=db_path)
     environment = build_environment_block()
     cli = build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace)
@@ -715,5 +744,5 @@ def build_kernel_context(
     if over() and notes:
         notes = build_project_notes_block(row, db_path=db_path, max_chars=0)
     room = KERNEL_BUDGET - len(_joined(kernel, context, notes, environment, cli, skills)) - 2
-    memory = build_memory_block(db_path=db_path, max_chars=room)
+    memory = build_memory_block(row, db_path=db_path, max_chars=room)
     return _joined(kernel, memory, context, notes, environment, cli, skills)

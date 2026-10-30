@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from ..context.user_sections import CONTEXT_BUDGET, PREFERENCES_HEADER, USER_HEADER
+from ..context.user_sections import CONTEXT_BUDGET, USER_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -305,25 +305,6 @@ def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
     return authored + found + packages
 
 
-def _machine_label() -> str:
-    """Return a short machine label like ``hostname (Linux/x86_64)``.
-
-    platform calls return "" rather than raise on unsupported OSes; we just
-    glue the parts we have. Always returns a non-empty string -- worst case
-    it's only the hostname or only the OS.
-    """
-    try:
-        host = platform.node() or ""
-        system = platform.system() or ""
-        machine = platform.machine() or ""
-        os_part = "/".join(p for p in (system, machine) if p)
-        if host and os_part:
-            return f"{host} ({os_part})"
-        return host or os_part or "unknown"
-    except Exception:
-        return "unknown"
-
-
 ENVIRONMENT_LINE_MAX = 400
 
 
@@ -366,115 +347,97 @@ def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
 
 PROJECTS_HEADER = "## Workspaces I manage"
 ENVIRONMENT_HEADER = "## Environment"
+DUE_HEADER = "## Due"
 RESUME_HEADER = "## Resume point"
-BIRTH_SECTION_HEADERS = (USER_HEADER, PREFERENCES_HEADER, ENVIRONMENT_HEADER, PROJECTS_HEADER)
+BIRTH_SECTION_HEADERS = (USER_HEADER, DUE_HEADER, ENVIRONMENT_HEADER, PROJECTS_HEADER)
 BIRTH_BUDGET = CONTEXT_BUDGET
 
 
-def _installation_label() -> Optional[str]:
-    """``<version>, <channel> channel, at <root>`` for the Gaia this session runs.
+def _due_item_line(row: dict, now) -> str:
+    """One due reminder or routine as values: its title, when, how late, its ref and its id."""
+    from gaia import notifications_time
 
-    The version comes from a live in-process re-scan of the declared install
-    (never the gaia_installations table, which only refreshes on `gaia
-    scan`), falling back to the package.json ancestor walk, which is the only
-    source under the plugin channel. A declared CLAUDE_PLUGIN_ROOT means the
-    plugin channel; otherwise the scan's install mode names it.
-    """
+    parts = [f"'{row['headline']}'"]
+    due_at = notifications_time.from_iso(row["due_at"]) if row.get("due_at") else None
+    if row.get("recurrence"):
+        parts.append(f"repeat='{row['recurrence']}'")
+        if due_at:
+            parts.append(f"missed={due_at.strftime('%Y-%m-%dT%H:%MZ')}")
+    elif due_at:
+        parts.append(f"due={due_at.strftime('%Y-%m-%dT%H:%MZ')}")
+        late = (now - due_at).days
+        if late > 0:
+            parts.append(f"late={late}d")
+    if row.get("pointer_kind") and row.get("pointer_ref"):
+        scope = f"{row['pointer_workspace']}/" if row.get("pointer_workspace") else ""
+        parts.append(f"ref={row['pointer_kind']}:{scope}{row['pointer_ref']}")
+    parts.append(f"id={row['id']}")
+    return "  ".join(parts)
+
+
+def build_due_section(workspace: Optional[str]) -> str:
+    """Render ``## Due``: the reminders and routines due now, one value line each, or "" when none is."""
+    try:
+        from datetime import datetime, timezone
+
+        from gaia.store.reader import list_unread_notifications
+
+        due = [row for row in list_unread_notifications(workspace=workspace) if row["kind"] != "report"]
+        if not due:
+            return ""
+        now = datetime.now(timezone.utc)
+        return "\n".join([DUE_HEADER, f"overdue={len(due)}", *(_due_item_line(row, now) for row in due)])
+    except Exception as exc:
+        logger.debug("build_due_section failed (non-fatal): %s", exc)
+        return ""
+
+
+def _installation_values() -> list[str]:
+    """``gaia=<version> channel=<channel>`` as values: a live re-scan of the declared install, else the package.json walk; CLAUDE_PLUGIN_ROOT means the plugin channel."""
     installation = _scan_live_gaia_installation() or {}
     version = installation.get("version") or _read_gaia_version()
     if not version:
-        return None
-    if _on_plugin_channel():
-        channel = "plugin"
-    else:
-        channel = installation.get("install_mode")
-    parts = [_describe_gaia_version(version)]
+        return []
+    channel = "plugin" if _on_plugin_channel() else installation.get("install_mode")
+    values = [f"gaia={_describe_gaia_version(version)}"]
     if channel and channel != "unknown":
-        parts.append(f"{channel} channel")
-    parts.append(f"at {_plugin_root()}")
-    return ", ".join(parts)
-
-
-def _recurring_work_line(workspace: Optional[str]) -> str:
-    """One line naming the recurring work that needs the user, or "" when nothing does.
-
-    Each unread report and each due reminder or routine is named, the latter with
-    its pointer so the session can act on it; the detail lives in
-    `gaia notifications list`. Reading evaluates due times against now and
-    writes nothing.
-    """
-    from gaia import notifications_time
-    from gaia.store.reader import list_unread_notifications
-
-    items: list[str] = []
-    verbs: list[str] = []
-    due = list_unread_notifications(workspace=workspace)
-    reports = [row for row in due if row["kind"] == "report"]
-    if reports:
-        items.append(f"{len(reports)} unread task report(s)")
-        verbs.append("`gaia notifications list --unread`")
-    reminders = [row for row in due if row["kind"] != "report"]
-    if reminders:
-        items.extend(f"{notifications_time.summary(row)} is due" for row in reminders)
-        verbs.append("`gaia notifications ack|snooze|cancel <id>`")
-    if not items:
-        return ""
-    return f"- Recurring work pending: {', '.join(items)} — {', '.join(verbs)}"
-
-
-MAP_POINTER = "- Live state, habits and which capability serves an intent: `gaia map`"
-
-
-def _local_zone_line() -> str:
-    """The zone only: a time in the birth block goes stale within one long turn."""
-    from gaia import notifications_time
-
-    zone = notifications_time.zone_name() or "unnamed (the offset is in `gaia now`)"
-    return f"- Local zone: {zone}; read the current time with `gaia now`"
+        values.append(f"channel={channel}")
+    return values
 
 
 def build_environment_section(session_id: str = "") -> str:
-    """Render the Environment section: where this session stands, or "" on failure.
+    """Render ``## Environment`` as values only -- machine, Gaia, CLI, cwd, session, zone, data, tools -- or "" on failure.
 
     ``session_id`` is the host's id for the session, the one
     `gaia session resume-point set --session-id` writes under and the
-    compaction snapshot reads; the block publishes it at birth and after every
-    compaction, so the orchestrator can name its own session on any host.
+    compaction snapshot reads. What each value means lives in the
+    orchestrator identity, not here.
     """
     try:
+        from gaia import notifications_time
         from gaia.paths import data_dir, db_path
-        from gaia.project import current
 
-        workspace = _read_workspace_identity()
-        folder = str(Path.cwd())
-        lines = [ENVIRONMENT_HEADER, f"- Machine: {_machine_label()}"]
-        installation = _installation_label()
+        release = platform.release().lower()
+        wsl = "yes" if "microsoft" in release or "wsl" in release else "no"
+        lines = [
+            ENVIRONMENT_HEADER,
+            f"machine={platform.node() or 'unknown'} os={platform.system() or 'unknown'} "
+            f"arch={platform.machine() or 'unknown'} wsl={wsl}",
+        ]
+        installation = " ".join(_installation_values())
         if installation:
-            lines.append(f"- Gaia: {installation}")
-        lines.append(f"- Folder: {folder} (workspace {workspace})" if workspace
-                     else f"- Folder: {folder} (not inside a declared workspace)")
-        if session_id:
-            lines.append(f"- Session id: {session_id}")
-        lines.append(_local_zone_line())
-        lines.append(MAP_POINTER)
-        # The orchestrator invokes `gaia` by this absolute path: the trust
-        # guard rejects the bare token.
+            lines.append(installation)
         cli_path = _resolve_gaia_cli_path()
         if cli_path:
-            lines.append(f"- gaia CLI: {cli_path}")
-        lines.append(f"- Data home: {data_dir()} (database {db_path()})")
+            lines.append(f"cli={cli_path}")
+        lines.append(f"cwd={Path.cwd()}")
+        if session_id:
+            lines.append(f"session={session_id}")
+        lines.append(f"zone={notifications_time.zone_name() or 'unnamed'}")
+        lines.append(f"data={data_dir()} db={db_path()}")
         tools = _scan_available_tools()
         if tools:
-            lines.append(f"- Tools on PATH: {', '.join(tools)}")
-        # Reminders set outside every workspace are filed under current()'s fallback.
-        notification_scope = workspace or current()
-        try:
-            recurring = _recurring_work_line(notification_scope)
-        except Exception as exc:
-            logger.debug("recurring work line failed (non-fatal): %s", exc)
-            recurring = ""
-        if recurring:
-            lines.append(recurring)
+            lines.append(f"tools={','.join(tools)}")
         return "\n".join(lines)
     except Exception as exc:
         logger.debug("build_environment_section failed (non-fatal): %s", exc)
@@ -558,7 +521,7 @@ def _read_roster() -> list[dict]:
     roster = []
     for ws in workspaces:
         held = members.get(ws["name"], [])
-        if ws["root_path"] or held:
+        if held:
             root = ws["root_path"] or _workspace_root([p["path"] for p in held if p["path"]])
             roster.append({"name": ws["name"], "path": _home_relative(root) if root else "",
                            "projects": held})
@@ -577,7 +540,7 @@ def _count_dispatches(roster: list[dict]) -> None:
     for display, turns in dispatch_counts_by_project(_DISPATCH_WINDOW_DAYS).items():
         name, _, rest = display.partition(" (")
         target = by_path.get(os.path.normpath(rest[:-1])) if rest.endswith(")") else None
-        named = by_name.get(name.lower(), [])
+        named = by_name.get(name.lower().rstrip("."), [])
         if target is None and len(named) == 1:
             target = named[0]
         if target is not None:
@@ -613,9 +576,6 @@ def projects_renderer():
         )
         for p in every:
             p["pending"] = pending.get(normalize_initiative(_display_name(p)), 0)
-        cli = _resolve_gaia_cli_path() or "gaia"
-        footer = (f"A name that is not listed here: {cli} map <word>\n"
-                  f"A project's card: {cli} context project <name>")
 
         def busiest_first(members: list[dict]) -> list[dict]:
             return sorted(members, key=lambda p: (-p["dispatches"], -p["pending"], _display_name(p)))
@@ -657,7 +617,7 @@ def projects_renderer():
 
         def render(level: str, cap: int = 0) -> str:
             body = [line for ws in roster for line in (workspace_line(ws), *lines_of(ws, level, cap))]
-            return "\n\n".join(["\n".join([PROJECTS_HEADER, total, *body]), footer])
+            return "\n".join([PROJECTS_HEADER, total, *body])
 
         levels = [render("projects", _FULL_GROUP_CAP), render("projects", _NARROW_GROUP_CAP),
                   render("projects"), render("counts"), render("workspaces")]
@@ -713,10 +673,10 @@ def build_schema_direction_block() -> str:
 # ---------------------------------------------------------------------------
 
 def orchestrator_user_rows() -> list[dict]:
-    """The user rows the orchestrator's context renders: every standing user row with a body."""
-    from gaia.store.reader import user_anchor_rows
+    """The user rows the orchestrator's context indexes: every live fact and preference of the user."""
+    from gaia.store.reader import user_memory_rows
 
-    return [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
+    return user_memory_rows()
 
 
 def record_user_rows_injected(rows: list[dict]) -> None:
@@ -763,26 +723,29 @@ def build_session_context(
 
         from ..context.user_sections import fit_user_sections, render_user_sections
 
+        from gaia.project import current
+
         rows = orchestrator_user_rows()
         heading = f"# Gaia session context (source: {source})"
         prefix = [heading, *(a for a in (*alarms, build_schema_direction_block()) if a)]
         environment = build_environment_section(session_id)
+        due = build_due_section(_read_workspace_identity() or current())
         snapshot = _snapshot(session_id)
         resume = render_resume_section(snapshot) if snapshot else ""
         user, kept = render_user_sections(rows), rows
         roster = projects_renderer()
 
-        if len(_joined(*prefix, *notices, user, resume, environment, roster(sys.maxsize))) > BIRTH_BUDGET:
+        if len(_joined(*prefix, *notices, user, due, resume, environment, roster(sys.maxsize))) > BIRTH_BUDGET:
             notices = ()
         floor = roster(0)
-        if snapshot and len(_joined(*prefix, user, resume, environment, floor)) > BIRTH_BUDGET:
+        if snapshot and len(_joined(*prefix, user, due, resume, environment, floor)) > BIRTH_BUDGET:
             resume = render_resume_section(snapshot, counts_only=True)
-        head = _joined(*prefix, *notices, user, resume, environment)
+        head = _joined(*prefix, *notices, user, due, resume, environment)
         projects = roster(BIRTH_BUDGET - len(head) - 2)
-        if len(_joined(*prefix, user, resume, environment, floor)) > BIRTH_BUDGET:
-            room = BIRTH_BUDGET - len(_joined(*prefix, resume, environment, floor)) - 2
+        if len(_joined(*prefix, user, due, resume, environment, floor)) > BIRTH_BUDGET:
+            room = BIRTH_BUDGET - len(_joined(*prefix, due, resume, environment, floor)) - 2
             user, kept = fit_user_sections(rows, room)
-            head = _joined(*prefix, user, resume, environment)
+            head = _joined(*prefix, user, due, resume, environment)
             projects = roster(BIRTH_BUDGET - len(head) - 2)
         text = _joined(head, projects)
         if text == heading:

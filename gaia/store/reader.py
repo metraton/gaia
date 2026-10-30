@@ -524,6 +524,81 @@ def user_anchor_rows(
         con.close()
 
 
+_USER_MEMORY = (
+    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.until, m.updated_at "
+    "FROM memory m "
+    "WHERE m.owner_level = 'user' AND m.kind IN ('fact', 'preference') "
+    "  AND m.class = 'anchor' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+)
+
+
+def user_memory_rows(db_path: Path | None = None) -> list[dict]:
+    """The user's live facts and preferences, freshest first, a preference only while its ``until`` holds."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        from gaia.store.memory_placement import until_holds
+
+        return [dict(r) for r in con.execute(_USER_MEMORY) if until_holds(r["until"], con)]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+_SCOPE_MEMORY = (
+    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.until, m.updated_at, "
+    "       m.owner_level, m.initiative, m.project_ref "
+    "FROM memory m "
+    "WHERE m.owner_level IN ('workspace', 'group', 'project') "
+    "  AND m.kind IN ('preference', 'fact', 'lesson') "
+    "  AND m.class = 'anchor' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+)
+
+
+def scope_memory_rows(
+    workspace: str | None,
+    group_key: str | None,
+    project_key: str | None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """The live preferences, facts and lessons of a scope chain, each row stamped ``scope`` with the owner that holds it.
+
+    A workspace row belongs by its ``workspace``; a group or project row by
+    ``canonical_project_key`` of its ``initiative`` and ``project_ref``. A
+    preference counts only while its ``until`` holds. ``[]`` on any error.
+    """
+    try:
+        from gaia.store.memory_placement import until_holds
+        from gaia.store.writer import canonical_project_key
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        rows = []
+        for r in con.execute(_SCOPE_MEMORY):
+            key = canonical_project_key(r["project_ref"], r["initiative"])
+            level = r["owner_level"]
+            held = (
+                (level == "workspace" and workspace and r["workspace"] == workspace)
+                or (level == "group" and group_key and key == group_key)
+                or (level == "project" and project_key and key == project_key)
+            )
+            if held and until_holds(r["until"], con):
+                rows.append({**dict(r), "scope": level})
+        return rows
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 _LIVE_OWNED_ROWS = (
     "SELECT m.workspace, m.name, m.type, m.class, m.description, m.body, "
     "       m.initiative, m.updated_at "
