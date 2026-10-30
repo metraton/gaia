@@ -1248,7 +1248,8 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("history",): _flags("--agent -a --limit -n --workspace", "--today -t --blocked -b --json"),
     ("memory", "add"): _flags(
         "--name --type --body --body-file --description --project --project-ref "
-        "--initiative --class --status --audience --measured-at --method --workspace", "--json"),
+        "--initiative --class --status --audience --measured-at --method --kind --until "
+        "--workspace", "--json"),
     ("memory", "append"): _flags("--body --body-file --workspace", "--json"),
     ("memory", "checkpoint"): _flags(
         "--file --project --project-ref --initiative --workspace", "--json"),

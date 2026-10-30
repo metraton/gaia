@@ -791,6 +791,8 @@ def _cmd_add(args) -> int:
     audience_flag = getattr(args, "audience", None)
     measured_at = getattr(args, "measured_at", None)
     method = getattr(args, "method", None)
+    kind_flag = getattr(args, "kind", None)
+    until_flag = getattr(args, "until", None)
     workspace = _resolve_workspace(workspace_flag)
 
     if measured_at is not None:
@@ -950,6 +952,8 @@ def _cmd_add(args) -> int:
             replace=getattr(args, "replace", False),
             measured_at=measured_at,
             method=method,
+            kind=kind_flag,
+            until=until_flag,
         )
     except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -978,6 +982,8 @@ def _cmd_add(args) -> int:
             "action": res.get("action"),
             "name": name,
             "type": mem_type,
+            "kind": res.get("kind"),
+            "owner_level": res.get("owner_level"),
             "description": description,
             "workspace": workspace,
             "body_preview": snippet,
@@ -3662,7 +3668,7 @@ def register(subparsers):
     link_p.set_defaults(func=_cmd_link)
 
     # -- add ----------------------------------------------------------------
-    from gaia.store.memory_claims import MEMORY_CLAIM_KINDS
+    from gaia.store.memory_placement import MEMORY_KINDS
 
     # No abbreviations: the signature and the orchestrator lane both match the
     # literal --replace, and an abbreviation argparse expanded would bypass both.
@@ -3673,22 +3679,26 @@ def register(subparsers):
         description=(
             "Insert by (workspace, name); an existing name is refused unless "
             "--replace.\n\n"
-            "One thing per row. Every row has one of three owners:\n"
-            "  the user    --type=user (true of him in any project; no scope)\n"
-            "  a project   --project=<name> or --initiative=<key>\n"
-            "  Gaia itself --initiative=gaia_system\n"
-            "--workspace alone is a container, not an owner.\n\n"
-            "The description is one sentence whose first word names the kind "
-            "of claim:\n  "
-            + "  ".join(f"{kind}:" for kind in MEMORY_CLAIM_KINDS)
-            + "\n\n"
-            "A changed fact is a new row plus `gaia memory link <new> <old> "
-            "--kind=supersedes`; --replace rewrites an existing name in place, "
-            "only to correct an error, and needs a signature (T3). The prior "
-            "value stays in memory_history. Only a log or a thread grows by "
-            "append.\n"
-            "The CLI warns on length, a missing owner, an in-place rewrite and "
-            "a user preference; the row is still written."
+            "One thing per row: one rule, one fact, one decision. Every row has "
+            "one owner, placed by the scope flags:\n"
+            "  the user      --type=user (true of him in any project; no scope)\n"
+            "  a workspace   --workspace=<ws> alone\n"
+            "  a group       --initiative=<group key> --workspace=<ws>\n"
+            "  a project     --project=<name> --workspace=<ws>\n"
+            "  Gaia itself   --initiative=gaia_system --workspace=<ws>\n"
+            "and one kind (--kind, see below). The owner decides which kinds it "
+            "may hold; a pair outside the matrix is refused with the right home.\n\n"
+            "The description is the title: for a preference it is the rule "
+            "itself, imperative, '<Where it applies>: <what to do>', readable "
+            "alone -- it is the only line injected, with ref=memory:<owner>/<slug>; "
+            "the body is the why, origin, date and examples, opened on demand.\n\n"
+            "A changed rule is a new row plus `gaia memory link <new> <old> "
+            "--kind=supersedes` (same owner and kind only); --replace rewrites an "
+            "existing name in place, only to correct an error, and needs a "
+            "signature (T3). The prior value stays in memory_history. Only a log "
+            "or a thread grows by append.\n"
+            "The CLI warns on length, an in-place rewrite and a user preference; "
+            "the row is still written."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
@@ -3803,6 +3813,29 @@ def register(subparsers):
             "and 'any' keep a user row with the orchestrator. Omitted, a new "
             "user row gets 'orchestrator', any other new row gets 'any', and "
             "--replace keeps the stored value (never silently reset)."
+        ),
+    )
+    add_p.add_argument(
+        "--kind", default=None, choices=MEMORY_KINDS,
+        help=(
+            "What the row claims. fact: true and commands nothing. preference: "
+            "a rule every output on a surface obeys; its title IS the rule. "
+            "decision: a one-time choice among alternatives with its why. "
+            "lesson: learned, or a dead end. pending: work owed. defect: Gaia "
+            "failing in use (a bug in a project's product is that project's "
+            "pending). Omitted: the claim word --description opens with, else "
+            "the type's default. The owner the scope flags place the row on "
+            "decides which kinds it may hold: user fact+preference; workspace "
+            "+decision; group and project +lesson+pending; gaia "
+            "(--initiative gaia_system) lesson+defect only."
+        ),
+    )
+    add_p.add_argument(
+        "--until", default=None, metavar="DATE|memory:<ws>/<slug>",
+        help=(
+            "A preference's expiry: a date (2026-12-31) after which it stops "
+            "being injected, or a memory coordinate -- it holds while that row "
+            "is live (a defect that forces the rule). Refused on any other kind."
         ),
     )
     add_p.add_argument(

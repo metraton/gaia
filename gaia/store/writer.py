@@ -2541,10 +2541,17 @@ def upsert_memory(
     replace: bool = False,
     measured_at: str | None = None,
     method: str | None = None,
+    kind: str | None = None,
+    until: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
     """Write a curated-memory row; an existing name needs ``replace``.
+
+    ``kind`` defaults to the claim word of ``description``, else the type's
+    default (``memory_placement.default_kind``); the owner level is derived
+    from the placement flags, and the pair must be one the matrix allows.
+    ``until`` is a preference's expiry, a date or ``memory:<ws>/<slug>``.
 
     Without ``replace`` an existing name, live or deleted, raises
     :class:`MemoryNameExistsError`; a ``type='user'`` name raises
@@ -2638,8 +2645,20 @@ def upsert_memory(
     if origin_session_id is None:
         origin_session_id = os.environ.get("GAIA_SESSION_ID") or None
 
+    from gaia.store.memory_placement import (
+        default_kind, derive_owner_level, parse_until, placement_refusal,
+    )
+
+    if until is not None:
+        until = parse_until(until)
+    kind = kind or default_kind(type, description, born_class)
+
     con = _connect(db_path)
     try:
+        owner_level = derive_owner_level(type, initiative, project_ref, con)
+        refusal = placement_refusal(owner_level, kind, until)
+        if refusal:
+            raise ValueError(f"cannot write {name!r} as {kind} owned by {owner_level}: {refusal}")
         con.execute("BEGIN")
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
@@ -2653,8 +2672,8 @@ def upsert_memory(
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
                                     updated_at, audience, created_at, class,
-                                    measured_at, method)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?)
+                                    measured_at, method, kind, owner_level, until)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2665,7 +2684,10 @@ def upsert_memory(
                     updated_at        = excluded.updated_at,
                     audience          = COALESCE(?, audience),
                     measured_at       = COALESCE(excluded.measured_at, measured_at),
-                    method            = COALESCE(excluded.method, method)
+                    method            = COALESCE(excluded.method, method),
+                    kind              = excluded.kind,
+                    owner_level       = excluded.owner_level,
+                    until             = excluded.until
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no
@@ -2684,12 +2706,14 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, born_class, measured_at, method, audience),
+                 now, born_class, measured_at, method, kind, owner_level, until, audience),
             )
             result = {
                 "status": "applied",
                 "action": action,
                 "name": name,
+                "kind": kind,
+                "owner_level": owner_level,
                 "updated_at": now,
                 # The workspace actually written -- may differ from the
                 # caller's requested workspace when host-scope forced it.
@@ -2986,11 +3010,26 @@ VALID_MEMORY_LINK_KINDS = ("relates_to", "supersedes", "derived_from", "graduate
 def _supersedes_refusal(
     con: sqlite3.Connection, workspace: str, src_name: str, dst_home: str, dst_name: str,
 ) -> str | None:
-    """Why ``src`` may not supersede ``dst`` (itself, or ``dst`` already supersedes ``src`` directly or through a chain), or ``None``."""
+    """Why ``src`` may not supersede ``dst`` (itself, a row of another owner or kind, or one that already supersedes ``src``), or ``None``."""
     pair = f"{src_name!r} -> {dst_name!r}"
     src, dst = (workspace, src_name), (dst_home, dst_name)
     if src == dst:
         return f"cannot link {pair}: a row cannot supersede itself"
+    placements = {
+        (row["workspace"], row["name"]): (row["owner_level"], row["kind"])
+        for row in con.execute(
+            "SELECT workspace, name, owner_level, kind FROM memory "
+            "WHERE (workspace = ? AND name = ?) OR (workspace = ? AND name = ?)",
+            (*src, *dst),
+        )
+    }
+    if src in placements and dst in placements and placements[src] != placements[dst]:
+        (src_owner, src_kind), (dst_owner, dst_kind) = placements[src], placements[dst]
+        return (
+            f"cannot link {pair}: a row supersedes only a row of its own owner and kind "
+            f"({src_owner or 'unplaced'} {src_kind} -> {dst_owner or 'unplaced'} {dst_kind}); "
+            f"a more specific owner overrides at read time, a kind change is graduated_to or derived_from"
+        )
     seen, frontier = {dst}, [dst]
     while frontier:
         ws, name = frontier.pop()
@@ -3908,7 +3947,8 @@ def get_memory(
             "SELECT workspace, name, type, description, body, project_ref, "
             "       initiative, origin_session_id, updated_at, deleted_at, "
             "       audience, injection_count, deliberate_count, "
-            "       last_injected_at, last_deliberate_at, measured_at, method "
+            "       last_injected_at, last_deliberate_at, measured_at, method, "
+            "       kind, owner_level, until "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
         if not include_deleted:

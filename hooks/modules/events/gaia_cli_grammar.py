@@ -197,8 +197,8 @@ OPTIONS = {
     'memory': '--help --json -h',
     'memory add': (
         '--audience --body --body-file --class --description --help --initiative --json '
-        '--measured-at --method --name --project --project-ref --replace --status --type '
-        '--workspace -h'
+        '--kind --measured-at --method --name --project --project-ref --replace --status --type '
+        '--until --workspace -h'
     ),
     'memory append': '--body --body-file --help --json --workspace -h',
     'memory checkpoint': '--file --help --initiative --json --project --project-ref --workspace -h',

@@ -1014,6 +1014,9 @@ CREATE TABLE IF NOT EXISTS memory (
     last_kernel_at     TEXT,  -- v50: ISO8601 timestamp of the most recent kernel injection; NULL = never injected into a kernel. Column added v50.
     measured_at        TEXT,  -- v67: ISO8601 date (or datetime) the fact in the row was measured. NULL = the row states no measurement, or predates v67 and its date is unknown; never backfilled. Column added v67.
     method             TEXT,  -- v67: how the fact was measured (command, query, sample). NULL as for measured_at. Column added v67.
+    kind               TEXT,  -- v71: fact | preference | decision | lesson | pending | defect. Backfilled from the claim word, else the type's default (scripts/migrations/v70_to_v71.sql); which kinds an owner may hold is the matrix in trg_memory_placement_* below and gaia/store/memory_placement.py.
+    owner_level        TEXT,  -- v71: user | workspace | group | project | gaia. NULL only on a legacy row with neither initiative nor project_ref, listed for hand placement. Precedence at read time: gaia < user < workspace < group < project.
+    until              TEXT,  -- v71: a preference's expiry -- an ISO date, or memory:<ws>/<slug> (holds while that row is live). NULL = standing.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -1066,6 +1069,54 @@ BEGIN
     VALUES ('delete', old.rowid, old.workspace, old.name, old.description, old.body);
     INSERT INTO memory_fts(rowid, workspace, name, description, body)
     VALUES (new.rowid, new.workspace, new.name, new.description, new.body);
+END;
+
+-- v71: the kind-per-owner matrix, judged on insert and on a placement change
+-- only, so a telemetry update never fires it and a legacy row the matrix
+-- forbids stays readable until it is curated. The messages are the ones
+-- gaia/store/memory_placement.py::placement_refusal teaches.
+CREATE TRIGGER IF NOT EXISTS trg_memory_placement_insert
+BEFORE INSERT ON memory
+WHEN NEW.kind IS NOT NULL OR NEW.owner_level IS NOT NULL OR NEW.until IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect')
+            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending or defect')
+        WHEN NEW.owner_level NOT IN ('user', 'workspace', 'group', 'project', 'gaia')
+            THEN RAISE(ABORT, 'memory owner_level must be user, workspace, group, project or gaia')
+        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference')
+            THEN RAISE(ABORT, 'the user owns facts and preferences only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
+        WHEN NEW.owner_level = 'workspace' AND NEW.kind NOT IN ('fact', 'preference', 'decision')
+            THEN RAISE(ABORT, 'a workspace owns facts, preferences and decisions; a lesson or pending belongs to a group or project, a defect to gaia')
+        WHEN NEW.owner_level IN ('group', 'project') AND NEW.kind = 'defect'
+            THEN RAISE(ABORT, 'a defect is Gaia failing in use and belongs to gaia; a bug in the product is this project''s pending')
+        WHEN NEW.owner_level = 'gaia' AND NEW.kind NOT IN ('lesson', 'defect')
+            THEN RAISE(ABORT, 'gaia owns lessons and defects only; a fact, decision or pending about Gaia belongs to the gaia project')
+        WHEN NEW.until IS NOT NULL AND NEW.kind IS NOT 'preference'
+            THEN RAISE(ABORT, 'until belongs to a preference only: the date or the memory:<ws>/<slug> row while which it holds')
+    END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memory_placement_update
+BEFORE UPDATE OF kind, owner_level, until ON memory
+WHEN NEW.kind IS NOT NULL OR NEW.owner_level IS NOT NULL OR NEW.until IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect')
+            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending or defect')
+        WHEN NEW.owner_level NOT IN ('user', 'workspace', 'group', 'project', 'gaia')
+            THEN RAISE(ABORT, 'memory owner_level must be user, workspace, group, project or gaia')
+        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference')
+            THEN RAISE(ABORT, 'the user owns facts and preferences only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
+        WHEN NEW.owner_level = 'workspace' AND NEW.kind NOT IN ('fact', 'preference', 'decision')
+            THEN RAISE(ABORT, 'a workspace owns facts, preferences and decisions; a lesson or pending belongs to a group or project, a defect to gaia')
+        WHEN NEW.owner_level IN ('group', 'project') AND NEW.kind = 'defect'
+            THEN RAISE(ABORT, 'a defect is Gaia failing in use and belongs to gaia; a bug in the product is this project''s pending')
+        WHEN NEW.owner_level = 'gaia' AND NEW.kind NOT IN ('lesson', 'defect')
+            THEN RAISE(ABORT, 'gaia owns lessons and defects only; a fact, decision or pending about Gaia belongs to the gaia project')
+        WHEN NEW.until IS NOT NULL AND NEW.kind IS NOT 'preference'
+            THEN RAISE(ABORT, 'until belongs to a preference only: the date or the memory:<ws>/<slug> row while which it holds')
+    END;
 END;
 
 -- ---------------------------------------------------------------------------
