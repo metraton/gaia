@@ -1014,15 +1014,19 @@ CREATE TABLE IF NOT EXISTS memory (
     last_kernel_at     TEXT,  -- v50: ISO8601 timestamp of the most recent kernel injection; NULL = never injected into a kernel. Column added v50.
     measured_at        TEXT,  -- v67: ISO8601 date (or datetime) the fact in the row was measured. NULL = the row states no measurement, or predates v67 and its date is unknown; never backfilled. Column added v67.
     method             TEXT,  -- v67: how the fact was measured (command, query, sample). NULL as for measured_at. Column added v67.
-    kind               TEXT,  -- v71: fact | preference | decision | lesson | pending | defect. Backfilled from the claim word, else the type's default (scripts/migrations/v70_to_v71.sql); which kinds an owner may hold is the matrix in trg_memory_placement_* below and gaia/store/memory_placement.py.
+    kind               TEXT,  -- v71: fact | preference | decision | lesson | pending | defect | tool (v72). Backfilled from the claim word, else the type's default (scripts/migrations/v70_to_v71.sql); which kinds an owner may hold is the matrix in trg_memory_placement_* below and gaia/store/memory_placement.py.
     owner_level        TEXT,  -- v71: user | workspace | group | project | gaia. NULL only on a legacy row with neither initiative nor project_ref, listed for hand placement. Precedence at read time: gaia < user < workspace < group < project.
     until              TEXT,  -- v71: a preference's expiry -- an ISO date, or memory:<ws>/<slug> (holds while that row is live). NULL = standing.
+    binary             TEXT,  -- v72: a tool's executable on PATH; the writer verifies it resolves. One live tool row per (workspace, binary).
+    replaces           TEXT,  -- v72: the CLI the hooks judge a tool as (hooks/modules/security/cli_aliases.py); only a CLI the classifier models.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_workspace ON memory(workspace);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_tool_binary
+    ON memory(workspace, binary) WHERE binary IS NOT NULL AND deleted_at IS NULL;
 -- Note: idx_memory_class_status is NOT declared here. It is created by
 -- scripts/migrations/v3_to_v4.sql after the columns exist on the live DB.
 -- Declaring it here would parse-fail on v3 DBs during the schema.sql replay
@@ -1078,14 +1082,17 @@ END;
 CREATE TRIGGER IF NOT EXISTS trg_memory_placement_insert
 BEFORE INSERT ON memory
 WHEN NEW.kind IS NOT NULL OR NEW.owner_level IS NOT NULL OR NEW.until IS NOT NULL
+   OR NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL
 BEGIN
     SELECT CASE
-        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect')
-            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending or defect')
+        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect', 'tool')
+            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending, defect or tool')
         WHEN NEW.owner_level NOT IN ('user', 'workspace', 'group', 'project', 'gaia')
             THEN RAISE(ABORT, 'memory owner_level must be user, workspace, group, project or gaia')
-        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference')
-            THEN RAISE(ABORT, 'the user owns facts and preferences only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
+        WHEN NEW.kind = 'tool' AND NEW.owner_level IS NOT 'user'
+            THEN RAISE(ABORT, 'a tool belongs to the user (--type=user --kind=tool --binary=<name>): it is a program built for him, whichever project it serves')
+        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference', 'tool')
+            THEN RAISE(ABORT, 'the user owns facts, preferences and tools only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
         WHEN NEW.owner_level = 'workspace' AND NEW.kind NOT IN ('fact', 'preference', 'decision')
             THEN RAISE(ABORT, 'a workspace owns facts, preferences and decisions; a lesson or pending belongs to a group or project, a defect to gaia')
         WHEN NEW.owner_level IN ('group', 'project') AND NEW.kind = 'defect'
@@ -1094,20 +1101,27 @@ BEGIN
             THEN RAISE(ABORT, 'gaia owns lessons and defects only; a fact, decision or pending about Gaia belongs to the gaia project')
         WHEN NEW.until IS NOT NULL AND NEW.kind IS NOT 'preference'
             THEN RAISE(ABORT, 'until belongs to a preference only: the date or the memory:<ws>/<slug> row while which it holds')
+        WHEN NEW.kind = 'tool' AND NEW.binary IS NULL
+            THEN RAISE(ABORT, 'a tool names its program: binary is required')
+        WHEN NEW.kind IS NOT 'tool' AND (NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL)
+            THEN RAISE(ABORT, 'binary and replaces belong to kind=tool only')
     END;
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_memory_placement_update
-BEFORE UPDATE OF kind, owner_level, until ON memory
+BEFORE UPDATE OF kind, owner_level, until, binary, replaces ON memory
 WHEN NEW.kind IS NOT NULL OR NEW.owner_level IS NOT NULL OR NEW.until IS NOT NULL
+   OR NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL
 BEGIN
     SELECT CASE
-        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect')
-            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending or defect')
+        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect', 'tool')
+            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending, defect or tool')
         WHEN NEW.owner_level NOT IN ('user', 'workspace', 'group', 'project', 'gaia')
             THEN RAISE(ABORT, 'memory owner_level must be user, workspace, group, project or gaia')
-        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference')
-            THEN RAISE(ABORT, 'the user owns facts and preferences only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
+        WHEN NEW.kind = 'tool' AND NEW.owner_level IS NOT 'user'
+            THEN RAISE(ABORT, 'a tool belongs to the user (--type=user --kind=tool --binary=<name>): it is a program built for him, whichever project it serves')
+        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference', 'tool')
+            THEN RAISE(ABORT, 'the user owns facts, preferences and tools only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
         WHEN NEW.owner_level = 'workspace' AND NEW.kind NOT IN ('fact', 'preference', 'decision')
             THEN RAISE(ABORT, 'a workspace owns facts, preferences and decisions; a lesson or pending belongs to a group or project, a defect to gaia')
         WHEN NEW.owner_level IN ('group', 'project') AND NEW.kind = 'defect'
@@ -1116,6 +1130,10 @@ BEGIN
             THEN RAISE(ABORT, 'gaia owns lessons and defects only; a fact, decision or pending about Gaia belongs to the gaia project')
         WHEN NEW.until IS NOT NULL AND NEW.kind IS NOT 'preference'
             THEN RAISE(ABORT, 'until belongs to a preference only: the date or the memory:<ws>/<slug> row while which it holds')
+        WHEN NEW.kind = 'tool' AND NEW.binary IS NULL
+            THEN RAISE(ABORT, 'a tool names its program: binary is required')
+        WHEN NEW.kind IS NOT 'tool' AND (NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL)
+            THEN RAISE(ABORT, 'binary and replaces belong to kind=tool only')
     END;
 END;
 

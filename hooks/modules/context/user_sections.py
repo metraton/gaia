@@ -59,6 +59,25 @@ def render_memory_index(rows: list[dict], *, scope: bool = False) -> list[str]:
     return lines
 
 
+def tool_lines(rows: list[dict], *, cap: int | None = None, which=None) -> list[str]:
+    """``tool=<binary> "<title>" [replaces=<cli>] ref=memory:user/<slug>`` for each tool whose binary resolves on PATH, at most ``cap``."""
+    import shutil
+
+    resolve = which or shutil.which
+    lines: list[str] = []
+    for row in rows:
+        if not row.get("binary") or not resolve(row["binary"]):
+            continue
+        parts = [f"tool={row['binary']}", f'"{title_of(row)}"']
+        if row.get("replaces"):
+            parts.append(f"replaces={row['replaces']}")
+        parts.append(f"ref={memory_ref(row)}")
+        lines.append(" ".join(parts))
+        if cap is not None and len(lines) >= cap:
+            break
+    return lines
+
+
 def omitted_line(names: list[str]) -> str:
     """The one line that names the user rows left out of a full context."""
     return (

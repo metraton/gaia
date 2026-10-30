@@ -64,6 +64,8 @@ def test_allowed_pairs_are_written_with_their_owner(owner_flags, kind, expected_
     ({"type": "project", "workspace": "me", "project_ref": "github.com/x/gaia"}, "defect", "project's pending"),
     ({"type": "feedback", "workspace": "me", "initiative": "gaia_system"}, "fact", "gaia project"),
     ({"type": "feedback", "workspace": "me", "initiative": "gaia_system"}, "pending", "gaia project"),
+    ({"type": "project", "workspace": "me", "project_ref": "github.com/x/gaia"}, "tool", "belongs to the user"),
+    ({"type": "project", "workspace": "me", "initiative": "branchkinect"}, "tool", "belongs to the user"),
 ])
 def test_forbidden_pairs_are_refused_naming_the_right_home(owner_flags, kind, home_hint):
     flags = dict(owner_flags)
@@ -80,6 +82,16 @@ def test_the_trigger_refuses_what_the_writer_refuses():
         con.execute(
             "INSERT INTO memory (workspace, name, type, body, kind, owner_level) "
             "VALUES ('me', 'raw_row', 'atom', 'b', 'fact', 'gaia')"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="a tool belongs to the user"):
+        con.execute(
+            "INSERT INTO memory (workspace, name, type, body, kind, owner_level, binary) "
+            "VALUES ('me', 'raw_tool', 'atom', 'b', 'tool', 'project', 'x')"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="binary is required"):
+        con.execute(
+            "INSERT INTO memory (workspace, name, type, body, kind, owner_level) "
+            "VALUES ('me', 'raw_tool', 'user', 'b', 'tool', 'user')"
         )
     con.close()
 

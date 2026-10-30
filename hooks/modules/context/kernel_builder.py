@@ -70,7 +70,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from .user_sections import CONTEXT_BUDGET
+from .user_sections import CONTEXT_BUDGET, tool_lines
 
 logger = logging.getLogger(__name__)
 
@@ -691,16 +691,23 @@ def build_project_context_block(workspace: str, project: str, sections: list, *,
     return "\n".join(head + lines)
 
 
-def build_environment_block() -> str:
-    """Render ``# Environment`` from the session's environment line, or "" when empty."""
+KERNEL_TOOL_LINES = 5
+
+
+def build_environment_block(db_path=None) -> str:
+    """Render ``# Environment``: the session's environment line, then up to ``KERNEL_TOOL_LINES`` detected user tools; "" when empty."""
     try:
+        from gaia.store.reader import user_tool_rows
+
         from ..session.session_manifest import build_environment_line
 
         line = build_environment_line()
+        tools = tool_lines(user_tool_rows(db_path), cap=KERNEL_TOOL_LINES)
     except Exception:
         logger.debug("environment line failed (non-fatal)", exc_info=True)
         return ""
-    return f"{ENVIRONMENT_HEADING}\n\n{line}" if line else ""
+    body = "\n".join([line, *tools] if line else tools)
+    return f"{ENVIRONMENT_HEADING}\n\n{body}" if body else ""
 
 
 def _joined(*blocks: str) -> str:
@@ -722,7 +729,7 @@ def build_kernel_context(
     workspace = str(row.get("workspace") or "")
     memory_size = len(build_memory_block(row, db_path=db_path))
     notes = build_project_notes_block(row, db_path=db_path)
-    environment = build_environment_block()
+    environment = build_environment_block(db_path=db_path)
     cli = build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace)
     skills = build_skills_block(agent_name, agents_dir=agents_dir) if with_skills else ""
     project, sections = _readable_project_sections(row, db_path=db_path)

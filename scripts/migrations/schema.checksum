@@ -4,5 +4,5 @@
 # corresponds to (EXPECTED_SCHEMA_VERSION in bin/cli/doctor.py).
 # Do NOT edit by hand: bump EXPECTED_SCHEMA_VERSION + add a migration,
 # then re-run the guard to refresh this file.
-version=71
-sha256=b1a7db8968b2d0e755318d68c782027f6d2316f1577023b94cfe0a2841fe9932
+version=72
+sha256=88bfcc815c0beaed41c4da6c7f8dab0747baa455cbaf42b62a40b267e15ca6fb

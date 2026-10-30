@@ -2543,6 +2543,8 @@ def upsert_memory(
     method: str | None = None,
     kind: str | None = None,
     until: str | None = None,
+    binary: str | None = None,
+    replaces: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -2552,6 +2554,9 @@ def upsert_memory(
     default (``memory_placement.default_kind``); the owner level is derived
     from the placement flags, and the pair must be one the matrix allows.
     ``until`` is a preference's expiry, a date or ``memory:<ws>/<slug>``.
+    ``binary`` and ``replaces`` belong to a tool: the executable on PATH it
+    is about (verified, one live row per workspace) and the CLI the hooks
+    judge it as (``memory_placement.tool_refusal``).
 
     Without ``replace`` an existing name, live or deleted, raises
     :class:`MemoryNameExistsError`; a ``type='user'`` name raises
@@ -2646,7 +2651,7 @@ def upsert_memory(
         origin_session_id = os.environ.get("GAIA_SESSION_ID") or None
 
     from gaia.store.memory_placement import (
-        default_kind, derive_owner_level, parse_until, placement_refusal,
+        default_kind, derive_owner_level, parse_until, placement_refusal, tool_refusal,
     )
 
     if until is not None:
@@ -2656,9 +2661,21 @@ def upsert_memory(
     con = _connect(db_path)
     try:
         owner_level = derive_owner_level(type, initiative, project_ref, con)
-        refusal = placement_refusal(owner_level, kind, until)
+        refusal = placement_refusal(owner_level, kind, until) or tool_refusal(
+            kind, description, binary, replaces)
         if refusal:
             raise ValueError(f"cannot write {name!r} as {kind} owned by {owner_level}: {refusal}")
+        if binary:
+            holder = con.execute(
+                "SELECT name FROM memory WHERE workspace = ? AND binary = ? AND name != ? "
+                "AND deleted_at IS NULL", (workspace, binary, name),
+            ).fetchone()
+            if holder:
+                raise ValueError(
+                    f"cannot write {name!r}: {binary!r} already has a tool row, {holder[0]}; a "
+                    f"changed tool is a new row plus `gaia memory link {name} {holder[0]} "
+                    f"--kind=supersedes` after retitling, or --replace on {holder[0]} to correct it"
+                )
         con.execute("BEGIN")
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
@@ -2672,8 +2689,9 @@ def upsert_memory(
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
                                     updated_at, audience, created_at, class,
-                                    measured_at, method, kind, owner_level, until)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?, ?, ?, ?)
+                                    measured_at, method, kind, owner_level, until,
+                                    binary, replaces)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2687,7 +2705,9 @@ def upsert_memory(
                     method            = COALESCE(excluded.method, method),
                     kind              = excluded.kind,
                     owner_level       = excluded.owner_level,
-                    until             = excluded.until
+                    until             = excluded.until,
+                    binary            = excluded.binary,
+                    replaces          = excluded.replaces
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no
@@ -2706,7 +2726,8 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, born_class, measured_at, method, kind, owner_level, until, audience),
+                 now, born_class, measured_at, method, kind, owner_level, until,
+                 binary, replaces, audience),
             )
             result = {
                 "status": "applied",
@@ -2714,6 +2735,8 @@ def upsert_memory(
                 "name": name,
                 "kind": kind,
                 "owner_level": owner_level,
+                "binary": binary,
+                "replaces": replaces,
                 "updated_at": now,
                 # The workspace actually written -- may differ from the
                 # caller's requested workspace when host-scope forced it.

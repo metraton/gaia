@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from ..context.user_sections import CONTEXT_BUDGET, USER_HEADER
+from ..context.user_sections import CONTEXT_BUDGET, USER_HEADER, tool_lines
 
 logger = logging.getLogger(__name__)
 
@@ -438,6 +438,9 @@ def build_environment_section(session_id: str = "") -> str:
         tools = _scan_available_tools()
         if tools:
             lines.append(f"tools={','.join(tools)}")
+        from gaia.store.reader import user_tool_rows
+
+        lines.extend(tool_lines(user_tool_rows()))
         return "\n".join(lines)
     except Exception as exc:
         logger.debug("build_environment_section failed (non-fatal): %s", exc)

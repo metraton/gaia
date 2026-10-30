@@ -550,6 +550,29 @@ def user_memory_rows(db_path: Path | None = None) -> list[dict]:
         con.close()
 
 
+_USER_TOOLS = (
+    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.binary, m.replaces "
+    "FROM memory m "
+    "WHERE m.owner_level = 'user' AND m.kind = 'tool' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY m.binary"
+)
+
+
+def user_tool_rows(db_path: Path | None = None) -> list[dict]:
+    """The user's live tool rows, by binary; ``[]`` on any error, which the alias reader takes as no alias."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(_USER_TOOLS)]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 _SCOPE_MEMORY = (
     "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.until, m.updated_at, "
     "       m.owner_level, m.initiative, m.project_ref "

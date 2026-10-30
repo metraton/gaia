@@ -30,7 +30,7 @@ HABITS = (
     ("ids arrive in a return (contract, handoff, plan, slug)",
      "append them to the project's thread row before answering"),
     ("the user names a thing (workspace, group, project, app, cluster, environment), or a (N) count sits by a name",
-     "place it against ## Projects; gaia map <word> only when the index does not place it or places it "
+     "place it against ## Workspaces I manage; gaia map <word> only when the index does not place it or places it "
      "at two levels; then gaia context project <name>, once per subject per session"),
     ("the intent needs a capability the user did not name",
      "offer it in one line after the answer, at most one per turn; act only on their yes"),
@@ -83,6 +83,15 @@ INTENTS = (
            "gaia session snapshot --session-id <id>; gaia session resume-point set",
            "gaia session snapshot --session-id <id> --json"),
 )
+
+
+def _memory_page() -> str:
+    from gaia.store.memory_placement import model_page
+
+    return model_page()
+
+
+PAGES = {"memory": _memory_page}
 
 
 def _ids(rows: list[dict], key: str, prefix: str = "") -> str:
@@ -294,10 +303,11 @@ def register(subparsers) -> None:
             "is not a signal channel."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  gaia map\n  gaia map remember\n  gaia map bildwiz\n",
+        epilog="Examples:\n  gaia map\n  gaia map remember\n  gaia map memory\n  gaia map bildwiz\n",
     )
     p.add_argument("intent", nargs="?", default=None,
-                   help=f"Expand one row: {', '.join(i.key for i in INTENTS)}; any other word is "
+                   help=f"Expand one row: {', '.join(i.key for i in INTENTS)}; a tour of one "
+                        f"capability: {', '.join(PAGES)}; any other word is "
                         "resolved as a workspace, group or project name (exit 0 exact, 1 closest "
                         "names only, 2 nothing).")
 
@@ -305,6 +315,9 @@ def register(subparsers) -> None:
 def cmd_map(args) -> int:
     """Dispatch handler for `gaia map`."""
     if args.intent is not None:
+        if args.intent in PAGES:
+            print(PAGES[args.intent]())
+            return 0
         match = next((i for i in INTENTS if i.key == args.intent), None)
         if match is None:
             exact, lines = resolve_name(args.intent)

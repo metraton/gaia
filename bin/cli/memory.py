@@ -709,21 +709,48 @@ def _stamp_suffix(row: dict) -> str:
     return f"({' '.join(parts)})" if parts else ""
 
 
+def _authored_executables() -> tuple:
+    """The names of the executables the user authored on PATH, as the Environment scan sees them; ``()`` when the scan is unreachable."""
+    hooks_dir = _REPO_ROOT / "hooks"
+    if str(hooks_dir) not in sys.path:
+        sys.path.insert(0, str(hooks_dir))
+    try:
+        from modules.session.session_manifest import _scan_user_executables
+
+        return tuple(_scan_user_executables()[0])
+    except Exception:
+        return ()
+
+
 def _add_warnings(
     *, mem_type: str, description: str | None, body: str, owned: bool,
     previous_body: str | None, measured_at: str | None = None,
-    method: str | None = None,
+    method: str | None = None, kind: str | None = None, authored: tuple = (),
 ) -> list[dict]:
     """What a ``memory add`` call should hear about the row it is writing.
 
     ``owned`` is whether the call named a project or initiative;
-    ``previous_body`` is the body already stored under the same name, or None.
+    ``previous_body`` is the body already stored under the same name, or None;
+    ``authored`` the user's own executables on PATH, which a user row of
+    another kind may be describing without saying so.
     """
     from gaia.store.memory_claims import (
         PREFERENCE_KIND, claims_measurement, memory_claim_kind,
     )
 
+    import re
+
     warnings = []
+    if mem_type == "user" and kind != "tool" and authored:
+        words = set(re.findall(r"[\w.-]+", description or ""))
+        named = sorted(words.intersection(authored))
+        if named:
+            warnings.append(_warning(
+                "tool_without_kind",
+                f"the title names {', '.join(named)}, an executable the user authored; a program "
+                f"built for him is a tool row: --kind=tool --binary={named[0]} "
+                f"[--replaces=<cli>], rendered in Environment while it is on PATH (gaia map memory).",
+            ))
     if claims_measurement(description) and not (measured_at and method):
         warnings.append(_warning(
             "measurement_unstamped",
@@ -793,7 +820,26 @@ def _cmd_add(args) -> int:
     method = getattr(args, "method", None)
     kind_flag = getattr(args, "kind", None)
     until_flag = getattr(args, "until", None)
+    binary_flag = getattr(args, "binary", None)
+    replaces_flag = getattr(args, "replaces", None)
     workspace = _resolve_workspace(workspace_flag)
+
+    from gaia.store.memory_placement import MEMORY_KINDS, kinds_text
+
+    if kind_flag is None:
+        return _err_structured(
+            "--kind is required: say what the row claims, one of\n" + kinds_text() + "\n"
+            "The owner the scope flags place the row on decides which kinds it may hold; "
+            "`gaia map memory` explains the matrix, the delivery and the supersession.",
+            as_json, code="kind_required",
+        )
+    if kind_flag not in MEMORY_KINDS:
+        return _err_structured(
+            f"--kind {kind_flag!r} is not a kind; the list is closed: {', '.join(MEMORY_KINDS)}. "
+            f"A rule is a preference, a dead end a lesson, work owed a pending, a program built "
+            f"for the user a tool; `gaia map memory` explains each.",
+            as_json, code="kind_unknown",
+        )
 
     if measured_at is not None:
         try:
@@ -933,7 +979,8 @@ def _cmd_add(args) -> int:
         mem_type=mem_type, description=description, body=body,
         owned=project_ref is not None or initiative is not None,
         previous_body=stored["body"] if stored else None,
-        measured_at=measured_at, method=method,
+        measured_at=measured_at, method=method, kind=kind_flag,
+        authored=_authored_executables(),
     )
 
     _, status_for_writer = _normalize_status_flag(status_flag)
@@ -954,6 +1001,8 @@ def _cmd_add(args) -> int:
             method=method,
             kind=kind_flag,
             until=until_flag,
+            binary=binary_flag,
+            replaces=replaces_flag,
         )
     except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -3668,7 +3717,25 @@ def register(subparsers):
     link_p.set_defaults(func=_cmd_link)
 
     # -- add ----------------------------------------------------------------
-    from gaia.store.memory_placement import MEMORY_KINDS
+    add_p = _add_parser(actions)
+    add_p.set_defaults(func=_cmd_add)
+    _register_rest(actions)
+
+
+def _add_parser_for_help():
+    """The ``memory add`` parser alone, for the surfaces that render its help without dispatching."""
+    import argparse
+
+    return _add_parser(argparse.ArgumentParser(prog="gaia memory").add_subparsers(dest="action"))
+
+
+def _add_parser(actions):
+    """Register ``memory add``; its description shares the kind list and owner matrix with ``gaia map memory``."""
+    import argparse as _argparse
+
+    from gaia.store.memory_placement import (
+        MEMORY_KINDS, TOOL_TITLE_MAX, kinds_text, owner_matrix_text,
+    )
 
     # No abbreviations: the signature and the orchestrator lane both match the
     # literal --replace, and an abbreviation argparse expanded would bypass both.
@@ -3679,36 +3746,38 @@ def register(subparsers):
         description=(
             "Insert by (workspace, name); an existing name is refused unless "
             "--replace.\n\n"
-            "One thing per row: one rule, one fact, one decision. Every row has "
-            "one owner, placed by the scope flags:\n"
-            "  the user      --type=user (true of him in any project; no scope)\n"
-            "  a workspace   --workspace=<ws> alone\n"
-            "  a group       --initiative=<group key> --workspace=<ws>\n"
-            "  a project     --project=<name> --workspace=<ws>\n"
-            "  Gaia itself   --initiative=gaia_system --workspace=<ws>\n"
-            "and one kind (--kind, see below). The owner decides which kinds it "
-            "may hold; a pair outside the matrix is refused with the right home.\n\n"
+            "One thing per row: one rule, one fact, one decision, one tool. Every "
+            "row has one owner, placed by the scope flags, and one kind, named by "
+            "--kind (required; the list is closed):\n"
+            + kinds_text() + "\n\n"
+            + owner_matrix_text() + "\n\n"
             "The description is the title: for a preference it is the rule "
             "itself, imperative, '<Where it applies>: <what to do>', readable "
-            "alone -- it is the only line injected, with ref=memory:<owner>/<slug>; "
-            "the body is the why, origin, date and examples, opened on demand.\n\n"
+            f"alone; for a tool it is how to use it, at most {TOOL_TITLE_MAX} "
+            "characters. The title is the only line injected, with "
+            "ref=memory:<owner>/<slug>; the body is the why, origin, date and "
+            "examples, opened on demand.\n\n"
             "A changed rule is a new row plus `gaia memory link <new> <old> "
             "--kind=supersedes` (same owner and kind only); --replace rewrites an "
             "existing name in place, only to correct an error, and needs a "
             "signature (T3). The prior value stays in memory_history. Only a log "
             "or a thread grows by append.\n"
-            "The CLI warns on length, an in-place rewrite and a user preference; "
-            "the row is still written."
+            "The CLI warns on length, an in-place rewrite, a user preference and a "
+            "user row that names an authored executable without --kind=tool; the "
+            "row is still written. `gaia map memory` is the tour of the whole model."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
-               "  gaia memory add --name=user_pref_x --type=user "
-               "--description='Preference: ...' --body='...'\n"
-               "  gaia memory add --name=feedback_x --type=feedback "
+               "  gaia memory add --name=user_pref_x --type=user --kind=preference "
+               "--description='PRs: open them as drafts.' --body='why...'\n"
+               "  gaia memory add --name=user_tool_ghx --type=user --kind=tool "
+               "--binary=ghx --replaces=gh --description='ghx -C <tree> pr create ...' "
+               "--body='pins the account per command'\n"
+               "  gaia memory add --name=feedback_x --type=feedback --kind=defect "
                "--initiative=gaia_system --workspace=me --body='...'\n"
-               "  gaia memory add --name=atom_x --type=atom --project=gaia "
+               "  gaia memory add --name=atom_x --type=atom --kind=fact --project=gaia "
                "--workspace=me --body-file=~/.gaia/scratch/body.md\n"
-               "  cat body.md | gaia memory add --name=atom_x --type=atom "
+               "  cat body.md | gaia memory add --name=atom_x --type=atom --kind=fact "
                "--project=gaia --workspace=me --body-file=-\n\n"
                "Writing memory is judgment as well as form: load "
                "Skill('memory') to decide whether the row deserves to exist, "
@@ -3816,18 +3885,29 @@ def register(subparsers):
         ),
     )
     add_p.add_argument(
-        "--kind", default=None, choices=MEMORY_KINDS,
+        "--kind", default=None, metavar="|".join(MEMORY_KINDS),
         help=(
-            "What the row claims. fact: true and commands nothing. preference: "
-            "a rule every output on a surface obeys; its title IS the rule. "
-            "decision: a one-time choice among alternatives with its why. "
-            "lesson: learned, or a dead end. pending: work owed. defect: Gaia "
-            "failing in use (a bug in a project's product is that project's "
-            "pending). Omitted: the claim word --description opens with, else "
-            "the type's default. The owner the scope flags place the row on "
-            "decides which kinds it may hold: user fact+preference; workspace "
-            "+decision; group and project +lesson+pending; gaia "
-            "(--initiative gaia_system) lesson+defect only."
+            "Required. What the row claims, one of the closed list above; a "
+            "missing or unknown kind is refused with the list. The owner the "
+            "scope flags place the row on decides which kinds it may hold "
+            "(matrix above); a tool is the user's only."
+        ),
+    )
+    add_p.add_argument(
+        "--binary", default=None, metavar="NAME",
+        help=(
+            "kind=tool only: the executable on PATH the row is about. Verified "
+            "at write; one live tool row per binary. Rendered in Environment as "
+            "tool=<binary> \"<title>\" [replaces=<cli>] ref=memory:user/<slug> "
+            "while it is detected."
+        ),
+    )
+    add_p.add_argument(
+        "--replaces", default=None, metavar="CLI",
+        help=(
+            "kind=tool only: the CLI the hooks judge this binary as (gh, "
+            "kubectl, ...), so it meets every gate that CLI meets; refused for "
+            "a CLI the classifier does not model."
         ),
     )
     add_p.add_argument(
@@ -3854,7 +3934,12 @@ def register(subparsers):
                        help="Workspace identity.")
     add_p.add_argument("--json", action="store_true", default=False,
                        help="Emit JSON. bool.")
-    add_p.set_defaults(func=_cmd_add)
+    return add_p
+
+
+def _register_rest(actions) -> None:
+    """The verbs after ``add``, split out so ``_add_parser`` can be rendered alone."""
+    import argparse as _argparse
 
     # -- checkpoint ---------------------------------------------------------
     checkpoint_p = actions.add_parser(

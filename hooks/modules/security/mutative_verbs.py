@@ -5760,8 +5760,8 @@ def detect_mutative_command(
     old reading is the corrupted one, and it is consulted only as a source of
     escalation.
 
-    A wrapper declared in ``GAIA_CLI_ALIASES`` is also read as the CLI it
-    wraps, so it is never classified more leniently than that CLI.  A wrapper
+    A tool whose memory row declares it ``replaces`` a CLI is also read as
+    that CLI, so it is never classified more leniently than it.  A wrapper
     the classifier does not model is classified as that CLI outright, which
     lets it inherit the CLI's exceptions (``gh label list``); a declared name
     the classifier models keeps its own gates.  The lookup stays outside the
@@ -5784,13 +5784,13 @@ def detect_mutative_command(
         if wrapped_result.is_mutative and not result.is_mutative:
             return replace(
                 wrapped_result,
-                reason=f"{wrapped_result.reason} (declared in GAIA_CLI_ALIASES as a wrapper of this CLI)",
+                reason=f"{wrapped_result.reason} (a tool row declares {wrapper} replaces this CLI)",
             )
         if result.is_mutative and not wrapped_result.is_mutative and _is_unmodelled_cli(wrapper):
             command = wrapped
             result = replace(
                 wrapped_result,
-                reason=f"{wrapped_result.reason} (inherited by a wrapper declared in GAIA_CLI_ALIASES)",
+                reason=f"{wrapped_result.reason} (inherited by {wrapper}, whose tool row replaces this CLI)",
             )
 
     if result.is_mutative:

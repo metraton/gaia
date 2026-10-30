@@ -718,8 +718,8 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
     # ------------------------------------------------------------------
     # Declared-wrapper guard.
     # ------------------------------------------------------------------
-    # Every rule here is keyed on a CLI's real name, so a wrapper the user
-    # declared in GAIA_CLI_ALIASES would reach the wrapped CLI's irreversible
+    # Every rule here is keyed on a CLI's real name, so a tool whose row
+    # declares it replaces a CLI would reach that CLI's irreversible
     # subcommands with an approval instead of a block. Resolving the wrapper
     # at every token position -- not only at the head -- and running the same
     # forms again holds it wherever the wrapped CLI's rule would match: inside
