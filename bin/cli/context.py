@@ -477,15 +477,8 @@ def _cmd_get_contract(args) -> int:
     return 0
 
 
-_PROJECT_PENDING_FOOTER_MAX = 200
-
-# The memory-index section ANNOUNCES the corpus; it does not dump it. A
-# project whose curated memory runs into the hundreds (measured: 419 rows for
-# `gaia` itself, in the workspace where this ficha is most needed) produced an
-# unusable, context-heavy ficha for its own primary reader -- the orchestrator,
-# reading in conversation. Capped to the N most-recently-updated rows; the rest
-# are named by count with the exact sweep command, never silently dropped.
-_PROJECT_MEMORY_INDEX_TOP_N = 10
+_PROJECT_INDEX_KINDS = ("preference", "fact", "decision")
+_PROJECT_SCOPES = ("project", "group", "workspace")
 
 
 def _project_derive_initiative(project_identity: str | None) -> str | None:
@@ -549,40 +542,82 @@ def _project_match_identity_entry(
     return None, None
 
 
-def _project_pending_footer(initiative: str | None) -> str | None:
-    """The P2-style computed footer line (decision_gaia_el_cli_ensena_en_el_
+def _project_memory(con, workspace: str, group_name: str | None, name: str, project_key: str | None) -> dict:
+    """The scope chain's preferences, facts and decisions as titles and refs, plus the project's lesson and pending counts with the read that opens each."""
+    from gaia.store.memory_placement import coordinate_word, strip_kind_word, until_holds
+    from gaia.store.reader import not_superseded, pending_threads_by_project
+    from gaia.store.writer import canonical_project_key, normalize_initiative
 
-    instante_del_verbo): fires ONLY when the resolved project's initiative
-    has other live-pending threads, naming the count and the exact sweep
-    command -- mirroring `bin/cli/memory.py`'s `_show_pointer_line2` for
-    `memory show`. Counts `gaia.store.reader.pending_threads_by_project`, the
-    rows `gaia memory get-relevant --initiative` returns, so the count printed
-    here is the SAME count that command would return, from every workspace. A
-    project with no initiative, or an initiative with zero live-pending rows,
-    returns None -- a condition that always fires is not a condition. Never
-    raises: a DB error reads as zero rows, so "nothing to say".
-    """
-    if not initiative:
-        return None
-    from gaia.store.reader import pending_threads_by_project
+    group_key = normalize_initiative(group_name) if group_name else None
+    keys = {"group": group_key, "project": project_key}
+    rows = con.execute(
+        "SELECT m.workspace, m.name, m.description, m.kind, m.until, m.owner_level, "
+        "       m.initiative, m.project_ref "
+        "FROM memory m "
+        "WHERE m.owner_level IN ('workspace', 'group', 'project') "
+        "  AND m.kind IN ('preference', 'fact', 'decision', 'lesson') "
+        "  AND m.class = 'anchor' AND m.deleted_at IS NULL "
+        f"  AND {not_superseded('m')} "
+        "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+    ).fetchall()
 
-    n = len(pending_threads_by_project([initiative]))
-    if not n:
-        return None
-    line = (
-        f"> initiative '{initiative}': {n} more live-pending -- sweep with "
-        f"`gaia memory get-relevant --initiative {initiative}` before writing."
+    index = []
+    lessons = 0
+    for r in rows:
+        level = r["owner_level"]
+        if level == "workspace":
+            mine = r["workspace"] == workspace
+        else:
+            key = canonical_project_key(r["project_ref"], r["initiative"])
+            mine = key is not None and key == keys[level]
+        if not mine or not until_holds(r["until"], con):
+            continue
+        if r["kind"] == "lesson":
+            if level == "project":
+                lessons += 1
+            continue
+        entry = {
+            "kind": r["kind"],
+            "scope": level,
+            "title": " ".join((strip_kind_word(r["description"]) or r["name"]).split()),
+            "ref": f"memory:{coordinate_word(r['workspace'])}/{r['name']}",
+        }
+        if r["until"]:
+            entry["until"] = r["until"]
+        index.append(entry)
+
+    index.sort(key=lambda e: (
+        _PROJECT_INDEX_KINDS.index(e["kind"]), _PROJECT_SCOPES.index(e["scope"]),
+    ))
+    pending = len(pending_threads_by_project([project_key])) if project_key else 0
+    reads = (
+        {"lessons": f"gaia memory get-relevant --initiative {project_key} --sections anchor",
+         "pending": f"gaia memory get-relevant --initiative {project_key}"}
+        if project_key else {"lessons": None, "pending": None}
     )
-    if len(line) <= _PROJECT_PENDING_FOOTER_MAX:
-        return line
-    # Hard cap: drop the descriptive prefix but keep the sweep command whole
-    # and runnable -- a truncated command cannot be run, and the line exists
-    # so there is one to run.
-    short = (
-        f"> {n} pendientes vivos -- "
-        f"`gaia memory get-relevant --initiative {initiative}`"
-    )
-    return short if len(short) <= _PROJECT_PENDING_FOOTER_MAX else None
+    return {
+        "chain": " > ".join(p for p in (workspace, group_name, name) if p),
+        "index": index,
+        "lessons": {"count": lessons, "read": reads["lessons"]},
+        "pending": {"count": pending, "read": reads["pending"]},
+    }
+
+
+def _print_project_memory(memory: dict) -> None:
+    """The kind-grouped index lines, then each non-zero count with its read; nothing at all when all are empty."""
+    counts = [(label, memory[label]) for label in ("lessons", "pending") if memory[label]["count"]]
+    if not memory["index"] and not counts:
+        return
+    print(f"memory: {memory['chain']}")
+    kind = None
+    for e in memory["index"]:
+        if e["kind"] != kind:
+            kind = e["kind"]
+            print(f"kind={kind}")
+        until = f"until={e['until']}  " if "until" in e else ""
+        print(f'  "{e["title"]}"  {until}scope={e["scope"]}  ref={e["ref"]}')
+    for label, c in counts:
+        print(f"{label}={c['count']}  read={c['read']}")
 
 
 def _project_close_candidates(con, name: str, workspace: str | None) -> list:
@@ -625,21 +660,6 @@ def _project_close_candidates(con, name: str, workspace: str | None) -> list:
         seen.add((ws, nm))
         candidates.append({"workspace": ws, "name": nm})
     return candidates
-
-
-def _project_memory_sweep_command(initiative: str | None, name: str) -> str:
-    """The exact command that shows the FULL memory index, for the overflow
-    line below the capped top-N. Prefers the initiative sweep (the same
-    corpus this section drew from); falls back to a name search only in the
-    edge case where the index matched by `project_ref` alone with no
-    derivable initiative -- in practice this cannot happen for a non-empty
-    index (a `project_ref` match requires a resolvable `project_identity`,
-    which always derives a non-None initiative), but the fallback keeps the
-    function total rather than assuming that invariant here too.
-    """
-    if initiative:
-        return f"gaia memory get-relevant --initiative {initiative}"
-    return f"gaia memory search {name}"
 
 
 def _resolve_project(
@@ -773,16 +793,11 @@ def _cmd_project(args) -> int:
     `project_context_contracts`, not `memory` (no telemetry bump either) --
     so it is safe to point at any name, resolved or not. Reads the one-project
     ficha end to end: the `projects` row, its `project_facets`, its
-    `project_identity` project-context contract entry (if any), and an INDEX
-    (slug + description only, never a body) of the curated `memory` rows
-    anchored to it by `project_ref` or `initiative`. The index ANNOUNCES the
-    corpus rather than dumping it: capped to `_PROJECT_MEMORY_INDEX_TOP_N`
-    (10) most-recently-updated rows -- a NULL `updated_at` sorts last, never
-    as freshest -- with a counted overflow line naming the total and the
-    exact sweep command when there are more. `--json` applies the identical
-    cap and never claims completeness by omission: `memory_index_total` and
-    `memory_index_truncated` are always present, and
-    `memory_index_sweep_command` is added when truncated.
+    `project_identity` project-context contract entry (if any), and its memory
+    by kind: the live preferences, facts and decisions of the workspace, group
+    and project chain as title + `scope=` + `ref=` (never a body, never the
+    user's rows), then the count of the project's lessons and live pendings
+    with the `gaia memory get-relevant` read that opens each.
 
     Resolution tries an EXACT `projects.name` match first, then the basename
     of `projects.path` -- the fix for a legacy row scanned under an opaque
@@ -917,30 +932,10 @@ def _cmd_project(args) -> int:
                 payload, row.get("path"), row.get("remote_url"),
             )
 
-        # The project's memory is every row whose canonical project key is the
-        # project's, in any workspace (AC-12): the workspace that registered
-        # the project does not own the notes written about it elsewhere.
-        from gaia.store.writer import canonical_project_key
-
-        initiative = _project_derive_initiative(row.get("project_identity"))
-        memory_rows = [
-            {"name": m["name"], "type": m["type"], "description": m["description"]}
-            for m in con.execute(
-                "SELECT name, type, description, initiative, project_ref "
-                "FROM memory WHERE deleted_at IS NULL "
-                "  AND (COALESCE(initiative, '') != '' "
-                "       OR COALESCE(project_ref, '') != '') "
-                "ORDER BY COALESCE(updated_at, '') DESC"
-            ).fetchall()
-            if initiative
-            and canonical_project_key(m["project_ref"], m["initiative"]) == initiative
-        ]
-
-        footer = _project_pending_footer(initiative)
-
-        memory_total = len(memory_rows)
-        memory_shown = memory_rows[:_PROJECT_MEMORY_INDEX_TOP_N]
-        memory_truncated = memory_total > len(memory_shown)
+        memory = _project_memory(
+            con, r_workspace, row.get("group_name"), r_name,
+            _project_derive_initiative(row.get("project_identity")),
+        )
 
         if as_json:
             out = {
@@ -951,21 +946,10 @@ def _cmd_project(args) -> int:
                     {"slug": contract_slug, "entry": contract_entry}
                     if contract_slug is not None else None
                 ),
-                # Capped identically to the human view -- the SAME context
-                # cost applies to a JSON payload read in conversation. Never
-                # silent about it: `memory_index_truncated` is always present
-                # (never inferred from array length alone), and `_total` is
-                # the real count regardless of how many are shown.
-                "memory_index": memory_shown,
-                "memory_index_total": memory_total,
-                "memory_index_truncated": memory_truncated,
+                "memory_index": memory["index"],
+                "lessons": memory["lessons"],
+                "pending": memory["pending"],
             }
-            if memory_truncated:
-                out["memory_index_sweep_command"] = _project_memory_sweep_command(
-                    initiative, r_name,
-                )
-            if footer:
-                out["pending_footer"] = footer
             if same_name_group:
                 out["group_of_same_name"] = {
                     "group": name, "workspace": r_workspace, "members": same_name_group,
@@ -1011,30 +995,7 @@ def _cmd_project(args) -> int:
             print("project_identity contract : (no entry found)")
 
         print()
-        if memory_rows:
-            label = (
-                f"curated memory ({memory_total}, showing {len(memory_shown)} "
-                f"most recent)" if memory_truncated
-                else f"curated memory ({memory_total})"
-            )
-            print(f"{label} -- index only, use `gaia memory show <slug>` "
-                  f"for the full body:")
-            if initiative:
-                print(f"  (its anchors whole: `gaia memory get-relevant "
-                      f"--initiative {initiative} --sections anchor`)")
-            for m in memory_shown:
-                desc = m.get("description") or ""
-                print(f"  - {m['name']}: {desc}" if desc else f"  - {m['name']}")
-            if memory_truncated:
-                sweep = _project_memory_sweep_command(initiative, r_name)
-                print(f"  ... and {memory_total - len(memory_shown)} more -- "
-                      f"full index: `{sweep}`")
-        else:
-            print("curated memory    : (none)")
-
-        if footer:
-            print()
-            print(footer)
+        _print_project_memory(memory)
 
         return 0
     finally:
