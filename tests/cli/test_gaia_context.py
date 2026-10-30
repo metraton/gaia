@@ -663,11 +663,6 @@ class TestCmdProject:
             parser.parse_args(["context", "project"])
 
 
-# ---------------------------------------------------------------------------
-# _cmd_project memory index -- grouped by kind over the workspace > group >
-# project chain, values only, never the user's rows or a body.
-# ---------------------------------------------------------------------------
-
 _DEMO_REF = "github.com/org/demo"
 
 
