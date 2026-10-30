@@ -40,25 +40,29 @@ def _memory_add(*flags: str) -> None:
     assert args.func(args) == 0
 
 
-def test_a_user_row_saved_without_a_class_reaches_birth_and_kernel():
+def test_a_user_row_saved_without_a_class_reaches_birth_as_a_title_and_a_ref_and_never_the_kernel():
+    """Replaces "reaches birth and kernel": the birth indexes the row, the kernel carries none of the user's rows."""
     _memory_add(
         "--name=user_pref_draft_prs",
+        "--kind=preference",
         "--description=Preference: pull requests start as drafts.",
         f"--body={STANDING}",
-        "--audience=executor",
     )
 
-    assert STANDING in build_session_context()
-    assert STANDING in build_memory_block()
+    birth = build_session_context()
+    assert '"pull requests start as drafts."  ref=memory:user/user_pref_draft_prs' in birth
+    assert STANDING not in birth
+    assert "user_pref_draft_prs" not in build_memory_block()
 
 
 def test_an_explicit_log_class_keeps_the_row_out_of_birth_and_kernel():
     _memory_add(
         "--name=user_pref_old_note",
+        "--kind=preference",
         "--description=Preference: an old note kept as history.",
         f"--body={LOGGED}",
         "--class=log",
     )
 
-    assert LOGGED not in build_session_context()
-    assert LOGGED not in build_memory_block()
+    assert "user_pref_old_note" not in build_session_context()
+    assert "user_pref_old_note" not in build_memory_block()

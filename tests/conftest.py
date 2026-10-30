@@ -513,6 +513,30 @@ def _isolate_target_configuration(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_alias_cache():
+    """Start and end every test with no alias read, so a tool row of one test never classifies another's command."""
+    def reset():
+        try:
+            from modules.security import cli_aliases
+        except ImportError:
+            return
+        cli_aliases.reset_cache()
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture
+def declare_alias(monkeypatch, tmp_path_factory):
+    """Declare ``wrapper=cli`` pairs as kind=tool rows with ``replaces`` and the binary on PATH."""
+    from tests.alias_support import declare_alias as write_tool_rows
+
+    def declare(*pairs: str) -> None:
+        write_tool_rows(monkeypatch, tmp_path_factory.mktemp("alias_bin"), *pairs)
+    return declare
+
+
+@pytest.fixture(autouse=True)
 def _fresh_mutative_classification_cache():
     """Drop the classifier's verdict and install-root caches after each test.
 

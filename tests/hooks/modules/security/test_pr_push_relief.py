@@ -29,7 +29,6 @@ WRAPPER = "ghwrap"
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
-    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     detect_mutative_command.cache_clear()
     tiers_module._classify_command_tier_cached.cache_clear()
     yield
@@ -146,13 +145,13 @@ def test_pr_create_is_free_at_the_bash_boundary():
     f"{WRAPPER} -C {{repo}} pr create --repo o/r --head feat/x --title t",
     f"{WRAPPER} pr edit 42 --title t",
 ])
-def test_declared_wrapper_inherits_the_pr_exception(monkeypatch, repo, template):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{WRAPPER}=gh")
+def test_declared_wrapper_inherits_the_pr_exception(declare_alias, repo, template):
+    declare_alias(f"{WRAPPER}=gh")
     assert not _mutative(template.format(repo=repo)), template
 
 
-def test_declared_wrapper_naming_a_repo_with_no_checkout_signs(monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{WRAPPER}=gh")
+def test_declared_wrapper_naming_a_repo_with_no_checkout_signs(declare_alias):
+    declare_alias(f"{WRAPPER}=gh")
     assert _mutative(f"{WRAPPER} -C /work/tree pr create --repo o/r --head feat/x --title t")
 
 
@@ -160,8 +159,8 @@ def test_declared_wrapper_naming_a_repo_with_no_checkout_signs(monkeypatch):
     f"{WRAPPER} pr merge 42 --squash",
     f"{WRAPPER} pr edit 42 --base main",
 ])
-def test_declared_wrapper_still_asks_where_gh_asks(monkeypatch, command):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{WRAPPER}=gh")
+def test_declared_wrapper_still_asks_where_gh_asks(declare_alias, command):
+    declare_alias(f"{WRAPPER}=gh")
     assert _mutative(command), command
 
 
@@ -171,8 +170,8 @@ def test_undeclared_wrapper_is_judged_by_the_change_request_shape():
     assert _mutative(f"{WRAPPER} pr merge 42 --squash")
 
 
-def test_an_alias_named_after_a_known_cli_keeps_that_cli_gates(monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", "kubectl=gh")
+def test_an_alias_named_after_a_known_cli_keeps_that_cli_gates(declare_alias):
+    declare_alias("kubectl=gh")
     assert _mutative("kubectl pr create --title t")
 
 
@@ -284,8 +283,8 @@ def test_a_refspec_onto_the_same_feature_branch_is_free(repo, refspec):
     "shred", "truncate", "dd", "wipefs", "srm", "mkfs.ext4", "ssh", "xargs",
     "watch", "flock", "sudo", "env", "bash", "rm", "curl",
 ])
-def test_a_wrapper_named_after_a_governed_program_keeps_its_gate(monkeypatch, name):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{name}=gh")
+def test_a_wrapper_named_after_a_governed_program_keeps_its_gate(declare_alias, name):
+    declare_alias(f"{name}=gh")
     assert _mutative(f"{name} pr create --title t"), name
 
 

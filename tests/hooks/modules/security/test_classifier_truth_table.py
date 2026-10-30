@@ -218,7 +218,7 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gh-workflow-view", FREE, "gh workflow view deploy.yml", False, T0),
     ("read-gh-run-view", FREE, "gh run view 123456", False, T0),
     # ---- Remote triggers and setting changes classify by SHAPE, any binary ----
-    # `wrapbin` is declared nowhere (no GAIA_CLI_ALIASES), so these rows prove
+    # `wrapbin` is declared nowhere (no tool row), so these rows prove
     # the verdict does not depend on the binary being named `gh`.
     ("shape-workflow-run-wrapper", GATED, "wrapbin workflow run deploy.yml", True, T3),
     ("shape-workflows-run-wrapper", GATED, "wrapbin workflows run deploy.yml", True, T3),
@@ -1552,9 +1552,9 @@ def test_classifier_truth_table_carries_both_directions():
         ("mywrap pr view 1", False),
     ],
 )
-def test_declared_wrapper_costs_what_the_cli_it_wraps_costs(monkeypatch, command, gated):
-    """A wrapper the user declares in GAIA_CLI_ALIASES is read as its target."""
-    monkeypatch.setenv("GAIA_CLI_ALIASES", "mywrap=gh")
+def test_declared_wrapper_costs_what_the_cli_it_wraps_costs(declare_alias, command, gated):
+    """A wrapper the user declares as a tool row with replaces=gh is read as its target."""
+    declare_alias("mywrap=gh")
     detect_mutative_command.cache_clear()
     assert detect_mutative_command(command).is_mutative is gated, command
     assert (classify_command_tier(command) == T3) is gated, command

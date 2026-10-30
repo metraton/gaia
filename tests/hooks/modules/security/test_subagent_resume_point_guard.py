@@ -94,8 +94,8 @@ def test_a_symlinked_gaia_binary_is_refused_for_a_subagent(monkeypatch):
     )
 
 
-def test_a_declared_gaia_wrapper_is_refused_for_a_subagent(monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", "gx=gaia")
+def test_a_declared_gaia_wrapper_is_refused_for_a_subagent(declare_alias):
+    declare_alias("gx=gaia")
     _assert_categorical_refusal(
         _validate("gx session resume-point set --session-id s --text t", is_subagent=True), "alias"
     )

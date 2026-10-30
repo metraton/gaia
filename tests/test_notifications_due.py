@@ -123,7 +123,7 @@ def row_count(db: Path) -> int:
 def birth_block_line(workspace: str) -> str:
     from modules.session import session_manifest
 
-    return session_manifest._recurring_work_line(workspace)
+    return session_manifest.build_due_section(workspace)
 
 
 def due_at_local(notification_id: int) -> datetime:

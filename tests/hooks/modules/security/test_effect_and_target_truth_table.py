@@ -106,7 +106,6 @@ def world(tmp_path_factory):
     patch = pytest.MonkeyPatch()
     patch.setenv("GAIA_DATA_DIR", str(root / "gaia-data"))
     patch.setenv("GAIA_DB", str(root / "gaia-data" / "gaia.db"))
-    patch.delenv("GAIA_CLI_ALIASES", raising=False)
     _isolate_targets(patch, root)
     from gaia.paths import ensure_layout, scratch_dir, worktrees_dir
 
@@ -163,7 +162,6 @@ def _case(row: dict):
 def _observe_isolated(row, world, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(world["root"] / "gaia-data"))
     monkeypatch.setenv("GAIA_DB", str(world["root"] / "gaia-data" / "gaia.db"))
-    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     _isolate_targets(monkeypatch, world["root"])
     monkeypatch.chdir(world["root"])
     assert os.environ["GAIA_DB"].startswith(str(world["root"]))
@@ -282,17 +280,14 @@ CHANGE_REQUEST_SPELLINGS = {
 
 
 @pytest.mark.parametrize("operation", list(CHANGE_REQUEST_OPERATIONS))
-def test_a_change_request_operation_gets_one_verdict_whatever_the_binary(operation, world, monkeypatch):
+def test_a_change_request_operation_gets_one_verdict_whatever_the_binary(operation, world, monkeypatch, declare_alias):
     monkeypatch.setenv("GAIA_DATA_DIR", str(world["root"] / "gaia-data"))
     monkeypatch.setenv("GAIA_DB", str(world["root"] / "gaia-data" / "gaia.db"))
     monkeypatch.chdir(world["root"])
+    declare_alias("mywrap=gh")
     verb, _, rest = operation.partition(" ")
     verdicts = {}
     for name, template in CHANGE_REQUEST_SPELLINGS.items():
-        if name == "declared-wrapper":
-            monkeypatch.setenv("GAIA_CLI_ALIASES", "mywrap=gh")
-        else:
-            monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
         command = template.format(op=operation, verb=verb, rest=rest)
         verdicts[command] = observe(command, "none", world)[0]
     assert set(verdicts.values()) == {CHANGE_REQUEST_OPERATIONS[operation]}, verdicts

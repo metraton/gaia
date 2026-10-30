@@ -76,8 +76,8 @@ INLINE_COMMANDS = [
 
 
 @pytest.fixture(autouse=True)
-def declared_gh_wrapper(monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{GH_WRAPPER}=gh")
+def declared_gh_wrapper(declare_alias):
+    declare_alias(f"{GH_WRAPPER}=gh")
 
 
 @pytest.fixture
