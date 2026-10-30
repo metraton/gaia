@@ -1248,7 +1248,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("history",): _flags("--agent -a --limit -n --workspace", "--today -t --blocked -b --json"),
     ("memory", "add"): _flags(
         "--name --type --body --body-file --description --project --project-ref "
-        "--initiative --class --status --audience --measured-at --method --kind --until "
+        "--initiative --class --status --measured-at --method --kind --until "
         "--binary --replaces --workspace", "--json"),
     ("memory", "append"): _flags("--body --body-file --workspace", "--json"),
     ("memory", "checkpoint"): _flags(
@@ -1260,7 +1260,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
         "--json --no-pointer"),
     ("memory", "link"): _flags("--kind --workspace", "--json"),
     ("memory", "list"): _flags(
-        "--type --audience --class --status --sort --order --workspace --limit --format",
+        "--type --kind --class --status --sort --order --workspace --limit --format",
         "--include-superseded --json"),
     ("memory", "reclassify"): _flags("--class --status --workspace", "--json"),
     ("memory", "search"): _flags(

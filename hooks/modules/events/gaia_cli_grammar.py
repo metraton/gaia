@@ -196,8 +196,8 @@ OPTIONS = {
     'map': '--help -h',
     'memory': '--help --json -h',
     'memory add': (
-        '--audience --binary --body --body-file --class --description --help --initiative --json '
-        '--kind --measured-at --method --name --project --project-ref --replace --replaces --status '
+        '--binary --body --body-file --class --description --help --initiative --json --kind '
+        '--measured-at --method --name --project --project-ref --replace --replaces --status '
         '--type --until --workspace -h'
     ),
     'memory append': '--body --body-file --help --json --workspace -h',
@@ -212,8 +212,8 @@ OPTIONS = {
     ),
     'memory link': '--delete --help --json --kind --workspace -h',
     'memory list': (
-        '--audience --class --format --help --include-superseded --json --limit --order '
-        '--sort --status --type --workspace -h'
+        '--class --format --help --include-superseded --json --kind --limit --order --sort '
+        '--status --type --workspace -h'
     ),
     'memory reclassify': '--class --help --json --status --workspace -h',
     'memory search': (

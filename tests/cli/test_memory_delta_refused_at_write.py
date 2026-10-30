@@ -19,9 +19,11 @@ AGENT = "a" + "3" * 16
 CONTRACT_ID = f"{AGENT}.0000000000bb"
 
 
-def _proposal(slug: str, mem_type: str) -> dict:
-    return {"operation": "create", "create": {
-        "slug": slug, "type": mem_type, "description": f"Fact: {slug} holds.", "body": "body"}}
+def _proposal(slug: str, mem_type: str, kind: str | None = "fact") -> dict:
+    create = {"slug": slug, "type": mem_type, "description": f"{slug} holds.", "body": "body"}
+    if kind is not None:
+        create["kind"] = kind
+    return {"operation": "create", "create": create}
 
 
 def _delta(*proposals: dict) -> dict:
@@ -76,6 +78,21 @@ def test_memory_delta_refused_at_write_by_fill(gaia, bad):
     assert bad["create"]["slug"] in message
     assert "atom" in message and "decision" in message
     assert "replace memory_delta" in message
+    assert _stored_delta(gaia) == {}
+
+
+@pytest.mark.parametrize("bad,reason", [
+    (_proposal("atom_no_kind", "atom", kind=None), "kind"),
+    (_proposal("atom_odd_kind", "atom", kind="opinion"), "kind"),
+    (_proposal("user_decided", "user", kind="decision"), "user owns"),
+    (_proposal("atom_called_lesson", "atom", kind="lesson"), "atom"),
+])
+def test_a_memory_proposal_names_a_kind_its_owner_and_type_hold(gaia, bad, reason):
+    refused = gaia("fill", "--json", json.dumps({"memory_delta": _delta(bad)}))
+
+    assert refused.returncode != 0, refused.stdout
+    message = refused.stdout + refused.stderr
+    assert bad["create"]["slug"] in message and reason in message
     assert _stored_delta(gaia) == {}
 
 

@@ -2652,10 +2652,14 @@ def upsert_memory(
 
     from gaia.store.memory_placement import (
         default_kind, derive_owner_level, parse_until, placement_refusal, tool_refusal,
+        type_refusal,
     )
 
     if until is not None:
         until = parse_until(until)
+    mismatch = type_refusal(type, kind)
+    if mismatch:
+        raise ValueError(f"cannot write {name!r} as {kind}: {mismatch}")
     kind = kind or default_kind(type, description, born_class)
 
     con = _connect(db_path)
@@ -4006,6 +4010,7 @@ def list_memory(
     *,
     type: str | None = None,
     audience: str | None = None,
+    kind: str | None = None,
     class_: str | None = None,
     status: str | None = None,
     include_deleted: bool = False,
@@ -4016,7 +4021,7 @@ def list_memory(
     db_path: Path | None = None,
 ) -> list[dict]:
     """List curated memory rows, optionally filtered by ``type``/``audience``/
-    ``class_``/``status``. ``with_user_scope`` adds the workspace-less
+    ``kind``/``class_``/``status``. ``with_user_scope`` adds the workspace-less
     :data:`USER_WORKSPACE` rows to the listing of ``workspace``.
 
     Every row carries ``superseded_by``; ``include_superseded=False`` drops those rows.
@@ -4073,6 +4078,9 @@ def list_memory(
         if audience is not None:
             where.append("audience = ?")
             params.append(audience)
+        if kind is not None:
+            where.append("kind = ?")
+            params.append(kind)
         if class_ is not None:
             where.append("class = ?")
             params.append(class_)
@@ -4085,7 +4093,7 @@ def list_memory(
         if not include_superseded:
             where.append(not_superseded())
         sql = (
-            "SELECT name, type, description, updated_at, audience, class, "
+            "SELECT name, type, kind, description, updated_at, audience, class, "
             "       status, injection_count, deliberate_count, "
             "       last_injected_at, last_deliberate_at, "
             f"      {superseded_by()} AS superseded_by "

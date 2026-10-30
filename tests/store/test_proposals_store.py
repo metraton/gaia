@@ -49,7 +49,7 @@ def db(tmp_path, monkeypatch) -> Path:
 def _memory(slug: str) -> dict:
     return {"operation": "create", "create": {
         "slug": slug, "type": "atom" if slug.startswith("atom_") else "project",
-        "description": f"Fact: {slug}.", "body": "body"}}
+        "kind": "fact", "description": f"{slug} holds.", "body": "body"}}
 
 
 def _envelope(state: str, *, memory=(), context=None) -> str:

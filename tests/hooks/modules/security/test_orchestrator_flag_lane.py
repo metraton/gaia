@@ -252,6 +252,28 @@ def test_flags_the_orchestrator_uses_today_still_pass(run_guard, argline) -> Non
     assert run_guard(argline) == (True, None)
 
 
+@pytest.mark.parametrize("argline", [
+    "memory add --name user_pref_x --type user --kind preference --description d --body b",
+    "memory add --name user_pref_x --type user --kind preference --until 2026-12-31 "
+    "--description d --body b",
+    "memory add --name user_tool_ghx --type user --kind tool --binary ghx --replaces gh "
+    "--description d --body b",
+    "memory add --name atom_x --type atom --kind fact --project gaia --workspace me --body b",
+    "memory list --kind preference",
+    "memory list --type user --kind tool --json",
+])
+def test_the_kind_model_writes_and_reads_pass_the_lane(run_guard, argline) -> None:
+    assert run_guard(argline) == (True, None)
+
+
+@pytest.mark.parametrize("argline", [
+    "memory add --name user_pref_x --type user --kind preference --audience any --body b",
+    "memory list --audience executor",
+])
+def test_the_retired_audience_flag_is_refused(run_guard, argline) -> None:
+    assert run_guard(argline)[0] is False
+
+
 @pytest.mark.parametrize(
     "argline",
     [

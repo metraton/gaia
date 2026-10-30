@@ -88,8 +88,9 @@ def _accept_memory(item: dict, owner: Optional[dict], workspace: Optional[str]) 
         return False, "the proposal names no slug or type; add it with `gaia memory add` and dismiss"
     argv = ["memory", "add", "--name", slug, "--type", mem_type, "--body", create["body"],
             "--description", create["description"]]
-    if create.get("class"):
-        argv += ["--class", create["class"]]
+    for field in ("kind", "class", "until", "binary", "replaces"):
+        if create.get(field):
+            argv += [f"--{field}", create[field]]
     if mem_type != "user":
         if owner is None:
             return False, "the proposal has no project: pass --project <identity or name>"

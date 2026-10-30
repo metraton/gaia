@@ -29,19 +29,25 @@ _SLUG = re.compile(r"[a-z0-9][a-z0-9_.-]*")
 def _unwritable(proposal: dict) -> Optional[str]:
     if proposal.get("operation") != "create":
         return None
+    from gaia.store.memory_placement import MEMORY_KINDS, placement_refusal, type_refusal
     from gaia.store.writer import VALID_MEMORY_TYPES, _validate_curated_slug
 
     create = proposal.get("create") or {}
     slug, mem_type = str(create.get("slug") or ""), create.get("type")
+    kind = create.get("kind")
     if mem_type not in VALID_MEMORY_TYPES:
         return f"type {mem_type!r} is not one of {list(VALID_MEMORY_TYPES)}"
     if not _SLUG.fullmatch(slug):
         return f"slug {slug!r} is not lowercase letters, digits and _ . -"
+    if kind not in MEMORY_KINDS:
+        return f"kind {kind!r} is required and is one of {', '.join(MEMORY_KINDS)}"
     try:
         _validate_curated_slug(slug, mem_type)
     except ValueError as exc:
         return str(exc)
-    return None
+    # Accepting writes a non-user proposal onto its contract's project.
+    owner = "user" if mem_type == "user" else "project"
+    return type_refusal(mem_type, kind) or placement_refusal(owner, kind, create.get("until"))
 
 
 def _refusal(item: dict, reason: str) -> str:

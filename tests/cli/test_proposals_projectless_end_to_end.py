@@ -23,7 +23,7 @@ CONTRACT_ID = f"{AGENT}.0000000000aa"
 
 def _create(slug: str) -> dict:
     return {"operation": "create", "create": {
-        "slug": slug, "type": "atom", "description": f"Fact: {slug} holds.",
+        "slug": slug, "type": "atom", "kind": "fact", "description": f"{slug} holds.",
         "body": f"{slug} was measured in the end-to-end test."}}
 
 

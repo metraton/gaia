@@ -185,7 +185,8 @@ def test_an_accepted_memory_proposal_signals_the_other_session_only(
     monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
     agent = "a" + "2" * 16
     contract_id = f"{agent}.000000000001"
-    create = {"slug": SLUG, "type": "user", "description": "Preference: probe.", "body": "probe"}
+    create = {"slug": SLUG, "type": "user", "kind": "preference",
+              "description": "Probe: run it.", "body": "probe"}
     envelope = {
         "agent_status": {"agent_state": "COMPLETE", "agent_id": agent,
                          "pending_steps": [], "next_action": "done"},

@@ -10,7 +10,7 @@ on curated memory rows:
   stats [--json]                         Episode count, index count, conflicts
   show <name> [--json]                  Curated memory row by (project, name)
   episode-show <episode_id> [--json]    Full episode with metadata
-  list [--type=...] [--audience=...] [--workspace=<ws>]
+  list [--type=...] [--kind=...] [--workspace=<ws>]
                                           Enumerate curated memory rows
   get-relevant [--workspace=<ws>]       Compact SessionStart injection block
   conflicts [--threshold F] [--json]    Pairwise contradiction scan (curated)
@@ -29,8 +29,9 @@ this order:
                                           no approval) -- appending only adds.
 
   add --name=<slug> --type=<project|user|feedback|atom|decision|negative>
+      --kind=<fact|preference|decision|lesson|pending|defect|tool>
       --body="..." [--description=...] [--class=...] [--status=...]
-      [--audience=<orchestrator|executor|any>]
+      [--until=...] [--binary=... [--replaces=...]]
       [--workspace=<ws>] [--project=<name> | --project-ref=<identity>]
       [--replace] [--json]
                                           Creates a NEW row (distinct from
@@ -54,7 +55,6 @@ this order:
                                           {"error","code"}) and writes no row.
                                           --workspace only => project_ref NULL,
                                           exit 0 (explicit degraded lane).
-                                          --audience sets memory.audience
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->
@@ -680,7 +680,7 @@ _WRITE_POINTER = (
 _DIFFERENCE_QUESTION = (
     "is this preference his difference from what Gaia does for anyone? A rule "
     "any user would want is a missing standard or a defect, not his row: record "
-    "it with --type=feedback --initiative=gaia_system. A bend of a default is "
+    "it with --type=feedback --kind=defect --initiative=gaia_system. A bend of a default is "
     "kept once he has agreed to it; one that would move consent, security or "
     "the contract is not kept at all."
 )
@@ -734,9 +734,7 @@ def _add_warnings(
     ``authored`` the user's own executables on PATH, which a user row of
     another kind may be describing without saying so.
     """
-    from gaia.store.memory_claims import (
-        PREFERENCE_KIND, claims_measurement, memory_claim_kind,
-    )
+    from gaia.store.memory_claims import claims_measurement
 
     import re
 
@@ -776,10 +774,11 @@ def _add_warnings(
         ))
     if mem_type != "user" and not owned:
         warnings.append(_warning(
-            "no_owner",
-            "--workspace alone names no owner: a container is not an owner. "
-            "Use --project=<name> or --initiative=<key> for a project, or "
-            "--initiative=gaia_system for Gaia.",
+            "workspace_owner",
+            "--workspace alone makes the workspace the owner, and every group and "
+            "project in it receives the row. A row true of one project takes "
+            "--project=<name>, of one group --initiative=<key>, of Gaia itself "
+            "--initiative=gaia_system.",
         ))
     if previous_body is not None and previous_body != body:
         warnings.append(_warning(
@@ -788,7 +787,7 @@ def _add_warnings(
             "`gaia memory link <new> <old> --kind=supersedes`; add over an "
             "existing name is for correcting an error.",
         ))
-    if mem_type == "user" and memory_claim_kind(description) == PREFERENCE_KIND:
+    if mem_type == "user" and kind == "preference":
         warnings.append(_warning("preference_or_bug", _DIFFERENCE_QUESTION))
     return warnings
 
@@ -815,7 +814,6 @@ def _cmd_add(args) -> int:
     status_flag = getattr(args, "status", None)
     project_flag = getattr(args, "project", None)
     project_ref_flag = getattr(args, "project_ref", None)
-    audience_flag = getattr(args, "audience", None)
     measured_at = getattr(args, "measured_at", None)
     method = getattr(args, "method", None)
     kind_flag = getattr(args, "kind", None)
@@ -913,9 +911,6 @@ def _cmd_add(args) -> int:
             f"invalid type '{mem_type}'; must be one of {list(VALID_MEMORY_TYPES)}",
             as_json,
         )
-    if mem_type == "user" and audience_flag is None:
-        audience_flag = "orchestrator"
-
     project_ref = None
     if project_flag is not None:
         try:
@@ -993,7 +988,6 @@ def _cmd_add(args) -> int:
             description=description,
             project_ref=project_ref,
             initiative=initiative,
-            audience=audience_flag,
             class_=class_flag,
             status=status_for_writer,
             replace=getattr(args, "replace", False),
@@ -1042,8 +1036,6 @@ def _cmd_add(args) -> int:
             out["project_ref"] = project_ref
         if initiative is not None:
             out["initiative"] = initiative
-        if audience_flag is not None:
-            out["audience"] = audience_flag
         if "class" in res:
             out["class"] = res["class"]
             out["memory_status"] = res["memory_status"]
@@ -1063,8 +1055,6 @@ def _cmd_add(args) -> int:
             print(f"  project_ref: {project_ref}")
         if initiative is not None:
             print(f"  initiative: {initiative}")
-        if audience_flag is not None:
-            print(f"  audience: {audience_flag}")
         print(f"  body: {snippet}")
         if host_scoped_notice:
             print(
@@ -1349,7 +1339,7 @@ def _cmd_list(args) -> int:
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     type_filter = getattr(args, "type", None)
-    audience_filter = getattr(args, "audience", None)
+    kind_filter = getattr(args, "kind", None)
     class_filter = getattr(args, "cls", None)
     status_filter = getattr(args, "status", None)
     order_by = getattr(args, "sort", None) or "name"
@@ -1366,7 +1356,7 @@ def _cmd_list(args) -> int:
 
     try:
         rows = list_memory(
-            workspace, type=type_filter, audience=audience_filter,
+            workspace, type=type_filter, kind=kind_filter,
             class_=class_filter, status=status_filter, order_by=order_by,
             direction=direction, with_user_scope=True,
             include_superseded=getattr(args, "include_superseded", False),
@@ -2750,7 +2740,7 @@ def _cmd_curated_show(args) -> int:
     if row.get("description"):
         print(f"# {row['description']}")
     print(f"# class: {row.get('class')}  status: {row.get('status')}")
-    print(f"# audience: {row.get('audience')}")
+    print(f"# kind: {row.get('kind')}  owner: {row.get('owner_level')}")
     print(f"# updated_at: {row.get('updated_at')}")
     if row.get("measured_at") or row.get("method"):
         print(f"# measured_at: {row.get('measured_at') or '(unknown)'}  "
@@ -3305,6 +3295,8 @@ def register(subparsers):
     """Register the memory subcommand with nested sub-actions."""
     import argparse as _argparse
 
+    from gaia.store.memory_placement import MEMORY_KINDS
+
     mem_parser = subparsers.add_parser(
         "memory",
         help="Curated memory + episodic log",
@@ -3471,6 +3463,7 @@ def register(subparsers):
             "Examples:\n"
             "  gaia memory list --type=feedback\n"
             "  gaia memory list --type=user --include-superseded\n"
+            "  gaia memory list --kind=preference\n"
             "  gaia memory list --limit=10\n"
             "  gaia memory list --sort=deliberate   # most deliberately-read first\n"
             "  gaia memory list --sort=deliberate --order=asc --limit=20   # least-read first\n"
@@ -3483,9 +3476,8 @@ def register(subparsers):
         help="Filter by type.",
     )
     list_p.add_argument(
-        "--audience", default=None,
-        choices=("orchestrator", "executor", "any"),
-        help="Filter by memory.audience (which agent role the row is FOR).",
+        "--kind", default=None, choices=MEMORY_KINDS,
+        help="Filter by what the row claims (gaia map memory lists the kinds).",
     )
     list_p.add_argument(
         "--class", dest="cls", default=None,
@@ -3868,20 +3860,6 @@ def _add_parser(actions):
         help=(
             "Set memory.status (open|carry_forward|graduated|closed); "
             "use 'null' to clear. Only valid for class=thread."
-        ),
-    )
-    add_p.add_argument(
-        "--audience", default=None,
-        choices=("orchestrator", "executor", "any"),
-        help=(
-            "Which agent role this row is FOR. A --type=user row reaches a "
-            "dispatched specialist only as 'executor': mark it so only when "
-            "it is his difference every specialist must apply in any project "
-            "(a signature on his PRs); a rule any user's artifacts must obey "
-            "is a standard for a skill or guard, not a row. 'orchestrator' "
-            "and 'any' keep a user row with the orchestrator. Omitted, a new "
-            "user row gets 'orchestrator', any other new row gets 'any', and "
-            "--replace keeps the stored value (never silently reset)."
         ),
     )
     add_p.add_argument(
