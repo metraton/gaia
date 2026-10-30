@@ -2652,14 +2652,10 @@ def upsert_memory(
 
     from gaia.store.memory_placement import (
         default_kind, derive_owner_level, parse_until, placement_refusal, tool_refusal,
-        type_refusal,
     )
 
     if until is not None:
         until = parse_until(until)
-    mismatch = type_refusal(type, kind)
-    if mismatch:
-        raise ValueError(f"cannot write {name!r} as {kind}: {mismatch}")
     kind = kind or default_kind(type, description, born_class)
 
     con = _connect(db_path)

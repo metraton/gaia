@@ -51,8 +51,8 @@ def _run(capsys, *argv):
 
 def _add(capsys, body, *extra):
     return _run(
-        capsys, "add", f"--name={SLUG}", "--type=decision", "--initiative=bildwiz",
-        "--workspace=me",
+        capsys, "add", f"--name={SLUG}", "--type=decision", "--kind=decision",
+        "--initiative=bildwiz", "--workspace=me",
         "--description=release cadence", f"--body={body}", *extra,
     )
 
@@ -116,11 +116,11 @@ def test_add_refuses_when_the_existence_lookup_fails(tmp_db, capsys, monkeypatch
 @pytest.mark.parametrize("replace", [[], ["--replace"]])
 def test_add_over_a_user_name_is_a_collision(tmp_db, capsys, replace):
     rc, out = _run(capsys, "add", "--name=user_prefers_plain", "--type=user",
-                   "--body=plain")
+                   "--kind=preference", "--body=plain")
     assert rc == 0, out
 
     rc, out = _run(capsys, "add", "--name=user_prefers_plain", "--type=user",
-                   "--body=rich", *replace)
+                   "--kind=preference", "--body=rich", *replace)
 
     assert rc == 1
     assert out["code"] == "user_name_collision"

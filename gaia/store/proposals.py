@@ -29,7 +29,7 @@ _SLUG = re.compile(r"[a-z0-9][a-z0-9_.-]*")
 def _unwritable(proposal: dict) -> Optional[str]:
     if proposal.get("operation") != "create":
         return None
-    from gaia.store.memory_placement import MEMORY_KINDS, placement_refusal, type_refusal
+    from gaia.store.memory_placement import MEMORY_KINDS, placement_refusal
     from gaia.store.writer import VALID_MEMORY_TYPES, _validate_curated_slug
 
     create = proposal.get("create") or {}
@@ -47,7 +47,7 @@ def _unwritable(proposal: dict) -> Optional[str]:
         return str(exc)
     # Accepting writes a non-user proposal onto its contract's project.
     owner = "user" if mem_type == "user" else "project"
-    return type_refusal(mem_type, kind) or placement_refusal(owner, kind, create.get("until"))
+    return placement_refusal(owner, kind, create.get("until"))
 
 
 def _refusal(item: dict, reason: str) -> str:

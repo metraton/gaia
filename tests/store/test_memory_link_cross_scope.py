@@ -57,8 +57,9 @@ def gaia(tmp_path):
         con.execute("INSERT OR IGNORE INTO workspaces (name) VALUES ('me')")
         con.execute(
             "INSERT INTO memory (workspace, name, type, description, body, class, audience, "
-            "updated_at, created_at) VALUES ('me', 'user_pref_old', 'user', 'Preferencia: vieja.', "
-            "'vieja', 'anchor', 'executor', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+            "kind, owner_level, updated_at, created_at) VALUES ('me', 'user_pref_old', 'user', "
+            "'Preferencia: vieja.', 'vieja', 'anchor', 'executor', 'preference', 'user', "
+            "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
         )
         con.commit()
     finally:

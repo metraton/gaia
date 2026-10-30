@@ -51,16 +51,6 @@ OWNER_FLAGS = {
 
 TOOL_TITLE_MAX = 80
 
-# Until the type column is retired, the three curated types whose slug prefix
-# names a claim keep that one kind, so a --type filter still reads truthfully.
-KINDS_BY_TYPE = {"atom": ("fact",), "decision": ("decision",), "negative": ("lesson",)}
-
-KIND_TYPE = {
-    "fact": "--type=atom (or project/user)", "decision": "--type=decision (or project)",
-    "lesson": "--type=negative (or project/feedback)", "preference": "--type=project or user",
-    "pending": "--type=project", "defect": "--type=feedback", "tool": "--type=user",
-}
-
 _KIND_BY_WORD = {
     "preference": "preference", "preferencia": "preference", "regla": "preference",
     "principio": "preference", "requisito": "preference",
@@ -173,15 +163,6 @@ def _matrix_refusal(owner_level: str, kind: str) -> str:
                 f"project (--project gaia)")
     return ("a defect is Gaia failing in use and belongs to gaia (--initiative gaia_system); "
             "a bug in the product is this project's pending (--kind pending)")
-
-
-def type_refusal(mem_type: str | None, kind: str | None) -> str | None:
-    """Why an explicit ``kind`` contradicts a curated ``mem_type`` whose slug prefix already names one, or None."""
-    held = KINDS_BY_TYPE.get(mem_type or "")
-    if kind is None or held is None or kind in held:
-        return None
-    return (f"--type={mem_type} holds a {held[0]} only, and its slug prefix says so; a {kind} is "
-            f"written as {KIND_TYPE[kind]} with a matching slug")
 
 
 def classifier_models_cli(name: str) -> bool:

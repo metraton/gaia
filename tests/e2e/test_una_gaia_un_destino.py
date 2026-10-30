@@ -36,6 +36,7 @@ for _p in (_REPO_ROOT, _REPO_ROOT / "hooks", _REPO_ROOT / "bin"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from gaia.store.memory_placement import strip_kind_word  # noqa: E402
 from modules.context.kernel_builder import build_kernel_context  # noqa: E402
 from modules.core import paths, plugin_setup  # noqa: E402
 from modules.session import session_manifest  # noqa: E402
@@ -104,9 +105,9 @@ def _ok(result: subprocess.CompletedProcess) -> dict:
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
-def _write_user_row(cwd: Path, name: str, sentence: str) -> None:
+def _write_user_row(cwd: Path, name: str, sentence: str, kind: str = "preference") -> None:
     _ok(_gaia(cwd, "memory", "add", "--name", name, "--type", "user", "--class", "anchor",
-              "--kind", "preference", "--description", sentence, "--body", sentence, "--json"))
+              "--kind", kind, "--description", sentence, "--body", sentence, "--json"))
 
 
 def _query(db: Path, sql: str, params: tuple = ()) -> list[tuple]:
@@ -170,7 +171,7 @@ def test_a_user_row_written_from_a_is_visible_from_b(one_home):
 
 def test_a_projects_memory_and_brief_written_from_a_are_read_from_b_without_workspace(one_home):
     _ok(_gaia(one_home.a.project, "memory", "add", "--name", "pa_open_thread", "--type", "project",
-              "--initiative", "pa", "--class", "thread", "--status", "open",
+              "--kind", "pending", "--initiative", "pa", "--class", "thread", "--status", "open",
               "--description", "Pendiente: land the pa release.", "--body", "land it",
               "--workspace", WS_A, "--json"))
     _ok(_gaia(one_home.a.project, "brief", "new", "pa-brief", "--headless",
@@ -222,16 +223,18 @@ def _seed_b(one_home) -> None:
     """What B owns and wrote: ownership rows, a collision with A, and history."""
     ts = "2026-09-01T00:00:00Z"
     db = one_home.db
-    _write_user_row(one_home.b.project, "b_user", "Hecho: the user runs the B workspace.")
+    _write_user_row(one_home.b.project, "b_user", "Hecho: the user runs the B workspace.", "fact")
     _ok(_gaia(one_home.b.project, "brief", "new", "b-brief", "--headless",
               "--title", "B brief", "--objective", "ship pb", "--json"))
     for name, kind, extra in (("b_thread", "project", ("--initiative", "pb")),
                               ("b_lesson", "feedback", ()),
                               ("shared_name", "feedback", ())):
         _ok(_gaia(one_home.b.project, "memory", "add", "--name", name, "--type", kind, *extra,
-                  "--description", "Hecho: from B.", "--body", "b", "--workspace", WS_B, "--json"))
+                  "--kind", "fact", "--description", "Hecho: from B.", "--body", "b",
+                  "--workspace", WS_B, "--json"))
     _ok(_gaia(one_home.a.project, "memory", "add", "--name", "shared_name", "--type", "feedback",
-              "--description", "Hecho: from A.", "--body", "a", "--workspace", WS_A, "--json"))
+              "--kind", "fact", "--description", "Hecho: from A.", "--body", "a",
+              "--workspace", WS_A, "--json"))
     _ok(_gaia(one_home.b.project, "memory", "link", "b_thread", "b_lesson", "--kind", "relates_to",
               "--workspace", WS_B, "--json"))
     _execute(
@@ -447,7 +450,7 @@ def test_undo_keeps_the_user_scope_when_a_user_row_was_written_into_it_since(one
     assert rc == 0, applied
     assert _query(one_home.db, "SELECT workspace FROM memory WHERE name = 'legacy_user'") \
         == [(USER_SCOPE,)]
-    _write_user_row(one_home.a.project, "user_after_merge", "Hecho: written after the merge.")
+    _write_user_row(one_home.a.project, "user_after_merge", "Hecho: written after the merge.", "fact")
 
     rc, undone = _undo(one_home, applied["ledger"])
 
@@ -499,7 +502,7 @@ def test_removing_bs_install_leaves_a_working_and_the_database_untouched(one_hom
     from cli import install, uninstall
 
     _ok(_gaia(one_home.a.project, "memory", "add", "--name", "pa_fact", "--type", "project",
-              "--initiative", "pa", "--description", "Hecho: pa is written from A.",
+              "--kind", "fact", "--initiative", "pa", "--description", "Hecho: pa is written from A.",
               "--body", "pa is written from A", "--workspace", WS_A, "--json"))
     _write_json(one_home.a.root / ".claude" / "settings.json",
                 {"enabledPlugins": {"gaia@gaia-marketplace": True}})
@@ -567,11 +570,11 @@ def _user_part(block: str) -> str:
 
 
 def _standing_user_rows(one_home) -> None:
-    _write_user_row(one_home.a.project, "user_jorge", _FACT)
+    _write_user_row(one_home.a.project, "user_jorge", _FACT, "fact")
     for name, sentence in _PREFERENCES.items():
         _write_user_row(one_home.b.project, name, sentence)
     _ok(_gaia(one_home.a.project, "memory", "add", "--name", "pa_anchor", "--type", "project",
-              "--initiative", "pa", "--class", "anchor",
+              "--kind", "fact", "--initiative", "pa", "--class", "anchor",
               "--description", _ANCHOR, "--body", _ANCHOR,
               "--workspace", WS_A, "--json"))
 
@@ -581,10 +584,11 @@ def test_a_plugin_session_in_a_and_an_npm_session_in_b_are_born_with_the_same_us
 
     blocks = [_born(one_home, plugin=True), _born(one_home, plugin=False)]
 
+    nothing_due = [h for h in session_manifest.BIRTH_SECTION_HEADERS if h != session_manifest.DUE_HEADER]
     for block in blocks:
-        assert re.findall(r"(?m)^## .+$", block) == list(session_manifest.BIRTH_SECTION_HEADERS)
+        assert re.findall(r"(?m)^## .+$", block) == nothing_due
         for sentence in (_FACT, *_PREFERENCES.values()):
-            assert sentence in block
+            assert strip_kind_word(sentence) in block
         assert _ANCHOR not in block
     assert _user_part(blocks[0]) == _user_part(blocks[1])
 
@@ -594,6 +598,7 @@ def test_a_new_user_row_that_supersedes_one_from_another_workspace_replaces_it_e
     new = "Preferencia: comments stay minimal; the code says what it does."
     _write_user_row(one_home.a.project, "user_pref_old", old)
     _write_user_row(one_home.b.project, "user_pref_new", new)
+    old, new = strip_kind_word(old), strip_kind_word(new)
     before = [_born(one_home, plugin=True), _born(one_home, plugin=False)]
     assert all(old in block and new in block for block in before)
 
@@ -601,6 +606,9 @@ def test_a_new_user_row_that_supersedes_one_from_another_workspace_replaces_it_e
               "--kind", "supersedes", "--json"))
 
     blocks = [_born(one_home, plugin=True), _born(one_home, plugin=False)]
+    for text in blocks:
+        assert new in text
+        assert old not in text
     for workspace in (WS_A, WS_B):
         kernel = build_kernel_context(
             {"contract_id": "a0123456789abcdef.beefcafe0123", "agent_id": "a0123456789abcdef",
@@ -608,7 +616,4 @@ def test_a_new_user_row_that_supersedes_one_from_another_workspace_replaces_it_e
              "kernel_sections": '{"role": "primary", "surface": "app_ci"}'},
             agent_name="developer", agents_dir=one_home.tmp / "agents", db_path=one_home.db,
         )
-        blocks.append(kernel)
-    for text in blocks:
-        assert new in text
-        assert old not in text
+        assert new not in kernel and old not in kernel

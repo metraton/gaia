@@ -139,15 +139,6 @@ def test_a_user_preference_is_asked_whether_it_is_his_difference(gaia):
     assert "preference_or_bug" not in fact
 
 
-def test_a_curated_type_refuses_a_kind_its_slug_prefix_contradicts(gaia):
-    """Until the type column is retired, atom holds facts, decision decisions and negative lessons."""
-    result = gaia("memory", "add", "--name", "atom_x", "--type", "atom", "--kind", "lesson",
-                  "--workspace", "demo", "--initiative", "demo", "--body", "x", "--json")
-
-    assert result.returncode != 0
-    assert "--type=atom holds a fact only" in result.stdout + result.stderr
-
-
 def test_the_difference_question_routes_a_universal_rule_to_the_harness_and_keeps_walls_out(gaia):
     """What any user would want goes to gaia_system, a bend needs his agreement, and a wall is never stored."""
     result = gaia(

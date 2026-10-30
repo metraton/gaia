@@ -96,24 +96,16 @@ class Seed:
     status: str | None = None
     initiative: str | None = None
     audience: str | None = None
+    kind: str | None = None
 
 
 SEEDS: tuple[Seed, ...] = (
-    Seed("t_alpha", "project", class_="thread", status="open", initiative="alpha"),
+    Seed("t_alpha", "project", class_="thread", status="open", initiative="alpha", kind="pending"),
     Seed("t_beta", "project", class_="thread", status="carry_forward",
-         initiative="beta"),
-    # type=user: the anchor section carries the user's instructions, so a
-    # type=project anchor sharing the workspace no longer reaches it.
-    Seed("a_anchor", "user", class_="anchor", audience="executor"),
-    # A user row is born anchor; this one is explicitly a log row, the one no
-    # kernel or birth block renders.
+         initiative="beta", kind="pending"),
+    Seed("a_anchor", "user", class_="anchor", audience="executor", kind="preference"),
     Seed("u_exec", "user", class_="log", audience="executor"),
-    # class=anchor so get-relevant's anchor section
-    # -- which pins type=user rows to the top -- can select it too: the row
-    # both the kernel block AND a session-context digest can reach, used by
-    # test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row.
-    Seed("u_kernel_and_digest", "user", class_="anchor", audience="executor"),
-    Seed("atom_seeded", "atom"),
+    Seed("atom_seeded", "atom", class_="anchor"),
     Seed("w_edit", "project"),
     Seed("w_append", "project"),
     Seed("w_reclass", "project"),
@@ -230,9 +222,9 @@ SURFACES: tuple[Surface, ...] = (
           ["memory", "get-relevant", "--workspace", WORKSPACE,
            "--sections", "carry_forward,anchor,thread_open",
            "--max-chars", "4000", "--no-pointer"],
-          INJECTION, ["t_alpha", "t_beta", "a_anchor", "u_kernel_and_digest"],
+          INJECTION, ["t_alpha", "t_beta", "a_anchor"],
           action="get-relevant",
-          contains=("t_alpha", "t_beta", "a_anchor", "u_kernel_and_digest")),
+          contains=("t_alpha", "t_beta", "a_anchor")),
     _read("get-relevant-types",
           ["memory", "get-relevant", "--workspace", WORKSPACE,
            "--types", "atom", "--limit", "8"],
@@ -302,13 +294,13 @@ SURFACES: tuple[Surface, ...] = (
     # A write is not a read: authoring a row is not someone going to look for
     # it, so no write verb touches either counter.
     _read("add",
-          ["memory", "add", "--name", "w_added", "--type", "project",
+          ["memory", "add", "--name", "w_added", "--type", "project", "--kind", "fact",
            "--body", "added body", "--description", "added",
            "--workspace", WORKSPACE, "--initiative", "alpha",
            "--class", "log", "--json"],
           None, action="add", contains=("w_added",)),
     _read("add-replace",
-          ["memory", "add", "--name", "w_edit", "--type", "project",
+          ["memory", "add", "--name", "w_edit", "--type", "project", "--kind", "fact",
            "--body", "corrected body", "--description", "corrected",
            "--workspace", WORKSPACE, "--initiative", "alpha",
            "--replace", "--json"],
@@ -351,7 +343,8 @@ NON_CLASSIFYING_FLAGS: dict[str, frozenset[str]] = {
     "reclassify": frozenset({"--workspace"}),
     "link": frozenset({"--workspace", "--delete"}),
     "add": frozenset({"--workspace", "--body-file", "--project",
-                      "--project-ref", "--status", "--measured-at", "--method"}),
+                      "--project-ref", "--status", "--measured-at", "--method",
+                      "--until", "--binary", "--replaces"}),
     "checkpoint": frozenset({"--workspace", "--project", "--project-ref",
                              "--initiative"}),
     "get-relevant": frozenset({"--workspace"}),
@@ -410,7 +403,7 @@ def seeded(tmp_path_factory) -> dict:
                 WORKSPACE, seed.name, type=seed.type,
                 body=f"body of {seed.name}, seeded for the surface census",
                 description=f"description of {seed.name}",
-                initiative=seed.initiative, audience=seed.audience,
+                initiative=seed.initiative, audience=seed.audience, kind=seed.kind,
                 db_path=db,
             )
             if seed.class_ or seed.status:
@@ -549,21 +542,21 @@ def test_surface_moves_exactly_the_counter_its_verdict_declares(surface, seeded)
 
 def test_kernel_memory_block_counts_the_rows_it_renders(seeded):
     """The dispatch kernel's memory renderer: kernel axis, never injection,
-    the axis it shared before this split. Every user anchor renders together,
-    so both seeded anchors move; ``u_exec`` is a log row, is not rendered,
-    and so is never counted as shown."""
+    the axis it shared before this split. It indexes the workspace's own rows
+    and none of the user's, and counts exactly the rows it renders."""
     from hooks.modules.context.kernel_builder import build_memory_block
 
     before = _counters(seeded["db"])
-    block = build_memory_block(db_path=seeded["db"])
+    block = build_memory_block({"workspace": WORKSPACE}, db_path=seeded["db"])
     after = _counters(seeded["db"])
 
-    assert "body of a_anchor" in block
-    assert "body of u_exec" not in block
-    assert _moved(before, after) == {
-        "a_anchor": (0, 0, 1),
-        "u_kernel_and_digest": (0, 0, 1),
-    }
+    assert "description of atom_seeded" in block
+    assert "description of a_anchor" not in block
+    assert "description of u_exec" not in block
+    moved = _moved(before, after)
+    assert "atom_seeded" in moved
+    assert {name for name in moved if f"description of {name}" in block} == set(moved)
+    assert set(moved.values()) == {(0, 0, 1)}
 
 
 def test_birth_block_counts_the_user_rows_it_carries_only_when_asked(seeded):
@@ -577,11 +570,8 @@ def test_birth_block_counts_the_user_rows_it_carries_only_when_asked(seeded):
 
     block = build_session_context(record_injection=True)
 
-    assert "body of a_anchor" in block
-    assert _moved(before, _counters(seeded["db"])) == {
-        "a_anchor": (1, 0, 0),
-        "u_kernel_and_digest": (1, 0, 0),
-    }
+    assert "description of a_anchor" in block
+    assert _moved(before, _counters(seeded["db"])) == {"a_anchor": (1, 0, 0)}
 
 
 def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
@@ -596,7 +586,7 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
     NEITHER case. Both writes stay outside updated_at and memory_history."""
     from hooks.modules.context.kernel_builder import build_memory_block
 
-    row_name = "u_kernel_and_digest"
+    row_name = "atom_seeded"
 
     def _row_updated_at() -> str:
         con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
@@ -625,29 +615,26 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
     # alongside `row_name` -- both on the kernel axis, neither on injection
     # or deliberate.
     before_dispatch = _counters(seeded["db"])
-    block = build_memory_block(db_path=seeded["db"])
+    block = build_memory_block({"workspace": WORKSPACE}, db_path=seeded["db"])
     after_dispatch = _counters(seeded["db"])
-    assert f"body of {row_name}" in block
-    assert _moved(before_dispatch, after_dispatch) == {
-        row_name: (0, 0, 1),
-        "a_anchor": (0, 0, 1),
-    }
+    assert f"description of {row_name}" in block
+    dispatched = _moved(before_dispatch, after_dispatch)
+    assert dispatched[row_name] == (0, 0, 1)
+    assert "a_anchor" not in dispatched
+    assert set(dispatched.values()) == {(0, 0, 1)}
 
     # 2) A real session-context surface, over the SAME row. The other seeded
     # anchor row (`a_anchor`) shares this section too -- both move on
     # injection, neither on kernel or deliberate.
     result = _run(
         ["memory", "get-relevant", "--workspace", WORKSPACE,
-         "--sections", "anchor", "--max-chars", "4000", "--no-pointer"],
+         "--types", "atom", "--limit", "8"],
         seeded,
     )
     assert result.returncode == 0, result.stderr[:2000]
     assert row_name in result.stdout
     after_digest = _counters(seeded["db"])
-    assert _moved(after_dispatch, after_digest) == {
-        row_name: (1, 0, 0),
-        "a_anchor": (1, 0, 0),
-    }
+    assert _moved(after_dispatch, after_digest) == {row_name: (1, 0, 0)}
 
     # Neither surface ever touched deliberate_count, updated_at, or
     # memory_history for this row.
