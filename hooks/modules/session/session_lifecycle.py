@@ -232,18 +232,28 @@ def refresh_heartbeat(session_id: str) -> None:
         logger.debug("touch_session failed (non-fatal): %s", exc)
 
 
-def notifications_counter(workspace: Optional[str]) -> str:
-    """Return a one-line count of notifications due in ``workspace`` and global, or "" when none.
+DUE_ITEMIZED_MAX = 3
 
-    ``None`` counts every workspace. Advisory: a failure returns "".
+
+def notifications_counter(workspace: Optional[str]) -> str:
+    """Return what ``## Due`` shows for ``workspace`` and global: up to three items in its line shape, else their count; "" when none.
+
+    ``None`` reads every workspace. Advisory: a failure returns "".
     """
     try:
-        from gaia.store.reader import count_unread_notifications
-        n = count_unread_notifications(workspace)
-        if not n:
+        from datetime import datetime, timezone
+
+        from gaia.store.reader import due_now
+        from modules.session.session_manifest import due_item_line
+
+        due = due_now(workspace)
+        if not due:
             return ""
-        noun = "notification" if n == 1 else "notifications"
-        return f"\U0001F514 {n} {noun} due (`gaia notifications list --unread` to see them)"
+        noun = "notification" if len(due) == 1 else "notifications"
+        if len(due) <= DUE_ITEMIZED_MAX:
+            now = datetime.now(timezone.utc)
+            return "\n".join([f"\U0001F514 {len(due)} {noun} due:", *(f"  {due_item_line(row, now)}" for row in due)])
+        return f"\U0001F514 {len(due)} {noun} due (`gaia notifications list --unread` to see them)"
     except Exception as exc:
         logger.warning("notifications counter failed (advisory, skipping): %s", exc)
         return ""

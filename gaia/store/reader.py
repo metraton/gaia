@@ -130,6 +130,15 @@ def list_unread_notifications(
         con.close()
 
 
+def due_now(workspace: str | None = None) -> list[dict[str, Any]]:
+    """The one rule for what is due: open notifications due now in ``workspace`` and global, reports excluded.
+
+    ``## Due`` lists exactly these rows, and the per-prompt line lists or counts
+    exactly these rows. ``limit=-1`` is SQLite's no-limit.
+    """
+    return [row for row in list_unread_notifications(workspace=workspace, limit=-1) if row["kind"] != "report"]
+
+
 def latest_signal_id(db_path: Path | None = None) -> int:
     """Return the id of the newest signal, 0 when there is none or the table cannot be read."""
     try:
@@ -160,16 +169,26 @@ def signals_from_others(
     limit: int | None = None,
     db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Return signals in ``(after_id, upto_id]`` not written by ``session_id`` or its children, newest first; [] on error."""
-    where = ["id > ?"]
+    """Return signals in ``(after_id, upto_id]`` not written by ``session_id`` or its children, newest first; [] on error.
+
+    A memory signal carries the changed row's ``kind``, ``description``,
+    ``initiative``, ``project_ref`` and ``owner_level`` as they stand now, None
+    once the row is hard-deleted.
+    """
+    where = ["s.id > ?"]
     params: list[Any] = [after_id]
     if upto_id is not None:
-        where.append("id <= ?")
+        where.append("s.id <= ?")
         params.append(upto_id)
     if session_id:
         where.append(_NOT_FROM_SESSION)
         params += [session_id, session_id]
-    sql = f"SELECT * FROM signals WHERE {' AND '.join(where)} ORDER BY id DESC"
+    sql = (
+        "SELECT s.*, m.kind, m.description, m.initiative, m.project_ref, m.owner_level "
+        "FROM signals s LEFT JOIN memory m "
+        "ON s.source = 'memory' AND m.workspace = s.workspace AND m.name = s.ref "
+        f"WHERE {' AND '.join(where)} ORDER BY s.id DESC"
+    )
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -179,6 +198,23 @@ def signals_from_others(
         return []
     try:
         return [dict(r) for r in con.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def active_projects(db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Return every active project's workspace, name, path, group_name and project_identity; [] on error."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(
+            "SELECT workspace, name, path, group_name, project_identity FROM projects "
+            "WHERE status = 'active' ORDER BY workspace, name"
+        ).fetchall()]
     except Exception:
         return []
     finally:

@@ -273,3 +273,34 @@ def test_add_reads_local_time_rejects_the_past_and_broken_pointers(gaia_env):
              "--skill", "gmail-triage")
     gaia_env.at(2026, 10, 1, 12, 0)
     assert "gmail-triage" in birth_block_line("ws")
+
+
+def _open_rows(n: int) -> list[dict]:
+    report = {"id": 99, "kind": "report", "headline": "agent finished"}
+    return [report, *({"id": i, "kind": "reminder", "headline": f"due-{i}"} for i in range(1, n + 1))]
+
+
+@pytest.mark.parametrize("due", [1, 3])
+def test_up_to_three_due_items_reach_the_prompt_in_the_due_section_shape(monkeypatch, due):
+    from modules.session.session_lifecycle import notifications_counter
+
+    monkeypatch.setattr(reader, "list_unread_notifications", lambda workspace=None, limit=50: _open_rows(due))
+    section = birth_block_line("ws").splitlines()
+    prompt = notifications_counter("ws").splitlines()
+
+    assert section[1] == f"overdue={due}"
+    noun = "notification" if due == 1 else "notifications"
+    assert prompt[0] == f"\U0001F514 {due} {noun} due:"
+    assert prompt[1:] == [f"  {line}" for line in section[2:]]
+    assert "agent finished" not in "\n".join(prompt + section)
+
+
+def test_above_three_due_items_the_prompt_keeps_the_counter_of_what_the_section_shows(monkeypatch):
+    from modules.session.session_lifecycle import notifications_counter
+
+    monkeypatch.setattr(reader, "list_unread_notifications", lambda workspace=None, limit=50: _open_rows(4))
+
+    assert birth_block_line("ws").splitlines()[1] == "overdue=4"
+    assert notifications_counter("ws") == (
+        "\U0001F514 4 notifications due (`gaia notifications list --unread` to see them)"
+    )

@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from gaia.paths.resolver import data_dir
+from gaia.signals import change_phrase
 
 logger = logging.getLogger(__name__)
 
 RESUME_HEADER = "## Resume point"
-LIST_CAPS = {"in_flight": 8, "pending": 6, "written": 5, "branches": 5}
+LIST_CAPS = {"in_flight": 8, "pending": 6, "written": 5, "changed": 6, "branches": 5}
 TEXT_MAX_CHARS = 80
 _LEDGER_DIR = "session_ledger"
 _LEDGER_MAX_AGE_SECONDS = 30 * 24 * 3600
@@ -82,6 +83,13 @@ def _written(con, session_id: str) -> list[dict[str, Any]]:
     return [{"workspace": r[0], "slug": r[1]} for r in rows]
 
 
+def _changed(con, session_id: str) -> list[dict[str, Any]]:
+    """What other sessions changed in user and project memory since this session's birth, newest first."""
+    from gaia.signals import changed_since_birth
+
+    return changed_since_birth(session_id)
+
+
 def _sidecar(worktree: Path) -> Optional[dict[str, Any]]:
     """The identity a Gaia worktree records about itself, read from files alone so no git process runs."""
     from gaia.worktree import _LEGACY_METADATA_FILENAME, _METADATA_FILENAME
@@ -128,7 +136,8 @@ def _branches(con, session_id: str) -> list[dict[str, Any]]:
     return found
 
 
-_SOURCES = (("in_flight", _in_flight), ("pending", _pending), ("written", _written), ("branches", _branches))
+_SOURCES = (("in_flight", _in_flight), ("pending", _pending), ("written", _written),
+            ("changed", _changed), ("branches", _branches))
 
 
 def build_ledger(session_id: str, compactions: int = 0) -> dict[str, Any]:
@@ -206,6 +215,7 @@ _LINES = {
     "in_flight": lambda c: f'in_flight: "{_clip(c["title"] or c["contract_id"])}" state={c["state"]} ref=contract:{c["contract_id"]}',
     "pending": lambda a: f'pending: {a["id"]} "{_clip(a["what"])}" state={a["state"]}',
     "written": lambda m: f'written: {m["slug"]} ref=memory:{m["workspace"]}/{m["slug"]}',
+    "changed": lambda c: f'changed: {c["where"]} {change_phrase({**c, "title": _clip(c["title"])})}',
     "branches": lambda b: f'branches: {b["branch"]} at {b["commit"] or "unknown"}',
 }
 

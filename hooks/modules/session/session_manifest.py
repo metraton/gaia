@@ -425,7 +425,7 @@ BIRTH_SECTION_HEADERS = (USER_HEADER, DUE_HEADER, ENVIRONMENT_HEADER, PROJECTS_H
 BIRTH_BUDGET = CONTEXT_BUDGET
 
 
-def _due_item_line(row: dict, now) -> str:
+def due_item_line(row: dict, now) -> str:
     """One due reminder or routine as values: its title, when, how late, its ref and its id."""
     from gaia import notifications_time
 
@@ -452,13 +452,13 @@ def build_due_section(workspace: Optional[str]) -> str:
     try:
         from datetime import datetime, timezone
 
-        from gaia.store.reader import list_unread_notifications
+        from gaia.store.reader import due_now
 
-        due = [row for row in list_unread_notifications(workspace=workspace) if row["kind"] != "report"]
+        due = due_now(workspace)
         if not due:
             return ""
         now = datetime.now(timezone.utc)
-        return "\n".join([DUE_HEADER, f"overdue={len(due)}", *(_due_item_line(row, now) for row in due)])
+        return "\n".join([DUE_HEADER, f"overdue={len(due)}", *(due_item_line(row, now) for row in due)])
     except Exception as exc:
         logger.debug("build_due_section failed (non-fatal): %s", exc)
         return ""

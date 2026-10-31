@@ -189,6 +189,8 @@ def test_every_list_is_capped_with_its_remainder_and_the_birth_fits_the_budget(d
         "in_flight": [{"title": "t" * 300, "state": "IN_PROGRESS", "contract_id": f"a{i:016x}.t"} for i in range(many)],
         "pending": [{"id": f"P-{i}", "what": "w" * 300, "state": "pending"} for i in range(many)],
         "written": [{"workspace": "me", "slug": f"atom_{i}"} for i in range(many)],
+        "changed": [{"where": "me/gaia", "op": "updated", "kind": "fact", "title": "c" * 300,
+                     "ref": f"memory:me/fact_{i}"} for i in range(many)],
         "branches": [{"branch": f"feat/b{i}", "commit": "80d055095641"} for i in range(many)],
     }
     path = _ledger_path(A)
@@ -205,6 +207,38 @@ def test_every_list_is_capped_with_its_remainder_and_the_birth_fits_the_budget(d
         assert len(listed) == cap and listed[-1].endswith(f"(+{many - cap})")
     assert all(len(line) < 200 for line in lines if not line.startswith("note: "))
     assert "n" * RESUME_POINT_MAX_CHARS in birth
+
+
+def test_changed_lists_what_other_sessions_changed_since_this_sessions_birth(db):
+    from gaia import signals
+    from gaia.session_ledger import LIST_CAPS, build_ledger, render_resume_point
+
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO memory (workspace, name, type, kind, owner_level, description, body) "
+                "VALUES ('_gaia_user', 'user_pref_early', 'user', 'preference', 'user', 'before birth', 'b')")
+    con.commit()
+    signals.baseline(B)
+    many = LIST_CAPS["changed"] + 2
+    for i in range(many):
+        con.execute("INSERT INTO memory (workspace, name, type, kind, owner_level, description, body) "
+                    "VALUES ('_gaia_user', ?, 'user', 'preference', 'user', ?, 'b')",
+                    (f"user_pref_{i}", f"choice {i}"))
+    con.commit()
+    con.close()
+    assert signals.take_line(B)
+
+    ledger = build_ledger(B)
+    rendered = render_resume_point(ledger).splitlines()
+
+    assert ledger["changed"][0] == {"where": "user", "op": "added", "kind": "preference",
+                                    "title": f"choice {many - 1}",
+                                    "ref": f"memory:user/user_pref_{many - 1}"}
+    assert "user_pref_early" not in json.dumps(ledger["changed"])
+    changed = [line for line in rendered if line.startswith("changed: ")]
+    assert changed[0] == (f'changed: user added kind=preference "choice {many - 1}"  '
+                          f"ref=memory:user/user_pref_{many - 1}")
+    assert len(changed) == LIST_CAPS["changed"] and changed[-1].endswith("(+2)")
+    assert build_ledger(A)["changed"] == []
 
 
 @pytest.mark.parametrize("breakage", ["corrupt_db", "invalid_session"])
