@@ -108,9 +108,38 @@ def _read_workspace_identity() -> Optional[str]:
     return name if isinstance(name, str) and name else workspace
 
 
+def _own_package_root() -> Path:
+    """Root of the package this module ships in, whatever the install layout."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _plugin_root_in_use() -> Optional[Path]:
+    """The plugin root this process runs from, or None when it runs from another install.
+
+    A hook gets ``CLAUDE_PLUGIN_ROOT`` from Claude Code; a `gaia` CLI started
+    from the plugin gets none, so there our own package says which channel
+    runs, by sitting in the dev-plugin cache. Never the cwd's ``node_modules``:
+    that install may be a second channel that is not the one running.
+    """
+    declared = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if declared:
+        return Path(declared)
+    from gaia.paths import cache_dir
+
+    from ..security.protected_paths import _DEV_PLUGIN_DIR
+
+    container = cache_dir() / _DEV_PLUGIN_DIR
+    own = _own_package_root()
+    return own if {Path(os.path.abspath(container)), container.resolve()} & set(own.parents) else None
+
+
 def _on_plugin_channel() -> bool:
-    """Whether Claude Code runs this session from a plugin install."""
-    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip())
+    """Whether this process runs from a plugin install."""
+    try:
+        return _plugin_root_in_use() is not None
+    except Exception as exc:
+        logger.debug("plugin channel unresolved (non-fatal): %s", exc)
+        return False
 
 
 def _declared_install_root() -> Optional[Path]:
@@ -153,17 +182,6 @@ def _scan_live_gaia_installation() -> Optional[dict]:
         return None
 
 
-def _own_package_root() -> Path:
-    """Root of the package this module ships in, whatever the install layout."""
-    return Path(__file__).resolve().parents[3]
-
-
-def _plugin_root() -> Path:
-    """The plugin's real root: the one Claude Code declares, else our own package."""
-    declared = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
-    return Path(declared) if declared else _own_package_root()
-
-
 def _declared_cli_path(package_root: Path) -> Optional[str]:
     """``package_root`` joined with its manifest's ``bin.gaia``, or None."""
     manifest_path = package_root / "package.json"
@@ -184,7 +202,7 @@ def _resolve_gaia_cli_path() -> Optional[str]:
     The guard accepts every genuine copy of the package, so the candidate
     order alone decides which install is published:
 
-    1. Under the plugin channel, the plugin root Claude Code declares.
+    1. Under the plugin channel, the plugin root this process runs from.
     2. Otherwise, the declared workspace's alias
        ``node_modules/@jaguilar87/gaia`` -- never one in a nested folder --
        published as the symlink path, not its realpath, because `gaia
@@ -201,8 +219,9 @@ def _resolve_gaia_cli_path() -> Optional[str]:
         return None
 
     candidates = []
-    if _on_plugin_channel():
-        candidates.append(_plugin_root())
+    plugin_root = _plugin_root_in_use() if _on_plugin_channel() else None
+    if plugin_root is not None:
+        candidates.append(plugin_root)
     else:
         try:
             install_root = _declared_install_root()
@@ -285,27 +304,42 @@ def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> tup
     return names, packages[:limit - len(names)]
 
 
-def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
-    """The user's own tools, then which *candidates* resolve on PATH right now, then package console scripts.
+def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS, user_binaries: Sequence[str] = ()) -> list:
+    """Which *candidates*, then which *user_binaries* (the user's registered tools), resolve on PATH right now.
 
     ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
-    -- so this reflects the current install rather than a snapshot. Never
-    raises: a lookup failure for one name is skipped, not fatal to the rest.
+    -- so this reflects the current install rather than a snapshot. Executables
+    on PATH that no tool row registers are not listed; `gaia doctor` names
+    them. Never raises: a lookup failure for one name is skipped.
     """
     import shutil
 
-    found = []
-    for name in candidates:
+    found: list = []
+    for name in (*candidates, *user_binaries):
         try:
-            if shutil.which(name):
+            if name not in found and shutil.which(name):
                 found.append(name)
         except Exception:
             continue
-    authored, packages = _scan_user_executables(exclude=candidates)
-    return authored + found + packages
+    return found
+
+
+def _host_label() -> str:
+    """The host this hook runs under, as ``claude-code`` or ``opencode``.
+
+    It is the key of the adapter the hook registry selects (``GAIA_HOST``,
+    which OpenCode's plugin and bridge set; Claude Code sets nothing).
+    """
+    from adapters.registry import active_host
+
+    return active_host().replace("_", "-")
 
 
 ENVIRONMENT_LINE_MAX = 400
+
+
+def _binaries_of(tool_rows: list) -> list:
+    return [row["binary"] for row in tool_rows if row.get("binary")]
 
 
 def _os_label() -> str:
@@ -318,10 +352,16 @@ def _os_label() -> str:
     return system
 
 
-def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
-    """The OS, gaia CLI path and tools on PATH as one line within ``limit`` characters."""
+def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX, db_path=None) -> str:
+    """The OS, host, gaia CLI path and detected tools as one line within ``limit`` characters."""
     try:
+        from gaia.store.reader import user_tool_rows
+
         parts = [_os_label()]
+        try:
+            parts.append(f"host {_host_label()}")
+        except Exception as exc:
+            logger.debug("host unresolved (non-fatal): %s", exc)
         cli_path = _resolve_gaia_cli_path()
         if cli_path:
             parts.append(f"gaia CLI {cli_path}")
@@ -330,7 +370,7 @@ def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
             return line[:limit - 1] + "…"
         label = "; tools on PATH: "
         kept = ""
-        for name in _scan_available_tools():
+        for name in _scan_available_tools(user_binaries=_binaries_of(user_tool_rows(db_path))):
             candidate = f"{kept}, {name}" if kept else name
             if len(line + label + candidate) > limit:
                 break
@@ -360,11 +400,11 @@ def _due_item_line(row: dict, now) -> str:
     parts = [f"'{row['headline']}'"]
     due_at = notifications_time.from_iso(row["due_at"]) if row.get("due_at") else None
     if row.get("recurrence"):
-        parts.append(f"repeat='{row['recurrence']}'")
+        parts.append(f"repeat='{notifications_time.describe_recurrence(row['recurrence'])}'")
         if due_at:
-            parts.append(f"missed={due_at.strftime('%Y-%m-%dT%H:%MZ')}")
+            parts.append(f"missed={notifications_time.format_value(due_at)}")
     elif due_at:
-        parts.append(f"due={due_at.strftime('%Y-%m-%dT%H:%MZ')}")
+        parts.append(f"due={notifications_time.format_value(due_at)}")
         late = (now - due_at).days
         if late > 0:
             parts.append(f"late={late}d")
@@ -419,28 +459,33 @@ def build_environment_section(session_id: str = "") -> str:
 
         release = platform.release().lower()
         wsl = "yes" if "microsoft" in release or "wsl" in release else "no"
-        lines = [
-            ENVIRONMENT_HEADER,
+        machine = (
             f"machine={platform.node() or 'unknown'} os={platform.system() or 'unknown'} "
-            f"arch={platform.machine() or 'unknown'} wsl={wsl}",
-        ]
+            f"arch={platform.machine() or 'unknown'} wsl={wsl}"
+        )
+        try:
+            machine += f" host={_host_label()}"
+        except Exception as exc:
+            logger.debug("host unresolved (non-fatal): %s", exc)
+        lines = [ENVIRONMENT_HEADER, machine]
         installation = " ".join(_installation_values())
         if installation:
             lines.append(installation)
         cli_path = _resolve_gaia_cli_path()
         if cli_path:
             lines.append(f"cli={cli_path}")
-        lines.append(f"cwd={Path.cwd()}")
+        lines.append(f"cwd={_home_relative(str(Path.cwd()))}")
         if session_id:
             lines.append(f"session={session_id}")
         lines.append(f"zone={notifications_time.zone_name() or 'unnamed'}")
         lines.append(f"data={data_dir()} db={db_path()}")
-        tools = _scan_available_tools()
-        if tools:
-            lines.append(f"tools={','.join(tools)}")
         from gaia.store.reader import user_tool_rows
 
-        lines.extend(tool_lines(user_tool_rows()))
+        tool_rows = user_tool_rows()
+        tools = _scan_available_tools(user_binaries=_binaries_of(tool_rows))
+        if tools:
+            lines.append(f"tools={','.join(tools)}")
+        lines.extend(tool_lines(tool_rows))
         return "\n".join(lines)
     except Exception as exc:
         logger.debug("build_environment_section failed (non-fatal): %s", exc)

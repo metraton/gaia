@@ -595,14 +595,14 @@ def scope_memory_rows(
 
     A workspace row belongs by its ``workspace``; a group or project row by
     ``canonical_project_key`` of its ``initiative`` and ``project_ref``. A
-    preference counts only while its ``until`` holds. ``[]`` on any error.
+    preference counts only while its ``until`` holds. Raises on a read error:
+    ``[]`` means the chain holds no rows, and the caller reports a failure
+    instead of showing it as an empty scope.
     """
-    try:
-        from gaia.store.memory_placement import until_holds
-        from gaia.store.writer import canonical_project_key
-        con = _connect(db_path)
-    except Exception:
-        return []
+    from gaia.store.memory_placement import until_holds
+    from gaia.store.writer import canonical_project_key
+
+    con = _connect(db_path)
     try:
         rows = []
         for r in con.execute(_SCOPE_MEMORY):
@@ -616,8 +616,6 @@ def scope_memory_rows(
             if held and until_holds(r["until"], con):
                 rows.append({**dict(r), "scope": level})
         return rows
-    except Exception:
-        return []
     finally:
         con.close()
 

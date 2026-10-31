@@ -142,7 +142,8 @@ def test_due_section_lists_overdue_items_as_values(monkeypatch):
     section = build_due_section("me")
     lines = section.splitlines()
     assert lines[0:2] == ["## Due", "overdue=1"]
-    assert lines[2].startswith("'Call the bank'  due=2020-01-02T15:00Z  late=")
+    assert lines[2].startswith("'Call the bank'  due=2020-01-02 ")
+    assert "  late=" in lines[2]
     assert lines[2].endswith(f"id={row_id}")
     birth = build_session_context()
     assert "## Due" in birth and "Recurring work pending" not in birth

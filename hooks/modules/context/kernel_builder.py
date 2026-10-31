@@ -503,7 +503,8 @@ def _scope_chain(row: Mapping[str, Any], *, db_path=None) -> tuple:
                 con.close()
             project_key = dispatch_project_key(workspace or "", dispatch_project, db_path=db_path)
         except Exception:
-            logger.debug("scope chain read failed (non-fatal)", exc_info=True)
+            logger.warning("scope chain read failed", exc_info=True)
+            raise
     from gaia.store.writer import normalize_initiative
 
     group_key = normalize_initiative(group_name) if group_name else None
@@ -512,7 +513,19 @@ def _scope_chain(row: Mapping[str, Any], *, db_path=None) -> tuple:
 
 
 def build_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars: Optional[int] = None) -> str:
-    """Render ``# Scope memory: <chain>`` -- the preferences, facts and lessons of the dispatch's workspace, group and project -- within ``max_chars`` when given, or ""."""
+    """Render ``# Scope memory: <chain>`` -- the preferences, facts and lessons of the dispatch's workspace, group and project -- within ``max_chars`` when given, or "" for an empty scope.
+
+    A read that fails is logged and rendered as the one line
+    ``scope memory unavailable: <error class>``, never as an empty scope.
+    """
+    try:
+        return _scope_memory_block(row, db_path=db_path, max_chars=max_chars)
+    except Exception as exc:
+        logger.warning("scope memory unavailable: %s", exc, exc_info=True)
+        return f"scope memory unavailable: {type(exc).__name__}"
+
+
+def _scope_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars: Optional[int] = None) -> str:
     from gaia.store.reader import scope_memory_rows
 
     from .user_sections import render_scope_section
@@ -701,7 +714,7 @@ def build_environment_block(db_path=None) -> str:
 
         from ..session.session_manifest import build_environment_line
 
-        line = build_environment_line()
+        line = build_environment_line(db_path=db_path)
         tools = tool_lines(user_tool_rows(db_path), cap=KERNEL_TOOL_LINES)
     except Exception:
         logger.debug("environment line failed (non-fatal)", exc_info=True)

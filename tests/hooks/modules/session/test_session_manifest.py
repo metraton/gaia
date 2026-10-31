@@ -44,14 +44,14 @@ class TestBuildEnvironmentSection:
         monkeypatch.setattr(session_manifest, "_scan_live_gaia_installation", lambda: None)
         monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
         monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
-        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: [])
+        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda **_: [])
 
     def test_the_machine_and_the_folder_are_values_not_prose(self):
         """Replaces "a folder outside every workspace says so": the section is values only, no sentence about the workspace."""
         result = build_environment_section()
 
         assert result.startswith("## Environment")
-        assert "machine=host os=Linux arch=x86_64 wsl=no" in result.splitlines()
+        assert "machine=host os=Linux arch=x86_64 wsl=no host=claude-code" in result.splitlines()
         assert f"cwd={Path.cwd()}" in result.splitlines()
         assert "not inside a declared workspace" not in result
 
@@ -120,7 +120,7 @@ class TestBuildEnvironmentSection:
         assert not [line for line in build_environment_section().splitlines() if line.startswith("cli=")]
 
     def test_tools_on_path_are_one_values_line_so_a_missing_tool_can_be_refused(self, monkeypatch):
-        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: ["git", "acli"])
+        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda **_: ["git", "acli"])
 
         assert "tools=git,acli" in build_environment_section().splitlines()
 
@@ -439,7 +439,9 @@ class TestScanAvailableTools:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("PATH", "")
 
-    def test_a_user_executable_precedes_the_candidates(self, monkeypatch, tmp_path):
+    def test_a_registered_binary_follows_the_candidates_and_an_unregistered_executable_is_not_listed(
+        self, monkeypatch, tmp_path
+    ):
         import shutil as _shutil
 
         user_bin = tmp_path / "bin"
@@ -448,9 +450,10 @@ class TestScanAvailableTools:
         (user_bin / "mywrap").chmod(0o755)
         monkeypatch.setenv("PATH", str(user_bin))
         monkeypatch.setattr(
-            _shutil, "which", lambda name: "/usr/bin/" + name if name == "git" else None
+            _shutil, "which", lambda name: "/usr/bin/" + name if name in ("git", "mywrap") else None
         )
-        assert session_manifest._scan_available_tools(("git",)) == ["mywrap", "git"]
+        assert session_manifest._scan_available_tools(("git",)) == ["git"]
+        assert session_manifest._scan_available_tools(("git",), user_binaries=["mywrap"]) == ["git", "mywrap"]
 
     def test_only_resolvable_candidates_are_returned_in_order(self, monkeypatch):
         import shutil as _shutil

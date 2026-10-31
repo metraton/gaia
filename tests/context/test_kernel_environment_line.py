@@ -1,4 +1,4 @@
-"""A specialist is told the OS, the gaia CLI path and the tools on PATH, in a line that stays capped."""
+"""A specialist is told the OS, host, the gaia CLI path and the detected tools, in a line that stays capped."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "hooks"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from gaia.store.writer import USER_WORKSPACE, upsert_memory  # noqa: E402
 from modules.context import kernel_builder  # noqa: E402
 from modules.session import session_manifest  # noqa: E402
 
@@ -30,6 +31,7 @@ def env(tmp_path, monkeypatch, bootstrapped_db_template):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("GAIA_DATA_DIR", str(data))
     monkeypatch.setenv("GAIA_DB", str(db))
+    monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: CLI_PATH)
     return db
@@ -66,93 +68,52 @@ def _make_console_scripts(directory: Path, *names: str) -> Path:
     return directory
 
 
-def test_line_lists_an_executable_from_a_directory_the_user_owns(env, tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    _path_with(monkeypatch, _make(tmp_path / "usr", "git"), _make(home / "bin", "ghx"), _make(home / ".local" / "bin", "mytool"))
+def _register(binary: str) -> None:
+    upsert_memory(USER_WORKSPACE, f"user_tool_{binary}", type="user", body="why it exists",
+                  description="run it for every push", kind="tool", binary=binary)
+
+
+def test_line_lists_the_catalog_tools_that_resolve_in_catalog_order(env, tmp_path, monkeypatch):
+    _path_with(monkeypatch, _make(tmp_path / "usr", "kubectl", "git", "not-in-the-catalog"))
 
     line = session_manifest.build_environment_line()
 
-    assert {"git", "ghx", "mytool"} <= set(_tools(line))
+    assert _tools(line) == ["git", "kubectl"]
     assert CLI_PATH in line
     assert line.startswith("Linux")
 
 
 def test_line_names_only_executable_files(env, tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    _make(home / "bin", "runs")
-    _make(home / "bin", "notes.txt", ".hidden", mode=0o644)
-    (home / "bin" / "adir").mkdir()
-    _path_with(monkeypatch, home / "bin")
+    _path_with(monkeypatch, _make(tmp_path / "usr", "git"), _make(tmp_path / "plain", "node", mode=0o644))
 
-    assert _tools(session_manifest.build_environment_line()) == ["runs"]
+    assert _tools(session_manifest.build_environment_line()) == ["git"]
 
 
-def test_line_skips_directories_outside_home_and_package_manager_trees(env, tmp_path, monkeypatch):
+def test_line_drops_authored_executables_and_console_scripts_that_no_row_registers(env, tmp_path, monkeypatch):
     home = tmp_path / "home"
     _path_with(
         monkeypatch,
-        _make(tmp_path / "system", "systool"),
-        _make(home / "proj" / "node_modules" / ".bin", "nodetool"),
-        _make(home / ".cargo" / "bin", "cargotool"),
-        _make(home / "go" / "bin", "gotool"),
-        _make(home / ".venv" / "bin", "venvtool"),
-        _make(home / "bin", "owned"),
-    )
-
-    assert _tools(session_manifest.build_environment_line()) == ["owned"]
-
-
-def test_line_lists_a_name_once_across_directories_and_known_tools(env, tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    _path_with(monkeypatch, _make(tmp_path / "usr", "git"), _make(home / "bin", "git", "twice"), _make(home / ".local" / "bin", "twice"))
-
-    assert sorted(_tools(session_manifest.build_environment_line())) == ["git", "twice"]
-
-
-def test_orchestrator_section_lists_more_user_executables_than_the_line_keeps(env, tmp_path, monkeypatch):
-    names = [f"my-own-tool-{n:02d}" for n in range(60)]
-    _path_with(monkeypatch, _make(tmp_path / "home" / "bin", *names))
-
-    kept_by_line = _tools(session_manifest.build_environment_line())
-    listed = session_manifest._scan_available_tools()
-
-    assert listed == names[: session_manifest.USER_EXECUTABLES_MAX]
-    assert 0 < len(kept_by_line) < len(listed)
-
-
-def test_line_lists_the_users_own_tools_before_known_tools_and_pip_console_scripts(env, tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    pip_scripts = [f"opentelemetry-tool-{n:02d}" for n in range(30)] + ["pytest", "py.test", "uvicorn"]
-    own_python = home / "bin" / "mytask"
-    _make(home / "bin", "ghx")
-    own_python.write_text("#!/usr/bin/env python3\nprint('mine')\n")
-    own_python.chmod(0o755)
-    _path_with(
-        monkeypatch,
-        _make_console_scripts(home / ".local" / "bin", *pip_scripts),
-        home / "bin",
+        _make_console_scripts(home / ".local" / "bin", "pytest", "uvicorn"),
+        _make(home / "bin", "ghx", "mytask"),
         _make(tmp_path / "usr", "git"),
     )
+
+    assert _tools(session_manifest.build_environment_line()) == ["git"]
+    assert session_manifest._scan_available_tools() == ["git"]
+    authored, packages = session_manifest._scan_user_executables()
+    assert authored == ["ghx", "mytask"] and packages == ["pytest", "uvicorn"]
+
+
+def test_line_adds_the_binaries_of_registered_tools_once_after_the_catalog(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _path_with(monkeypatch, _make(home / "bin", "ghx", "mytask"), _make(tmp_path / "usr", "git"))
+    _register("ghx")
+    _register("git")
 
     line = session_manifest.build_environment_line()
-    tools = _tools(line)
 
-    assert len(line) <= session_manifest.ENVIRONMENT_LINE_MAX
-    assert tools[:3] == ["ghx", "mytask", "git"]
-    assert set(tools[3:]) <= set(pip_scripts)
-    assert 0 < len(tools[3:]) < len(pip_scripts)
-
-
-def test_orchestrator_scan_orders_own_tools_then_known_tools_then_pip_console_scripts(env, tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    _path_with(
-        monkeypatch,
-        _make_console_scripts(home / ".local" / "bin", "pytest"),
-        _make(home / "bin", "ghx"),
-        _make(tmp_path / "usr", "git"),
-    )
-
-    assert session_manifest._scan_available_tools() == ["ghx", "git", "pytest"]
+    assert _tools(line) == ["git", "ghx"]
+    assert session_manifest._scan_available_tools(user_binaries=["ghx", "git"]) == ["git", "ghx"]
 
 
 def test_line_names_wsl_from_the_kernel_release(env, monkeypatch):
@@ -164,7 +125,7 @@ def test_line_names_wsl_from_the_kernel_release(env, monkeypatch):
 
 def test_line_is_capped_and_keeps_the_cli_path(env, monkeypatch):
     many = [f"tool{n:02d}" for n in range(80)]
-    monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: many)
+    monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda **_: many)
 
     line = session_manifest.build_environment_line()
 
