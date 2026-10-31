@@ -515,12 +515,12 @@ def _classify_free_kind(prompt: str) -> str:
     default, 'memory' when the prompt names the memory skill explicitly.
 
     ``Skill('memory')`` (or the double-quoted spelling) is the literal marker
-    every memory dispatch carries -- see ``agents/gaia-orchestrator.md``
-    ("only when the user needs depth ... do I dispatch a subagent with
-    `Skill('memory')`") and ``agents/gaia-operator.md`` ("written through the
-    `gaia memory` CLI under the rules in `Skill('memory')`"). A dispatch that
-    does not name it is classified 'investigation', the more general free-turn
-    shape.
+    every memory dispatch carries -- see the Memory row of
+    ``agents/gaia-orchestrator.md`` ("Mine, or `gaia-operator` on my adjudicated
+    instruction; the exception boundary is `Skill('memory')`'s table") and
+    ``agents/gaia-operator.md`` ("written through the `gaia memory` CLI under
+    the rules in `Skill('memory')`"). A dispatch that does not name it is
+    classified 'investigation', the more general free-turn shape.
     """
     import re as _re
 

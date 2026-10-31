@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Use before the first memory verb — read or write — whenever the orchestrator is about to touch memory as this turn's subject, or the user voices a doubt, an idea or a pending, in passing or on purpose, or asks to save, remember or hand something on: deciding what persists and where it goes, searching, curating, or triaging what a session injected at start.
+description: Use before the first memory verb — read or write — whenever the orchestrator is about to touch memory as this turn's subject, or the user voices a doubt, an idea or a pending, in passing or on purpose, or asks to save, remember or hand something on, or a `~ changed: … — gaia signals` line arrives beside a prompt: deciding what persists and where it goes, searching, curating, or triaging what a session injected at start.
 ---
 
 # Memory
