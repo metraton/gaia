@@ -100,11 +100,10 @@ def _ids(rows: list[dict], key: str, prefix: str = "") -> str:
 
 
 def _due_lines(workspace: Optional[str]) -> list[tuple[str, str]]:
-    from gaia.store.reader import list_unread_notifications
+    from gaia.store.reader import due_now, list_unread_notifications
 
-    due = list_unread_notifications(workspace=workspace)
-    reports = [row for row in due if row["kind"] == "report"]
-    timed = [row for row in due if row["kind"] != "report"]
+    timed = due_now(workspace)
+    reports = [row for row in list_unread_notifications(workspace=workspace) if row["kind"] == "report"]
     lines = []
     if timed:
         named = ", ".join(f"{row['kind']} #{row['id']}" for row in timed[:LISTED_IDS])

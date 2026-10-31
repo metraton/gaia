@@ -106,6 +106,7 @@ skills/
 ├── subagent-request-approval/ # Producer: the phrases a signature needs, their limits, and how to group T3 commands
 │   └── reference.md
 ├── reminders/             # Reminders and routines as notifications that come due when Gaia is next used
+├── session-channels/      # Lookup: what each birth-block section and each per-prompt line means to the orchestrator, with the renderer behind it
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
 ├── session-reflection/    # Recover, reconcile, curate, and hand off session continuity; on request, record the resume point and start the compaction
@@ -140,7 +141,7 @@ needs it, even if also declared in frontmatter. The overlap is deliberate: listi
 | gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, code-standards | code-standards, code-review, gaia-patterns, gaia-audit, agent-creation, skill-creation, gaia-release, gaia-verify as applicable |
 | gaia-verifier | agent-protocol, security-tiers, command-execution, verification-oracle, verification-rubric | — |
 | gaia-planner | agent-protocol, security-tiers, investigation, command-execution, gaia-planner | — |
-| gaia-orchestrator | — | human-register before anything a person reads; code-review for explicit review; agent-response and flow-specific skills |
+| gaia-orchestrator | — | human-register before anything a person reads; session-channels for a birth section or per-prompt line it does not hold; code-review for explicit review; agent-response and flow-specific skills |
 | gaia-operator | agent-protocol, security-tiers, investigation, command-execution | memory, gmail-triage, gmail-policy, gws-setup, blog-writing, ticket-writing, ghostwriting, technical-writing, deck-builder, brief-spec |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
@@ -159,6 +160,7 @@ Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 - `pending-approvals` — present and resolve pending approval requests
 - `gaia-check` — guided live certification of Gaia by area, first area approvals: blind specialists with ordinary reversible tasks, the orchestrator guides the user and checks with the CLI, in either host
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
+- `session-channels` — the lookup behind the orchestrator's birth block and per-prompt lines: what each section and line means, with the renderer symbol behind it; the identity keeps only the rows that change behaviour on sight and points here for the rest. Loaded by the orchestrator when a line arrives whose meaning it does not hold, and after a compaction
 - `reminders` — turns a sentence into one `gaia notifications add` (a reminder or a routine, pointing at a skill, a memory or a project) and says how to act on what comes due: do now, snooze, done. Nothing runs unattended and there is no system scheduler; loaded on demand by description match
 - `gaia-research` — technique for mining one or more bookmarked GitHub repos (or, in the inverse direction, finding who solves a capability the user wants) for ideas Gaia can take: burden of proof set by the claim type, code read instead of README, evidential status marked on every idea. Ends at digested ideas and deliberately produces no brief or plan — `brief-spec` picks up downstream. Loaded on demand by description match, invocable directly via the Skill tool
 - `session-reflection` — session-arc recovery, two-way reconciliation against the live corpus, and memory curation proposal

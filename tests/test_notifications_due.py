@@ -148,7 +148,6 @@ def test_a_dated_reminder_is_due_once_from_its_local_hour_and_never_after_ack(ga
         assert "review-x-7f3" in birth_block_line("ws")
         assert counter()
     assert due_ids("ws") == [reminder]
-    assert reader.count_unread_notifications(workspace="ws") == 1
     assert row_count(gaia_env.db) == 1
 
     rc, out, err = gaia_notifications("ack", str(reminder))
@@ -158,7 +157,7 @@ def test_a_dated_reminder_is_due_once_from_its_local_hour_and_never_after_ack(ga
 
     gaia_env.at(2027, 10, 1, 16, 0)
     assert reminder not in due_ids("ws")
-    assert reader.count_unread_notifications(workspace="ws") == 0
+    assert counter() == ""
 
 
 def test_a_friday_routine_acked_late_comes_back_once_on_the_next_friday(gaia_env):
@@ -221,7 +220,7 @@ def test_a_reminder_created_without_workspace_is_seen_from_every_workspace(gaia_
     gaia_env.at(2026, 10, 1, 16, 0)
 
     monkeypatch.chdir(gaia_env.tmp / "ws")
-    assert reader.count_unread_notifications(workspace="ws") == 1
+    assert due_ids("ws") == [reminder]
     assert _prompt_notice()
 
     rc, out, err = gaia_notifications("list", "--unread", "--workspace", "aaxis", "--json")

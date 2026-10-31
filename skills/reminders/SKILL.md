@@ -5,7 +5,7 @@ description: Use when the user wants to be reminded of something at a time, or w
 
 # Reminders
 
-A reminder is a row that comes due, not a job that starts. Gaia has no scheduler, no daemon, no system timer and no unattended AI session: nothing runs while the user is away. A row is due when a read finds it open with its time passed, and the reads happen when the user is present -- the `## Due` section at session start and the `N notifications due` counter on the next prompt. A reminder for 16:00 shows after 16:00, the next time Gaia is used.
+A reminder is a row that comes due, not a job that starts. Gaia has no scheduler, no daemon, no system timer and no unattended AI session: nothing runs while the user is away. A row is due when a read finds it open with its time passed, and the reads happen when the user is present, both from one rule (`gaia/store/reader.py::due_now`: open reminders and routines whose time has passed, in the workspace or global, reports excluded). At session start the `## Due` section lists them, `overdue=N` then one line each with the title, `due=` or `repeat=`/`missed=`, `late=`, `ref=` and `id=` (`hooks/modules/session/session_manifest.py::build_due_section`). On every later prompt a line arrives: up to three due, `🔔 N notifications due:` followed by those same item lines; more than three, `🔔 N notifications due (`gaia notifications list --unread` to see them)` (`hooks/modules/session/session_lifecycle.py::notifications_counter`). A reminder for 16:00 shows after 16:00, the next time Gaia is used.
 
 ## The three kinds
 

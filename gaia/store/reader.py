@@ -82,28 +82,6 @@ def _due_rows(con: sqlite3.Connection, select: str, workspace: str | None,
     ).fetchall()
 
 
-def count_unread_notifications(
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> int:
-    """Return the number of notifications open and due now, optionally scoped.
-
-    Fail-soft: returns 0 on any query/connection error so the per-prompt hook
-    counter never breaks the pipeline.
-    """
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return 0
-    try:
-        rows = _due_rows(con, "SELECT COUNT(*)", workspace)
-        return int(rows[0][0]) if rows else 0
-    except Exception:
-        return 0
-    finally:
-        con.close()
-
-
 def list_unread_notifications(
     workspace: str | None = None,
     limit: int = 50,
