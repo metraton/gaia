@@ -113,13 +113,22 @@ def _own_package_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+_MARKETPLACE_CACHE_SHAPE = ("plugins", "cache", "gaia-marketplace", "gaia")
+
+
+def _is_marketplace_cache_entry(root: Path) -> bool:
+    """Whether *root* is a marketplace cache version directory, by path shape (Claude's config dir can move)."""
+    return root.parts[-len(_MARKETPLACE_CACHE_SHAPE) - 1:-1] == _MARKETPLACE_CACHE_SHAPE
+
+
 def _plugin_root_in_use() -> Optional[Path]:
     """The plugin root this process runs from, or None when it runs from another install.
 
     A hook gets ``CLAUDE_PLUGIN_ROOT`` from Claude Code; a `gaia` CLI started
     from the plugin gets none, so there our own package says which channel
-    runs, by sitting in the dev-plugin cache. Never the cwd's ``node_modules``:
-    that install may be a second channel that is not the one running.
+    runs, by sitting in the dev-plugin or marketplace cache. Never the cwd's
+    ``node_modules``: that install may be a second channel that is not the
+    one running.
     """
     declared = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
     if declared:
@@ -130,7 +139,8 @@ def _plugin_root_in_use() -> Optional[Path]:
 
     container = cache_dir() / _DEV_PLUGIN_DIR
     own = _own_package_root()
-    return own if {Path(os.path.abspath(container)), container.resolve()} & set(own.parents) else None
+    in_dev_cache = {Path(os.path.abspath(container)), container.resolve()} & set(own.parents)
+    return own if in_dev_cache or _is_marketplace_cache_entry(own) else None
 
 
 def _on_plugin_channel() -> bool:

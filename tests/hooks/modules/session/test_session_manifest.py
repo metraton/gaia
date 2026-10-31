@@ -376,6 +376,42 @@ class TestResolveGaiaCliPathByInstallLayout:
         assert "gaia=5.5.0 channel=plugin" in block.splitlines()
         assert "5.0.0-rc.7" not in block
 
+    def _run_from(self, monkeypatch, root: Path) -> Path:
+        bin_path = _make_gaia_package(root)
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: root)
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.5.0")
+        return bin_path
+
+    def test_marketplace_cache_cli_without_plugin_root_reports_the_plugin_channel(
+        self, layout, monkeypatch
+    ):
+        workspace, tmp_path = layout
+        _make_gaia_package(workspace / _ALIAS, version="5.6.0")
+        cache_root = tmp_path / "home" / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / "5.5.0"
+        bin_path = self._run_from(monkeypatch, cache_root)
+
+        block = build_environment_section()
+
+        assert "gaia=5.5.0 channel=plugin" in block.splitlines()
+        assert session_manifest._resolve_gaia_cli_path() == str(bin_path)
+
+    @pytest.mark.parametrize(
+        "parts",
+        [
+            ("plugins", "cache", "other-marketplace", "gaia", "5.5.0"),
+            ("plugins", "cache", "gaia-marketplace", "other", "5.5.0"),
+            ("plugins", "gaia-marketplace", "gaia", "5.5.0"),
+            ("plugins", "cache", "gaia-marketplace", "gaia"),
+        ],
+    )
+    def test_a_path_that_only_resembles_the_marketplace_cache_is_not_the_plugin_channel(
+        self, layout, monkeypatch, parts
+    ):
+        _workspace, tmp_path = layout
+        self._run_from(monkeypatch, tmp_path.joinpath("home", ".claude", *parts))
+
+        assert session_manifest._on_plugin_channel() is False
+
     def test_npm_only_publishes_the_workspace_alias(self, layout):
         from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
 
