@@ -1467,7 +1467,8 @@ class OpenCodeAdapter(HookAdapter):
         whose context survives the summary that discards the session's prior
         messages. A dispatched child gets back the kernel its row was born
         with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
-        only the instructions that steer the summary: its snapshot reaches the
+        only the instructions that steer the summary, and its session ledger is
+        written here, as Claude Code's PreCompact writes it; the ledger reaches the
         next turn through adapt_session_start's refresh, so it is never
         paraphrased by the summarizer nor delivered twice.
         Both travel as ``context`` entries, which the host appends to its own
@@ -1481,6 +1482,13 @@ class OpenCodeAdapter(HookAdapter):
             )
         if event.payload.get("main") is True:
             from modules.context.compact_context_builder import build_summary_instructions
+
+            try:
+                from gaia.session_ledger import write_ledger
+
+                write_ledger(event.session_id)
+            except Exception:
+                logger.warning("PreCompact: session ledger not written", exc_info=True)
 
             return HookResponse(
                 output={"action": "allow", "updated_input": {"context": [build_summary_instructions()]}}

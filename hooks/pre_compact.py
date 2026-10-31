@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""PreCompact hook — opens the session's compaction bracket and returns an empty response.
+"""PreCompact hook — opens the compaction bracket, writes the session ledger, and returns an empty response.
 
 PreCompact can run code and can block compaction (exit code 2, or a top-level
 ``decision: "block"``), but Claude Code neither validates nor consumes
 ``hookSpecificOutput`` for it (see ``_handle_pre_compact``), so this hook has no
-way to inject model context. It stays registered as a well-formed responder
-that never blocks, and as the wired entry point for a future capability.
+way to inject model context. It writes the session ledger
+(``gaia.session_ledger``) that SessionStart(source=compact) renders instead.
 
-All errors are caught — this hook never blocks compaction.
+All errors are caught and logged — this hook never blocks compaction.
 """
 
 import sys
@@ -48,8 +48,8 @@ def _handle_pre_compact(event) -> None:
     "(root): Invalid input". There is currently no hook event that can inject
     model context in the narrow window *before* compaction erases it; the
     post-compaction refresh happens instead at SessionStart with
-    ``source == "compact"``. So this handler only logs for GAIA_DEBUG
-    diagnosis and returns a schema-valid empty response.
+    ``source == "compact"``. So this handler stores the session ledger that
+    refresh renders and returns a schema-valid empty response.
     """
     logger.info("PreCompact: no deliverable payload for this event, returning {}")
     try:
@@ -58,6 +58,12 @@ def _handle_pre_compact(event) -> None:
         open_bracket(event.session_id)
     except Exception:
         logger.warning("PreCompact: compaction bracket not recorded", exc_info=True)
+    try:
+        from gaia.session_ledger import write_ledger
+
+        write_ledger(event.session_id)
+    except Exception:
+        logger.warning("PreCompact: session ledger not written", exc_info=True)
 
     # No hookSpecificOutput: PreCompact does not accept one. An empty object
     # is the schema-valid "nothing to report" response for every hook event.

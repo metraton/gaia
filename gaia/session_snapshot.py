@@ -1,12 +1,14 @@
-"""Host-neutral, session-scoped snapshot of the work a compaction must not lose.
+"""The session's hand note, and the snapshot ``gaia session snapshot`` prints.
 
-Derived from the database at birth -- contracts, signatures, plan and task, pending
-proposals, memory the session wrote -- beside the hand note, aged and marked stale
-once a newer contract exists; rendered at birth and by ``gaia session snapshot``.
+The snapshot is derived from the database -- contracts, signatures, plan and
+task, pending proposals, memory the session wrote -- beside the hand note, aged
+and marked stale once a newer contract exists. The birth block no longer
+renders it; it renders ``gaia.session_ledger`` after a compaction instead.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -25,19 +27,18 @@ _WAITING_STATES = frozenset({"NEEDS_INPUT", "APPROVAL_REQUEST", "BLOCKED"})
 _BLOCK_MAX_CHARS = 1500
 _TRUNCATED = "\n... (snapshot truncated; `gaia session snapshot --json` has the rest)"
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
-_PROPOSALS_VERB = "gaia contract proposals list"
 _UNAVAILABLE = "unavailable (the query failed)"
 
 
 def _resume_path(session_id: str):
     if not _SESSION_ID_RE.match(session_id or ""):
         raise ValueError(f"invalid session id: {session_id!r}")
-    return data_dir() / _RESUME_DIR / f"{session_id}.txt"
+    return data_dir() / _RESUME_DIR / f"{session_id}.json"
 
 
 def _prune_resume_points(directory, keep) -> None:
     cutoff = time.time() - _RESUME_MAX_AGE_SECONDS
-    for stale in directory.glob("*.txt"):
+    for stale in [*directory.glob("*.json"), *directory.glob("*.txt")]:
         try:
             if stale != keep and stale.stat().st_mtime < cutoff:
                 stale.unlink()
@@ -45,25 +46,39 @@ def _prune_resume_points(directory, keep) -> None:
             continue
 
 
-def write_resume_point(session_id: str, text: str) -> str:
-    """Replace the session's resume point with *text* (at most 2000 characters), drop resume points older than 30 days, and return the file written."""
+def write_resume_point(session_id: str, text: str, written_by: str = "") -> str:
+    """Replace the session's resume point with *text* (at most 2000 characters), recording the session that wrote it, and return the file written.
+
+    *written_by* defaults to *session_id*; a writer other than *session_id* is
+    refused, so a note is only ever stored by the session it belongs to.
+    Resume points older than 30 days are dropped.
+    """
     text = text.strip()
     if len(text) > RESUME_POINT_MAX_CHARS:
         raise ValueError(f"resume point is {len(text)} characters; the limit is {RESUME_POINT_MAX_CHARS}")
+    if written_by and written_by != session_id:
+        raise ValueError(f"session {written_by} cannot write the resume point of session {session_id}")
     path = _resume_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text + "\n", encoding="utf-8")
+    path.write_text(json.dumps({"text": text, "written_by": written_by or session_id}) + "\n", encoding="utf-8")
     _prune_resume_points(path.parent, path)
     return str(path)
 
 
-def read_resume_point(session_id: str) -> str | None:
-    """The session's last written resume point, or None when it has none."""
+def _stored_note(session_id: str) -> dict[str, Any]:
     try:
-        text = _resume_path(session_id).read_text(encoding="utf-8").strip()
+        stored = json.loads(_resume_path(session_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def read_resume_point(session_id: str) -> str | None:
+    """The hand note *session_id* itself wrote, or None when it has none or the stored writer is another session."""
+    stored = _stored_note(session_id)
+    if stored.get("written_by") != session_id:
         return None
-    return text or None
+    return str(stored.get("text") or "").strip() or None
 
 
 def resume_point_written_at(session_id: str) -> str | None:
@@ -88,7 +103,7 @@ def _open_contracts(con, session_id: str) -> tuple[list[dict[str, Any]], list[di
     rows = [
         dict(r)
         for r in con.execute(
-            "SELECT h.id, h.contract_id, h.agent_id, h.agent_state, h.kind, "
+            "SELECT h.id, h.contract_id, h.agent_id, h.agent_state, h.kind, h.dispatch_description, "
             "MAX(h.created_at, COALESCE(h.claimed_at, h.created_at)) AS last_activity, "
             "h.continues_handoff_id, COALESCE(h.plan_task_id, parent.plan_task_id) AS plan_task_id, "
             "t.status AS task_status "
@@ -293,17 +308,10 @@ def _active_line(task: dict[str, Any] | None, plan: dict[str, Any] | None = None
     return line
 
 
-def _proposals_line(snapshot: dict[str, Any]) -> str:
-    count = snapshot.get("pending_proposals") or 0
-    return f"Pending proposals: {count} (`{_PROPOSALS_VERB}`)" if count else ""
-
-
-def _memory_line(snapshot: dict[str, Any], counts_only: bool) -> str:
+def _memory_line(snapshot: dict[str, Any]) -> str:
     names = [row["name"] for row in snapshot.get("memory_touched") or []]
     if not names:
         return ""
-    if counts_only:
-        return f"Memory touched this session: {len(names)}"
     more = f", +{len(names) - _MAX_LISTED} more" if len(names) > _MAX_LISTED else ""
     return "Memory touched this session: " + ", ".join(names[:_MAX_LISTED]) + more
 
@@ -350,20 +358,6 @@ def _list_sections(snapshot: dict[str, Any]) -> list[str]:
     ]
 
 
-def _count_sections(snapshot: dict[str, Any]) -> list[str]:
-    quiet = len(snapshot.get("older_unbound", []))
-
-    def count(key: str) -> str:
-        return _UNAVAILABLE if _failed(snapshot, key) else str(len(snapshot[key]))
-
-    return [
-        f"Pending signatures: {count('pending_signatures')}\n"
-        f"Open contracts: {count('open_contracts')}"
-        + (f" (+{quiet} unbound, quiet for 24h)" if quiet else "")
-        + f"\nList them with `gaia session snapshot --session-id {snapshot['session_id']}`"
-    ]
-
-
 def _cap(block: str, resume: str | None) -> str:
     limit = _BLOCK_MAX_CHARS + len(resume or "")
     if len(block) > limit:
@@ -380,28 +374,6 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
         + (f"\nResume point {_note_age(snapshot)}" if resume else ""),
         "Resume point:\n" + resume if resume else "Resume point: none",
         *_list_sections(snapshot),
-        _memory_line(snapshot, counts_only=False) or "Memory touched this session: none",
+        _memory_line(snapshot) or "Memory touched this session: none",
     ]
     return _cap("## Session Snapshot\n" + "\n\n".join(sections), resume)
-
-
-def render_resume_section(snapshot: dict[str, Any], *, counts_only: bool = False) -> str:
-    """The birth block's resume section, derived lines first and the hand note whole with its age; "" when nothing is derived and no note exists."""
-    resume = snapshot["resume_point"]
-    has_lists = (
-        snapshot["pending_signatures"] or snapshot["open_contracts"] or snapshot.get("older_unbound")
-        or _failed(snapshot, "pending_signatures") or _failed(snapshot, "open_contracts")
-    )
-    active = snapshot["active_task"] or snapshot.get("active_plan")
-    head = "\n".join(filter(None, [
-        _active_line(snapshot["active_task"], snapshot.get("active_plan")) if active else "",
-        _proposals_line(snapshot),
-    ]))
-    sections = [
-        head,
-        f"Hand note, {_note_age(snapshot)}:\n{resume}" if resume else "",
-        *((_count_sections(snapshot) if counts_only else _list_sections(snapshot)) if has_lists else []),
-        _memory_line(snapshot, counts_only),
-    ]
-    body = "\n\n".join(s for s in sections if s)
-    return _cap("## Resume point\n" + body, resume) if body else ""

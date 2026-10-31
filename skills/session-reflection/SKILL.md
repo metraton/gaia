@@ -110,23 +110,25 @@ Name what the next session picks up: a pointer, never a copied container.
 
 ## Compacting
 
-After step 7, when the user asked to compact. The session id is the
-`- Session id:` line of the `## Environment` block, which arrives at birth and
-after every compaction on both hosts.
+Compaction no longer waits for this reflection. Before every compaction, manual
+or automatic, the PreCompact hook writes this session's ledger from the
+database -- its open contracts, its pending signatures, the memory it wrote,
+the worktrees its agents opened -- and the birth that follows renders it as
+`## Resume point`. Reflection stays a deliberate curation pass the user asks
+for; it is not a precondition. When the user asks to compact, the session id
+is the `session=` line of the `## Environment` block:
 
 1. **Request the compaction.** Call the host's compaction tool once:
    `mcp__gaia__compact_when_idle` in Claude Code, `gaia_compact_when_idle` in
    OpenCode. It schedules the compaction for when the current turn ends, never
    mid-turn. The host can still refuse it.
-2. **Write the resume point.** `gaia session resume-point set --session-id <id>
-   --text "<text>"`, at most 2000 characters, replacing any earlier one: the
-   step 7 pointer plus what the next turn needs and no row holds -- the exact
-   next action, blockers and approvals in flight, the active files. Durable
-   objects are named by id, never copied.
-3. **End the turn** with the post-curation report and a line saying the
-   compaction was requested -- not that it will happen. The snapshot that
-   arrives after compaction carries the resume point; do not restate either in
-   the turn.
+2. **Optionally leave a hand note.** Only what comes next and no row holds --
+   the exact next action, the active files: `gaia session resume-point set
+   --session-id <id> --text "<text>"`, at most 2000 characters. It appears as
+   `note:` only in this session's Resume point; the ledger already carries the
+   contracts, signatures, memory and branches, so do not restate them.
+3. **End the turn** with a line saying the compaction was requested -- not
+   that it will happen.
 
 If the next turn carries a note that the compaction did not start, tell the
 user so, name the host's reason, and ask them to type `/compact`.

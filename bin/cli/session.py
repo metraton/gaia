@@ -57,10 +57,11 @@ def _cmd_snapshot(args) -> int:
 
 def _cmd_resume_point_set(args) -> int:
     """Handle `gaia session resume-point set`: record the session's resume point."""
+    from gaia.agent_identity import host_session_from_env
     from gaia.session_snapshot import write_resume_point
 
     try:
-        path = write_resume_point(args.session_id, args.text)
+        path = write_resume_point(args.session_id, args.text, written_by=host_session_from_env())
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -421,7 +421,6 @@ def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX, db_path=None) -
 PROJECTS_HEADER = "## Workspaces I manage"
 ENVIRONMENT_HEADER = "## Environment"
 DUE_HEADER = "## Due"
-RESUME_HEADER = "## Resume point"
 BIRTH_SECTION_HEADERS = (USER_HEADER, DUE_HEADER, ENVIRONMENT_HEADER, PROJECTS_HEADER)
 BIRTH_BUDGET = CONTEXT_BUDGET
 
@@ -773,16 +772,22 @@ def record_user_rows_injected(rows: list[dict]) -> None:
             logger.debug("user row injection telemetry failed (non-fatal)", exc_info=True)
 
 
-def _snapshot(session_id: str) -> Optional[dict]:
-    if not session_id:
-        return None
-    try:
-        from gaia.session_snapshot import build_snapshot
+RESUME_SOURCES = frozenset({"compact", "resume", "fork"})
 
-        return build_snapshot(session_id)
+
+def build_resume_section(source: str, session_id: str) -> str:
+    """``## Resume point`` for a compact, resume or fork start: this session's ledger and its own hand note; "" otherwise or on failure."""
+    if source not in RESUME_SOURCES or not session_id:
+        return ""
+    try:
+        from gaia.session_ledger import ledger_for_start, render_resume_point
+        from gaia.session_snapshot import read_resume_point
+
+        ledger = ledger_for_start(session_id, source)
+        return render_resume_point(ledger, read_resume_point(session_id)) if ledger else ""
     except Exception as exc:
-        logger.debug("session snapshot failed (non-fatal): %s", exc)
-        return None
+        logger.debug("resume section failed (non-fatal): %s", exc)
+        return ""
 
 
 def _joined(*blocks: str) -> str:
@@ -800,8 +805,6 @@ def build_session_context(
     on each user row the block carries.
     """
     try:
-        from gaia.session_snapshot import render_resume_section
-
         from ..context.user_sections import fit_user_sections, render_user_sections
 
         from gaia.project import current
@@ -811,16 +814,13 @@ def build_session_context(
         prefix = [heading, *(a for a in (*alarms, build_schema_direction_block()) if a)]
         environment = build_environment_section(session_id)
         due = build_due_section(_read_workspace_identity() or current())
-        snapshot = _snapshot(session_id)
-        resume = render_resume_section(snapshot) if snapshot else ""
+        resume = build_resume_section(source, session_id)
         user, kept = render_user_sections(rows), rows
         roster = projects_renderer()
 
         if len(_joined(*prefix, *notices, user, due, resume, environment, roster(sys.maxsize))) > BIRTH_BUDGET:
             notices = ()
         floor = roster(0)
-        if snapshot and len(_joined(*prefix, user, due, resume, environment, floor)) > BIRTH_BUDGET:
-            resume = render_resume_section(snapshot, counts_only=True)
         head = _joined(*prefix, *notices, user, due, resume, environment)
         projects = roster(BIRTH_BUDGET - len(head) - 2)
         if len(_joined(*prefix, user, due, resume, environment, floor)) > BIRTH_BUDGET:
