@@ -3,8 +3,8 @@ gaia session -- Inspect what a session receives, and record where it resumes.
 
 Subcommands:
   session preview                Print the session birth block verbatim.
-  session snapshot               Print one session's open contracts, pending
-                                 signatures, active task and resume point.
+  session snapshot               Print one session's ledger: what its next
+                                 compaction would carry.
   session resume-point set       Replace a session's resume point.
 
 `preview` calls build_session_context() (hooks/modules/session/
@@ -45,13 +45,18 @@ def _cmd_preview(args) -> int:
 
 
 def _cmd_snapshot(args) -> int:
-    """Handle `gaia session snapshot`: print one session's snapshot, writing nothing."""
+    """Handle `gaia session snapshot`: print one session's ledger as it stands now, writing nothing."""
     import json
 
-    from gaia.session_snapshot import build_snapshot, render_snapshot
+    from gaia.session_ledger import ledger_for_start, render_resume_point
+    from gaia.session_snapshot import read_resume_point
 
-    snapshot = build_snapshot(args.session_id)
-    print(json.dumps(snapshot, indent=2) if args.json else render_snapshot(snapshot))
+    ledger = ledger_for_start(args.session_id, "snapshot")
+    note = read_resume_point(args.session_id)
+    if args.json:
+        print(json.dumps({**ledger, "note": note}, indent=2))
+    else:
+        print(render_resume_point(ledger, note, header="## Session ledger"))
     return 0
 
 
@@ -90,9 +95,10 @@ def register(subparsers):
             "  preferences. Writes nothing: no telemetry, no database change.\n"
             "  Notices only a real session start produces (a database upgrade\n"
             "  it just ran) are not shown.\n\n"
-            "snapshot: print one session's open contracts, pending signatures,\n"
-            "  active brief/plan/task and resume point -- what a compaction\n"
-            "  delivers. Writes nothing.\n\n"
+            "snapshot: print one session's ledger as it stands now -- open\n"
+            "  contracts, pending signatures, memory written, worktrees opened,\n"
+            "  compactions and its own hand note: what a compaction delivers as\n"
+            "  ## Resume point. Writes nothing.\n\n"
             "resume-point set: replace the session's resume point (one small file\n"
             "  under the Gaia data directory; older ones are pruned)."
         ),
@@ -114,7 +120,7 @@ def register(subparsers):
     preview_p.set_defaults(func=_cmd_preview)
 
     snapshot_p = actions.add_parser(
-        "snapshot", help="Print one session's open contracts, signatures, active task and resume point; read-only"
+        "snapshot", help="Print one session's ledger, what its next compaction would carry; read-only"
     )
     snapshot_p.add_argument("--session-id", required=True, help="Session whose snapshot to print")
     snapshot_p.add_argument("--json", action="store_true", help="Emit JSON output")

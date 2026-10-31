@@ -153,17 +153,17 @@ class TestOneSummarizerTextOnBothHosts:
         assert "Do not restate" in text and "resume point" in text
 
 
-class TestTheRefreshDeliversTheSnapshotOnce:
-    """The SessionStart(compact) refresh carries exactly one snapshot; register.test.ts pins that the mod adds none."""
+class TestTheRefreshDeliversTheLedgerOnce:
+    """The SessionStart(compact) refresh carries exactly one Resume point; register.test.ts pins that the mod adds none."""
 
-    def test_the_compact_start_context_carries_one_snapshot(self, monkeypatch):
-        import gaia.session_snapshot as snapshot
+    def test_the_compact_start_context_carries_the_stored_ledger_once(self, monkeypatch):
+        import gaia.session_ledger as ledger
         from modules.session.session_lifecycle import start_context
 
-        monkeypatch.setattr(snapshot, "build_snapshot", lambda session_id: {"session_id": session_id})
-        monkeypatch.setattr(snapshot, "render_resume_section", lambda snap, counts_only=False: f"## Session Snapshot\n{snap['session_id']}")
+        stored = {"session_id": "session-1", "compactions": 4, "in_flight": [], "pending": [], "written": [], "branches": []}
+        monkeypatch.setattr(ledger, "read_ledger", lambda session_id: dict(stored, session_id=session_id))
 
         refresh = start_context("compact", ["## Workspace\nnotice"], "session-1")
 
-        assert refresh.count("## Session Snapshot") == 1
-        assert "## Session Snapshot\nsession-1" in refresh
+        assert refresh.count("## Resume point") == 1
+        assert "## Resume point\nsession=session-1 compactions=4" in refresh

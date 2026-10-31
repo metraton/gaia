@@ -540,8 +540,8 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # reachable. Denying it would leave the verb built for the orchestrator
     # unreachable by the orchestrator.
     ("session", "preview"),
-    # Reads one session's contracts, signatures, active task and resume point
-    # (gaia.session_snapshot.build_snapshot): SELECTs and one file read.
+    # Reads one session's ledger (gaia.session_ledger.build_ledger): SELECTs
+    # and file reads of the stored ledger, the hand note and worktree sidecars.
     ("session", "snapshot"),
     # A specialist's own worktree lifecycle: the orchestrator may inspect
     # (never create or release) another turn's isolated worktree, the same

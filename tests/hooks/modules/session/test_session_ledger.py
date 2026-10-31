@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -126,6 +127,20 @@ def test_pre_compact_writes_this_sessions_ledger_and_counts_each_compaction(db):
     assert ledger["written"] == [{"workspace": "me", "slug": "atom_written_by_a"}]
     assert [(b["branch"], b["commit"]) for b in ledger["branches"]] == [("feat/ledger-a", "80d055095641")]
     assert read_ledger(B) is None
+
+
+def test_the_written_list_reads_origin_session_id_when_no_signal_names_the_session(db):
+    from gaia.session_ledger import build_ledger
+
+    con = sqlite3.connect(db)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(memory)")}
+    signals = con.execute("SELECT COUNT(*) FROM signals WHERE ref = 'atom_written_by_a'").fetchone()[0]
+    con.close()
+    migrations = (_REPO / "scripts" / "migrations").glob("*.sql")
+
+    assert "origin_session_id" in columns and signals == 0
+    assert not [m.name for m in migrations if re.search(r"DROP\s+COLUMN\s+origin_session_id", m.read_text(), re.I)]
+    assert build_ledger(A)["written"] == [{"workspace": "me", "slug": "atom_written_by_a"}]
 
 
 @pytest.mark.parametrize("source", ["compact", "resume", "fork"])

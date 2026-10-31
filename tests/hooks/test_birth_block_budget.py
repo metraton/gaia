@@ -83,18 +83,18 @@ def corpus(tmp_path, monkeypatch, bootstrapped_db_template):
     assert sum(len(_line(name, title)) for name, title in titles.items()) > 4_000
     monkeypatch.chdir(root / "me" / "me-project-0")
 
-    from gaia import session_snapshot
+    from gaia import session_ledger, session_snapshot
 
     session_snapshot.write_resume_point(SESSION, RESUME)
-    monkeypatch.setattr(session_snapshot, "_pending_signatures", lambda con, sid: [
-        {"id": f"P-{n:032x}", "agent_id": f"a{n:016x}", "created_at": "2026-10-21T10:00:00Z"}
-        for n in range(12)
-    ])
-    monkeypatch.setattr(session_snapshot, "_open_contracts", lambda con, sid: ([
-        {"contract_id": f"a{n:016x}.{n:012x}", "agent_id": f"a{n:016x}",
-         "agent_state": "NEEDS_INPUT", "kind": None, "plan_task_id": None}
-        for n in range(12)
-    ], []))
+    monkeypatch.setattr(session_ledger, "_SOURCES", (
+        ("in_flight", lambda con, sid: [
+            {"title": f"open contract {n} " * 8, "state": "NEEDS_INPUT", "contract_id": f"a{n:016x}.{n:012x}"}
+            for n in range(12)
+        ]),
+        ("pending", lambda con, sid: [
+            {"id": f"P-{n:032x}", "what": f"push branch {n} " * 8, "state": "pending"} for n in range(12)
+        ]),
+    ))
     return titles
 
 
@@ -149,10 +149,12 @@ BIRTH_ORDER = ("## Database upgrade", "## User memory", "## Resume point",
 def test_claude_code_birth_fits_the_cap_in_order_with_no_row_cut(corpus, maintenance, source):
     outcome = _claude(source)
     context = outcome.context
+    order = BIRTH_ORDER if source != "startup" else tuple(h for h in BIRTH_ORDER if h != "## Resume point")
 
     assert len(context) < HOST_CAP, len(context)
-    positions = [context.find(header) for header in BIRTH_ORDER]
-    assert -1 not in positions, dict(zip(BIRTH_ORDER, positions))
+    assert ("## Resume point" in context) == (source != "startup")
+    positions = [context.find(header) for header in order]
+    assert -1 not in positions, dict(zip(order, positions))
     assert positions == sorted(positions)
     assert _assert_rows_whole_or_named(context, corpus)
     assert "## Leftovers" not in context
@@ -171,21 +173,26 @@ def _without_source(context: str) -> str:
     return re.sub(r"(?m)^# .*\(source: \w+\)$", "", context)
 
 
-def test_a_compaction_is_the_same_birth_as_a_start(corpus, maintenance):
-    startup = _claude("startup").context
-    compact = _claude("compact").context
-
-    assert _without_source(compact) == _without_source(startup)
+def _sections(context: str) -> dict:
+    return {block.split("\n", 1)[0]: block for block in _without_source(context).split("\n\n") if block.startswith("## ")}
 
 
-def test_under_pressure_lists_become_counts_and_the_roster_takes_the_richest_level_that_fits(corpus, maintenance):
-    """Replaces "the roster keeps its pointers": the two footer pointers moved to the orchestrator identity."""
+def test_a_compaction_is_the_start_birth_plus_this_sessions_resume_point(corpus, maintenance):
+    startup = _sections(_claude("startup").context)
+    compact = _sections(_claude("compact").context)
+
+    assert set(compact) - set(startup) == {"## Resume point"}
+    assert compact["## Environment"] == startup["## Environment"]
+
+
+def test_under_pressure_the_ledger_is_capped_and_the_roster_takes_the_richest_level_that_fits(corpus, maintenance):
     context = _claude("compact").context
+    lines = context.splitlines()
 
-    assert "Pending signatures: 12" in context
-    assert "Open contracts: 12" in context
-    assert "P-" + "0" * 32 not in context
-    assert f"gaia session snapshot --session-id {SESSION}" in context
+    assert len([line for line in lines if line.startswith("pending: ")]) == 6
+    assert len([line for line in lines if line.startswith("in_flight: ")]) == 8
+    assert "(+6)" in context and "(+4)" in context
+    assert "Pending signatures" not in context and "Open contracts" not in context
     from modules.session.session_manifest import BIRTH_BUDGET, build_projects_section
 
     projects = context[context.index("## Workspaces I manage"):]

@@ -1,10 +1,4 @@
-"""One session's ledger: what its compaction must not lose, built from the database and nothing else.
-
-PreCompact writes it (``write_ledger``) because that hook can run code but
-cannot inject context; SessionStart renders it under ``## Resume point`` after
-a compaction, a resume or a fork (``render_resume_point``). Every list holds
-only rows this session wrote, so another session's work never appears.
-"""
+"""One session's ledger, built from the database: PreCompact writes it, SessionStart renders it as ``## Resume point``."""
 
 from __future__ import annotations
 
@@ -75,12 +69,7 @@ def _pending(con, session_id: str) -> list[dict[str, Any]]:
 
 
 def _written(con, session_id: str) -> list[dict[str, Any]]:
-    """Live memory rows this session created or changed, newest first.
-
-    ``origin_session_id`` names the creator; a signal names the session behind
-    every later write, for the rows signals cover (user rows and rows with an
-    initiative).
-    """
+    """Live memory rows this session created (``origin_session_id``) or changed (a signal it wrote), newest first."""
     rows = con.execute(
         "SELECT m.workspace, m.name FROM memory m "
         "LEFT JOIN (SELECT workspace, ref, MAX(id) AS last_signal FROM signals "
@@ -115,11 +104,7 @@ def _sidecar(worktree: Path) -> Optional[dict[str, Any]]:
 
 
 def _branches(con, session_id: str) -> list[dict[str, Any]]:
-    """Worktrees under a declared workspace whose sidecar names one of this session's contracts.
-
-    The database records no worktree; the sidecar ``gaia worktree create``
-    writes holds the owning contract, the branch and the commit it started at.
-    """
+    """Worktrees under a declared workspace whose sidecar names one of this session's contracts; the database records none."""
     contracts = {r[0] for r in con.execute(
         "SELECT contract_id FROM agent_contract_handoffs WHERE session_id = ? AND contract_id IS NOT NULL",
         (session_id,),
@@ -225,9 +210,9 @@ _LINES = {
 }
 
 
-def render_resume_point(ledger: dict[str, Any], note: Optional[str] = None) -> str:
-    """``## Resume point`` as values with refs, each list capped with a ``(+N)`` remainder, then the hand note whole."""
-    lines = [RESUME_HEADER, f"session={ledger['session_id']} compactions={ledger.get('compactions') or 0}"]
+def render_resume_point(ledger: dict[str, Any], note: Optional[str] = None, header: str = RESUME_HEADER) -> str:
+    """*header* then the ledger as values with refs, each list capped with a ``(+N)`` remainder, then the hand note whole."""
+    lines = [header, f"session={ledger['session_id']} compactions={ledger.get('compactions') or 0}"]
     for key, line in _LINES.items():
         items = ledger.get(key) or []
         shown = [line(item) for item in items[: LIST_CAPS[key]]]
