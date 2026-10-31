@@ -260,7 +260,7 @@ _CANDIDATE_TOOLS: tuple = (
     "git", "go", "npm", "terraform", "node", "gcloud", "flux", "kubectl",
     "gh", "terragrunt", "helm", "aws", "pulumi", "python3", "gws", "jq",
     "pnpm", "curl", "ssh", "eslint", "cargo", "prettier", "vault",
-    "playwright", "acli",
+    "playwright", "acli", "pytest", "semgrep",
 )
 
 

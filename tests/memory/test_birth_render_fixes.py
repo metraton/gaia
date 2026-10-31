@@ -137,17 +137,17 @@ def test_tools_are_rows_then_catalog_then_the_users_other_executables_on_both_su
     birth = session_manifest.build_environment_section().splitlines()
     kernel = kernel_builder.build_environment_block()
 
-    assert "tools=ghx,git,kubectl,orphan" in birth
-    assert "tools on PATH: ghx, git, kubectl, orphan" in kernel
+    assert "tools=ghx,git,kubectl,pytest,orphan" in birth
+    assert "tools on PATH: ghx, git, kubectl, pytest, orphan" in kernel
     tools_values = [line for line in birth if line.startswith("tools=")] + [kernel.split("tools on PATH: ")[1].splitlines()[0]]
     for surface in tools_values:
-        assert "pytest" not in surface and "not-installed" not in surface
+        assert "not-installed" not in surface
 
 
 def test_a_registered_binary_that_is_in_the_catalog_is_listed_once(path_world):
     _tool("user_tool_git", binary="git")
 
-    assert "tools=git,kubectl,orphan" in session_manifest.build_environment_section().splitlines()
+    assert "tools=git,kubectl,pytest,orphan" in session_manifest.build_environment_section().splitlines()
 
 
 def test_doctor_still_lists_an_authored_executable_that_has_no_tool_row(path_world):
@@ -236,7 +236,7 @@ def test_the_environment_section_renders_verbatim(path_world, monkeypatch, santi
         "session=sess-1234",
         "zone=America/Santiago",
         f"data={data_dir()} db={db_path()}",
-        "tools=ghx,git,kubectl,orphan",
+        "tools=ghx,git,kubectl,pytest,orphan",
         'tool=ghx "run it for every push" replaces=gh ref=memory:user/user_tool_ghx',
     ])
 

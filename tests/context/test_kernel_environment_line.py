@@ -109,8 +109,9 @@ def test_line_lists_the_users_executables_after_the_catalog_and_drops_console_sc
         _make(tmp_path / "usr", "git"),
     )
 
-    assert _tools(session_manifest.build_environment_line()) == ["git", "actionlint", "uv", "ghx", "mytask"]
-    assert session_manifest._scan_available_tools() == ["git", "actionlint", "uv", "ghx", "mytask"]
+    expected = ["git", "pytest", "actionlint", "uv", "ghx", "mytask"]
+    assert _tools(session_manifest.build_environment_line()) == expected
+    assert session_manifest._scan_available_tools() == expected
     authored, packages = session_manifest._scan_user_executables()
     assert authored == ["ghx", "mytask"] and packages == ["pytest", "uvicorn"]
 
@@ -127,12 +128,12 @@ def test_line_puts_registered_tools_first_then_the_catalog_then_the_rest_listing
     assert session_manifest._scan_available_tools(user_binaries=["ghx", "git"]) == ["ghx", "git", "kubectl", "mytask"]
 
 
-def test_a_registered_console_script_is_listed_though_unregistered_ones_are_not(env, tmp_path, monkeypatch):
+def test_a_registered_or_catalog_console_script_is_listed_though_other_ones_are_not(env, tmp_path, monkeypatch):
     home = tmp_path / "home"
-    _path_with(monkeypatch, _make_console_scripts(home / ".local" / "bin", "pytest", "uvicorn"))
+    _path_with(monkeypatch, _make_console_scripts(home / ".local" / "bin", "pytest", "uvicorn", "httpx"))
     _register("uvicorn")
 
-    assert _tools(session_manifest.build_environment_line()) == ["uvicorn"]
+    assert _tools(session_manifest.build_environment_line()) == ["uvicorn", "pytest"]
 
 
 def test_a_long_rest_is_truncated_before_any_row_or_catalog_name(env, tmp_path, monkeypatch):
