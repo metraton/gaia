@@ -475,7 +475,7 @@ class TestScanAvailableTools:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("PATH", "")
 
-    def test_a_registered_binary_follows_the_candidates_and_an_unregistered_executable_is_not_listed(
+    def test_a_registered_binary_leads_the_candidates_and_an_unregistered_user_executable_follows_them(
         self, monkeypatch, tmp_path
     ):
         import shutil as _shutil
@@ -488,8 +488,8 @@ class TestScanAvailableTools:
         monkeypatch.setattr(
             _shutil, "which", lambda name: "/usr/bin/" + name if name in ("git", "mywrap") else None
         )
-        assert session_manifest._scan_available_tools(("git",)) == ["git"]
-        assert session_manifest._scan_available_tools(("git",), user_binaries=["mywrap"]) == ["git", "mywrap"]
+        assert session_manifest._scan_available_tools(("git",)) == ["git", "mywrap"]
+        assert session_manifest._scan_available_tools(("git",), user_binaries=["mywrap"]) == ["mywrap", "git"]
 
     def test_only_resolvable_candidates_are_returned_in_order(self, monkeypatch):
         import shutil as _shutil

@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -127,7 +128,7 @@ def path_world(tmp_path, monkeypatch):
     return system
 
 
-def test_tools_are_the_catalog_plus_the_users_registered_binaries_on_both_surfaces(path_world):
+def test_tools_are_rows_then_catalog_then_the_users_other_executables_on_both_surfaces(path_world):
     _tool("user_tool_ghx", binary="ghx")
     _executable(path_world, "not-installed")
     _tool("user_tool_absent", binary="not-installed")
@@ -136,17 +137,17 @@ def test_tools_are_the_catalog_plus_the_users_registered_binaries_on_both_surfac
     birth = session_manifest.build_environment_section().splitlines()
     kernel = kernel_builder.build_environment_block()
 
-    assert "tools=git,kubectl,ghx" in birth
-    assert "tools on PATH: git, kubectl, ghx" in kernel
+    assert "tools=ghx,git,kubectl,orphan" in birth
+    assert "tools on PATH: ghx, git, kubectl, orphan" in kernel
     tools_values = [line for line in birth if line.startswith("tools=")] + [kernel.split("tools on PATH: ")[1].splitlines()[0]]
     for surface in tools_values:
-        assert "orphan" not in surface and "pytest" not in surface and "not-installed" not in surface
+        assert "pytest" not in surface and "not-installed" not in surface
 
 
 def test_a_registered_binary_that_is_in_the_catalog_is_listed_once(path_world):
     _tool("user_tool_git", binary="git")
 
-    assert "tools=git,kubectl" in session_manifest.build_environment_section().splitlines()
+    assert "tools=git,kubectl,orphan" in session_manifest.build_environment_section().splitlines()
 
 
 def test_doctor_still_lists_an_authored_executable_that_has_no_tool_row(path_world):
@@ -155,6 +156,32 @@ def test_doctor_still_lists_an_authored_executable_that_has_no_tool_row(path_wor
     _tool("user_tool_ghx", binary="ghx")
 
     assert "orphan" in str(doctor.check_user_tools())
+
+
+def test_doctor_names_only_what_the_user_built_not_third_party_installs(path_world, tmp_path, monkeypatch):
+    import cli.doctor as doctor
+
+    home = tmp_path / "own-home"
+    monkeypatch.setenv("HOME", str(home))
+    local_bin, own, plugin_bin = home / ".local" / "bin", home / "bin", home / ".gaia" / "cache" / "plugin" / "bin"
+    for name in ("ghx", "loose-script"):
+        _executable(own, name)
+    _tool("user_tool_ghx", binary="ghx")
+    (local_bin).mkdir(parents=True)
+    (local_bin / "uv").write_bytes(b"\x7fELF\x02\x01\x01" + bytes(64))
+    (local_bin / "uv").chmod(0o755)
+    _executable(tmp_path / "usr-share", "fdfind")
+    (local_bin / "fd").symlink_to(tmp_path / "usr-share" / "fdfind")
+    _executable(local_bin, "gws")
+    _executable(plugin_bin, "gaia")
+    monkeypatch.setenv("PATH", os.pathsep.join(str(d) for d in (local_bin, own, plugin_bin)))
+
+    message = str(doctor.check_user_tools())
+
+    flagged = message.split("authored executables with no tool row:")[1].split("'")[0]
+    assert "loose-script" in flagged
+    for third_party in ("uv", "fd", "gws", "gaia"):
+        assert not re.search(rf"(?<![\w-]){third_party}(?![\w-])", flagged)
 
 
 def test_host_comes_from_the_hook_host_adapter_on_both_surfaces(path_world, monkeypatch):
@@ -209,7 +236,7 @@ def test_the_environment_section_renders_verbatim(path_world, monkeypatch, santi
         "session=sess-1234",
         "zone=America/Santiago",
         f"data={data_dir()} db={db_path()}",
-        "tools=git,kubectl,ghx",
+        "tools=ghx,git,kubectl,orphan",
         'tool=ghx "run it for every push" replaces=gh ref=memory:user/user_tool_ghx',
     ])
 

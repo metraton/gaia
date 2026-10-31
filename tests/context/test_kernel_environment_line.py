@@ -89,31 +89,63 @@ def test_line_names_only_executable_files(env, tmp_path, monkeypatch):
     assert _tools(session_manifest.build_environment_line()) == ["git"]
 
 
-def test_line_drops_authored_executables_and_console_scripts_that_no_row_registers(env, tmp_path, monkeypatch):
+def _make_compiled(directory: Path, *names: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        binary = directory / name
+        binary.write_bytes(b"\x7fELF\x02\x01\x01" + bytes(64))
+        binary.chmod(0o755)
+    return directory
+
+
+def test_line_lists_the_users_executables_after_the_catalog_and_drops_console_scripts(env, tmp_path, monkeypatch):
     home = tmp_path / "home"
+    _make_compiled(home / ".local" / "bin", "actionlint", "uv")
+    _make_console_scripts(home / ".local" / "bin", "pytest", "uvicorn")
     _path_with(
         monkeypatch,
-        _make_console_scripts(home / ".local" / "bin", "pytest", "uvicorn"),
+        home / ".local" / "bin",
         _make(home / "bin", "ghx", "mytask"),
         _make(tmp_path / "usr", "git"),
     )
 
-    assert _tools(session_manifest.build_environment_line()) == ["git"]
-    assert session_manifest._scan_available_tools() == ["git"]
+    assert _tools(session_manifest.build_environment_line()) == ["git", "actionlint", "uv", "ghx", "mytask"]
+    assert session_manifest._scan_available_tools() == ["git", "actionlint", "uv", "ghx", "mytask"]
     authored, packages = session_manifest._scan_user_executables()
     assert authored == ["ghx", "mytask"] and packages == ["pytest", "uvicorn"]
 
 
-def test_line_adds_the_binaries_of_registered_tools_once_after_the_catalog(env, tmp_path, monkeypatch):
+def test_line_puts_registered_tools_first_then_the_catalog_then_the_rest_listing_each_once(env, tmp_path, monkeypatch):
     home = tmp_path / "home"
-    _path_with(monkeypatch, _make(home / "bin", "ghx", "mytask"), _make(tmp_path / "usr", "git"))
+    _path_with(monkeypatch, _make(home / "bin", "ghx", "mytask"), _make(tmp_path / "usr", "git", "kubectl"))
     _register("ghx")
     _register("git")
 
     line = session_manifest.build_environment_line()
 
-    assert _tools(line) == ["git", "ghx"]
-    assert session_manifest._scan_available_tools(user_binaries=["ghx", "git"]) == ["git", "ghx"]
+    assert _tools(line) == ["ghx", "git", "kubectl", "mytask"]
+    assert session_manifest._scan_available_tools(user_binaries=["ghx", "git"]) == ["ghx", "git", "kubectl", "mytask"]
+
+
+def test_a_registered_console_script_is_listed_though_unregistered_ones_are_not(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _path_with(monkeypatch, _make_console_scripts(home / ".local" / "bin", "pytest", "uvicorn"))
+    _register("uvicorn")
+
+    assert _tools(session_manifest.build_environment_line()) == ["uvicorn"]
+
+
+def test_a_long_rest_is_truncated_before_any_row_or_catalog_name(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    rest = [f"loose-script-number-{n:03d}" for n in range(60)]
+    _path_with(monkeypatch, _make(home / "bin", "ghx", *rest), _make(tmp_path / "usr", "git", "kubectl", "terraform"))
+    _register("ghx")
+
+    line = session_manifest.build_environment_line()
+
+    assert len(line) <= 400
+    assert _tools(line)[:4] == ["ghx", "git", "terraform", "kubectl"]
+    assert "loose-script-number-000" in line and rest[-1] not in line
 
 
 def test_line_names_wsl_from_the_kernel_release(env, monkeypatch):

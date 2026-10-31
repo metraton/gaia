@@ -268,7 +268,7 @@ USER_EXECUTABLES_MAX = 40
 
 _PACKAGE_TREES = frozenset({
     "node_modules", ".venv", "venv", ".cargo", ".rustup", "go", ".nvm", ".pyenv",
-    ".rbenv", ".asdf", ".npm", ".npm-global", ".bun", ".volta", ".gem", "gem", ".sdkman",
+    ".rbenv", ".asdf", ".npm", ".npm-global", ".bun", ".volta", ".gem", "gem", ".sdkman", ".gaia",
 })
 
 
@@ -287,12 +287,11 @@ def _is_package_console_script(path: str) -> bool:
     return first_line.startswith(b"#!") and b"python" in first_line and _CONSOLE_SCRIPT_MARKER in head
 
 
-def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> tuple:
-    """The user's executables on PATH as (authored, package console scripts), together within *limit*."""
+def _user_path_executables(exclude=()) -> list:
+    """(name, path) of each executable in a PATH directory under $HOME outside the package trees, first on PATH winning."""
     home = Path.home()
     seen = set(exclude)
-    names: list = []
-    packages: list = []
+    found: list = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if not entry:
             continue
@@ -309,29 +308,53 @@ def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> tup
         for name, path in files:
             if name not in seen:
                 seen.add(name)
-                (packages if _is_package_console_script(path) else names).append(name)
+                found.append((name, path))
+    return found
+
+
+def _looks_authored(name: str, path: str) -> bool:
+    """Whether *path* looks built by the user: a shebang script that stays in its directory.
+
+    A catalog name, a link into another install, a compiled program and a console script are third-party."""
+    if name in _CANDIDATE_TOOLS:
+        return False
+    if os.path.dirname(os.path.realpath(path)) != os.path.realpath(os.path.dirname(path)):
+        return False
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(2) != b"#!":
+                return False
+    except OSError:
+        return False
+    return not _is_package_console_script(path)
+
+
+def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> tuple:
+    """The user's executables on PATH as (authored, package console scripts), together within *limit*."""
+    names: list = []
+    packages: list = []
+    for name, path in _user_path_executables(exclude):
+        if _is_package_console_script(path):
+            packages.append(name)
+        elif _looks_authored(name, path):
+            names.append(name)
     names = names[:limit]
     return names, packages[:limit - len(names)]
 
 
 def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS, user_binaries: Sequence[str] = ()) -> list:
-    """Which *candidates*, then which *user_binaries* (the user's registered tools), resolve on PATH right now.
-
-    ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
-    -- so this reflects the current install rather than a snapshot. Executables
-    on PATH that no tool row registers are not listed; `gaia doctor` names
-    them. Never raises: a lookup failure for one name is skipped.
-    """
+    """The tools on PATH now: *user_binaries* (tool rows), then *candidates*, then the user's other executables, console scripts excluded."""
     import shutil
 
     found: list = []
-    for name in (*candidates, *user_binaries):
+    for name in (*user_binaries, *candidates):
         try:
             if name not in found and shutil.which(name):
                 found.append(name)
         except Exception:
             continue
-    return found
+    rest = [name for name, path in _user_path_executables(found) if not _is_package_console_script(path)]
+    return found + rest[:USER_EXECUTABLES_MAX]
 
 
 def _host_label() -> str:
