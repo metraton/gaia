@@ -1,6 +1,6 @@
 ---
 name: session-reflection
-description: Use when the user asks to reflect on a session or to compact it -- "reflexionemos sobre la sesión", "cerremos esto", "guardemos lo que aprendimos", "compactemos", "compacta", "let's reflect on this session", "wrap up this session", "compact the session" -- or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, reports what changed, and when asked to compact, records the resume point and starts the compaction.
+description: Use when the user asks to reflect on a session or to compact it -- "reflexionemos sobre la sesión", "cerremos esto", "guardemos lo que aprendimos", "compactemos", "compacta", "let's reflect on this session", "wrap up this session", "compact the session" -- or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, and reports what changed. Compacting needs no reflection: asked to compact, it requests the compaction and may leave an optional hand note.
 ---
 
 # Session Reflection
@@ -12,9 +12,9 @@ every item — settled or open — with an owner a later session can find.
 
 Upstream are the transcript, the specialist contracts, and the injected digest.
 Downstream is memory curation: reflection ends when the corpus is correct.
-When the user asks to compact, compaction is the reflection's last step, never
-a step of its own: a compaction that skips the reflection loses whatever had
-no home yet.
+Compaction is a separate act: it is safe at any time and needs no reflection
+first, because the PreCompact hook rebuilds the session's in-flight state from
+the database (see "Compacting").
 
 ## Process
 
@@ -133,22 +133,21 @@ is the `session=` line of the `## Environment` block:
 If the next turn carries a note that the compaction did not start, tell the
 user so, name the host's reason, and ask them to type `/compact`.
 
-When the user insists on compacting before the reflection finishes, offer it
-once; if they decline, write the unsaved items into the resume point marked as
-not durable, rather than dropping them or saving memory unasked.
+Compact when the user asks, reflection finished or not: do not offer a
+reflection first and do not hold the compaction for one. The ledger already
+carries the durable state, and the hand note is where anything else the next
+turn needs goes.
 
 **Without the tool** -- a headless Claude Code session (the desktop app, `-p`,
 the SDK), where the host cannot compact from a mod, Claude Code with mods
 disabled or older than 2.1.287, or any host that does not list it -- nothing
-the orchestrator runs can start the compaction. Skip step 1, still write the
-resume point (step 2) with the Environment block's session id, and end the
-turn asking the user to type `/compact`: the report itself is summarized away,
-the resume point survives into the snapshot. Never report a compaction you did
-not start.
+the orchestrator runs can start the compaction. Skip step 1, optionally leave
+the hand note (step 2), and end the turn asking the user to type `/compact`.
+Never report a compaction you did not start.
 
 When the user types `/compact` without asking to compact first, nothing above
-runs: the snapshot carries the last resume point written, however old, or
-none.
+runs: the PreCompact hook still writes the ledger, and the hand note appears
+only if one was written for this session.
 
 ## Ownership and consent
 
