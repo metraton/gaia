@@ -305,9 +305,11 @@ when it has none. `# Project context` carries the dispatch project's `can_read`
 sections: whole when they fit what the budget leaves, else one pointer line per
 section naming its `gaia context get-contract` verb, else a single count line
 (`hooks/modules/context/kernel_builder.py::_readable_project_sections`).
-`# Environment` is one capped line: the OS, the gaia CLI path
-and the tools on PATH, the user's own executables among them
-(`session_manifest.build_environment_line`). `# Your CLI` is the index of what
+`# Environment` is one line capped at 400 chars, `<OS>; host <host>; gaia CLI
+<path>; tools on PATH: <names>`, with no cwd (`session_manifest.build_environment_line`).
+The names are Gaia's detected catalog, then the binaries of the user's detected
+`kind=tool` rows. Under the line come at most five of those rows, each as
+`tool=<binary> "<title>" [replaces=<cli>] ref=memory:user/<slug>`. `# Your CLI` is the index of what
 the turn can look up on its own, last because `gaia --help` rebuilds it. Beyond
 the standing notes nothing of the project's memory arrives, so a decision or
 thread the turn needs travels as a reference in the goal, or is read with `gaia

@@ -21,7 +21,7 @@ Session opens
         |  gaia.db at most once per 24 h, sweeps idle worktrees;
         |  on the plugin channel, migrates a database that is behind
         |  Emits one-shot hookSpecificOutput.additionalContext birth block
-        |  (## Projects + ## Environment + ## The user + ## User preferences,
+        |  (## The user + ## User preferences + ## Due + ## Environment + ## Workspaces I manage,
         |   and ## Database schema when the database and the code disagree)
         v
 User sends prompt
@@ -77,9 +77,10 @@ Claude Code replaces a hook's `additionalContext` over 10,000 chars with a 2,000
 1. a heading naming the source (`# Gaia session context (source: compact)`), which is the orchestrator's cue that the context was compacted;
 2. the alarms that condition every write (database upgrade, data home, workspace, schema mismatch);
 3. `## The user` and `## User preferences`, each row whole (`user_sections`, shared with the kernel);
-4. `## Resume point`: the session's snapshot (`gaia/session_snapshot.py::render_resume_section`) with the resume point whole, the active task, pending signatures and open contracts. It is absent when the session has nothing to resume;
-5. `## Environment`: where the session stands (machine, folder, zone, CLI path, data home, tools), one line pointing at `gaia map` for live state, habits and which capability serves an intent, and the recurring work that is due;
-6. `## Projects`.
+4. `## Due`: the reminders and routines due now (`build_due_section`), absent when none is;
+5. `## Resume point`: the session's snapshot (`gaia/session_snapshot.py::render_resume_section`) with the resume point whole, the active task, pending signatures and open contracts. It is absent when the session has nothing to resume;
+6. `## Environment` (`build_environment_section`): values only. `machine=`, `os=`, `arch=`, `wsl=` and `host=`; `gaia=` and `channel=`; `cli=`; `cwd=` relative to the home as `~/…`; `session=`; `zone=`; `data=` and `db=`; `tools=`, which is Gaia's detected catalog plus the binaries of the detected user `kind=tool` rows; then one `tool=<binary> "<title>" [replaces=<cli>] ref=memory:user/<slug>` line per such row;
+7. `## Workspaces I manage`.
 
 The order defends what matters most if the block is ever cut. Over the budget it shrinks in a fixed order, and each step runs only when the previous one was not enough:
 
@@ -88,7 +89,7 @@ The order defends what matters most if the block is ever cut. Over the budget it
 3. the snapshot lists become counts plus the `gaia session snapshot --session-id` command;
 4. whole user rows leave, stalest first (the reader orders them by `updated_at`), and one line names them. No row is ever cut mid-text, and only the rows the block carries count an injection.
 
-**The kernel** (`modules/context/kernel_builder.py::build_kernel_context`) holds the same budget, with OpenCode's `# Your skills` block counted inside it (`with_skills=True`). It carries none of the user's own rows: those reach the orchestrator through the birth block. In order it renders `# Your Contract`, `# Scope memory: <workspace > group > project>`, `# Project context`, `# Standing notes`, `# Environment` and `# Your CLI`, then `# Your skills` where the host asks for it. `# Scope memory` holds the live preferences, facts and lessons of the dispatch's workspace, group and project (`gaia.store.reader.scope_memory_rows`), and `# Environment` the environment line plus up to `KERNEL_TOOL_LINES` of the user's tool rows. `# Project context` carries the dispatch project's `can_read` sections in the room left once every other block, `# Scope memory` included, is at full size. It degrades in three stages: sections whole where they fit and a `gaia context get-contract --section <s> --project <name>` line for the rest, then pointer lines only, then one line that counts the sections and is shown whatever the room. Then the kernel shrinks in this order: `# Your CLI` becomes its `gaia --help` line, which rebuilds the rest, the skills lose their descriptions, `# Standing notes` keeps only the command that lists them, and `# Scope memory` drops rows from the end of the reader's order until it fits the room left. Only the rows it still carries count a kernel access. `# Your Contract` is never shrunk, so a dispatch prompt over about 8,000 chars can still exceed the cap.
+**The kernel** (`modules/context/kernel_builder.py::build_kernel_context`) holds the same budget, with OpenCode's `# Your skills` block counted inside it (`with_skills=True`). It carries none of the user's own rows: those reach the orchestrator through the birth block. In order it renders `# Your Contract`, `# Scope memory: <workspace > group > project>`, `# Project context`, `# Standing notes`, `# Environment` and `# Your CLI`, then `# Your skills` where the host asks for it. `# Scope memory` holds the live preferences, facts and lessons of the dispatch's workspace, group and project (`gaia.store.reader.scope_memory_rows`), and `# Environment` one line (`<OS>; host <host>; gaia CLI <path>; tools on PATH: <names>`, capped at 400 chars, carrying the host but no cwd or session) plus up to `KERNEL_TOOL_LINES` of the user's `tool=` lines. `# Project context` carries the dispatch project's `can_read` sections in the room left once every other block, `# Scope memory` included, is at full size. It degrades in three stages: sections whole where they fit and a `gaia context get-contract --section <s> --project <name>` line for the rest, then pointer lines only, then one line that counts the sections and is shown whatever the room. Then the kernel shrinks in this order: `# Your CLI` becomes its `gaia --help` line, which rebuilds the rest, the skills lose their descriptions, `# Standing notes` keeps only the command that lists them, and `# Scope memory` drops rows from the end of the reader's order until it fits the room left. Only the rows it still carries count a kernel access. `# Your Contract` is never shrunk, so a dispatch prompt over about 8,000 chars can still exceed the cap.
 
 ## Entry point -> adapter -> module
 
