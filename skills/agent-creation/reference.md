@@ -13,7 +13,7 @@ The canonical structure for a Gaia specialist agent. Sections marked [REQUIRED] 
 name: <kebab-case-name>
 description: <triggering conditions -- when the orchestrator should dispatch this agent>
 # DECIDE THIS BLOCK FIRST (D0): the read list is the token lever, the write list is the security lever
-project_context_contracts:            # per-agent project-context access; write list gates update_contracts
+project_context_contracts:            # per-agent project-context access; write list names what the agent owns
   read: [project_identity, stack]     # only the slices this domain actually reasons over -- each extra slice taxes every call
   write: []                           # only the contracts this domain owns; absence here means the runtime rejects the write
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill  # restrict to what the domain actually needs
@@ -40,11 +40,15 @@ skills:
 
 ## Identity                            [REQUIRED]
 
-You are a <role with stakes>. You <what you uniquely see or are constrained to do>.
+<Does what activity>, with <which instruments>, over <which raw sources>. <The constraint that fences it>.
 
 **Your output is always a <Realization Package | Diagnostic Report | Findings Report>:**
 - What the output contains
 - What it never contains (hybrid outputs drift)
+
+## Termination                         [REQUIRED]
+
+Done when <the outside judge -- a command it runs, a verifier gate, or the user> shows <the observable outcome in this domain's terms>.
 
 ## <Domain-Specific Section>          [CONDITIONAL -- only if lookup logic is agent-specific]
 
@@ -91,8 +95,8 @@ If the same logic would help another agent, extract it to a skill instead.
 
 The `project_context_contracts` block is the first design decision because it sets two things nothing else can recover later: read scope and write safety.
 
-- **`read` is the scope lever.** It defines the menu of project-context slices the agent may pull on demand -- surfaced to the turn as `can_read` in its dispatch kernel; nothing is preloaded. A `read` list bloated with slices the agent never consults widens the menu it is told to reason over and dilutes its evidence scope. Scope it to what the domain actually consults.
-- **`write` is the security lever.** It is the allowlist the runtime checks before accepting any `update_contracts` clause in the agent's contract envelope (see `agent-contract-handoff`). A contract absent from `write` cannot be persisted, regardless of what the agent wrote into its row. Scope it to the contracts the domain *owns* -- `developer` owns `application_services`, `platform-architect` owns `infrastructure`/`infrastructure_topology`, a read-only diagnostic agent owns nothing or only the single observation contract it curates.
+- **`read` is the scope lever.** It defines the menu of project-context slices the agent may pull on demand -- surfaced to the turn as `can_read` in its dispatch kernel and injected as its `# Project context` block, whole when the sections fit and as pointer lines otherwise. Changes to any section are proposed through `update_contracts`, never written by the agent. A `read` list bloated with slices the agent never consults widens the menu it is told to reason over and dilutes its evidence scope. Scope it to what the domain actually consults.
+- **`write` names what the agent owns, not what it may propose.** An `update_contracts` clause in the agent's contract envelope is a proposal for any section; it reaches project context when the orchestrator accepts it, or at the close when every auto-apply guard of a drift correction holds (see `agent-contract-handoff`). Scope it to the contracts the domain *owns* -- `developer` owns `application_services`, `platform-architect` owns `infrastructure`/`infrastructure_topology`, a read-only diagnostic agent owns nothing or only the single observation contract it curates.
 
 The identity, the tool set, and the skills all derive from the contract: "this agent reasons over X and owns Y" is what the `read`/`write` lists already say. Decide the contract, then write the rest to match it.
 
@@ -152,7 +156,7 @@ What is actually per-builder, and where the design effort goes:
 - the **skills** list -- which catalog skills address this domain's risks
 - the **subset** -- one paragraph naming *what this agent builds* (application code / infrastructure-as-code / Kubernetes desired-state) and *which neighbors own the adjacent surfaces*
 
-`platform-architect` is the reference instance: read its identity to see the essence and subset side by side. A non-builder (read-only-into-prod, e.g. `cloud-troubleshooter`) does not use this essence -- its identity is the *constraint* that fences it ("you never act"), not the builder's capability-under-consent.
+`platform-architect` is the reference instance: read its identity to see the essence and subset side by side. A non-builder (read-only-into-prod, e.g. `cloud-troubleshooter`) does not use this essence -- its identity is the *constraint* that fences it ("never applies a fix"), not the builder's capability-under-consent.
 
 ---
 
@@ -205,7 +209,7 @@ An output type declaration passes if it excludes a hybrid the agent would otherw
 | `model` | string | Yes | `inherit` for most; `sonnet` if the agent needs a specific model pinned |
 | `permissionMode` | string | D1=yes | `acceptEdits` -- required for agents that write files |
 | `disallowedTools` | list | read-only-into-prod | Hard denylist `[Write, Edit, NotebookEdit]` reserved for agents that inspect live prod and must never mutate (e.g. `cloud-troubleshooter`). Builders carry no hard denylist (at most `[NotebookEdit]`); they are governed by T3 consent + the `write` contract |
-| `project_context_contracts` | block | Yes | `read`/`write` contract lists; the `write` list gates what an agent may persist via an `update_contracts` clause |
+| `project_context_contracts` | block | Yes | `read`/`write` contract lists; `write` names what the agent owns, and an `update_contracts` clause is only a proposal the orchestrator accepts |
 | `maxTurns` | int | Recommended | 40 for most specialists; 50+ for agents with complex investigation phases |
 | `effort` | string | Optional | `high` raises reasoning effort; used by `gaia-system` for architecture-level work |
 | `skills` | list | Yes | `agent-protocol` always first, `security-tiers` always second |
@@ -221,7 +225,7 @@ This skill guides thinking about each file, but gaia-system (the invoking agent)
 |------|--------------|---------------|
 | `agents/<name>.md` (source, under `gaia/`, never the `.claude/` copy) | New agent definition | gaia-system |
 | new agent's `routing:` frontmatter block | New surface entry with signals; seeded into the `surface_routing` DB table by `tools/scan/seed_surface_routing.py` at install time | gaia-system |
-| `.claude/skills/README.md` | Agent assignment matrix (if agent gets new skills) | gaia-system |
+| `skills/README.md` | Agent assignment matrix (if agent gets new skills) | gaia-system |
 | `agents/README.md` | New agent in the roster | gaia-system |
 | `build/gaia.manifest.json` (`agents` array) | New `"agents/<name>.md"` entry — without it the agent is not part of the publishable plugin | gaia-system, Step 7 of this skill |
 | Installed marketplace copy (`~/.claude/plugins/marketplaces/<name>`) | Reached only via a `gaia-release` publish/update action, never a hand-edit of the `.claude/` copy — verify with `find ~/.claude/plugins/marketplaces -name <name>.md` | `gaia-release` flow, not this skill directly |

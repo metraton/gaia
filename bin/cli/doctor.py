@@ -317,7 +317,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 67
+EXPECTED_SCHEMA_VERSION = 72
 
 # Locations the doctor reads outside the workspace, module-level so tests can
 # redirect them to a tmp path.
@@ -895,7 +895,7 @@ def check_git_long_paths() -> dict:
 
     problem = long_paths_disabled()
     if problem:
-        return _result("Git long paths", "warn", problem, f"If you want it, run: {ENABLE_LONG_PATHS_COMMAND}")
+        return _result("Git long paths", "warning", problem, f"If you want it, run: {ENABLE_LONG_PATHS_COMMAND}")
     return _result("Git long paths", "pass", "core.longpaths enabled or not required")
 
 
@@ -1132,6 +1132,21 @@ def check_schema_version() -> dict:
     return _result("Schema version", "pass", f"v{live} matches code expectation")
 
 
+@register_check("DB backups", order=44)
+def check_db_backups() -> dict:
+    """Report the newest gaia.db backup's age, size and verification; warn past 48h or after a failed run."""
+    try:
+        from gaia.paths import snapshot_dir, state_dir  # noqa: PLC0415
+        from gaia.paths.backup import STATUS_FILE, backup_health  # noqa: PLC0415
+    except ImportError as exc:
+        return _result("DB backups", "info", f"backup health unavailable: {exc}")
+    health = backup_health(snapshot_dir(), state_dir() / STATUS_FILE)
+    fix = None
+    if health["severity"] != "pass":
+        fix = f"start a session to take one; the last run is recorded in {state_dir() / STATUS_FILE}"
+    return _result("DB backups", health["severity"], health["detail"], fix)
+
+
 @register_check("Episodes growth", order=48)
 def check_episodes_growth() -> dict:
     """Report gaia.db growth: FILE size vs the episodes TABLE size (distinct).
@@ -1301,6 +1316,50 @@ def check_project_copies() -> dict:
         f"{len(rows)} second clone(s): "
         + "; ".join(f"{copy} copies {ws}/{name} at {path}" for copy, ws, name, path in rows),
         "remove the copy, or give it its own remote if it is a different project",
+    )
+
+
+@register_check("User tools", order=64)
+def check_user_tools() -> dict:
+    """Report tool rows whose binary is absent from PATH, and authored executables on PATH with no tool row."""
+    import shutil  # noqa: PLC0415
+
+    from gaia.paths import db_path  # noqa: PLC0415
+
+    database = db_path()
+    if not database.is_file():
+        return _result("User tools", "info", f"no DB at {database}")
+    try:
+        con = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT name, binary FROM memory WHERE kind = 'tool' AND owner_level = 'user' "
+                "AND deleted_at IS NULL ORDER BY binary"
+            ).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        return _result("User tools", "info", f"could not read tool rows: {exc}")
+
+    hooks_dir = Path(__file__).resolve().parents[2] / "hooks"
+    if str(hooks_dir) not in sys.path:
+        sys.path.insert(0, str(hooks_dir))
+    from modules.session.session_manifest import _scan_user_executables  # noqa: PLC0415
+
+    recorded = {binary for _, binary in rows}
+    absent = [f"{name} (binary {binary})" for name, binary in rows if not shutil.which(binary)]
+    unrecorded = [name for name in _scan_user_executables()[0] if name not in recorded]
+    findings = []
+    if absent:
+        findings.append("tool rows whose binary is not on PATH: " + ", ".join(absent))
+    if unrecorded:
+        findings.append("authored executables with no tool row: " + ", ".join(unrecorded))
+    if not findings:
+        return _result("User tools", "pass", f"{len(rows)} tool row(s), every binary on PATH")
+    return _result(
+        "User tools", "warning" if absent else "info", "; ".join(findings),
+        "retire a row whose program is gone (new row + link --kind=supersedes, or reclassify); "
+        "describe an authored executable with gaia memory add --type=user --kind=tool --binary=<name>",
     )
 
 

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
 
 SHELL_TOOLS = frozenset({"bash", "powershell", "monitor"})
+FILE_WRITE_TOOLS = frozenset({"write", "edit", "multiedit", "notebookedit"})
 
 # Dotted event category written to harness_events when a nascent-row birth is
 # rejected for an ANOMALOUS reason (see _is_anomalous_dispatch_binding_rejection).
@@ -153,6 +154,22 @@ def build_powershell_identity_command(command: str, agent_type: str, tmpdir: str
     return f"{exports}; {command}"
 
 
+def strip_dispatch_identity_prefix(command: str, agent_type: str) -> str:
+    """The command as the agent wrote it: drop the one prefix the builders above put at the front for ``agent_type``."""
+    agent = (agent_type or "").strip()
+    if not agent:
+        return command
+    bash_word = r"(?:[\w@%+=:,./-]+|'[^']*'(?:\"'\"'[^']*')*)"
+    bash_prefix = (
+        re.escape(f"export {GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}") + f"(?: TMPDIR={bash_word})?; "
+    )
+    powershell_prefix = (
+        re.escape(f"$env:{GAIA_DISPATCH_AGENT_ENV}={_powershell_literal(agent)}; ") + r"(?:\$env:TMPDIR='(?:[^']|'')*'; )?"
+    )
+    prefix = re.match(f"{bash_prefix}|{powershell_prefix}", command)
+    return command[prefix.end():] if prefix else command
+
+
 def _powershell_literal(value: str) -> str:
     # PowerShell ends a single-quoted string on any of these four marks, and a doubled mark is literal.
     return "'" + re.sub("['‘’‚‛]", lambda mark: mark.group() * 2, value) + "'"
@@ -243,6 +260,66 @@ def _record_dispatch_binding_rejection(
         )
 
 
+def _record_cli_use(
+    hook_data: dict, *, outcome: str, command: str = "", exit_code: int | None = None,
+) -> None:
+    """Record a shell call's gaia invocations, never failing it; ``command`` is the call before its rewrite."""
+    try:
+        tool_input = hook_data.get("tool_input")
+        if str(hook_data.get("tool_name") or "").lower() not in SHELL_TOOLS or not isinstance(
+            tool_input, dict
+        ):
+            return
+        from modules.events.capability_usage import record_cli_invocations
+
+        record_cli_invocations(
+            command or str(tool_input.get("command") or ""), hook_data,
+            outcome=outcome, exit_code=exit_code,
+        )
+    except Exception as exc:
+        logger.debug("gaia CLI use not recorded (non-fatal): %s", exc)
+
+
+def _record_skill_use(tool_name: str, tool_input: object, hook_data: dict) -> None:
+    """Record a skill load; telemetry never fails the call."""
+    try:
+        from modules.events.capability_usage import record_skill_load
+
+        record_skill_load(tool_name, tool_input, hook_data)
+    except Exception as exc:
+        logger.debug("skill load not recorded (non-fatal): %s", exc)
+
+
+def _record_command_run(tool_input: object, tool_result: ToolResult, hook_data: dict) -> None:
+    """Add a finished shell call to the calling subagent's tool record; recording never fails the call."""
+    try:
+        from modules.events.capability_usage import record_command_run
+
+        ran = tool_result.ran and hook_data.get("is_interrupt") is not True
+        if isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str):
+            tool_input = {
+                **tool_input,
+                "command": strip_dispatch_identity_prefix(tool_input["command"], str(hook_data.get("agent_type") or "")),
+            }
+        record_command_run(
+            tool_input, tool_result.output, tool_result.exit_code if ran else None, hook_data,
+        )
+    except Exception as exc:
+        logger.debug("tool call not recorded (non-fatal): %s", exc)
+
+
+def _record_file_checked(hook_data: dict) -> None:
+    """Add the path of a file tool the policy let run to the calling subagent's tool record; recording never fails the call."""
+    try:
+        from modules.events.capability_usage import record_file_checked
+
+        record_file_checked(
+            str(hook_data.get("tool_name") or ""), hook_data.get("tool_input"), hook_data,
+        )
+    except Exception as exc:
+        logger.debug("file read not recorded (non-fatal): %s", exc)
+
+
 def failure_verdict(error: Exception) -> PolicyVerdict:
     """Refuse a call whose validation raised, naming storage exhaustion apart.
 
@@ -266,10 +343,13 @@ class ToolPolicy:
     carries no agent; the approval core never defaults an identity, so a host
     whose main session sends none declares its own name here. ``HOST_NAME`` is
     the host an approval's chain names when that host refused a signed call.
+    ``AGENT_ID_NAMES_SCRATCH`` is set by a host whose subagent id is the name
+    of its scratch entries; only such a host's subagent gets local-work relief.
     """
 
     PRIMARY_AGENT_TYPE = ""
     HOST_NAME = "unattributed"
+    AGENT_ID_NAMES_SCRATCH = False
 
     # ------------------------------------------------------------------ #
     # Before the call
@@ -282,8 +362,24 @@ class ToolPolicy:
 
         ``dispatch_identity_in_env`` is set by a host that exports the
         subagent's identity through the shell environment itself, so the
-        command is not rewritten to carry it.
+        command is not rewritten to carry it. A refused gaia call is recorded
+        here, since no terminal event follows a PreToolUse refusal. A Read,
+        Grep or Glob call the policy lets run is recorded here too, with only
+        its path, so a read costs no PostToolUse process; a refused one is not
+        recorded, since nothing was read.
         """
+        verdict = self._decide_before_call(
+            event, dispatch_identity_in_env=dispatch_identity_in_env,
+        )
+        if verdict.refusal is not None or verdict.decision == "deny":
+            _record_cli_use(event.payload, outcome="denied")
+        elif verdict.consent is None and verdict.decision != "ask":
+            _record_file_checked(event.payload)
+        return verdict
+
+    def _decide_before_call(
+        self, event: HookEvent, *, dispatch_identity_in_env: bool,
+    ) -> PolicyVerdict:
         from modules.security.approval_grants import cleanup_expired_grants
 
         hook_data = event.payload
@@ -323,7 +419,7 @@ class ToolPolicy:
                     session_id=event.session_id,
                     hook_data=hook_data,
                 )
-            if lowered in ("write", "edit"):
+            if lowered in FILE_WRITE_TOOLS:
                 agent_id = hook_data.get("agent_id", "")
                 return self._write_edit_verdict(
                     tool_name, tool_input,
@@ -385,7 +481,7 @@ class ToolPolicy:
         # state file and lost EXECUTED terminal events.
         tool_use_id = (hook_data or {}).get("tool_use_id", "")
 
-        validator = BashValidator()
+        validator = BashValidator(agent_names_scratch=self.AGENT_ID_NAMES_SCRATCH)
         result = validator.validate(
             command, is_subagent=is_subagent, session_id=session_id,
             agent_type=agent_type, hook_payload=hook_data,
@@ -467,10 +563,11 @@ class ToolPolicy:
             return PolicyVerdict(
                 decision="allow", reason=reason,
                 updated_input={"command": final_command},
+                context=validator.last_warning,
             )
 
         logger.info("ALLOWED: %s - tier=%s", command[:100], result.tier)
-        return PolicyVerdict()
+        return PolicyVerdict(context=validator.last_warning)
 
     @staticmethod
     def _verdict_from_block_response(result) -> PolicyVerdict:
@@ -617,8 +714,9 @@ class ToolPolicy:
         ``agent_contract_permissions`` for can_read/can_write, the agent's own
         ``surface_routing`` row for its surface, the dispatch binding for its
         role. The project is dispatch data first: a ``project=<name>`` token in
-        the prompt resolves by name; only a dispatch that named none falls back
-        to the cwd, because the orchestrator dispatches from the workspace root.
+        the prompt resolves by name, ``project=none`` stamps no project; only a
+        dispatch with no token falls back to the cwd, because the orchestrator
+        dispatches from the workspace root.
 
         Fail-safe: any error degrades to ``(None, None)`` -- a birth without a
         kernel payload, never a blocked dispatch.
@@ -633,9 +731,13 @@ class ToolPolicy:
                 resolve_project_by_name,
             )
 
+            from modules.agents.dispatch_binding import NO_PROJECT
+
             sections = build_kernel_sections(
                 agent_name, workspace, turn_role=turn_role,
             )
+            if project_token == NO_PROJECT:
+                return sections, None
             project = resolve_project_by_name(workspace, project_token)
             if not project:
                 project = resolve_dispatch_project(workspace, cwd)
@@ -803,6 +905,8 @@ class ToolPolicy:
         account path (``sensitive_paths.is_account_path``) gets the signature a
         Bash write onto it gets.
 
+        - gaia-verifier: refused outright outside its own scratch entry
+          (``verifier_scratch_guard``), before any signature is considered.
         - Main session: consent is asked inline through the host's own
           mechanism (``consent`` without an approval id).
         - Subagent: the host-neutral ``core.protected_write_verdict`` decides,
@@ -821,15 +925,27 @@ class ToolPolicy:
             build_reminder_context,
             should_remind,
         )
+        from modules.security import protected_path_guard
         from modules.security.protected_paths import (
             is_protected_hook_path,
+            is_read_spool_path,
             resolved_write_target,
         )
         from modules.security.sensitive_paths import is_account_path
 
-        file_path = parameters.get("file_path", "")
+        file_path = parameters.get("file_path") or parameters.get("notebook_path") or ""
         if not file_path:
             return PolicyVerdict()
+
+        from modules.security import verifier_scratch_guard
+
+        refusal = verifier_scratch_guard.check(
+            file_path, agent_type=agent_type, harness_agent_id=agent_id,
+        )
+        if refusal:
+            return PolicyVerdict(decision="deny", reason=refusal)
+        if is_read_spool_path(file_path):
+            return PolicyVerdict(decision="deny", reason=protected_path_guard.rejection_message(file_path))
 
         account_path = is_account_path(file_path)
         if not account_path and not is_protected_hook_path(file_path):
@@ -858,8 +974,8 @@ class ToolPolicy:
             f"[T3_APPROVAL_REQUIRED] This {tool_name} writes '{file_path}', which "
             f"grants access to your own account."
             if account_path else
-            "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
-            "require approval."
+            "[PROTECTED_PATH] Modifications to installed Gaia code, hooks and "
+            "security config require approval."
         )
 
         if not is_subagent:
@@ -952,6 +1068,14 @@ class ToolPolicy:
         )
         success = tool_result.exit_code == 0
 
+        from modules.security.memory_skill_guard import is_memory_skill, record_skill_loaded
+
+        if not hook_data.get("agent_id") and is_memory_skill(tool_name, parameters):
+            record_skill_loaded(post_session_id)
+        _record_skill_use(tool_name, parameters, hook_data)
+        if str(tool_name).lower() in SHELL_TOOLS:
+            _record_command_run(parameters, tool_result, hook_data)
+
         # The dispatch result is the only place a harness-truncated subagent is
         # observable, and where the orchestrator gets its look at the row. The
         # tool reports itself as "Agent"; "Task" is its former name.
@@ -966,6 +1090,17 @@ class ToolPolicy:
                 session_id=post_session_id, tool_use_id=tool_use_id
             )
             tier = pre_state.tier if pre_state else "unknown"
+
+            if hook_data.get("is_interrupt") is True:
+                outcome, exit_code = "interrupted", None
+            elif not tool_result.ran:
+                outcome, exit_code = "refused", None
+            else:
+                outcome, exit_code = "allowed", tool_result.exit_code
+            _record_cli_use(
+                hook_data, outcome=outcome, exit_code=exit_code,
+                command=pre_state.command if pre_state else "",
+            )
 
             computed_duration = duration
             if pre_state and pre_state.start_time_epoch > 0:

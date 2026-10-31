@@ -17,16 +17,24 @@ Categories retained internally for verb classification:
 """
 
 import functools
+import json
 import logging
+import os
 import re
 import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
 
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
-from .cli_aliases import as_wrapped_cli
+from .cli_aliases import as_wrapped_cli, declared_wrapper
+from .forge_shapes import change_request_action
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
     CommandSemantics,
@@ -37,6 +45,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .nested_executors import nested_run, opens_session, reads_local_state, with_target_flags, writes_or_sends
 from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
@@ -68,12 +77,14 @@ except ImportError:
 
 try:
     from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
-    from .inline_ast_analyzer import (
-        is_provably_read_only_python as _is_provably_read_only_python,
-    )
+    from .inline_ast_analyzer import parse_finds_no_effect as _parse_finds_no_effect
+    from .inline_ast_analyzer import runs_code_string as _runs_code_string
+    from .inline_ast_analyzer import loaded_modules as _loaded_modules
 except ImportError:  # pragma: no cover -- defensive
     _analyze_python_inline = None
-    _is_provably_read_only_python = None
+    _loaded_modules = None
+    _parse_finds_no_effect = None
+    _runs_code_string = None
     logging.getLogger(__name__).warning(
         "inline_ast_analyzer.analyze_python_inline not importable; "
         "AST-based Python inline analysis disabled (falling back to regex)"
@@ -103,6 +114,7 @@ CATEGORY_MUTATIVE = "MUTATIVE"
 CATEGORY_SIMULATION = "SIMULATION"
 CATEGORY_READ_ONLY = "READ_ONLY"
 CATEGORY_UNKNOWN = "UNKNOWN"
+_READING_CATEGORIES = frozenset({CATEGORY_READ_ONLY, CATEGORY_SIMULATION})
 
 
 # ============================================================================
@@ -124,6 +136,7 @@ class MutativeResult:
         reason: Human-readable explanation of the classification.
         guidance: The non-mutating way to reach the same outcome, when one
             exists. Empty for every classification that has no such equivalent.
+        rule: The verdict rule a lane settled itself; empty when derived from the verb.
     """
     is_mutative: bool = False
     category: str = CATEGORY_UNKNOWN
@@ -133,6 +146,7 @@ class MutativeResult:
     confidence: str = "low"
     reason: str = ""
     guidance: str = ""
+    rule: str = ""
 
 
 
@@ -158,7 +172,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Lifecycle
     "start", "restart", "reboot", "reload", "refresh", "resume",
     "uncordon", "unsuspend", "enable", "disable", "suspend", "pause",
-    "stop", "shutdown", "halt", "abort",
+    "stop", "shutdown", "halt", "abort", "up", "seal", "unseal",
     # Movement / transfer
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
@@ -188,7 +202,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "push", "merge", "rebase",
     "rollback",
     # Access control
-    "grant", "assign", "revoke",
+    "grant", "assign", "revoke", "login", "select", "get-credentials",
     # Reconciliation
     "reconcile", "rsync",
     # Deletion / removal (approvable via nonce -- blocked_commands.py catches
@@ -240,6 +254,169 @@ COMPOUND_READ_ONLY_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "merge-base",
 })
 
+COMPOUND_HEAD_MUTATIVE_VERBS: FrozenSet[str] = frozenset({
+    "run", "add", "use", "report", "associate", "disassociate", "schedule",
+})
+GROUP_PATH_HYPHEN_DEPTH = 3
+GROUP_READ_WORDS: FrozenSet[str] = frozenset({"auth", "config"})
+LIVE_SIMULATION_VERBS: Dict[str, FrozenSet[str]] = {"test": frozenset({"iac", "k8s"})}
+VERB_DESTROYING_FLAGS: Dict[str, FrozenSet[str]] = {
+    "down": frozenset({"-v", "--volumes", "--rmi"}),
+    "prune": frozenset({"-a", "--all", "--volumes"}),
+}
+APPLYING_PROGRAMS: Dict[str, FrozenSet[str]] = {
+    "ansible-playbook": frozenset({"--check", "-C", "--syntax-check", "--list-tasks", "--list-hosts", "--list-tags"}),
+}
+LOCAL_CACHE_PATHS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+    "helm": (("repo", "update"),),
+    "apt": (("update",),),
+    "apt-get": (("update",),),
+    "act": (("push",),),
+}
+LOCAL_CACHE_SAFE_FLAGS: FrozenSet[str] = frozenset({"-q", "-qq", "--quiet", "-y", "--yes"})
+_PUSHING_OUTPUT_RE = re.compile(r"(?:^|,)(?:type=registry|push=true)(?:,|$)")
+
+
+def _names_operation(token: str) -> bool:
+    """Return True when a head token, whole or by its head fragment, is a word of the effect lexicon."""
+    head = token.split("-", 1)[0]
+    tables = (MUTATIVE_VERBS, SIMULATION_VERBS, READ_ONLY_VERBS)
+    return head in COMPOUND_HEAD_MUTATIVE_VERBS or any(word in table for word in (token, head) for table in tables)
+
+
+def _hyphen_candidate(token: str, is_group: bool = False) -> Tuple[str, bool]:
+    """Return the fragment naming a hyphenated subcommand's effect (only the head for a group name) and whether it is a compound-only change verb."""
+    head, *rest = token.split("-")
+    if not rest or head in SIMULATION_VERBS or head in MUTATIVE_VERBS or head in READ_ONLY_VERBS:
+        return head, False
+    if head in COMPOUND_HEAD_MUTATIVE_VERBS and rest != ["all"]:
+        return head, True
+    if not is_group:
+        for fragment in rest:
+            if fragment in MUTATIVE_VERBS:
+                return fragment, False
+    return head, False
+
+
+def _head_token_mutates(token: str) -> bool:
+    """Return True when a head token, whole or by its effect fragment, names a change."""
+    candidate, compound_change = _hyphen_candidate(token) if _is_subcommand_identifier(token) else (token, False)
+    return compound_change or token in MUTATIVE_VERBS or candidate in MUTATIVE_VERBS
+
+
+def _later_head_mutates(
+    head_tokens: Tuple[str, ...], index: int, hyphen_depth: int, values: FrozenSet[int] = frozenset(),
+) -> bool:
+    """Return True when a command word after *index* names a change: any whole verb, or a compound within the path depth."""
+    return any(
+        position not in values
+        and (token in MUTATIVE_VERBS or (position <= hyphen_depth and _head_token_mutates(token)))
+        for position, token in enumerate(head_tokens[index + 1:], start=index + 1)
+    )
+
+
+def _option_value_positions(semantics: "CommandSemantics") -> FrozenSet[int]:
+    """Return the semantic head positions that hold an option's value, never a command word."""
+    positions, index, previous = set(), 0, ""
+    for token in semantics.args:
+        expected = semantics.non_flag_tokens_raw
+        if index < len(expected) and token == expected[index]:
+            index += 1
+            if previous.startswith("-") and "=" not in previous and (previous.startswith("--") or len(previous) == 2):
+                positions.add(index)
+        previous = token
+    return frozenset(positions)
+
+
+# Global options of the cloud CLIs and how many words each takes. They hold no command word, so they are read
+# away before the command path is classified; an option missing here may take a value, so it is read both ways.
+_CLOUD_GLOBAL_OPTIONS: Dict[str, Dict[str, int]] = {
+    "aws": {
+        "--profile": 1, "--region": 1, "--output": 1, "--query": 1, "--endpoint-url": 1, "--color": 1,
+        "--ca-bundle": 1, "--cli-read-timeout": 1, "--cli-connect-timeout": 1, "--cli-binary-format": 1,
+        "--debug": 0, "--no-verify-ssl": 0, "--no-paginate": 0, "--no-sign-request": 0, "--no-cli-pager": 0,
+    },
+    "az": {"--subscription": 1, "--output": 1, "-o": 1, "--query": 1, "--debug": 0, "--verbose": 0, "--only-show-errors": 0},
+    "gcloud": {
+        "--project": 1, "--account": 1, "--configuration": 1, "--format": 1, "--verbosity": 1,
+        "--billing-project": 1, "--trace-token": 1, "--quiet": 0, "--log-http": 0,
+    },
+}
+
+
+_CLOUD_SESSION_WORDS: FrozenSet[str] = frozenset({"ssh", "scp", "connect", "tunnel"})
+
+
+def _cloud_command_readings(base_cmd: str, tokens: List[str]) -> Tuple[List[str], bool]:
+    """Return the command without its global options and whether that reading is exact; an unknown option before the operation word is read both ways."""
+    arity = _CLOUD_GLOBAL_OPTIONS.get(base_cmd)
+    start = next((i for i, t in enumerate(tokens) if program_identity(t) == base_cmd), None) if arity else None
+    if start is None:
+        return [], True
+    kept, rest, index, operation_seen = tokens[:start + 1], tokens[start + 1:], 0, False
+    while index < len(rest):
+        token = rest[index]
+        name = token.split("=", 1)[0]
+        if token == "--":
+            kept += rest[index:]
+            break
+        if name in arity:
+            index += 1 + (0 if "=" in token else arity[name])
+            continue
+        if token.startswith("-") and "=" not in token and not operation_seen:
+            after = rest[index + 1:]
+            return [shlex.join(kept + after), shlex.join(kept + after[1:])], False
+        operation_seen = operation_seen or (not token.startswith("-") and (
+            _names_operation(token) or _is_known_verb(token) or token in _CLOUD_SESSION_WORDS
+        ))
+        kept.append(token)
+        index += 1
+    return ([shlex.join(kept)] if len(kept) < len(tokens) else []), True
+
+
+# Reads that take the resource they read as an operand: a config after one is that operand, not the verb.
+_OPERAND_READ_VERBS: FrozenSet[str] = frozenset({"get", "list", "describe", "show", "read", "view", "inspect", "ls"})
+
+
+def _configure_position(head_tokens: Tuple[str, ...], values: FrozenSet[int]) -> int:
+    """Return where a group-path command ends on the verb ``config`` (az webapp log config), or 0 when a read names it."""
+    for position, token in enumerate(head_tokens):
+        if position in values:
+            continue
+        if token.split("-", 1)[0] in _OPERAND_READ_VERBS:
+            return 0
+        if token == "config" and position >= 2:
+            later = [t for p, t in enumerate(head_tokens[position + 1:], start=position + 1) if p not in values]
+            return 0 if any(_names_operation(t) for t in later) else position
+    return 0
+
+
+def _local_cache_refresh(base_cmd: str, semantics: "CommandSemantics") -> str:
+    """Return the head path of a command that only refreshes a local cache and carries no option that loads code, or ""."""
+    if not set(semantics.flag_tokens) <= LOCAL_CACHE_SAFE_FLAGS:
+        return ""
+    for path in LOCAL_CACHE_PATHS.get(base_cmd, ()):
+        if semantics.non_flag_tokens == path:
+            return " ".join(path)
+    return ""
+
+
+def _output_pushes(tokens: Tuple[str, ...]) -> bool:
+    """Return True when an output option sends the build to a registry."""
+    for flag, value in zip(tokens, tokens[1:]):
+        if flag in ("-o", "--output") and _PUSHING_OUTPUT_RE.search(value):
+            return True
+    return any(t.startswith("--output=") and _PUSHING_OUTPUT_RE.search(t[len("--output="):]) for t in tokens)
+
+
+def _simulation_flag_holds(tokens: Tuple[str, ...]) -> bool:
+    """Return True when a simulation flag is present and no later dry-run spelling turns it off."""
+    lowered = [t.lower() for t in tokens]
+    dry_runs = [t for t in lowered if t.startswith(("--dry-run", "--dryrun"))]
+    if dry_runs and dry_runs[-1] not in SIMULATION_FLAGS:
+        return False
+    return any(t in SIMULATION_FLAGS for t in lowered)
+
 
 # ============================================================================
 # Git Local-Only Subcommands (early-exit guard)
@@ -287,6 +464,7 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "cherry-pick", # local-only: applies commits from another branch, no remote side effects
     "grep",        # read-only search: its pattern is data, never a verb to run
                    # (except -O, see git_grep_opens_pager)
+    "merge-tree",
 })
 
 
@@ -302,6 +480,45 @@ def git_grep_opens_pager(tokens: Tuple[str, ...]) -> bool:
         or (token.startswith("-") and not token.startswith("--") and "O" in token)
         for token in tokens
     )
+
+_GIT_OUTPUT_LONG_OPTIONS: Tuple[str, ...] = ("output", "output-directory")
+_GIT_SHORT_O_WRITES: FrozenSet[str] = frozenset({"format-patch", "archive", "bugreport", "diagnose"})
+_GIT_WRITES_CWD_BY_DEFAULT: FrozenSet[str] = frozenset({"format-patch", "bugreport", "diagnose"})
+
+
+def _git_output_targets(tokens: tuple, subcommand: str) -> "List[str]":
+    """Return every file or directory a git command writes by option (unique long prefixes included), plus ``.`` for a report or patch written without one."""
+    split = _git_subcommand_split(tokens)
+    args = split[2] if split else list(tokens[1:])
+    targets: List[str] = []
+    for index, token in enumerate(args):
+        following = args[index + 1] if index + 1 < len(args) else ""
+        if token == "--":
+            break
+        name, has_value, value = token[2:].partition("=")
+        if token.startswith("--") and len(name) >= 3 and any(o.startswith(name) for o in _GIT_OUTPUT_LONG_OPTIONS):
+            targets.append(value if has_value else following)
+        elif subcommand in _GIT_SHORT_O_WRITES and token.startswith("-") and not token.startswith("--") and "o" in token:
+            targets.append(token.split("o", 1)[1] or following)
+    if subcommand in _GIT_WRITES_CWD_BY_DEFAULT and not targets and "--stdout" not in args:
+        targets.append(".")
+    return targets
+
+
+def _git_output_in_owned_entry(tokens: tuple, targets: "List[str]", caller: "Optional[LocalWorkCaller]") -> bool:
+    """True when each output path, resolved from the directory git runs in, lies in the caller's own scratch entry."""
+    split = _git_subcommand_split(tokens)
+    if split is None or caller is None:
+        return False
+    base = _git_repo_dir(split[0], caller.cwd)
+    for target in targets:
+        real = _resolve_local_work_path(target, base)
+        if real is None or _scratch_entry(real) is None or _local_work_root(real, caller, allow_top=True) is None:
+            return False
+        if _shares_inode(real):
+            return False
+    return True
+
 
 # Flags that turn a local-safe branch switch into a reset of an EXISTING branch:
 # `-B`/`-C` create the branch, or repoint it when it already exists, so the
@@ -429,6 +646,7 @@ CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # alter message content, send mail, or delete anything.  Safe as T0 unless
     # it may remove INBOX (archive), which _may_archive_gmail carves back out.
     ("workspace", "modify"): CATEGORY_READ_ONLY,
+    ("docker", "up"): CATEGORY_READ_ONLY,
 }
 
 
@@ -475,6 +693,10 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # `gaia notifications`: reversible local rows that start no process, and the
     # group has no delete/purge verb, so the deny-verb guard exempts all of it.
     ("gaia", "notifications"): CATEGORY_READ_ONLY,
+    # `gaia login start` only runs logins that keep the active account
+    # (`gcloud auth login --no-activate`); the consent is the user's own, given
+    # in the browser.
+    ("gaia", "login"): CATEGORY_READ_ONLY,
     # `gaia contract <verb>` (init/set/add/fill/finalize/view/validate): the
     # by-value agent_contract_handoff draft store under
     # `data_dir()/contract_drafts/` — a subagent's own turn-scoped draft, edited
@@ -616,6 +838,39 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 }
 
 
+# Actions exempted by name under a group whose other actions stay gated: verbs proven not to write, or (approvals)
+# only to store a request for the user's decision; the stored command is judged when it runs. Every other verb,
+# including one added later, still falls to the scan, which reads option values such as --what as words.
+#
+# Key:   (base_cmd, group)  -- group is non_flag_tokens[0].
+# Value: {verb: category}.
+SUBCOMMAND_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
+    ("gaia", "approvals"): dict.fromkeys(("request-set", "request-file-write", "question", "show"), CATEGORY_READ_ONLY),
+    ("gaia", "migrate"): {"plan": CATEGORY_SIMULATION},
+    ("gh", "label"): {"list": CATEGORY_READ_ONLY},
+}
+
+# A change request runs nothing until merged; these flags take the merge's decision.
+_CHANGE_REQUEST_OWN_WORK: FrozenSet[str] = frozenset({"create", "edit", "update"})
+_CHANGE_REQUEST_LANDING_FLAGS: Tuple[str, ...] = ("--auto-complete", "--auto-merge", "--bypass-policy")
+_CHANGE_REQUEST_EDIT_FLAGS: Tuple[str, ...] = (
+    "--base", "-B", "--target-branch", "--ready", "--draft", "--status", "--state",
+)
+_CHANGE_REQUEST_VOICE: FrozenSet[str] = frozenset({"ready", "comment", "note"})
+_FORGE_CLIS: FrozenSet[str] = frozenset({"gh", "glab", "tea", "az"})
+
+
+def _carries_revoking_flag(tokens: Union[List[str], tuple], flags: Tuple[str, ...]) -> bool:
+    """True when any of *flags* appears, bare, as ``--long=value``, or as an attached ``-Xvalue``."""
+    for token in tokens:
+        for flag in flags:
+            if token == flag or (flag.startswith("--") and token.startswith(f"{flag}=")):
+                return True
+            if not flag.startswith("--") and token.startswith(flag):
+                return True
+    return False
+
+
 # ============================================================================
 # Command-path Tier UPGRADES (anchored) — the symmetric opposite of
 # COMMAND_SUBCOMMAND_TIER_EXCEPTIONS above.
@@ -641,14 +896,28 @@ _ACCOUNT_SLOT_GUIDANCE = (
     "session on this machine -- choose the account per process instead of "
     "switching it: set the CLI's token variable for that one process, e.g. "
     "`GH_TOKEN=$ACCOUNT_TOKEN gh pr list`, or run it through a wrapper that "
-    "does the same. `gh auth status` lists the accounts; `gh auth login` adds "
-    "a missing one."
+    "does the same. `gh auth status` lists the accounts. Adding a missing "
+    "account is the user's call: `gh auth login` makes the new account the "
+    "active one."
+)
+
+_GCLOUD_LOGIN_GUIDANCE = (
+    "A gcloud login makes the new account the active one for every "
+    "session on this machine. Add it without switching: "
+    "`gcloud auth login <account> --no-activate`, or start it detached with "
+    "`gaia login start gcloud --account <account>`."
 )
 
 _REMOTE_RUN_NOUNS: FrozenSet[str] = frozenset({
     "workflow", "workflows", "pipeline", "pipelines", "ci",
 })
 _ACCOUNT_SLOT_ACTIONS: FrozenSet[str] = frozenset({"switch", "logout"})
+_API_BODY_FLAGS: FrozenSet[str] = frozenset({"--field", "--raw-field", "--input"})
+_API_READ_METHODS: FrozenSet[str] = frozenset({"get", "head"})
+_GRAPHQL_MUTATION_RE = re.compile(r"\bmutation\b", re.IGNORECASE)
+_REVIEW_VERDICT_FLAGS: FrozenSet[str] = frozenset({
+    "--approve", "--request-changes", "--comment", "-a", "-r", "-c",
+})
 _GMAIL_ARCHIVE_RE = re.compile(r"removelabelids\W[^\]]*\binbox\b", re.DOTALL)
 _GMAIL_HIDDEN_PAYLOAD_RE = re.compile(
     r"--[\w-]*file\b"
@@ -675,6 +944,55 @@ def _may_archive_gmail(semantics: CommandSemantics) -> bool:
     return bool(_GMAIL_HIDDEN_PAYLOAD_RE.search(text))
 
 
+def _api_body_flags(args: Tuple[str, ...]) -> List[Tuple[str, str]]:
+    """(flag, value) for each body flag of an `api` call, however the value is attached."""
+    found = []
+    for i, token in enumerate(args):
+        flag, eq, attached = token.partition("=")
+        following = args[i + 1] if i + 1 < len(args) else ""
+        if flag in _API_BODY_FLAGS:
+            found.append((flag, attached if eq else following))
+        elif token[:2] in ("-f", "-F"):
+            found.append(("-f", token[2:] or following))
+    return found
+
+
+def _graphql_document_mutates(bodies: List[Tuple[str, str]]) -> bool:
+    """True when a GraphQL `query` field or `--input` document holds `mutation`, or cannot be read."""
+    for flag, value in bodies:
+        if flag != "--input":
+            key, _, value = value.partition("=")
+            if key != "query":
+                continue
+        if flag == "--input" or value.startswith("@"):
+            try:
+                value = Path(value if flag == "--input" else value[1:]).read_text(errors="replace")
+            except OSError:
+                return True
+        if _GRAPHQL_MUTATION_RE.search(value):
+            return True
+    return False
+
+
+def _api_mutating_verb(args: Tuple[str, ...], graphql: bool = False) -> Optional[str]:
+    """The method, or "api" for an implicit POST, when an `api` call writes; an explicit method decides alone."""
+    bodies = _api_body_flags(args)
+    if graphql:
+        return "api" if _graphql_document_mutates(bodies) else None
+    method: Optional[str] = None
+    for i, token in enumerate(args):
+        if token in ("-X", "--method"):
+            method = args[i + 1] if i + 1 < len(args) else ""
+        elif token.startswith("--method="):
+            method = token.split("=", 1)[1]
+        elif token.startswith("-X"):
+            method = token[2:]
+    if method is None:
+        return "api" if bodies else None
+    method = method.lower()
+    return None if method in _API_READ_METHODS else method or "api"
+
+
 def _check_generic_cli_shape(
     base_cmd: str, family: str, semantics: CommandSemantics
 ) -> Optional["MutativeResult"]:
@@ -684,13 +1002,16 @@ def _check_generic_cli_shape(
     <write verb>` rewrites where every later command points, and `auth
     switch|logout` rewrites the shared account slot. `config` heads the read
     forms people run all day, so only a write verb after it decides; `use-context`
-    and `activate` carry none and stay out. Only the leading path is read, so
-    `docker run ci run`, `npm run test` and `gh run list` are untouched.
+    and `activate` carry none and stay out. `api` with a body or non-GET method
+    (`api graphql` only for a mutation), `pr ready` and `<noun> review` with a verdict flag publish.
+    Only the leading path is read, so `docker run ci run`, `npm run test` and
+    `gh run list` are untouched.
     """
     path = semantics.non_flag_tokens
     if len(path) < 2:
         return None
     head, action = path[0], path[1]
+    verb = action
     guidance = ""
     if head in _REMOTE_RUN_NOUNS and action == "run":
         pass
@@ -698,12 +1019,18 @@ def _check_generic_cli_shape(
         pass
     elif head == "auth" and action in _ACCOUNT_SLOT_ACTIONS:
         guidance = _ACCOUNT_SLOT_GUIDANCE
+    elif head == "api" and (api_verb := _api_mutating_verb(semantics.args, action == "graphql")):
+        verb = api_verb
+    elif change_request_action(path) in _CHANGE_REQUEST_VOICE:
+        verb = change_request_action(path)
+    elif action == "review" and _REVIEW_VERDICT_FLAGS.intersection(semantics.flag_tokens):
+        pass
     else:
         return None
     return MutativeResult(
         is_mutative=True,
         category=CATEGORY_MUTATIVE,
-        verb=action,
+        verb=verb,
         cli_family=family,
         confidence="high",
         reason=(
@@ -737,6 +1064,11 @@ class MutativeAnchor:
     "no" to a command with a safe equivalent teaches nothing, and leaves the
     agent hunting for a spelling that passes.
 
+    ``exempt_flags`` stand the anchor down, unless a flag in
+    ``exempt_cancelled_by`` comes after them: CLIs such as gcloud let the last
+    of ``--no-activate``/``--activate`` win, so presence alone would let
+    ``--no-activate --activate`` through.
+
     An empty ``path`` is refused. It would anchor a whole CLI on a flag alone —
     the global behaviour this model exists to replace; a CLI-wide condition is
     spelled out as one anchor per subcommand that warrants it. Tokens and flags
@@ -748,6 +1080,8 @@ class MutativeAnchor:
     path: Tuple[str, ...]
     flags: FrozenSet[str] = frozenset()
     guidance: str = ""
+    exempt_flags: FrozenSet[str] = frozenset()
+    exempt_cancelled_by: FrozenSet[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.path:
@@ -759,10 +1093,10 @@ class MutativeAnchor:
                 raise ValueError(
                     f"MutativeAnchor.path token {token!r} must be non-empty lowercase"
                 )
-        for flag in self.flags:
+        for flag in self.flags | self.exempt_flags | self.exempt_cancelled_by:
             if not flag or flag != flag.lower():
                 raise ValueError(
-                    f"MutativeAnchor.flags entry {flag!r} must be non-empty lowercase"
+                    f"MutativeAnchor flag {flag!r} must be non-empty lowercase"
                 )
 
     def matched_flags(self, semantics: CommandSemantics) -> Optional[Tuple[str, ...]]:
@@ -772,6 +1106,12 @@ class MutativeAnchor:
         ``None`` rather than for truthiness.
         """
         if semantics.non_flag_tokens[:len(self.path)] != self.path:
+            return None
+        toggles = [
+            flag for flag in semantics.flag_tokens
+            if flag in self.exempt_flags or flag in self.exempt_cancelled_by
+        ]
+        if toggles and toggles[-1] in self.exempt_flags:
             return None
         if not self.flags:
             return ()
@@ -784,10 +1124,13 @@ def _anchor_shadows(earlier: MutativeAnchor, later: MutativeAnchor) -> bool:
 
     Anchors of one CLI are tried in declaration order and the first match
     returns, so ``later`` is reachable only while some command matches it and
-    NOT ``earlier``. Two conditions together make that impossible:
+    NOT ``earlier``. Three conditions together make that impossible:
 
     * ``earlier``'s path is a prefix of ``later``'s -- matching is by prefix,
-      and an equal path is a prefix of itself; and
+      and an equal path is a prefix of itself;
+    * ``earlier`` has no exemption, or exactly the same exemption as
+      ``later``, otherwise ``later`` may still answer a command ``earlier``
+      stands down for; and
     * ``earlier``'s condition is no narrower. An unflagged ``earlier`` fires on
       the path alone, so it swallows everything beneath it. A flagged one
       swallows ``later`` only when every flag that could fire ``later`` also
@@ -795,6 +1138,10 @@ def _anchor_shadows(earlier: MutativeAnchor, later: MutativeAnchor) -> bool:
       ``earlier`` survives: it still answers the commands that carry no flag.
     """
     if later.path[:len(earlier.path)] != earlier.path:
+        return False
+    if earlier.exempt_flags and (earlier.exempt_flags, earlier.exempt_cancelled_by) != (
+        later.exempt_flags, later.exempt_cancelled_by
+    ):
         return False
     if not earlier.flags:
         return True
@@ -839,6 +1186,26 @@ def _validated_anchor_table(
     return table
 
 
+# A tool ignores a flag it does not know, so only these exact spellings free a
+# formatter that otherwise rewrites files in place.
+# `-check=false` and `-write=true` turn them back off, and a later one cancels.
+# `-check=true` and `fmt -` are not exempted and ask a signature.
+_TERRAFORM_FMT_NO_WRITE_FLAGS = frozenset({"-check", "--check", "-write=false", "--write=false"})
+_TERRAFORM_FMT_WRITE_FLAGS = frozenset({"-check=false", "--check=false", "-write=true", "--write=true"})
+
+
+def _terraform_fmt_anchor() -> "MutativeAnchor":
+    return MutativeAnchor(
+        path=("fmt",),
+        exempt_flags=_TERRAFORM_FMT_NO_WRITE_FLAGS,
+        exempt_cancelled_by=_TERRAFORM_FMT_WRITE_FLAGS,
+        guidance=(
+            "fmt rewrites the files it finds unless -check or -write=false is "
+            "given. Run it as `terraform fmt -check` to see what would change."
+        ),
+    )
+
+
 # Keyed by base_cmd; the anchors of one CLI are tried in declaration order and
 # the first match decides. Every match yields the same verdict, so order only
 # affects which path the reason names -- and an order that leaves an anchor
@@ -854,6 +1221,7 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # destructive prune un-gated. Anchor ONLY the destructive leaf; the
         # other `gaia context` read/inspect subcommands stay READ_ONLY.
         MutativeAnchor(path=("context", "prune-workspaces")),
+        MutativeAnchor(path=("context", "relocate")),
         # `gaia scan --workspace <name>` (write mode) UPSERTs (workspace,
         # project) rows into gaia.db and promotes the resolved workspace -- a
         # persistent DB mutation. Like `context`, `scan` carries no verb in
@@ -909,6 +1277,19 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # `add` is kept out of MUTATIVE_VERBS so `git add` stays free; this one
         # publishes a new secret value to every consumer of `latest`.
         MutativeAnchor(path=("secrets", "versions", "add")),
+        # `--update-adc` rewrites the application default credentials that
+        # client libraries read, whatever the active account does; a
+        # `--flags-file` can turn that or activation back on out of sight.
+        MutativeAnchor(
+            path=("auth", "login"),
+            flags=frozenset({"--update-adc", "--flags-file"}),
+        ),
+        MutativeAnchor(
+            path=("auth", "login"),
+            exempt_flags=frozenset({"--no-activate"}),
+            exempt_cancelled_by=frozenset({"--activate"}),
+            guidance=_GCLOUD_LOGIN_GUIDANCE,
+        ),
     ),
     # `config <write verb>` is generic (_check_generic_cli_shape). NOT gated,
     # and left open on purpose: `kubectl config use-context` and `gcloud config
@@ -968,11 +1349,33 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
             path=("init",),
             flags=frozenset({"-upgrade", "-migrate-state", "-reconfigure"}),
         ),
+        _terraform_fmt_anchor(),
     ),
+    "tofu": (_terraform_fmt_anchor(),),
+    "helm": (MutativeAnchor(path=("repo", "add")),),
     "terragrunt": (
         MutativeAnchor(
             path=("init",),
             flags=frozenset({"-upgrade", "-migrate-state", "-reconfigure"}),
+        ),
+        _terraform_fmt_anchor(),
+        # `--check` is honored only by terragrunt releases after the v0.72 flag
+        # redesign, so it asks; `--terragrunt-hclfmt-stdin` formats stdin to stdout.
+        MutativeAnchor(
+            path=("hclfmt",),
+            exempt_flags=frozenset({"--terragrunt-check", "--terragrunt-hclfmt-stdin"}),
+            exempt_cancelled_by=frozenset({"--terragrunt-check=false"}),
+            guidance=(
+                "hclfmt rewrites HCL in place unless --terragrunt-check is "
+                "given; --check and --working-dir are not flags of this "
+                "terragrunt and are ignored."
+            ),
+        ),
+        MutativeAnchor(
+            path=("hcl", "fmt"),
+            exempt_flags=frozenset({"--check"}),
+            exempt_cancelled_by=frozenset({"--check=false"}),
+            guidance="hcl fmt rewrites HCL in place unless --check is given.",
         ),
     ),
 })
@@ -1011,12 +1414,16 @@ _INLINE_CODE_MAP: Dict[str, FrozenSet[str]] = {
     "python3.11": frozenset({"-c"}),
     "python3.12": frozenset({"-c"}),
     "python3.13": frozenset({"-c"}),
-    "node": frozenset({"-e", "--eval"}),
+    "node": frozenset({"-e", "--eval", "-p", "--print"}),
     "ruby": frozenset({"-e"}),
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
     "lua": frozenset({"-e"}),
+    "luajit": frozenset({"-e"}),
     "rscript": frozenset({"-e"}),
+    "r": frozenset({"-e"}),
+    "deno": frozenset({"eval"}),
+    "bun": frozenset({"-e", "--eval", "-p", "--print"}),
 }
 _INLINE_CODE_CLIS: FrozenSet[str] = frozenset(_INLINE_CODE_MAP.keys())
 
@@ -1042,7 +1449,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
     "python", "python3",
     "python3.10", "python3.11", "python3.12", "python3.13",
     "bash", "sh", "zsh", "dash", "ksh",
-    "node", "ruby", "perl", "php",
+    "node", "ruby", "perl", "php", "lua", "luajit", "rscript",
 })
 
 # Non-shell, non-Python interpreters: their script files are SOURCE CODE in a
@@ -1055,7 +1462,7 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
 # camelCase multi-word tokens embedded inside a quoted string argument were
 # never matched anyway (the quote makes the whole string a single token).
 _NON_SHELL_SCRIPT_INTERPRETERS: FrozenSet[str] = frozenset({
-    "node", "ruby", "perl", "php",
+    "node", "ruby", "perl", "php", "lua", "luajit", "rscript",
 })
 
 # File extensions whose interpreter is implied by ``./script`` (no explicit
@@ -1198,7 +1605,30 @@ _INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "ruby": frozenset({"-e"}),
     "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}),
+    "lua": frozenset({"-e", "-l"}),
+    "luajit": frozenset({"-e", "-l"}),
+    "rscript": frozenset({"-e"}),
 }
+
+_PYTHON_OPTION_VALUE_FLAGS: FrozenSet[str] = frozenset({"-W", "-X", "--check-hash-based-pycs"})
+
+
+def script_positional(interpreter: str, arguments: List[str]) -> Optional[str]:
+    """The script file *interpreter* runs from *arguments*, or None when it runs inline code, a module or stdin."""
+    defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(interpreter, frozenset())
+    value_flags = _PYTHON_OPTION_VALUE_FLAGS if interpreter in _PYTHON_INTERPRETERS else frozenset()
+    skip_value = False
+    for token in arguments:
+        if skip_value:
+            skip_value = False
+        elif token == "-" or token in defer_flags:
+            return None
+        elif token in value_flags:
+            skip_value = True
+        elif not token.startswith("-"):
+            return token
+    return None
+
 
 # Interpreter flags that VALIDATE SYNTAX ONLY and never execute the script
 # body.  ``bash -n <script>`` reads the script and reports parse errors without
@@ -1885,6 +2315,28 @@ _DIRECT_MUTATION_PATTERNS_BY_LANGUAGE: Dict[str, Tuple[Tuple["_re.Pattern", str,
 }
 
 
+_JS_MUTATION_METHOD_NAMES_RE = _re.compile(
+    r"\b(?:"
+    + "|".join(
+        _JS_FS_DELETE_METHODS + _JS_FS_WRITE_METHODS
+        + _JS_FS_MUTATE_METHODS + _JS_FS_PERM_METHODS
+    )
+    + r")\b"
+)
+
+
+def _may_mutate_directly(content: str, language: str) -> bool:
+    """False only when *content* provably holds no direct-mutation match.
+
+    Lexing blanks characters and never creates them, so a mutation method name
+    absent from the raw text is absent from every view and the per-line scan
+    can be skipped.  A language with no table has nothing to scan.
+    """
+    if language not in _DIRECT_MUTATION_PATTERNS_BY_LANGUAGE:
+        return False
+    return _JS_MUTATION_METHOD_NAMES_RE.search(content) is not None
+
+
 def _scan_direct_mutation(code: str, language: str) -> "Optional[Tuple[str, str]]":
     """Return ``(label, category)`` for a direct filesystem mutation, or None.
 
@@ -1936,6 +2388,45 @@ _EXEC_SINK_BACKTICK_RE = _re.compile(r"`([^`\n]{2,})`")
 _EXEC_SINK_PERCENT_X_RE = _re.compile(r"%x[\{\(\[]([^\}\)\]\n]{2,})[\}\)\]]")
 
 
+_EXEC_SINK_ARGV_RE = _re.compile(
+    r"\b(?:spawnSync|spawn|execFileSync|execFile)\s*\(\s*"
+    r"(?P<q>['\"])(?P<prog>(?:[^'\"\\]|\\.)*)(?P=q)\s*,\s*\[(?P<args>[^\]]*)\]"
+)
+_ARGV_LITERAL_ITEM_RE = _re.compile(r"""\s*(?P<q>['"])(?P<item>(?:[^'"\\]|\\.)*)(?P=q)\s*""")
+_ARGV_SHELL_PROGRAMS: FrozenSet[str] = frozenset({"cmd", "powershell", "pwsh"})
+
+
+def _scan_exec_sink_argv(
+    code: str, family: str, cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Judge ``spawn``/``execFile`` calls by the argv they run; a shell handed a computed argv asks."""
+    import os
+    from .shell_unwrapper import _SHELLS
+    for match in _EXEC_SINK_ARGV_RE.finditer(code):
+        program = match.group("prog")
+        items = [part for part in match.group("args").split(",") if part.strip()]
+        literals = [_ARGV_LITERAL_ITEM_RE.fullmatch(part) for part in items]
+        if all(literals):
+            argv = (program, *(literal.group("item") for literal in literals))
+            if not _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1):
+                continue
+            reason = f"exec-sink argv runs a mutative command: {shlex.join(argv)}"
+        else:
+            name = os.path.basename(program.replace("\\", "/")).lower().removesuffix(".exe")
+            if name not in _SHELLS and name not in _ARGV_SHELL_PROGRAMS:
+                continue
+            reason = f"exec-sink hands shell '{program}' an argv computed at runtime"
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="exec-sink-argv",
+            cli_family=family,
+            confidence="medium",
+            reason=reason,
+        )
+    return None
+
+
 def _scan_exec_sink_string_args(
     code: str, family: str, shell_backticks: bool = True,
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -1969,6 +2460,9 @@ def _scan_exec_sink_string_args(
     (the default) keeps the previous, hook-cwd-only behavior for the inline
     ``-c``/``-e`` caller, which has no surrounding script file to anchor to.
     """
+    argv_result = _scan_exec_sink_argv(code, family, cwd=cwd, _depth=_depth)
+    if argv_result is not None:
+        return argv_result
     candidates: List[str] = []
     for m in _EXEC_SINK_STRING_ARG_RE.finditer(code):
         candidates.append(m.group("cmd"))
@@ -2022,6 +2516,53 @@ _SUSPICIOUS_HEURISTICS: Tuple[Tuple[_re.Pattern, str], ...] = (
 
 MAX_SAFE_INLINE_LENGTH = 150
 MAX_NORMAL_INLINE_LENGTH = 500
+
+_JS_INLINE_INTERPRETERS: FrozenSet[str] = frozenset({"node", "deno", "bun"})
+# Long-JavaScript effects Layers 1-3a miss: built code, a network or process
+# module, an fs change outside the delete/write/append patterns.
+_JS_UNSEEN_EFFECT_RE = _re.compile(
+    r"\b(?:eval|Function|import)\s*\(|\bnew\s+Function\b|\bvm\b|\brequire\s*\(\s*[^'\"\s]"
+    r"|\brequire\s*\(\s*['\"](?:node:)?(?:net|https?|http2|dgram|tls|dns|cluster|worker_threads|inspector|child_process)['\"]"
+    r"|\bprocess\.(?:binding|dlopen|kill)\b"
+    r"|\b(?:rename|copyFile|cp|mkdir|mkdtemp|symlink|link|truncate|ftruncate|utimes|chown|lchown|open|"
+    r"createWriteStream|writev?)(?:Sync)?\s*\("
+)
+# JavaScript effects judged at every length and in every lane.
+_JS_NETWORK_MODULE_RE = _re.compile(
+    r"""(?:\brequire\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)['"](?:node:)?"""
+    r"""(?:net|https?|http2|dgram|tls|cluster|worker_threads|inspector|vm)['"]"""
+)
+_JS_HIDDEN_CALL_RE = _re.compile(
+    r"\b(?:eval|Function)\s*\(|\bnew\s+Function\b|\bimport\s*\(|\brequire\s*\(\s*[^'\"`\s)]"
+    r"|\bprocess\s*\.\s*(?:binding|dlopen)\b|\brequire\s*\([^)]*\)\s*\["
+    r"|\bfetch\s*\([^)]*\b(?:body|method)\s*:|\bcreateRequire\b"
+)
+# Deno and Bun reach the filesystem, processes and the network through their own
+# globals; only the members named here are reads, any other member asks.
+_JS_RUNTIME_EFFECT_RE = _re.compile(
+    r"\bDeno\s*(?:\?\.\s*)?\[|\bBun\s*(?:\?\.\s*)?\["
+    r"|\bDeno\s*\??\.\s*(?!(?:readTextFile|readFile|readDir|stat|lstat|realPath|readLink)(?:Sync)?\b"
+    r"|(?:cwd|args|env|version|build|pid|ppid|noColor|inspect|mainModule|execPath|exit|hostname|osRelease"
+    r"|memoryUsage|stdout|stderr|stdin|errors)\b)"
+    r"|\bBun\s*\??\.\s*(?!(?:version|revision|argv|env|main|which|sleep|sleepSync|nanoseconds|hash|inspect"
+    r"|deepEquals|escapeHTML|stringWidth)\b)"
+)
+_JS_RUNTIME_MODULE_RE = _re.compile(
+    r"""(?:\brequire\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)['"]"""
+    r"""(?:bun(?::[\w-]+)?|(?:https?|jsr|npm):[^'"]*)['"]"""
+)
+_JS_EFFECT_BINDING_RE = _re.compile(
+    r"""\b(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]"""
+    r"""(?:node:)?(?:fs|fs/promises|net|child_process)['"]\s*\)"""
+    r"""|\bimport\s+(?:\*\s+as\s+)?(\w+)\s+from\s+['"](?:node:)?(?:fs|fs/promises|net|child_process)['"]"""
+)
+# Ruby, perl, php, lua and R have no parser here: their code asks unless every
+# statement prints only literals (no interpolation), numbers and arithmetic.
+_UNPARSED_CODE_INTERPRETERS: FrozenSet[str] = frozenset({"ruby", "perl", "php", "lua", "luajit", "rscript", "r"})
+_PRINT_ONLY_STATEMENT_RE = _re.compile(
+    r"""\s*(?:(?:print|puts|pp|p|echo|say|printf)\b"""
+    r"""(?:'(?:[^'\\]|\\['\\])*'|"(?:[^"\\$#@{`]|\\[nt"\\])*"|\d+(?:\.\d+)?|[\s+\-*/%.,()])*)?\s*"""
+)
 
 
 # ============================================================================
@@ -2364,9 +2905,11 @@ def is_account_sensitive_path(token: str) -> bool:
 
 
 def account_path_redirect_target(command: str) -> str:
-    """The first redirect destination in *command* that grants account access."""
-    for match in _REDIRECT_TARGET_RE.finditer(command):
-        target = match.group(1).strip("\"'")
+    """The first redirect or HTTP-client output destination in *command* that grants account access."""
+    from .sensitive_read_guard import copy_written_paths, http_client_written_paths
+
+    redirected = [match.group(1).strip("\"'") for match in _REDIRECT_TARGET_RE.finditer(command)]
+    for target in redirected + http_client_written_paths(command) + copy_written_paths(command):
         if is_account_sensitive_path(target):
             return target
     return ""
@@ -2502,6 +3045,31 @@ def _gaia_scratch_root() -> "str | None":
         return None
 
 
+def _scratch_entry(real: str) -> "str | None":
+    """Return the turn entry (``<scratch>/<first component>``) holding *real*, or None for the shared root or outside it."""
+    import os
+    scratch = _gaia_scratch_root()
+    if not scratch or not real.startswith(scratch + os.sep):
+        return None
+    return os.path.join(scratch, os.path.relpath(real, scratch).split(os.sep, 1)[0])
+
+
+@dataclass(frozen=True)
+class LocalWorkCaller:
+    """Who a local-work write runs for and the directory its relative paths resolve against (None when unproven)."""
+
+    agent_id: str
+    cwd: Optional[str]
+
+
+def _owned_by(entry: "str | None", caller: "Optional[LocalWorkCaller]") -> bool:
+    """True when *entry* is a scratch entry named ``<agent_id>`` or ``<agent_id>.<token>`` for the caller's agent."""
+    import os
+    if not entry or caller is None or not caller.agent_id:
+        return False
+    return os.path.basename(entry).split(".", 1)[0] == caller.agent_id
+
+
 def _gaia_hooks_root() -> "str | None":
     """Return the canonical (realpath) Gaia hooks directory this module ships in.
 
@@ -2527,7 +3095,7 @@ def _gaia_hooks_root() -> "str | None":
         return None
 
 
-def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
+def _rm_scratch_confined_targets(tokens: tuple, caller: "Optional[LocalWorkCaller]" = None) -> "Tuple[str, ...] | None":
     """Return the canonical rm targets when every one is confined to scratch.
 
     STRICT and fail-closed. Returns the resolved paths only when ALL of the
@@ -2535,8 +3103,9 @@ def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
       (a) at least one positional (non-flag) path argument is present;
       (b) NO token contains an unexpanded glob metacharacter (``*?[]{}``) or
           a parent-traversal component (``..``);
-      (c) each path, after os.path.expanduser + os.path.realpath, is the
-          scratch root itself or lives under ``scratch_root + os.sep``.
+      (c) each path, resolved against the caller's cwd (never the hook's), lies
+          in a scratch entry the caller owns (``_owned_by``); ``rmdir -p`` also
+          removes every parent its operand names, so those are targets too.
 
     Any ambiguity -- no positional path, an unresolvable scratch root, a glob,
     a ``..``, an unexpandable ``~user``, or a single path outside scratch --
@@ -2553,11 +3122,8 @@ def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
         scratch cannot be established.
     """
     import os
-    scratch_root = _gaia_scratch_root()
-    if not scratch_root:
-        return None
-
     seen_end_of_opts = False
+    removes_parents = False
     path_tokens = []
     i = 1  # skip base_cmd at index 0
     while i < len(tokens):
@@ -2567,12 +3133,20 @@ def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
             seen_end_of_opts = True
             continue
         if not seen_end_of_opts and token.startswith("-"):
-            # rm has no value-consuming short flags relevant here.
+            removes_parents = removes_parents or token == "--parents" or (
+                not token.startswith("--") and "p" in token
+            )
             continue
         path_tokens.append(token)
 
     if not path_tokens:
         return None  # (a) -- no clear path target
+    if removes_parents and os.path.basename(tokens[0]) == "rmdir":
+        for token in list(path_tokens):
+            head = os.path.dirname(token.rstrip(os.sep))
+            while head:
+                path_tokens.append(head)
+                head = "" if head == os.sep else os.path.dirname(head)
 
     resolved = []
     for token in path_tokens:
@@ -2581,95 +3155,297 @@ def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
             return None
         if ".." in token:
             return None
-        expanded = os.path.expanduser(token)
-        # A residual ~ (unexpandable, e.g. ~unknownuser) is not confined.
-        if expanded.startswith("~"):
-            return None
-        # (c) canonicalise and require strict containment in scratch.
-        real = os.path.realpath(expanded)
-        if not (real == scratch_root or real.startswith(scratch_root + os.sep)):
+        real = _resolve_local_work_path(token, caller.cwd if caller else None)
+        if real is None or not _owned_by(_scratch_entry(real), caller) or _shares_inode(real):
             return None
         resolved.append(real)
-
     return tuple(resolved)
 
 
-def _rm_targets_only_scratch(tokens: tuple) -> bool:
-    """Return True only if every rm target resolves strictly inside scratch."""
-    return _rm_scratch_confined_targets(tokens) is not None
+_LOCAL_WORK_UNRESOLVED_CHARS: FrozenSet[str] = frozenset("*?[]{}$`")
 
 
-# Flags of a single-file copy that cannot move where it writes.  A recursive
-# copy (``-r``/``-R``/``-a``) is left out on purpose: it writes paths nested
-# under the destination, any of which may be a symlink already sitting in
-# scratch and pointing outside it.  ``-l``/``-s`` (a link back to the source),
-# ``-t``/``-T`` (destination named elsewhere) and every unlisted option also
-# keep the alias verdict.
-_CP_SCRATCH_SHORT_FLAGS: FrozenSet[str] = frozenset("pvfniuLHP")
-_CP_SCRATCH_LONG_FLAGS: FrozenSet[str] = frozenset({
-    "--verbose", "--force", "--no-clobber", "--interactive", "--update",
-    "--dereference", "--no-dereference", "--preserve",
-})
-
-
-def _cp_scratch_written_paths(tokens: tuple) -> "Tuple[str, ...] | None":
-    """Return the canonical paths a ``cp`` writes when all lie inside scratch.
-
-    Separate from the rm predicate on purpose: cp has its own grammar and
-    writes only its destination, so the sources are never judged here.  A
-    destination that is an existing directory is written at
-    ``<dest>/<basename(source)>``; each such path is re-resolved so a symlink
-    already sitting in scratch cannot carry the write outside it.  Any
-    ambiguity returns None and the command keeps its T3 alias verdict.
-    """
+def _never_free_paths() -> "Tuple[Tuple[str, ...], Tuple[str, ...]]":
+    """Return the harness-trusted files and directories (database, journals, backups, drafts) no root may cover."""
     import os
-    scratch_root = _gaia_scratch_root()
-    if not scratch_root:
-        return None
+    from pathlib import Path
+    from gaia.paths.resolver import data_dir, db_path
+    files, dirs = [], []
+    for db in {db_path(), Path.home() / ".gaia" / "gaia.db"}:
+        files += [os.path.realpath(f"{db}{suffix}") for suffix in ("", "-wal", "-shm", "-journal")]
+        dirs.append(os.path.realpath(db.parent / "backups"))
+    for base in {data_dir(), Path.home() / ".gaia"}:
+        dirs += [os.path.realpath(base / "contract_drafts"), os.path.realpath(base / "backups")]
+    return tuple(files), tuple(dirs)
 
-    positionals = []
+
+_KERNEL_VIEW_ROOTS: Tuple[str, ...] = ("/proc", "/dev")
+
+
+def _enters_kernel_view(path: str) -> bool:
+    """True when resolving *path* passes through /proc or /dev, whose links name the resolving process's cwd, root and fds."""
+    import os
+    pending = [part for part in reversed(path.split(os.sep)) if part]
+    current, hops = os.sep, 0
+    while pending:
+        part = pending.pop()
+        if part in (".", ".."):
+            current = current if part == "." else os.path.dirname(current)
+            continue
+        current = os.path.join(current, part)
+        if any(current == root or current.startswith(root + os.sep) for root in _KERNEL_VIEW_ROOTS):
+            return True
+        if hops < 40 and os.path.islink(current):
+            try:
+                target = os.readlink(current)
+            except OSError:
+                return True
+            hops += 1
+            pending.extend(part for part in reversed(target.split(os.sep)) if part)
+            current = os.sep if os.path.isabs(target) else os.path.dirname(current)
+    return False
+
+
+def _resolve_local_work_path(token: str, cwd: "Optional[str]", follow_last: bool = True) -> "str | None":
+    """Return the file the kernel would open for *token* (only its parent unless follow_last), or None if unresolvable."""
+    import os
+    if not token or any(ch in _LOCAL_WORK_UNRESOLVED_CHARS for ch in token):
+        return None
+    expanded = os.path.expanduser(token)
+    if expanded.startswith("~"):
+        return None
+    if not os.path.isabs(expanded):
+        if not cwd or not os.path.isabs(cwd):
+            return None
+        expanded = os.path.join(cwd, expanded)
+    if _enters_kernel_view(expanded):
+        return None
+    if follow_last:
+        return os.path.realpath(expanded)
+    parent, name = os.path.split(expanded.rstrip(os.sep))
+    if name in ("", ".", ".."):
+        return None
+    return os.path.join(os.path.realpath(parent or os.sep), name)
+
+
+def _local_work_root(real: str, caller: "Optional[LocalWorkCaller]", allow_top: bool = False) -> "str | None":
+    """Return the caller-owned scratch entry or managed worktree holding *real* outside any ``.git``, or None (fail closed)."""
+    import os
+    try:
+        files, dirs = _never_free_paths()
+        from .protected_paths import is_protected_hook_path
+        from .sensitive_paths import is_account_path
+        if real in files or any(real == d or real.startswith(d + os.sep) for d in dirs):
+            return None
+        if is_protected_hook_path(real) or is_account_path(real):
+            return None
+    except Exception:
+        return None
+    entry = _scratch_entry(real)
+    if entry is not None:
+        if not _owned_by(entry, caller):
+            return None
+        top = entry
+    elif real == _gaia_scratch_root():
+        return None
+    else:
+        managed = _gaia_worktrees_root(real)
+        if managed is None:
+            return None
+        top = os.path.dirname(real) if not allow_top else real
+        while top != managed and top.startswith(managed + os.sep) and not os.path.lexists(os.path.join(top, ".git")):
+            top = os.path.dirname(top)
+        if top == managed or not top.startswith(managed + os.sep):
+            return None
+    if ".git" in os.path.relpath(real, top).split(os.sep):
+        return None
+    return top
+
+
+def _confined_to_local_work(paths: "List[str | None]", caller: "Optional[LocalWorkCaller]") -> "Tuple[str, ...] | None":
+    """Return the written or removed *paths* when each resolved into a caller-owned local-work root; reads need no owner."""
+    if not paths or any(p is None or _local_work_root(p, caller) is None for p in paths):
+        return None
+    return tuple(paths)
+
+
+_TREE_WALK_BUDGET = 20000
+
+
+def _shares_inode(real: "str | None") -> bool:
+    """True when *real* is an existing non-directory with another hard link, which a write through it also changes."""
+    import os
+    import stat
+    try:
+        status = os.lstat(real) if real else None
+    except OSError:
+        return False
+    return status is not None and not stat.S_ISDIR(status.st_mode) and status.st_nlink > 1
+
+
+def _tree_shares_inode(real: str) -> bool:
+    """True when any file under *real* has another hard link, or the tree cannot be walked within budget (fail closed)."""
+    import os
+    seen = 0
+    for top, _, files in os.walk(real):
+        seen += len(files)
+        if seen > _TREE_WALK_BUDGET or any(_shares_inode(os.path.join(top, name)) for name in files):
+            return True
+    return False
+
+
+def _tree_carries_git(real: "str | None") -> bool:
+    """True when the tree at *real* is or holds a ``.git`` entry, or cannot be walked within budget (fail closed)."""
+    import os
+    if real is None or os.path.basename(real) == ".git":
+        return True
+    if os.path.islink(real) or not os.path.isdir(real):
+        return False
+    seen = 0
+    for _, dirs, files in os.walk(real, followlinks=True):
+        seen += len(dirs) + len(files)
+        if ".git" in dirs or ".git" in files or seen > _TREE_WALK_BUDGET:
+            return True
+    return False
+
+
+# Options that cannot move where mv or cp write; -t, -T, -l, -s, -b and any
+# unlisted option keep the alias verdict.
+_MV_LOCAL_WORK_SHORT_FLAGS: FrozenSet[str] = frozenset("fivnu")
+_MV_LOCAL_WORK_LONG_FLAGS: FrozenSet[str] = frozenset({
+    "--force", "--interactive", "--no-clobber", "--verbose", "--update",
+})
+_CP_LOCAL_WORK_SHORT_FLAGS: FrozenSet[str] = frozenset("pvfniuLHPrRad")
+_CP_LOCAL_WORK_LONG_FLAGS: FrozenSet[str] = frozenset({
+    "--verbose", "--force", "--no-clobber", "--interactive", "--update",
+    "--dereference", "--no-dereference", "--preserve", "--recursive", "--archive",
+})
+_CP_RECURSIVE_SHORT_FLAGS: FrozenSet[str] = frozenset("rRa")
+
+
+def _local_work_operands(tokens: tuple, short: FrozenSet[str], long: FrozenSet[str]) -> "Tuple[List[str], Set[str]] | None":
+    """Split mv/cp tokens into positionals and the option letters/words used, or None on an unlisted option."""
+    positionals: List[str] = []
+    used: Set[str] = set()
     end_of_options = False
     for token in tokens[1:]:
         if not end_of_options and token == "--":
             end_of_options = True
         elif not end_of_options and token.startswith("--"):
-            if token.split("=", 1)[0] not in _CP_SCRATCH_LONG_FLAGS:
+            name = token.split("=", 1)[0]
+            if name not in long:
                 return None
+            used.add(name)
         elif not end_of_options and token.startswith("-") and token != "-":
-            if not set(token[1:]) <= _CP_SCRATCH_SHORT_FLAGS:
+            if not set(token[1:]) <= short:
                 return None
+            used.update(token[1:])
         else:
             positionals.append(token)
-    if len(positionals) < 2:
-        return None
+    return (positionals, used) if len(positionals) >= 2 else None
 
-    def confined(path: str) -> "str | None":
-        real = os.path.realpath(path)
-        inside = real == scratch_root or real.startswith(scratch_root + os.sep)
-        return real if inside else None
 
-    *sources, destination = positionals
-    if any(ch in _RM_GLOB_CHARS for ch in destination) or ".." in destination:
-        return None
-    expanded = os.path.expanduser(destination)
-    if expanded.startswith("~"):
-        return None
-    real_destination = confined(expanded)
+def _local_work_destinations(sources: List[str], destination: str, cwd: "Optional[str]") -> "List[str | None] | None":
+    """Return the paths a copy or move of *sources* onto *destination* creates."""
+    import os
+    real_destination = _resolve_local_work_path(destination, cwd)
     if real_destination is None:
         return None
     if not os.path.isdir(real_destination):
-        return (real_destination,) if len(sources) == 1 else None
-
-    written = []
+        return [real_destination] if len(sources) == 1 else None
+    written: "List[str | None]" = []
     for source in sources:
-        name = os.path.basename(os.path.normpath(os.path.expanduser(source)))
-        if not name or name in (".", ".."):
+        name = os.path.basename(source.rstrip(os.sep))
+        if name in ("", ".", "..") or source.rstrip(os.sep).endswith(os.sep + "."):
             return None
-        real = confined(os.path.join(real_destination, name))
-        if real is None:
+        written.append(_resolve_local_work_path(os.path.join(real_destination, name), None))
+    return written
+
+
+def _cp_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tuple[str, ...] | None":
+    """Return the paths a ``cp`` writes when all are the caller's local work; recursive only onto new paths, never a ``.git``."""
+    import os
+    parsed = _local_work_operands(tokens, _CP_LOCAL_WORK_SHORT_FLAGS, _CP_LOCAL_WORK_LONG_FLAGS)
+    if parsed is None:
+        return None
+    (*sources, destination), used = parsed
+    written = _local_work_destinations(sources, destination, caller.cwd)
+    if written is None or any(map(_shares_inode, written)):
+        return None
+    read = [_resolve_local_work_path(source, caller.cwd) for source in sources]
+    if used & (_CP_RECURSIVE_SHORT_FLAGS | {"--recursive", "--archive"}):
+        if any(p is None or os.path.lexists(p) for p in written) or any(map(_tree_carries_git, read)):
             return None
-        written.append(real)
-    return tuple(written)
+    return _confined_to_local_work(written, caller)
+
+
+def _mv_local_work_written_paths(tokens: tuple, caller: LocalWorkCaller) -> "Tuple[str, ...] | None":
+    """Return every path an ``mv`` removes (link itself, not its target) or creates when all are the caller's local work."""
+    parsed = _local_work_operands(tokens, _MV_LOCAL_WORK_SHORT_FLAGS, _MV_LOCAL_WORK_LONG_FLAGS)
+    if parsed is None:
+        return None
+    (*sources, destination), _ = parsed
+    written = _local_work_destinations(sources, destination, caller.cwd)
+    if written is None or any(map(_shares_inode, written)):
+        return None
+    removed = [_resolve_local_work_path(source, caller.cwd, follow_last=False) for source in sources]
+    if any(map(_tree_carries_git, removed)):
+        return None
+    return _confined_to_local_work(removed + written, caller)
+
+
+# Stages that never create, move or extract a symlink; every stage of a line is
+# classified before the first runs, so any other stage could redirect a freed write.
+_PLANTS_NO_LINK: FrozenSet[str] = frozenset({
+    "cd", "pushd", "popd", "mkdir", "touch", "rm", "rmdir", "echo", "printf",
+    "true", "false", "pwd", "ls", "cat", "test", "[", "stat", "wc", "head",
+    "tail", "grep", "diff", "file", "du", "df", "realpath", "readlink",
+    "basename", "dirname", "sleep", "date", "sha256sum", "md5sum",
+})
+_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar", "rm", "rmdir", "git"})
+
+
+def chain_withdraws_local_work_relief(components: List[str]) -> List[str]:
+    """Return the mv/cp/tar/rm stages whose path-judged write another stage of the line could redirect."""
+    import os
+    bases = []
+    for component in components:
+        tokens = tokenize_command(component)
+        bases.append(os.path.basename(tokens[0]) if tokens else "")
+    return [
+        components[index] for index, base in enumerate(bases)
+        if base in _LOCAL_WORK_RELIEF_COMMANDS
+        and any(other not in _PLANTS_NO_LINK for i, other in enumerate(bases) if i != index)
+    ]
+
+
+_LITERAL_CD_AND_RE = re.compile(r"\s*cd\s+([^\s$`*?\[\]{}()<>|;&'\"\\]+)\s*&&")
+_SHELL_CWD_WORD_RE = re.compile(r"(?<![\w./-])(?:cd|pushd|popd)(?![\w./-])")
+
+
+def local_work_cwd_known(command: str) -> bool:
+    """True when every cwd change on the line is a leading, success-gated ``cd <absolute or ~/ path> &&``; CDPATH can redirect a relative one."""
+    remaining = command
+    while True:
+        match = _LITERAL_CD_AND_RE.match(remaining)
+        target = match.group(1) if match else ""
+        if not target.startswith("/") and target != "~" and not target.startswith("~/"):
+            break
+        remaining = remaining[match.end():]
+    return _SHELL_CWD_WORD_RE.search(remaining) is None
+
+
+def local_work_callers(
+    command: str, components: List[str], cwd: "Optional[str]", agent_id: str,
+) -> "List[Optional[LocalWorkCaller]]":
+    """Return each component's local-work caller: None when another stage could redirect its write, cwd None when unproven."""
+    withdrawn = set(chain_withdraws_local_work_relief(components))
+    known = local_work_cwd_known(command)
+    callers: "List[Optional[LocalWorkCaller]]" = []
+    for component in components:
+        callers.append(None if component in withdrawn else LocalWorkCaller(agent_id, cwd if known else None))
+        cwd = cwd_after_component(component, cwd)
+    return callers
 
 
 _DURABLE_STORE_SIGNATURES: Tuple[Tuple[bytes, str], ...] = (
@@ -2912,7 +3688,6 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
 
     Any ambiguity returns False, keeping the command at T3.
     """
-    import os
     if _git_worktree_has_force_signal(tokens):
         return False
 
@@ -2922,18 +3697,337 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
     if not targets:
         return False
 
-    for target in targets:
-        if any(char in _WORKTREE_GLOB_CHARS for char in target):
-            return False
-        if ".." in target:
-            return False
-        expanded = os.path.expanduser(target)
-        if not os.path.isabs(expanded):
-            return False
-        if _gaia_worktrees_root(os.path.realpath(expanded)) is None:
-            return False
+    return all(_is_inside_managed_worktrees_root(target) for target in targets)
 
-    return True
+
+def _is_inside_managed_worktrees_root(target: str) -> bool:
+    """True when *target* is absolute, glob- and ``..``-free, and resolves inside a managed root."""
+    import os
+    if any(char in _WORKTREE_GLOB_CHARS for char in target) or ".." in target:
+        return False
+    expanded = os.path.expanduser(target)
+    if not os.path.isabs(expanded):
+        return False
+    return _gaia_worktrees_root(os.path.realpath(expanded)) is not None
+
+
+# `git push <remote> <branch>` and `git -C <worktree> merge --ff-only <rev>`
+# are freed only in these exact shapes; any other flag, global option or
+# operand count leaves the command to the verb scan, where both stay T3.
+_GIT_PUSH_RELIEF_FLAGS: FrozenSet[str] = frozenset({"-u", "--set-upstream"})
+_GIT_DEFAULT_BRANCHES: FrozenSet[str] = frozenset({"main", "master"})
+_GIT_REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_GIT_BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def _git_subcommand_split(tokens: tuple) -> "Optional[Tuple[Optional[str], str, List[str]]]":
+    """Split ``git [-C <path>] <subcommand> <rest>`` into ``(path, subcommand, rest)``.
+
+    None for any global option other than one ``-C <path>``: the others
+    (``-c``, ``--git-dir``, ``--work-tree``) can redirect what the command acts on.
+    """
+    args = list(tokens[1:])
+    path: Optional[str] = None
+    if len(args) >= 2 and args[0] == "-C":
+        path, args = args[1], args[2:]
+    if not args or args[0].startswith("-"):
+        return None
+    return path, args[0], args[1:]
+
+
+def _git_repo_dir(path: Optional[str], cwd: Optional[str]) -> Optional[str]:
+    """The repository a command acts on, or None when only the hook process's own cwd could name it."""
+    import os
+    expanded = os.path.expanduser(path) if path else None
+    if expanded and os.path.isabs(expanded):
+        return expanded
+    if cwd:
+        return os.path.join(cwd, expanded) if expanded else cwd
+    return None
+
+
+def _git_run(repo: str, *args: str) -> Optional[Tuple[int, str]]:
+    """``(exit code, stdout)`` of a read-only ``git -C <repo> <args>``, or None when git cannot run."""
+    import subprocess
+    try:
+        completed = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.returncode, completed.stdout.strip()
+
+
+def _git_read(repo: str, *args: str) -> Optional[str]:
+    """Stdout of a read-only ``git -C <repo> <args>``, or None when it fails."""
+    ran = _git_run(repo, *args)
+    return ran[1] if ran is not None and ran[0] == 0 else None
+
+
+def _git_config(repo: str, key: str) -> Tuple[str, Optional[str]]:
+    """``("set", value)``, ``("unset", None)`` or ``("error", None)`` for one ``git config --get``.
+
+    Exit 1 is git's documented "key not set"; every other failure is an error.
+    """
+    ran = _git_run(repo, "config", "--get", key)
+    if ran is None or ran[0] not in (0, 1):
+        return "error", None
+    return ("set", ran[1]) if ran[0] == 0 else ("unset", None)
+
+
+def _push_config_keeps_branch(repo: str, remote: str, branch: str, default: FrozenSet[str]) -> bool:
+    """True when the repository's configuration pushes *branch* to itself, onto no default branch.
+
+    ``remote.<remote>.push`` and ``remote.<remote>.mirror`` replace the
+    refspec git pushes; under ``push.default`` upstream or tracking the branch
+    goes to its configured upstream, which must then be a non-default branch.
+    Any config read that fails keeps the push gated.
+    """
+    for key in (f"remote.{remote}.push", f"remote.{remote}.mirror"):
+        state, value = _git_config(repo, key)
+        if state == "error" or (state == "set" and value != "false"):
+            return False
+    state, mode = _git_config(repo, "push.default")
+    if state == "error":
+        return False
+    if state == "unset" or mode not in ("upstream", "tracking"):
+        return True
+    state, merge = _git_config(repo, f"branch.{branch}.merge")
+    if state != "set" or not merge or not merge.startswith("refs/heads/"):
+        return False
+    return merge[len("refs/heads/"):].lower() not in default
+
+
+def _remote_head_branch(repo: str, remote: str) -> Optional[str]:
+    """The branch ``refs/remotes/<remote>/HEAD`` points at, or None when unresolved."""
+    prefix = f"refs/remotes/{remote}/"
+    ref = _git_read(repo, "symbolic-ref", "--quiet", f"{prefix}HEAD")
+    if not ref or not ref.startswith(prefix):
+        return None
+    return ref[len(prefix):]
+
+
+def _is_local_branch_only(repo: str, name: str) -> bool:
+    """True when *name* is a local branch and no tag shares it, so git pushes that branch."""
+    return (
+        _git_read(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}") is not None
+        and _git_read(repo, "show-ref", "--verify", "--quiet", f"refs/tags/{name}") is None
+    )
+
+
+def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: Optional[str]) -> bool:
+    """True for ``push [-u|--set-upstream] <remote> <branch>`` onto a branch that is not the default.
+
+    The default is main, master and whatever the remote's HEAD names; an
+    unresolved HEAD leaves only main and master. A ``+`` refspec, a ``src:dst``
+    whose sides name different branches, a remote that is not configured,
+    ``HEAD``, any ref outside ``refs/heads/`` and a name that is not a local
+    branch, or is also a tag, never qualify: git would push something else.
+    """
+    flags = [token for token in rest if token.startswith("-")]
+    operands = [token for token in rest if not token.startswith("-")]
+    if any(flag not in _GIT_PUSH_RELIEF_FLAGS for flag in flags) or len(operands) != 2:
+        return False
+    remote, branch = operands
+    source, colon, destination = branch.partition(":")
+    if colon:
+        if destination not in (source, f"refs/heads/{source}"):
+            return False
+        branch = source
+    if not _GIT_REMOTE_NAME_RE.match(remote) or not _GIT_BRANCH_NAME_RE.match(branch):
+        return False
+    if branch.startswith("refs/"):
+        if not branch.startswith("refs/heads/"):
+            return False
+        branch = branch[len("refs/heads/"):]
+    if ".." in branch or branch.endswith(("/", ".lock")) or branch.lower() == "head":
+        return False
+    repo = _git_repo_dir(path, cwd)
+    if repo is None or remote not in _git_remote_names(repo):
+        return False
+    default = set(_GIT_DEFAULT_BRANCHES)
+    remote_head = _remote_head_branch(repo, remote)
+    if remote_head:
+        default.add(remote_head.lower())
+    return (
+        branch.lower() not in default
+        and _is_local_branch_only(repo, branch)
+        and _push_config_keeps_branch(repo, remote, branch, frozenset(default))
+    )
+
+
+def _git_relief_under_prefix(
+    readings: "Tuple[str, ...]", cwd: Optional[str],
+) -> Optional["MutativeResult"]:
+    """T3 for a push or ff-only merge the relief would free, run behind an assignment or wrapper.
+
+    ``GIT_DIR=``, ``GIT_CONFIG_GLOBAL=``, ``HOME=`` or ``sudo -u`` change which
+    repository, configuration or user git acts with, none of which the relief
+    read, so the freed shape is only trusted when nothing precedes ``git``.
+    """
+    for reading in readings:
+        semantics = analyze_command(reading)
+        if semantics.base_cmd != "git":
+            continue
+        relief = _check_git_publish_relief(semantics, tuple(semantics.tokens), "git", cwd)
+        if relief is not None:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=relief.verb,
+                cli_family="git",
+                confidence="high",
+                reason=(
+                    f"'git {relief.verb}' behind an environment assignment or wrapper "
+                    f"may act on another repository, configuration or user"
+                ),
+            )
+    return None
+
+
+def _check_git_publish_relief(
+    semantics: CommandSemantics, tokens: tuple, family: str, cwd: Optional[str],
+) -> Optional["MutativeResult"]:
+    """Free a feature-branch push and a fast-forward merge in a managed worktree.
+
+    Returns None for every other git command, which keeps its verdict.
+    """
+    split = _git_subcommand_split(tokens)
+    if split is None:
+        return None
+    path, subcommand, rest = split
+    if subcommand == "push" and _git_push_targets_feature_branch(path, rest, cwd):
+        reason = "'git push' of a named non-default branch, without force, delete or refspec"
+    elif (
+        subcommand == "merge"
+        and path is not None
+        and len(rest) == 2
+        and rest[0] == "--ff-only"
+        and not rest[1].startswith("-")
+        and _is_inside_managed_worktrees_root(path)
+    ):
+        reason = "'git merge --ff-only' inside a Gaia-managed worktree"
+    else:
+        return None
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_UNKNOWN,
+        verb=subcommand,
+        cli_family=family,
+        confidence="high",
+        reason=reason,
+    )
+
+
+_GIT_SYNC_OPERAND_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/@+-]*$")
+_GIT_SYNC_SHELL_CHARS_RE = re.compile(r"[;&|<>`$()\\\n'\"*?\[\]{}~#!]")
+
+
+def _git_current_branch(repo: str) -> Optional[str]:
+    """The checked-out branch, or None on a detached HEAD or when git cannot say."""
+    return _git_read(repo, "symbolic-ref", "--quiet", "--short", "HEAD") or None
+
+
+def _git_remote_names(repo: str) -> List[str]:
+    return (_git_read(repo, "remote") or "").split()
+
+
+def _git_merge_is_own_fast_forward(repo: str, rest: List[str]) -> bool:
+    """True for ``merge --ff-only <remote>/<branch>`` where <branch> is the checked-out one."""
+    if len(rest) != 2 or rest[0] != "--ff-only" or not _GIT_SYNC_OPERAND_RE.match(rest[1]):
+        return False
+    current = _git_current_branch(repo)
+    if current is None:
+        return False
+    return any(rest[1] == f"{remote}/{current}" for remote in _git_remote_names(repo))
+
+
+def _git_local_sync(
+    command: str, cwd: Optional[str], in_prefix: bool,
+) -> Optional["MutativeResult"]:
+    """Free ``git merge --ff-only <remote>/<branch>`` when <branch> is the checked-out one; None otherwise."""
+    if in_prefix or _GIT_SYNC_SHELL_CHARS_RE.search(command):
+        return None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens or tokens[0] != "git":
+        return None
+    split = _git_subcommand_split(tuple(tokens))
+    if split is None:
+        return None
+    path, subcommand, rest = split
+    repo = _git_repo_dir(path, cwd)
+    if subcommand != "merge" or repo is None or not _git_merge_is_own_fast_forward(repo, rest):
+        return None
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_UNKNOWN,
+        verb=subcommand,
+        cli_family="git",
+        confidence="high",
+        reason="'git merge --ff-only' of the current branch to its own remote ref",
+    )
+
+
+_REPO_OPTIONS: FrozenSet[str] = frozenset({"-R", "--repo"})
+
+
+def _repo_option_values(args: List[str]) -> List[str]:
+    values: List[str] = []
+    for index, arg in enumerate(args):
+        flag, equals, value = arg.partition("=")
+        if arg in _REPO_OPTIONS and index + 1 < len(args):
+            values.append(args[index + 1])
+        elif equals and flag in _REPO_OPTIONS:
+            values.append(value)
+        elif arg.startswith("-R") and len(arg) > 2:
+            values.append(arg[2:])
+    return values
+
+
+def _repo_segments(location: str) -> List[str]:
+    bare = re.sub(r"^[a-z][a-z0-9+.-]*://", "", location.strip().lower())
+    bare = re.sub(r"^[^/@]+@", "", bare).replace(":", "/")
+    bare = bare.rstrip("/").removesuffix(".git")
+    return [segment for segment in bare.split("/") if segment]
+
+
+def _change_request_elsewhere(command: str, cwd: Optional[str]) -> "Optional[MutativeResult]":
+    """Sign a change request whose ``-R/--repo`` is not provably this checkout's origin; reads git, so uncached."""
+    for reading in _peel_wrapper_readings(command)[0]:
+        try:
+            tokens = shlex.split(reading)
+        except ValueError:
+            continue
+        base = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+        if base not in _FORGE_CLIS and not _is_unmodelled_cli(base):
+            continue
+        args = tokens[1:]
+        directory = args[1] if args[:1] == ["-C"] and len(args) > 1 else None
+        path = [a for a in args if not a.startswith("-")]
+        targets = _repo_option_values(args)
+        if not targets or not any(
+            change_request_action(path[i:]) in _CHANGE_REQUEST_OWN_WORK for i in range(len(path))
+        ):
+            continue
+        repo = _git_repo_dir(directory, cwd)
+        origin = _repo_segments(_git_read(repo, "remote", "get-url", "origin") or "") if repo else []
+        for target in targets:
+            wanted = _repo_segments(target)
+            if not wanted or origin[-len(wanted):] != wanted:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb="post",
+                    cli_family="forge",
+                    confidence="high",
+                    reason=f"the change request targets {target}, which is not this checkout's origin",
+                    rule="sign.speaks",
+                )
+    return None
 
 
 def _check_git_worktree_unlock(
@@ -3235,6 +4329,10 @@ DANGEROUS_FLAGS: Dict[str, str] = {
     "--cascade": "ALWAYS",
     "--grace-period=0": "ALWAYS",
     "--now": "ALWAYS",
+    "--push": "ALWAYS",
+    "--auto-approve": "ALWAYS",
+    "-auto-approve": "ALWAYS",
+    "--admin": "ALWAYS",
     "-f": "CONTEXT",
     "-r": "CONTEXT",
     "-R": "CONTEXT",
@@ -3300,6 +4398,16 @@ COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS: Dict[str, Tuple[MutativeAnchor, ...]] = _va
         # so it was never matched by the ALWAYS scan in the first place.
         MutativeAnchor(path=("fetch",), flags=frozenset({"--prune"})),
     ),
+    # `--force` only makes gcloud fetch a credential it already stores again.
+    # Activation and `--update-adc` stay gated by the `auth login` anchors in
+    # COMMAND_PATH_MUTATIVE_UPGRADES, which are decided before this table.
+    "gcloud": (
+        MutativeAnchor(path=("auth", "login"), flags=frozenset({"--force"})),
+    ),
+    # `gaia login start --force` hands `--force` to the `--no-activate` login it runs.
+    "gaia": (
+        MutativeAnchor(path=("login", "start"), flags=frozenset({"--force"})),
+    ),
 })
 
 
@@ -3307,8 +4415,9 @@ def _always_flag_exemptions(base_cmd: str, semantics: "CommandSemantics") -> Fro
     """Return the ALWAYS-dangerous flags exempted for this exact command path.
 
     Consulted only from the read-only-verb ALWAYS-flag escalation branch of
-    Step 4, so a verb already decided MUTATIVE by an earlier step never
-    reaches this table and can never be downgraded by it.
+    Step 4 and from the gaia local-bookkeeping exception, after its
+    destructive verbs have returned, so a verb already decided MUTATIVE by an
+    earlier step never reaches this table and can never be downgraded by it.
     """
     exempted: set = set()
     for anchor in COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS.get(base_cmd, ()):
@@ -3904,7 +5013,29 @@ _SHELL_MULTICALL_WRAPPERS = frozenset({"busybox"})
 # tokens between the flag and the terminator ARE a command by definition, which
 # is what makes reading them safe here rather than a heuristic.
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
-_FIND_EXEC_TERMINATORS = frozenset({";", "\\;", "+"})
+_FIND_EXEC_TERMINATORS = frozenset({";", "\\;"})
+
+
+def _find_exec_payloads(tokens: "List[str]") -> "Tuple[str, ...]":
+    """Every argv a find line hands to -exec/-execdir/-ok/-okdir, in order; ``+`` ends one only right after ``{}``, as find reads it."""
+    payloads: "List[str]" = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index].lower() not in _FIND_EXEC_FLAGS:
+            index += 1
+            continue
+        words: "List[str]" = []
+        index += 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in _FIND_EXEC_TERMINATORS or (token == "+" and words[-1:] == ["{}"]):
+                break
+            words.append(token)
+            index += 1
+        index += 1
+        if words:
+            payloads.append(shlex.join(words))
+    return tuple(payloads)
 
 
 def _resolve_executor_payload(
@@ -3912,15 +5043,16 @@ def _resolve_executor_payload(
 ) -> "Optional[str]":
     """Return the command text *base_cmd* would hand to an executor, or None.
 
-    Three shapes, all of which pass a COMMAND as DATA:
+    Shapes that pass a COMMAND as DATA (find's exec actions are
+    ``_find_exec_payloads``, since one find can carry several):
 
         <shell> -c "<command>"      the payload is a program
         eval <words>                the words are re-parsed as a command
-        find ... -exec <command> ;  each match is handed to a command
+        a ``_COMMAND_EXECUTORS`` line  its ``-c`` option or trailing words
 
     Returns:
         The payload as a command string, or ``None`` when this command is not
-        one of the three shapes. An empty or flag-only payload also returns
+        one of these shapes. An empty or flag-only payload also returns
         ``None`` -- there is nothing to classify and inventing a verdict for it
         would gate the shell's own ``--help``.
     """
@@ -3943,18 +5075,6 @@ def _resolve_executor_payload(
 
     if base_cmd == "eval":
         return " ".join(tokens[1:]).strip() or None
-
-    if base_cmd == "find":
-        for index, token in enumerate(tokens):
-            if token.lower() not in _FIND_EXEC_FLAGS:
-                continue
-            payload = []
-            for token in tokens[index + 1:]:
-                if token in _FIND_EXEC_TERMINATORS:
-                    break
-                payload.append(token)
-            return " ".join(payload).strip() or None
-        return None
 
     grammar = _COMMAND_EXECUTORS.get(base_cmd)
     if grammar is not None:
@@ -4007,6 +5127,14 @@ _COMMAND_EXECUTORS: Dict[str, _ExecutorGrammar] = {
         positionals=1,
         command_option=True,
         trailing="argv",
+    ),
+    "sg": _ExecutorGrammar(positionals=1, command_option=True, trailing="shell"),
+    "runuser": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group",
+            "--shell", "--whitelist-environment",
+        }),
+        command_option=True,
     ),
     "su": _ExecutorGrammar(
         value_flags=frozenset({
@@ -4071,6 +5199,277 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
     return None
 
 
+def _executor_floor_payloads(command: str) -> "Tuple[str, ...]":
+    """Return every command *command* hands to an executor (``_resolve_executor_payload``, or each find exec action); the floor judges each as written."""
+    semantics = analyze_command(command)
+    if semantics.base_cmd == "find":
+        return _find_exec_payloads(list(semantics.tokens))
+    nested = nested_run(semantics.tokens)
+    handed = (nested.inner, *nested.alternatives) if nested else ()
+    payloads = (_resolve_executor_payload(semantics.base_cmd, semantics), *handed)
+    return tuple(payload for payload in payloads if payload)
+
+
+def flag_floor_block(command: str) -> "Optional[FlagClassifierResult]":
+    """The flag classifier's permanent block on *command* as ``bash_validator`` reaches it bare: after a verb that signs."""
+    from .flag_classifiers import OUTCOME_BLOCKED, classify_by_flags
+
+    flagged = classify_by_flags(command)
+    if flagged is None or flagged.outcome != OUTCOME_BLOCKED:
+        return None
+    return None if detect_mutative_command(command).is_mutative else flagged
+
+
+def _check_target_environment(
+    command: str, remainder: str, *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Escalate *remainder* when a variable assigned anywhere down its chain of local executors picks the target or identity of the innermost program as one of its flags would."""
+    from ..tools.shell_parser import shell_split
+
+    dropped, expanded, _, _ = _expand_split_strings(command)
+    try:
+        written, words = shell_split(dropped) + shell_split(expanded), shell_split(remainder)
+    except ValueError:
+        return None
+    return _target_verdict(written[: len(written) - len(words)], words, cwd=cwd, _depth=_depth)
+
+
+def target_under_line(
+    command: str, assigned: "Dict[str, str]", *, cwd: "Optional[str]",
+) -> "Optional[MutativeResult]":
+    """Escalate *command* when a variable its line may set (*assigned*, name to value) picks its innermost program's target or identity."""
+    from ..tools.shell_parser import shell_split
+
+    if not assigned:
+        return None
+    readings, _ = _peel_wrapper_readings(command)
+    dropped, expanded, _, _ = _expand_split_strings(command)
+    try:
+        written, words = shell_split(dropped) + shell_split(expanded), shell_split(readings[0])
+    except ValueError:
+        return None
+    inherited = [f"{name}={value}" for name, value in assigned.items()]
+    return _target_verdict(inherited + written[: len(written) - len(words)], words, cwd=cwd, _depth=0)
+
+
+def _target_verdict(
+    assigned: "List[str]", words: "List[str]", *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    from ..tools.shell_parser import shell_split
+
+    run = nested_run(words)
+    while run is not None and not run.remote and run.unparsed is None and run.inner:
+        dropped, expanded, _, _ = _expand_split_strings(run.inner)
+        try:
+            inner_words = shell_split(dropped) + shell_split(expanded)
+            words = shell_split(_peel_wrapper_readings(run.inner)[0][0])
+        except ValueError:
+            return None
+        assigned += inner_words[: len(inner_words) - len(words)]
+        run = nested_run(words)
+    flagged = with_target_flags(assigned, words)
+    if flagged is None:
+        return None
+    result = detect_mutative_command(shlex.join(flagged), cwd=cwd, _depth=_depth + 1)
+    return replace(result, reason=f"run as {shlex.join(flagged)!r}: {result.reason}") if result.is_mutative else None
+
+
+def _component_verdict(component: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
+    """Classify one component with the flag-dependent effects (``sed -i``, ``curl -X POST``) the verb ladder leaves to the validator."""
+    from .flag_classifiers import OUTCOME_READ_ONLY, classify_by_flags
+
+    result = detect_mutative_command(component, cwd=cwd, _depth=_depth)
+    if result.is_mutative:
+        return result
+    readings, peeled = _peel_wrapper_readings(component)
+    flagged = classify_by_flags(readings[0], wrapped=peeled)
+    if flagged is None or flagged.command_family.startswith("git_"):
+        return result
+    if flagged.outcome == OUTCOME_READ_ONLY:
+        return replace(result, category=CATEGORY_READ_ONLY)
+    return replace(
+        result, is_mutative=True, category=CATEGORY_MUTATIVE, verb=flagged.matched_pattern or result.verb,
+        reason=f"Flag classifier: {flagged.reason}",
+    )
+
+
+def _strictest_component(command: str, *, cwd: "Optional[str]", _depth: int) -> MutativeResult:
+    """Classify each component of the chain or pipeline *command*; the first mutative one wins."""
+    from ..tools.shell_parser import parse_command
+
+    for component in parse_command(command) or [command]:
+        result = _component_verdict(component, cwd=cwd, _depth=_depth)
+        if result.is_mutative:
+            break
+    return result
+
+
+def _unproven_writer_or_sender(command: str, *, cwd: "Optional[str]", _depth: int) -> str:
+    """The first component of *command* whose program writes files or sends data and that no lane showed to only read."""
+    from ..tools.shell_parser import parse_command
+    from .shell_unwrapper import shell_command_string
+
+    for component in parse_command(command) or [command]:
+        payload = shell_command_string(component)
+        if payload is not None:
+            found = _unproven_writer_or_sender(payload, cwd=cwd, _depth=_depth + 1)
+        else:
+            program = analyze_command(_peel_wrapper_readings(component)[0][0]).base_cmd
+            reads = _component_verdict(component, cwd=cwd, _depth=_depth).category in _READING_CATEGORIES
+            found = "" if reads or not writes_or_sends(program) else component
+        if found:
+            return found
+    return ""
+
+
+def _check_nested_executor(
+    semantics: "CommandSemantics", *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge an executor that runs a command elsewhere (``nested_executors``) by that command; only a full parse relieves."""
+    run = nested_run(semantics.tokens)
+    if run is None:
+        return None
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("nested executor")
+    if run.unparsed is None and (run.inner is None or opens_session(run.inner)):
+        return MutativeResult(
+            is_mutative=True, category=CATEGORY_MUTATIVE, verb="exec", cli_family=semantics.base_cmd,
+            reason=f"'{run.executor}' opens an interactive session", rule="sign.speaks",
+        )
+    inner = _strictest_component(run.inner, cwd=cwd, _depth=_depth + 1) if run.inner else None
+    if inner is not None and inner.is_mutative:
+        return replace(inner, reason=f"'{run.executor}' runs {run.inner!r}: {inner.reason}")
+    if run.unparsed is not None:
+        if run.generic:
+            return None
+        undetermined = f"'{run.executor}' word {run.unparsed!r} is outside its grammar"
+    elif run.remote and reads_local_state(run.inner):
+        undetermined = f"'{run.executor}' runs {run.inner!r} on another host, whose files decide its effect"
+    elif _unproven_writer_or_sender(run.inner, cwd=cwd, _depth=_depth + 1):
+        undetermined = f"'{run.executor}' runs {run.inner!r}, which may write files or send data"
+    else:
+        return MutativeResult(
+            is_mutative=False, category=CATEGORY_READ_ONLY, verb=inner.verb, cli_family=semantics.base_cmd,
+            confidence=inner.confidence, reason=f"'{run.executor}' runs {run.inner!r}: {inner.reason}",
+        )
+    return MutativeResult(
+        is_mutative=True, category=CATEGORY_UNKNOWN, verb="executor-unparsed-flag", cli_family=semantics.base_cmd,
+        reason=f"{undetermined}, so the command it runs could not be determined", rule="unknown.dynamic-span",
+    )
+
+
+_VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
+# CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
+_GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil", "oci"})
+_SHARED_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS | {"ls", "ps", "rm", "cp", "mv"}
+
+
+def _is_shell_expansion(word: str) -> bool:
+    return word[:1] in ("$", "`")
+
+
+def _verb_word_effect(word: str) -> str:
+    """Return the strongest category among a verb word's hyphen parts: MUTATIVE, READ_ONLY, or "" when none is a verb."""
+    parts = word.lower().split("-")
+    if any(part in MUTATIVE_VERBS or part == "rm" for part in parts):
+        return CATEGORY_MUTATIVE
+    return CATEGORY_READ_ONLY if any(part in _SHARED_VERBS for part in parts) else ""
+
+
+_EXPRESSION_FIRST_TOOLS: FrozenSet[str] = frozenset({
+    "jq", "yq", "sed", "awk", "gawk", "shellcheck", "curl", "wget", "grep", "egrep", "fgrep", "rg",
+    "test", "[", "[[", "printf", "cut", "sort", "tr", "xmllint", "dasel",
+})
+
+
+def _literal_words(base_cmd: str, args: "List[str]") -> "List[str]":
+    """Return the literal positionals of *args*, with every flag value and shell expansion left out."""
+    words, index = [], 0
+    while index < len(args):
+        token = args[index]
+        if token.startswith("-") and len(token) > 1:
+            follower = args[index + 1] if index + 1 < len(args) else "-"
+            unknown_long = token.startswith("--") and not follower.startswith("-")
+            takes_value = "=" not in token and (absorbs_next_token(base_cmd, token) or unknown_long)
+            index += 2 if takes_value else 1
+            continue
+        closer = ")" if token.startswith("$(") else "`" if token.startswith("`") else ""
+        if closer and not (token.endswith(closer) and len(token) > 2):
+            while index + 1 < len(args) and not args[index].endswith(closer):
+                index += 1
+        elif not _is_shell_expansion(token):
+            words.append(token)
+        index += 1
+    return words
+
+
+def _is_known_verb(word: str) -> bool:
+    word = word.lower()
+    return word in _SHARED_VERBS or word.split("-", 1)[0] in _SHARED_VERBS
+
+
+def _literal_verb_follows(args: "List[str]") -> bool:
+    """Return True when a known verb follows among the literal words, before any other shell expansion."""
+    for token in args:
+        if _is_shell_expansion(token):
+            return False
+        if not token.startswith("-") and _is_known_verb(token):
+            return True
+    return False
+
+
+def _dynamic_verb_span_word(base_cmd: str, args: "List[str]") -> "Optional[str]":
+    """Return a shell-expanded word that may stand on a CLI's command path, or None.
+
+    An unknown long flag followed by an expansion is resolved by the shared verb
+    vocabulary: a known verb after it makes the expansion the flag's value.
+    """
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return None
+        if token.startswith("-") and len(token) > 1:
+            if "=" not in token and absorbs_next_token(base_cmd, token):
+                index += 2
+                continue
+            follower = args[index + 1] if index + 1 < len(args) else "-"
+            unknown_long = token.startswith("--") and "=" not in token and not follower.startswith("-")
+            if unknown_long and _is_shell_expansion(follower) and not _literal_verb_follows(args[index + 2:]):
+                return follower
+            index += 2 if unknown_long and not _is_known_verb(follower) else 1
+            continue
+        if _is_shell_expansion(token):
+            return token
+        if base_cmd not in _GROUP_PATH_CLIS or _is_known_verb(token):
+            return None
+        index += 1
+    return None
+
+
+# Executors whose every option is known, so a flag outside both sets leaves the payload's start unknown.
+_EXECUTOR_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
+    "ssh": frozenset(f"-{ch}" for ch in "46AaCfGgKkMNnqsTtVvXxYy"),
+}
+
+
+def _executor_unparsed_flag(base_cmd: str, args: "List[str]") -> "Optional[str]":
+    """Return the first option before an executor's payload that its grammar does not name, or None."""
+    grammar, boolean = _COMMAND_EXECUTORS.get(base_cmd), _EXECUTOR_BOOLEAN_FLAGS.get(base_cmd)
+    if grammar is None or boolean is None:
+        return None
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "--":
+        token = args[index]
+        if token in grammar.value_flags or token[:2] in grammar.value_flags:
+            index += 2 if token in grammar.value_flags else 1
+        elif all(f"-{ch}" in boolean for ch in token[1:]):
+            index += 1
+        else:
+            return token
+    return None
+
+
 def _check_executor_payload(
     base_cmd: str, semantics: "CommandSemantics", *,
     cwd: "Optional[str]", _depth: int,
@@ -4103,16 +5502,33 @@ def _check_executor_payload(
         A mutative result when the payload is mutative, ``None`` otherwise --
         including for every command that is not one of the executor shapes.
     """
-    payload = _resolve_executor_payload(base_cmd, semantics)
-    if payload is None:
+    unparsed = _executor_unparsed_flag(base_cmd, list(semantics.tokens[1:]))
+    if unparsed is not None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="executor-unparsed-flag",
+            cli_family=base_cmd,
+            reason=f"'{base_cmd}' option {unparsed!r} is not in its grammar, so the command it runs could not be determined",
+            rule="unknown.dynamic-span",
+        )
+    if base_cmd == "find":
+        payloads = _find_exec_payloads(list(semantics.tokens))
+    else:
+        payload = _resolve_executor_payload(base_cmd, semantics)
+        payloads = (payload,) if payload is not None else ()
+    if not payloads:
         return None
 
     # Budget exhausted: stop descending AND retain -- see the constant.
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("executor payload")
 
-    inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
-    if not inner.is_mutative:
+    for payload in payloads:
+        inner = _strictest_component(payload, cwd=cwd, _depth=_depth + 1)
+        if inner.is_mutative:
+            break
+    else:
         return None
     return MutativeResult(
         is_mutative=True,
@@ -4125,6 +5541,7 @@ def _check_executor_payload(
             f"Executor '{base_cmd}' runs mutative payload {payload!r}: "
             f"{inner.reason}"
         ),
+        rule=inner.rule,
     )
 
 
@@ -4220,6 +5637,48 @@ def _check_command_substitutions(
 # ============================================================================
 
 
+# Programs whose own effect is destructive, remote or an execution of other
+# commands. A wrapper declared under one of these names would otherwise shed
+# that effect's gate by inheriting the wrapped CLI's exceptions.
+_NEVER_INHERITING_PROGRAMS: FrozenSet[str] = frozenset({
+    "shred", "truncate", "dd", "wipefs", "srm", "fdisk", "sfdisk", "cfdisk",
+    "gdisk", "sgdisk", "parted", "blkdiscard", "mkswap", "hdparm", "rm",
+    "rmdir", "unlink", "mv", "cp", "ln", "install", "tee", "chmod", "chown",
+    "chgrp", "chattr", "kill", "pkill", "killall", "reboot", "shutdown", "halt",
+    "poweroff", "crontab", "at", "sudo", "su", "doas", "eval", "exec", "nohup",
+    "ssh", "scp", "sftp", "rsync", "xargs", "watch", "flock", "parallel",
+    "curl", "wget", "nc", "ncat", "socat", "sed", "awk", "find",
+})
+
+
+def _is_unmodelled_cli(name: str) -> bool:
+    """True when no rule of the classifier, nor its destructive-program list, names the program *name*."""
+    from .flag_classifiers import _CLASSIFIER_REGISTRY
+    from .shell_unwrapper import _SHELLS
+    from .command_semantics import LONG_VALUE_FLAGS
+
+    base = name.lower()
+    if base != name or base.startswith("mkfs"):
+        return False
+    if "-" in base and base.split("-", 1)[0] in _PS_ALL_VERBS:
+        return False
+    name_keyed_tables = (
+        CLI_FAMILY_LOOKUP, COMMAND_ALIASES, READ_ONLY_BASE_CMDS,
+        _SCRIPT_FILE_INTERPRETERS, _INLINE_CODE_MAP, _POWERSHELL_INTERPRETERS,
+        COMMAND_PATH_MUTATIVE_UPGRADES, COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS,
+        CLI_MUTATIVE_PATH_PREFIXES, _COMMAND_EXECUTORS, _COMMAND_WRAPPERS,
+        _PREFIX_RUNNER_SUBCOMMANDS, _PACKAGE_TOOL_COMMANDS, _PACKAGE_MANAGERS,
+        _CMD_MUTATIVE_BUILTINS, _CMD_READ_BUILTINS, _CMD_SUBCOMMAND_BUILTINS,
+        _PS_ALIASES, _PS_BARE_OBFUSCATION_ALIASES, F_FLAG_MEANS_FORCE,
+        R_FLAG_MEANS_RECURSIVE_DELETE, D_FLAG_MEANS_FORCE_DELETE,
+        M_FLAG_MEANS_FORCE_MOVE, DELETE_FLAG_IS_DESTRUCTIVE,
+        HARD_FLAG_IS_DESTRUCTIVE, BOOLEAN_SHORT_FLAGS, LONG_VALUE_FLAGS,
+        MUTATIVE_VERBS, SIMULATION_VERBS, READ_ONLY_VERBS,
+        _CLASSIFIER_REGISTRY, _SHELLS, _NEVER_INHERITING_PROGRAMS,
+    )
+    return not any(base in table for table in name_keyed_tables)
+
+
 def _absorbing_form(command: str) -> "Optional[str]":
     """Rewrite *command* as the pre-table tokenizer read it, or None if identical.
 
@@ -4277,7 +5736,7 @@ def _absorbing_form(command: str) -> "Optional[str]":
 
 def detect_mutative_command(
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
-    _depth: int = 0,
+    _depth: int = 0, _in_prefix: bool = False, caller: "Optional[LocalWorkCaller]" = None,
 ) -> MutativeResult:
     """Classify *command*, then hold the result to a non-regression floor.
 
@@ -4301,25 +5760,45 @@ def detect_mutative_command(
     old reading is the corrupted one, and it is consulted only as a source of
     escalation.
 
-    A wrapper declared in ``GAIA_CLI_ALIASES`` gets the same one-way floor:
-    it is also read as the CLI it wraps, so it is never classified more
-    leniently than that CLI.  The lookup stays outside the cached function so
-    the cache remains keyed on the command text alone.
+    A tool whose memory row declares it ``replaces`` a CLI is also read as
+    that CLI, so it is never classified more leniently than it.  A wrapper
+    the classifier does not model is classified as that CLI outright, which
+    lets it inherit the CLI's exceptions (``gh label list``); a declared name
+    the classifier models keeps its own gates.  The lookup stays outside the
+    cached function so the cache remains keyed on the command text alone.
     """
-    result = _detect_mutative_command(command, from_source_code, cwd, _depth)
-    if result.is_mutative:
-        return result
+    # The sync verdict depends on the repository's state, which the lru_cache
+    # on _detect_mutative_command would freeze, so it is decided here.
+    sync = None if from_source_code else _git_local_sync(command, cwd, _in_prefix)
+    if sync is not None:
+        return sync
 
-    wrapped = as_wrapped_cli(command)
-    if wrapped is not None:
+    result = _detect_mutative_command(command, from_source_code, cwd, _depth, caller, _in_prefix)
+
+    declared = declared_wrapper(command)
+    if declared is not None:
+        wrapper, wrapped = declared
         # One hop through the cached classifier: a declared cycle
         # (a=b,b=a) must not recurse.
         wrapped_result = _detect_mutative_command(wrapped, from_source_code, cwd, _depth)
-        if wrapped_result.is_mutative:
+        if wrapped_result.is_mutative and not result.is_mutative:
             return replace(
                 wrapped_result,
-                reason=f"{wrapped_result.reason} (declared in GAIA_CLI_ALIASES as a wrapper of this CLI)",
+                reason=f"{wrapped_result.reason} (a tool row declares {wrapper} replaces this CLI)",
             )
+        if result.is_mutative and not wrapped_result.is_mutative and _is_unmodelled_cli(wrapper):
+            command = wrapped
+            result = replace(
+                wrapped_result,
+                reason=f"{wrapped_result.reason} (inherited by {wrapper}, whose tool row replaces this CLI)",
+            )
+
+    if result.is_mutative:
+        return result
+
+    elsewhere = None if from_source_code else _change_request_elsewhere(command, cwd)
+    if elsewhere is not None:
+        return elsewhere
 
     absorbing = _absorbing_form(command)
     if absorbing is None or absorbing == command:
@@ -4340,7 +5819,7 @@ def detect_mutative_command(
 @functools.lru_cache(maxsize=128)
 def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step per lane
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
-    _depth: int = 0,
+    _depth: int = 0, caller: "Optional[LocalWorkCaller]" = None, _in_prefix: bool = False,
 ) -> MutativeResult:
     """Analyze a shell command and return a structured mutative assessment.
 
@@ -4369,6 +5848,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             in the command chain overrides this (see the ``cd``-peel below), so
             Gaia governs a script in the workspace it is actually run from, not
             only the Gaia install dir.
+        caller: Who runs the command and from where, as the validator proved
+            it; without one the rm/rmdir/mv/cp relief never applies.  The peels
+            below re-classify without it, so a wrapper (``sudo``, ``env -C``)
+            or a cd inside the string withdraws the relief.
 
     Returns:
         MutativeResult with full classification details.
@@ -4386,6 +5869,15 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # environment, but command substitutions in its value still execute.
     # Inspect those before env-prefix peeling; otherwise
     # ``TOKEN=$(mutative-command) read-only-command`` loses the mutation.
+    git_config_result = _check_git_code_config(command)
+    if git_config_result is not None:
+        return git_config_result
+    environment_result = runs_under_injected_environment(
+        command, code_injecting_assignments(command), cwd=cwd, _depth=_depth,
+    )
+    if environment_result is not None:
+        return environment_result
+
     assignment_result = _classify_leading_shell_assignments(
         command, cwd=cwd, _depth=_depth,
     )
@@ -4421,18 +5913,31 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         config_result = _check_package_config_environment(command, env_remainder)
         if config_result is not None:
             return config_result
+        target_result = _check_target_environment(command, env_remainder, cwd=cwd, _depth=_depth)
+        if target_result is not None:
+            return target_result
         if sets_node_options(command):
             node_options_result = node_test_under_node_options(env_remainder, cwd)
             if node_options_result is not None:
                 return node_options_result
+        prefixed_relief = _git_relief_under_prefix(readings, cwd)
+        if prefixed_relief is not None:
+            return prefixed_relief
         for reading in readings:
             result = detect_mutative_command(
                 reading, from_source_code=from_source_code, cwd=cwd,
-                _depth=_depth,
+                _depth=_depth, _in_prefix=True,
             )
             if result.is_mutative:
                 break
         return result
+    for reading in readings[1:] if env_peeled else ():
+        result = detect_mutative_command(
+            reading, from_source_code=from_source_code, cwd=cwd,
+            _depth=_depth, _in_prefix=True,
+        )
+        if result.is_mutative:
+            return result
 
     # --- Honor a release-track prefix (`gcloud alpha ...`, `gcloud beta ...`) ---
     # A track word between the tool and the command names a different API track
@@ -4484,6 +5989,21 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     base_cmd = semantics.base_cmd
     family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
 
+    if base_cmd == "gaia" and "/" in tokens[0] and not _gaia_shipped_script(
+        Path(cwd or Path.cwd(), os.path.expanduser(tokens[0]))
+    ):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="gaia-by-path",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                f"'{tokens[0]}' runs a Gaia CLI by path from outside the installed Gaia this hook "
+                f"runs from, so it can import code anyone edited -- use the gaia launcher"
+            ),
+        )
+
     # --- Step 0-redirect: a redirect onto an account-sensitive path ---
     # Ahead of every step below: the alias fast-path and the read-only base
     # commands key on the base command alone and return before any destination
@@ -4491,6 +6011,45 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     account_redirect = _check_account_path_redirect(command)
     if account_redirect is not None:
         return account_redirect
+
+    # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
+    program = command.lstrip()
+    program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
+    literal_words = _literal_words(base_cmd, tokens[1:])
+    first_word = literal_words[0] if literal_words else ""
+    unlisted_subcommand = (
+        family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS | _EXPRESSION_FIRST_TOOLS
+        and any(_is_known_verb(word) for word in literal_words)
+    )
+    if program_is_dynamic:
+        dynamic_word = tokens[0]
+    elif family in _VERB_FIRST_FAMILIES or unlisted_subcommand:
+        dynamic_word = _dynamic_verb_span_word(base_cmd, tokens[1:])
+    else:
+        dynamic_word = None
+    if dynamic_word is not None and not from_source_code:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="dynamic-program" if program_is_dynamic else "dynamic-verb",
+            cli_family=family,
+            reason=f"the word {dynamic_word!r} naming what runs could not be determined",
+            rule="unknown.dynamic-span",
+        )
+    spellings, exact = _cloud_command_readings(base_cmd, tokens)
+    readings = [_detect_mutative_command(s, from_source_code, cwd, _depth, caller, _in_prefix) for s in spellings]
+    changed = next((reading for reading in readings if reading.is_mutative), None)
+    if changed is not None or (readings and exact):
+        return changed or readings[0]
+    if unlisted_subcommand and "-" in first_word and _verb_word_effect(first_word) == CATEGORY_MUTATIVE:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=first_word,
+            cli_family=family,
+            confidence="medium",
+            reason=f"the verb word {first_word!r} carries a mutative part",
+        )
 
     # --- Step 1: Command alias fast-path ---
     if base_cmd in COMMAND_ALIASES:
@@ -4530,7 +6089,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # /*, ~) still runs first in blocked_commands.py, which defers to this
         # detector only for scratch-confined rm commands.
         if base_cmd in ("rm", "rmdir"):
-            scratch_targets = _rm_scratch_confined_targets(tuple(tokens))
+            scratch_targets = _rm_scratch_confined_targets(tuple(tokens), caller)
             if scratch_targets:
                 valuable = _durable_store_under_scratch_targets(scratch_targets)
                 if valuable is None:
@@ -4560,10 +6119,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     ),
                 )
 
-        # cp writes only its destination; into scratch it is free unless it
-        # would overwrite a durable store already parked there.
-        if base_cmd == "cp":
-            written = _cp_scratch_written_paths(tuple(tokens))
+        # mv and cp are free when every path they touch stays in scratch or a
+        # managed worktree and none overwrites a durable store parked there.
+        if base_cmd in ("cp", "mv") and caller is not None:
+            local_work = _cp_local_work_written_paths if base_cmd == "cp" else _mv_local_work_written_paths
+            written = local_work(tuple(tokens), caller)
             if written and _durable_store_under_scratch_targets(written) is None:
                 return MutativeResult(
                     is_mutative=False,
@@ -4572,8 +6132,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     cli_family="system",
                     confidence="high",
                     reason=(
-                        "cp writing only inside the Gaia scratch directory "
-                        "(~/.gaia/scratch) and overwriting no durable store"
+                        f"{base_cmd} writing only inside the Gaia scratch directory "
+                        f"or a Gaia-managed worktree, overwriting no durable store"
                     ),
                 )
 
@@ -4586,6 +6146,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             confidence="high",
             reason=f"Command alias '{base_cmd}' is {alias_category.lower()}",
         )
+
+    nested_result = _check_nested_executor(semantics, cwd=cwd, _depth=_depth)
+    if nested_result is not None:
+        return nested_result
 
     # --- Step 1a-exec: a command handed to an executor as a STRING ---
     # Runs ahead of the read-only fast path because one of the executors that
@@ -4688,6 +6252,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # list/download -> read-only).  Returns None when the command is not a
     # package-manager module invocation, so detection continues unchanged --
     # ``python3 -m pytest`` and ``python3 -m http.server`` are NOT rerouted.
+    load_result = _check_interpreter_loads(base_cmd, semantics, cwd, _depth)
+    if load_result is not None:
+        return load_result
+
     py_module_result = _check_python_module_runner(base_cmd, semantics)
     if py_module_result is not None:
         return py_module_result
@@ -4773,7 +6341,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # instead inside the script-file lane by ``_script_honored_simulation_flag``,
     # which frees the invocation only when the script's own executable text
     # references the flag that was passed.
-    if any(t.lower() in SIMULATION_FLAGS for t in tokens):
+    if _simulation_flag_holds(tokens):
         # Find the first non-flag token after base_cmd for the verb
         verb, _ = _find_first_non_flag(semantics.semantic_head_tokens)
         return MutativeResult(
@@ -4862,8 +6430,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # using the 3-layer approach instead of verb-matching tokens (which would
     # false-positive on generic keywords like "import", "create", etc.).
     cli_flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
-    if base_cmd in _INLINE_CODE_CLIS and cli_flags & set(semantics.flag_tokens):
-        return _check_inline_code(command, base_cmd, family)
+    if base_cmd in _INLINE_CODE_CLIS and (
+        cli_flags & set(semantics.flag_tokens) or (base_cmd == "deno" and tuple(semantics.non_flag_tokens[:1]) == ("eval",))
+    ):
+        return _check_inline_code(command, base_cmd, family, cwd=cwd, _depth=_depth)
 
     # --- Step 3c: Heredoc safety check ---
     # When a runtime interpreter is invoked with '-' (stdin) and the command
@@ -4881,7 +6451,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         program is not None
         or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
     ):
-        return _check_inline_code(command, base_cmd, family, skip_length_check=True)
+        return _check_inline_code(command, base_cmd, family, skip_length_check=True, cwd=cwd, _depth=_depth)
 
     # --- Step 3d: CLI-specific mutative command paths ---
     command_path = tuple(token.lower() for token in semantics.non_flag_tokens)
@@ -4924,9 +6494,15 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         if config_result is not None:
             return config_result
 
+        relief_result = _check_git_publish_relief(semantics, tuple(tokens), family, cwd)
+        if relief_result is not None:
+            return relief_result
+
         git_subcmd = semantics.non_flag_tokens[0]
+        subcommand_split = _git_subcommand_split(tuple(tokens))
+        subcommand_args = subcommand_split[2] if subcommand_split else tokens
         reset_flags = tuple(sorted(
-            _GIT_BRANCH_RESET_FLAGS.get(git_subcmd, frozenset()).intersection(tokens)
+            _GIT_BRANCH_RESET_FLAGS.get(git_subcmd, frozenset()).intersection(subcommand_args)
         ))
         if reset_flags:
             return MutativeResult(
@@ -4949,6 +6525,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 cli_family=family,
                 confidence="high",
                 reason="'git grep -O' runs a command over every matching file",
+            )
+        written = _git_output_targets(tuple(tokens), git_subcmd)
+        if written and not _git_output_in_owned_entry(tuple(tokens), written, caller):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=git_subcmd,
+                cli_family=family,
+                confidence="high",
+                reason=f"'git {git_subcmd}' writes {written[0] or 'a file'} outside the caller's own scratch entry",
             )
         if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
@@ -5133,7 +6719,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                         f"stays T3 despite the local bookkeeping exception"
                     ),
                 )
-            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+            exempt_flags = _always_flag_exemptions(base_cmd, semantics)
+            dangerous_flags = tuple(
+                flag for flag in _scan_dangerous_flags(tokens, base_cmd)
+                if flag not in exempt_flags
+            )
             if not dangerous_flags:
                 target_category = COMMAND_SUBCOMMAND_TIER_EXCEPTIONS[subcommand_key]
                 return MutativeResult(
@@ -5148,6 +6738,37 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                         f"excepted to {target_category.lower()} by config"
                     ),
                 )
+
+        cr_action = change_request_action(semantics.non_flag_tokens)
+        cr_revoking = _CHANGE_REQUEST_LANDING_FLAGS + (_CHANGE_REQUEST_EDIT_FLAGS if cr_action != "create" else ())
+        if (
+            cr_action in _CHANGE_REQUEST_OWN_WORK
+            and (base_cmd in _FORGE_CLIS or _is_unmodelled_cli(base_cmd))
+            and not _scan_dangerous_flags(tokens, base_cmd)
+            and not _carries_revoking_flag(tokens, cr_revoking)
+        ):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_UNKNOWN,
+                verb=cr_action,
+                cli_family=family,
+                confidence="high",
+                reason=f"'{base_cmd} {' '.join(semantics.non_flag_tokens[:3])}' opens or edits a change request, free for any forge binary",
+            )
+
+        verb_categories = SUBCOMMAND_VERB_TIER_EXCEPTIONS.get(subcommand_key, {})
+        if group_verb in verb_categories and not _scan_dangerous_flags(tokens, base_cmd):
+            return MutativeResult(
+                is_mutative=False,
+                category=verb_categories[group_verb],
+                verb=group_verb,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"'{base_cmd} {semantics.non_flag_tokens[0]} {group_verb}' "
+                    f"excepted to {verb_categories[group_verb].lower()} by config"
+                ),
+            )
 
     # --- Step 3f: Consent-reducing operations are not T3 (anchored) ---
     # Within Gaia's own consent layer (`gaia approvals ...`), verbs that REDUCE
@@ -5183,6 +6804,45 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                         f"not state-granting, so not T3"
                     ),
                 )
+
+    if base_cmd in APPLYING_PROGRAMS and not APPLYING_PROGRAMS[base_cmd] & set(tokens):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=base_cmd,
+            dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+            cli_family=family,
+            confidence="high",
+            reason=f"'{base_cmd}' applies its configuration to the hosts it names",
+        )
+    if _output_pushes(tuple(tokens)):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="push",
+            cli_family=family,
+            confidence="high",
+            reason="An output option sends the build to a registry",
+        )
+    local_cache_path = "" if _in_prefix else _local_cache_refresh(base_cmd, semantics)
+    if local_cache_path and not _scan_dangerous_flags(tokens, base_cmd):
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb=local_cache_path.split()[-1],
+            cli_family=family,
+            confidence="high",
+            reason=f"'{base_cmd} {local_cache_path}' only refreshes a local cache",
+        )
+    hyphen_depth = GROUP_PATH_HYPHEN_DEPTH if base_cmd in _GROUP_PATH_CLIS else 2
+    option_values = _option_value_positions(semantics)
+    configure_at = (
+        _configure_position(semantics.semantic_head_tokens, option_values) if base_cmd in _GROUP_PATH_CLIS else 0
+    )
+    path_anchored = any(
+        semantics.non_flag_tokens[:len(anchor.path)] == anchor.path
+        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ())
+    )
 
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
@@ -5232,28 +6892,57 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # or camelCase-split and the inner fragments match mutative verbs.
         is_subcmd_shape = _is_subcommand_identifier(stripped_token)
 
-        # Split hyphenated tokens: "delete-stack" -> check "delete"
-        # IMPORTANT: only apply hyphen-split at subcommand positions
-        # (semantic_index <= 2).  At deeper positions (index >= 3), tokens are
-        # typically argument values or slugs like "remove-live-state-from-context"
-        # or "some-name-with-delete-in-it".  Splitting those produces false
-        # positives -- the first fragment matches a mutative verb even though
-        # the token is not a CLI subcommand.  The camelCase guard already applies
-        # the same constraint (semantic_index == 1).
-        if semantic_index <= 2 and "-" in stripped_token and is_subcmd_shape:
-            candidate = stripped_token.split("-", 1)[0]
+        # Deeper than the subcommand path, a hyphenated token is an argument
+        # slug ("some-name-with-delete-in-it"), never split.
+        if semantic_index <= hyphen_depth and "-" in stripped_token and is_subcmd_shape:
+            is_group = any(
+                _names_operation(t)
+                for p, t in enumerate(semantics.semantic_head_tokens[:hyphen_depth + 1])
+                if p > semantic_index and p not in option_values
+            )
+            candidate, compound_change = _hyphen_candidate(stripped_token, is_group)
         else:
-            candidate = stripped_token
+            candidate, compound_change = stripped_token, False
 
-        # Also check full token for exact matches (e.g., "force-delete")
         full_lower = stripped_token
-
-        # Determine confidence from position
         confidence = "high" if semantic_index <= 2 else "medium"
 
-        # Check verb taxonomy in priority order
+        if configure_at and semantic_index == configure_at:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="config",
+                dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+                cli_family=family,
+                confidence=confidence,
+                reason=f"'{base_cmd} {' '.join(semantics.non_flag_tokens[:configure_at])}' configures the group it ends",
+            )
+
+        destroying_flags = VERB_DESTROYING_FLAGS.get(full_lower, frozenset()) & frozenset(semantics.flag_tokens)
+        if destroying_flags:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=full_lower,
+                dangerous_flags=tuple(sorted(destroying_flags)),
+                cli_family=family,
+                confidence="high",
+                reason=f"'{full_lower}' with {', '.join(sorted(destroying_flags))} destroys what it held",
+                rule="sign.destroys",
+            )
+
         if candidate in SIMULATION_VERBS or full_lower in SIMULATION_VERBS:
             verb = candidate if candidate in SIMULATION_VERBS else full_lower
+            if family in LIVE_SIMULATION_VERBS.get(verb, frozenset()):
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=verb,
+                    dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+                    cli_family=family,
+                    confidence=confidence,
+                    reason=f"'{verb}' runs against live state on a {family} CLI",
+                )
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_SIMULATION,
@@ -5263,8 +6952,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 reason=f"Simulation verb '{verb}'",
             )
 
-        if candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
-            verb = candidate if candidate in MUTATIVE_VERBS else full_lower
+        if compound_change or candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
+            verb = candidate if compound_change or candidate in MUTATIVE_VERBS else full_lower
 
             # git tag is dual-mode: a listing form (`git tag`, `-l`,
             # `--points-at`, `--contains`, ...) is read-only (T0), while a
@@ -5423,6 +7112,19 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
         if candidate in READ_ONLY_VERBS or full_lower in READ_ONLY_VERBS:
             verb = candidate if candidate in READ_ONLY_VERBS else full_lower
+            next_head = semantics.semantic_head_tokens[semantic_index + 1:semantic_index + 2]
+            group_word_defers = (
+                verb in GROUP_READ_WORDS
+                and semantic_index < hyphen_depth
+                and next_head
+                and _head_token_mutates(next_head[0])
+            )
+            group_path_defers = base_cmd in _GROUP_PATH_CLIS and (
+                configure_at > semantic_index
+                or _later_head_mutates(semantics.semantic_head_tokens, semantic_index, hyphen_depth, option_values)
+            )
+            if not path_anchored and (group_word_defers or group_path_defers):
+                continue
             # An ALWAYS-dangerous flag escalates even a read-only verb: the
             # Step 5 flag scan below never runs for a read-only verb because
             # this early-return fires first, so `terraform state list --prune`
@@ -5546,17 +7248,17 @@ detect_mutative_command.cache_info = _detect_mutative_command.cache_info
 # ============================================================================
 
 def _extract_python_payload(command: str, base_cmd: str) -> str:
-    """Return the Python source string passed via ``-c "..."`` or ``-`` heredoc.
+    """Return the Python source the interpreter runs: its ``-c`` word as the shell passes it, else a ``-`` heredoc body.
 
-    The extractor looks for the canonical ``<python> -c <payload>`` shape,
-    accepting single, double, or unquoted payloads.  When the interpreter is
-    invoked with ``-`` (stdin) and a heredoc body, the body between
-    ``<<MARKER`` and ``MARKER`` is returned instead.
-
-    Empty string is returned when extraction fails -- the caller is expected
-    to fall back to its regex layer in that case.
+    A ``-c`` program wins over a heredoc, which is then only its stdin, and a
+    ``"$(cat <<'D' ... D)"`` word is read as the lines it prints.  Empty string
+    is returned when extraction fails.
     """
-    # Heredoc form: python3 - <<'PYEOF' ... PYEOF
+    from .gaia_cli_invocation import resolve_cat_heredocs
+
+    payload = _inline_code_text(resolve_cat_heredocs(command, keep_newlines=True), base_cmd, "")
+    if payload:
+        return payload
     if "<<" in command:
         m = _re.search(
             r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\s*\1\s*$",
@@ -5564,8 +7266,6 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
         )
         if m:
             return m.group(2)
-
-    # Inline -c form, with quoted or unquoted payload.
     m = _re.search(
         r"(?:^|\s)" + _re.escape(base_cmd) + r"\b[^-]*?-c\s+(['\"])(.*?)\1",
         command, _re.DOTALL,
@@ -6018,9 +7718,72 @@ def _check_prefix_runner(
 _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_plugins")
 
 
+_HOOK_ROOT = Path(__file__).resolve().parents[3]
+
+
+class _GitUnanswered(Exception):
+    pass
+
+
+@functools.lru_cache(maxsize=8)
+def _root_is_install(root: Path) -> bool:
+    """True only for a root at a known install location (protected_paths._install_root) that git, run without GIT_* in the C locale, proves no checkout's top level; any unproven git reply raises _GitUnanswered, which lru_cache never stores."""
+    import subprocess
+    from .protected_paths import _install_root
+
+    real = Path(os.path.realpath(root))
+    if _install_root(real) != real:
+        return False
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    env.update(LC_ALL="C", LANGUAGE="")
+    try:
+        ran = subprocess.run(
+            ["git", "-C", str(real), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3, check=False, env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise _GitUnanswered(root) from error
+    if ran.returncode == 128 and "not a git repository" in ran.stderr:
+        return True
+    top = ran.stdout.strip()
+    if ran.returncode == 0 and os.path.isabs(top):
+        top_real = Path(os.path.realpath(top))
+        if top_real == real:
+            return False
+        if top_real in real.parents:
+            return True
+    raise _GitUnanswered(root)
+
+
+def _hook_root_is_install() -> bool:
+    """True when the Gaia this hook runs from is proven an install, not a git checkout anyone can edit; an npm install nested in a project's checkout still counts, anything unproven counts as a checkout."""
+    try:
+        return _root_is_install(_HOOK_ROOT)
+    except _GitUnanswered:
+        return False
+
+
+def _gaia_shipped_script(script: Path) -> bool:
+    """True when *script* is a file of the installed Gaia this hook runs from; a checkout's copy, Gaia's own source included, is judged by content."""
+    real = Path(os.path.realpath(script))
+    return real.is_file() and real.is_relative_to(_HOOK_ROOT) and _hook_root_is_install()
+
+
+def _gaia_cli_group(script: Path) -> "Optional[str]":
+    """The group a Gaia-shipped ``bin/cli/<group>.py`` runs as, or None."""
+    from .gaia_cli_invocation import _CLI_MODULES
+
+    real = Path(os.path.realpath(script))
+    if real.suffix != ".py" or real.stem.startswith("_") or real.stem not in _CLI_MODULES:
+        return None
+    if real.parent.name != "cli" or real.parent.parent.name != "bin":
+        return None
+    return real.stem if _gaia_shipped_script(real) else None
+
+
 def _check_gaia_cli_dispatcher(
     script_path: str, content: str, semantics: "CommandSemantics", family: str,
-    _depth: int = 0,
+    _depth: int = 0, cwd: "Optional[str]" = None,
 ) -> "Optional[MutativeResult]":
     """Re-dispatch ``<python> <path>/bin/gaia <subcmd> ...`` as ``gaia <subcmd> ...``.
 
@@ -6044,16 +7807,25 @@ def _check_gaia_cli_dispatcher(
     narrowly scoped to the gaia dispatcher; it is NOT a general bypass of
     subprocess.run detection for arbitrary Python scripts.
 
+    A ``bin/cli/<group>.py`` script runs as ``gaia <group>`` and is
+    re-dispatched the same way.  Either script counts only inside the installed
+    Gaia this hook runs from (``_gaia_shipped_script``): a git checkout's copy,
+    Gaia's own source worktrees included, can import code anyone edited, so it
+    is judged by its content.
+
     Returns ``None`` when the script is not the gaia dispatcher, so the caller
     continues with ordinary AST/regex script analysis.
     """
     import os
 
-    if os.path.basename(script_path) != "gaia":
-        return None
-    if os.path.basename(os.path.dirname(script_path)) != "bin":
-        return None
-    if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE):
+    script = Path(cwd or Path.cwd(), Path(script_path).expanduser())
+    if os.path.basename(script_path) == "gaia" and os.path.basename(os.path.dirname(script_path)) == "bin":
+        if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE) or not _gaia_shipped_script(script):
+            return None
+        group: Tuple[str, ...] = ()
+    elif (cli_group := _gaia_cli_group(script)) is not None:
+        group = (cli_group,)
+    else:
         return None
 
     # Tokens AFTER the script positional are the gaia argv.
@@ -6062,7 +7834,7 @@ def _check_gaia_cli_dispatcher(
         idx = raw_tokens.index(script_path)
     except ValueError:
         return None
-    sub_args = raw_tokens[idx + 1:]
+    sub_args = [*group, *raw_tokens[idx + 1:]]
 
     if not sub_args:
         # `python3 bin/gaia` with no subcommand prints help -- read-only.
@@ -6102,6 +7874,12 @@ def _check_gaia_cli_dispatcher(
 # the ``cd`` FAILED, so the target dir is not in effect.  ``|`` / ``&`` are not
 # sequential cwd hand-offs either.
 _LEADING_CD_SPLIT_RE = _re.compile(r"&&|;|\n")
+_CD_FAMILY_RE = _re.compile(r"\s*(?:cd|pushd|popd)(?=\s|$)")
+_CD_PLAIN_FLAGS = frozenset({"-P", "-L", "-e", "-@"})
+
+# The cwd after a `cd -`, `popd` or other move the fold cannot follow: a path no
+# relative target can be placed under, so a consumer fails closed rather than guess.
+UNKNOWN_CWD = "/nonexistent/gaia-unknown-cwd"
 
 
 def _parse_cd_target(segment: str) -> "Optional[str]":
@@ -6115,11 +7893,12 @@ def _parse_cd_target(segment: str) -> "Optional[str]":
     filesystems.
     """
     sem = analyze_command(segment)
-    if sem.base_cmd != "cd":
+    if sem.base_cmd == "popd" and len(sem.tokens) == 1:
+        return "-"
+    if sem.base_cmd not in ("cd", "pushd"):
         return None
-    args = [t for t in sem.tokens[1:] if not t.startswith("-")]
-    flags = [t for t in sem.tokens[1:] if t.startswith("-")]
-    if flags or len(args) != 1:
+    args = [t for t in sem.tokens[1:] if t not in _CD_PLAIN_FLAGS]
+    if len(args) != 1 or (args[0][0] in "-+" and args[0] != "-"):
         return None
     return args[0]
 
@@ -6134,11 +7913,16 @@ def _resolve_dir_against_cwd(base_cwd: "Optional[str]", target: str) -> str:
     matching the hook's previous default.
     """
     import os
+    from .sensitive_paths import expand_home
 
+    if target == "-":
+        return UNKNOWN_CWD
     base = base_cwd if base_cwd is not None else os.getcwd()
-    target = os.path.expanduser(target)
+    target = os.path.expanduser(expand_home(target))
     if os.path.isabs(target):
         return os.path.normpath(target)
+    if base == UNKNOWN_CWD:
+        return UNKNOWN_CWD
     return os.path.normpath(os.path.join(base, target))
 
 
@@ -6188,7 +7972,9 @@ def cwd_after_component(command: str, base_cwd: "Optional[str]") -> "Optional[st
     where the ``cd`` and the script land in SEPARATE components.
     """
     cwd, _remaining, peeled = _peel_leading_cd(command, base_cwd)
-    return cwd if peeled else base_cwd
+    if peeled:
+        return cwd
+    return UNKNOWN_CWD if _CD_FAMILY_RE.match(command) else base_cwd
 
 
 # A leading shell env-var assignment:  NAME=  (value consumed separately, so it
@@ -6216,6 +8002,8 @@ class _WrapperGrammar:
     windows_switches: bool = False
     terminators: FrozenSet[str] = frozenset()
     window_title: bool = False
+    lookup_flags: FrozenSet[str] = frozenset()
+    split_string_flags: FrozenSet[str] = frozenset()
 
 
 # Wrappers that run the command after them with the same effect it has alone.
@@ -6223,9 +8011,38 @@ class _WrapperGrammar:
 # _peel_leading_command_wrappers), so a wrapper recognised by one and not the
 # other cannot reopen a floor command the other still blocks.
 _COMMAND_WRAPPERS: Dict[str, _WrapperGrammar] = {
-    "env": _WrapperGrammar(value_flags=frozenset({
-        "-u", "-C", "-S", "--unset", "--chdir", "--split-string",
-        "--block-signal", "--default-signal", "--ignore-signal",
+    "env": _WrapperGrammar(
+        value_flags=frozenset({
+            "-u", "-C", "--unset", "--chdir",
+            "--block-signal", "--default-signal", "--ignore-signal",
+        }),
+        split_string_flags=frozenset({"-S", "--split-string"}),
+    ),
+    "command": _WrapperGrammar(lookup_flags=frozenset({"-v", "-V"})),
+    "builtin": _WrapperGrammar(),
+    "exec": _WrapperGrammar(value_flags=frozenset({"-a"})),
+    "busybox": _WrapperGrammar(),
+    "setsid": _WrapperGrammar(),
+    "chronic": _WrapperGrammar(),
+    "unbuffer": _WrapperGrammar(),
+    "pkexec": _WrapperGrammar(value_flags=frozenset({"--user"})),
+    "chroot": _WrapperGrammar(value_flags=frozenset({"--userspec", "--groups"}), positionals=1),
+    "taskset": _WrapperGrammar(positionals=1),
+    "chrt": _WrapperGrammar(value_flags=frozenset({"-T", "-P", "-D"}), positionals=1),
+    "numactl": _WrapperGrammar(value_flags=frozenset({
+        "-N", "-m", "-C", "-p", "-i", "-P", "--cpunodebind", "--membind",
+        "--physcpubind", "--preferred", "--interleave",
+    })),
+    "prlimit": _WrapperGrammar(value_flags=frozenset({"-p", "--pid"})),
+    "unshare": _WrapperGrammar(value_flags=frozenset({"-S", "-G", "-R", "-w"})),
+    "nsenter": _WrapperGrammar(value_flags=frozenset({
+        "-t", "-S", "-G", "-r", "-w", "--target", "--setuid", "--setgid",
+    })),
+    "strace": _WrapperGrammar(value_flags=frozenset({
+        "-e", "-o", "-p", "-s", "-u", "-E", "-a", "-b", "-I", "-O", "-P", "-S", "-X",
+    })),
+    "ltrace": _WrapperGrammar(value_flags=frozenset({
+        "-e", "-o", "-p", "-s", "-u", "-a", "-A", "-D", "-F", "-l", "-n", "-x", "-w",
     })),
     "sudo": _WrapperGrammar(value_flags=frozenset({
         "-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "-R",
@@ -6338,7 +8155,18 @@ def _short_bundle_ends_in_value_flag(tok: str, value_flags: FrozenSet[str]) -> b
     return False
 
 
-def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
+def _split_string_flag(tok: str, grammar: _WrapperGrammar) -> bool:
+    if tok.startswith("--"):
+        return tok.split("=", 1)[0] in grammar.split_string_flags
+    for letter in tok[1:]:
+        if f"-{letter}" in grammar.split_string_flags:
+            return True
+        if f"-{letter}" in grammar.value_flags:
+            return False
+    return False
+
+
+def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> "Optional[int]":
     """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
     positionals = grammar.positionals
@@ -6365,6 +8193,10 @@ def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
             else tok.startswith("-")
         )
         if is_switch:
+            if tok in grammar.lookup_flags:
+                return None
+            if _split_string_flag(tok, grammar):
+                return i
             i = tok_end
             if tok in grammar.value_flags or _short_bundle_ends_in_value_flag(
                 tok, grammar.value_flags,
@@ -6402,10 +8234,11 @@ def _wrapper_chain(s: str, i: int) -> "Tuple[int, Tuple[_WrapperGrammar, ...]]":
             i += 1
         word_end = _consume_shell_word(s, i)
         grammar = _COMMAND_WRAPPERS.get(program_identity(s[i:word_end].strip("\"'")))
-        if grammar is None:
+        wrapped_start = None if grammar is None else _skip_wrapper_arguments(s, word_end, grammar)
+        if wrapped_start is None:
             return i, tuple(chain)
         chain.append(grammar)
-        i = _skip_wrapper_arguments(s, word_end, grammar)
+        i = wrapped_start
 
 
 def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
@@ -6436,7 +8269,45 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
     as a title to anyone expecting ``start "title"``; the words after it are
     a reading too, so either spelling classifies at the stricter verdict.
     """
+    dropped, s, i, innermost = _expand_split_strings(command)
+    expanded = bool(dropped)
+    remainder = s[i:].strip()
+    readings = [remainder]
+    if innermost is not None and innermost.terminators and _STRING_PAYLOAD_SWITCH_RE.search(s[:i]):
+        payload = _unquote_single_word(remainder)
+        from ..tools.shell_parser import parse_command
+
+        stages = parse_command(payload)
+        readings = [payload, *stages] if len(stages) > 1 else [payload]
+    elif innermost is not None and innermost.window_title:
+        words_end = _consume_shell_word(remainder, 0)
+        after_title = remainder[words_end:].strip()
+        if after_title:
+            readings.append(after_title)
+    named = [_name_program_head(reading) for reading in readings]
+    renamed = any(was_renamed for _, was_renamed in named)
+    named_readings = [reading for reading, _ in named]
+    config_programs = _git_config_programs(named_readings[0])
+    return (
+        tuple(named_readings + config_programs),
+        i > 0 or expanded or renamed or bool(config_programs),
+    )
+
+
+def _expand_split_strings(command: str) -> "Tuple[str, str, int, Optional[_WrapperGrammar]]":
+    """``(dropped, s, i, innermost)``: *command* as ``s`` with every ``env -S`` string split into its words, the prefixes that rewrite replaced, and where ``s``'s peeled remainder starts."""
     s = command.strip() if command else ""
+    dropped: List[str] = []
+    while True:
+        i, innermost = _peel_prefix(s)
+        split = _expand_split_string(s[i:], innermost)
+        if split is None:
+            return " ".join(dropped), s, i, innermost
+        dropped.append(s[:i])
+        s = split
+
+
+def _peel_prefix(s: str) -> "Tuple[int, Optional[_WrapperGrammar]]":
     n = len(s)
     i = 0
     innermost: "Optional[_WrapperGrammar]" = None
@@ -6453,24 +8324,142 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
                 break
             i = _consume_shell_word(s, m.end())
         if i == start:
-            break
+            return i, innermost
 
-    remainder = s[i:].strip()
-    readings = [remainder]
-    if innermost is not None and innermost.terminators and _STRING_PAYLOAD_SWITCH_RE.search(s[:i]):
-        payload = _unquote_single_word(remainder)
-        from ..tools.shell_parser import parse_command
 
-        stages = parse_command(payload)
-        readings = [payload, *stages] if len(stages) > 1 else [payload]
-    elif innermost is not None and innermost.window_title:
-        words_end = _consume_shell_word(remainder, 0)
-        after_title = remainder[words_end:].strip()
-        if after_title:
-            readings.append(after_title)
-    named = [_name_program_head(reading) for reading in readings]
-    renamed = any(was_renamed for _, was_renamed in named)
-    return tuple(reading for reading, _ in named), i > 0 or renamed
+def _expand_split_string(rest: str, grammar: "Optional[_WrapperGrammar]") -> "Optional[str]":
+    """Rewrite ``env -S STRING ARGS`` as ``env STRING ARGS``: env reads the split words as its own arguments."""
+    if grammar is None or not grammar.split_string_flags:
+        return None
+    tok_end = _consume_shell_word(rest, 0)
+    tok = rest[:tok_end]
+    if not tok.startswith("-") or not _split_string_flag(tok, grammar):
+        return None
+    if tok.startswith("--"):
+        value = tok.split("=", 1)[1] if "=" in tok else None
+    else:
+        attached = tok[tok.index("S") + 1:]
+        value = attached or None
+    if value is None:
+        value_start = len(rest) - len(rest[tok_end:].lstrip())
+        tok_end = _consume_shell_word(rest, value_start)
+        value = rest[value_start:tok_end]
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        words = [value]
+    return f"env {' '.join(words)} {rest[tok_end:].strip()}".strip()
+
+
+_GIT_CODE_PATH_KEY_RE = _re.compile(r"core\.hookspath|core\.fsmonitor|include\.path|includeif\..+\.path")
+_GIT_PROGRAM_KEY_RE = _re.compile(
+    r"core\.(?:pager|editor|sshcommand|askpass|gitproxy)|sequence\.editor|diff\.external"
+    r"|gpg\.(?:[^.]+\.)?program|credential\.(?:.+\.)?helper|pager\..+|alias\..+"
+    r"|(?:filter|diff|merge|difftool|mergetool|browser|man)\..+\."
+    r"(?:clean|smudge|process|textconv|command|driver|cmd|path)"
+    r"|uploadpack\.packobjectshook|remote\..+\.(?:uploadpack|receivepack)|web\.browser"
+)
+_GIT_HARMLESS_CODE_VALUES = frozenset({
+    "/dev/null", "true", "false", "yes", "no", "on", "off", "1", "0", "",
+    "$pager", "${pager}", "$git_pager", "$editor", "${editor}", "$visual", "$git_editor",
+})
+_GIT_VALUE_OPTIONS = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix",
+})
+_GIT_CONFIG_ENV_RE = _re.compile(
+    r"(?<!\S)(?:GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_\d+|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG)="
+    r"(\S*)"
+)
+
+
+def _git_global_options(command: str) -> "Optional[List[Tuple[str, str]]]":
+    """Return git's global options in *command* as ``(option, value)`` pairs, or None when it is not git."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    if not words or program_identity(words[0]) != "git":
+        return None
+    options: List[Tuple[str, str]] = []
+    index = 1
+    while index < len(words) and words[index].startswith("-"):
+        option, has_value, value = words[index].partition("=")
+        if not has_value and option in _GIT_VALUE_OPTIONS and index + 1 < len(words):
+            index += 1
+            value = words[index]
+        options.append((option, value))
+        index += 1
+    return options
+
+
+def _git_config_programs(command: str) -> "List[str]":
+    """Return the commands git runs from program-valued ``-c`` keys of *command*."""
+    programs = []
+    for option, value in _git_global_options(command) or ():
+        key, has_value, program = value.partition("=")
+        if option != "-c" or not has_value or not _GIT_PROGRAM_KEY_RE.fullmatch(key.lower()):
+            continue
+        if program.lower() in _GIT_HARMLESS_CODE_VALUES:
+            continue
+        if key.lower().startswith("alias.") and not program.startswith("!"):
+            programs.append(f"git {program}")
+        else:
+            programs.append(program.lstrip("!"))
+    return programs
+
+
+def _check_git_code_config(command: str) -> "Optional[MutativeResult]":
+    """Sign git run with configuration that points it at code the command line does not show."""
+    readings, _ = _peel_wrapper_readings(command)
+    options = _git_global_options(readings[0])
+    if options is None:
+        return None
+    reasons = _git_config_env_reasons(command)
+    for option, value in options:
+        key, _, setting = value.partition("=")
+        key = key.lower()
+        if option == "-c" and _GIT_CODE_PATH_KEY_RE.fullmatch(key) and setting.lower() not in _GIT_HARMLESS_CODE_VALUES:
+            reasons.append(f"-c {key}")
+        elif option == "--config-env" and (_GIT_CODE_PATH_KEY_RE.fullmatch(key) or _GIT_PROGRAM_KEY_RE.fullmatch(key)):
+            reasons.append(f"--config-env {key}")
+        elif option == "--exec-path" and value:
+            reasons.append("--exec-path")
+    return _git_config_code_result(reasons) if reasons else None
+
+
+def _git_config_env_reasons(command: str) -> "List[str]":
+    reasons = []
+    for match in _GIT_CONFIG_ENV_RE.finditer(command):
+        name, value = match.group(0).split("=", 1)[0], match.group(1).strip("\"'").lower()
+        if name.startswith("GIT_CONFIG_KEY_"):
+            if _GIT_CODE_PATH_KEY_RE.fullmatch(value) or _GIT_PROGRAM_KEY_RE.fullmatch(value):
+                reasons.append(f"{name}={value}")
+        elif value != "/dev/null":
+            reasons.append(name)
+    return reasons
+
+
+def injects_git_config(command: str) -> bool:
+    """True when *command* sets a ``GIT_CONFIG_*`` variable that can point git at code."""
+    return bool(_git_config_env_reasons(command))
+
+
+def git_under_injected_config(command: str) -> "Optional[MutativeResult]":
+    """Sign *command* when it runs git after an earlier command of its chain injected git configuration."""
+    if _git_global_options(_peel_wrapper_readings(command)[0][0]) is None:
+        return None
+    return _git_config_code_result(["GIT_CONFIG_* set earlier in the chain"])
+
+
+def _git_config_code_result(reasons: "List[str]") -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="git-config-code",
+        cli_family="git",
+        confidence="high",
+        reason=f"git runs code its configuration points at ({', '.join(reasons)})",
+    )
 
 
 def _unquote_single_word(command: str) -> str:
@@ -6622,6 +8611,38 @@ def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
     return command, False
 
 
+_JS_RUNTIME_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "deno": frozenset({"-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--preload"}),
+    "bun": frozenset({
+        "--cwd", "--env-file", "--config", "-c", "--tsconfig-override", "--port", "-r", "--preload", "--require",
+    }),
+}
+_JS_RUNTIME_SCRIPT_RE = _re.compile(r"[^\s]*(?:/|://)[^\s]*|[^\s]+\.(?:[mc]?[jt]s|[jt]sx)")
+
+
+def _js_runtime_script(runtime: str, arguments: List[str]) -> Optional[str]:
+    """The file ``deno [run]`` or ``bun [run]`` executes from *arguments*, or None for any other subcommand."""
+    value_flags = _JS_RUNTIME_SCRIPT_VALUE_FLAGS[runtime]
+    positionals: List[str] = []
+    skip_value = False
+    for token in arguments:
+        if skip_value:
+            skip_value = False
+        elif token in _INLINE_CODE_MAP[runtime]:
+            return None
+        elif token in value_flags:
+            skip_value = True
+        elif not token.startswith("-"):
+            positionals.append(token)
+            if token != "run" or len(positionals) > 1:
+                break
+    if positionals[:1] == ["run"]:
+        positionals = positionals[1:]
+    if positionals and _JS_RUNTIME_SCRIPT_RE.fullmatch(positionals[0]):
+        return positionals[0]
+    return None
+
+
 def _resolve_script_argument(
     base_cmd: str, semantics: "CommandSemantics",
 ) -> "Optional[Tuple[str, str]]":
@@ -6631,7 +8652,8 @@ def _resolve_script_argument(
 
     * ``<interpreter> <script-file>`` -- the first positional argument after a
       known interpreter, whose lane (``"python"`` or ``"shell"``) is decided by
-      the interpreter, not the filename.
+      the interpreter, not the filename; ``deno``/``bun`` count only a
+      file-shaped positional (``_js_runtime_script``), and ``R`` only ``CMD BATCH``.
     * ``./script`` / ``path/to/script`` -- a direct executable invocation whose
       lane is inferred from the file extension via ``_SHEBANG_EXT_LANES``.
 
@@ -6649,22 +8671,14 @@ def _resolve_script_argument(
             lane = "code"
         else:
             lane = "shell"
-        defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(base_cmd, frozenset())
-        # Walk the args (original casing) and return the first true positional
-        # -- the script file.  Standalone interpreter switches (-u, -O, -x, ...)
-        # are skipped; flags that consume the next token as inline code or a
-        # module name (-c, -m, -e, ...) mean there is NO script file, so we
-        # defer to the inline path / verb scanner by returning None.  The stdin
-        # sentinel "-" likewise defers (heredoc path owns it).
-        for token in raw_tokens[1:]:
-            if token == "-":
-                return None
-            if token in defer_flags:
-                return None
-            if token.startswith("-"):
-                continue
-            return (token, lane)
-        return None
+        path = script_positional(base_cmd, raw_tokens[1:])
+        return (path, lane) if path else None
+    if base_cmd in _JS_RUNTIME_SCRIPT_VALUE_FLAGS:
+        path = _js_runtime_script(base_cmd, raw_tokens[1:])
+        return (path, "code") if path else None
+    if base_cmd == "r" and [token.upper() for token in raw_tokens[1:3]] == ["CMD", "BATCH"]:
+        path = next((token for token in raw_tokens[3:] if not token.startswith("-")), None)
+        return (path, "code") if path else None
 
     # Direct ``./script`` or ``path/script.ext`` invocation: the executable
     # token IS the script.  Use the original-case token so the path resolves
@@ -7068,7 +9082,8 @@ def _read_script_content(
     the surrounding chain), else against the process cwd -- the previous,
     hook-cwd-only behavior.  This is what lets ``cd /repo && node build.mjs``
     find ``build.mjs`` under ``/repo`` instead of the Gaia install dir.  An
-    absolute path is unaffected.
+    absolute path is unaffected, and a leading ``~`` is the home directory the
+    shell expands it to.
 
     Returns ``None`` when the path cannot be resolved to a readable regular
     file -- the caller treats that as the conservative (mutative) case, because
@@ -7078,7 +9093,7 @@ def _read_script_content(
     """
     import os
 
-    resolved = path
+    resolved = path = os.path.expanduser(path)
     if not os.path.isabs(path):
         base = cwd if cwd is not None else os.getcwd()
         resolved = os.path.join(base, path)
@@ -7204,21 +9219,378 @@ def _script_honored_simulation_flag(
     return None
 
 
-_NODE_PRELOAD_FLAGS: FrozenSet[str] = frozenset({"-r", "--require", "--import"})
+_PRELOAD_FLAGS: Dict[str, FrozenSet[str]] = {
+    "node": frozenset({"-r", "--require", "--import", "--loader", "--experimental-loader"}),
+    "bun": frozenset({"-r", "--preload", "--require"}),
+    "deno": frozenset({"--preload"}),
+}
+_NODE_PRELOAD_FLAGS = _PRELOAD_FLAGS["node"]
 
 
-def _node_preload_values(args: "List[str]") -> "List[str]":
-    """The modules node loads before its entry point (``-r x``, ``--require=x``, ``--import x``)."""
+def _flag_values(args: "List[str]", flags: "FrozenSet[str]") -> "List[str]":
+    """The values *flags* take in *args*, spaced (``-r x``), with ``=`` or attached to a short flag (``-rx``)."""
     values = []
     for index, token in enumerate(args):
         flag, attached, value = token.partition("=")
-        if flag not in _NODE_PRELOAD_FLAGS:
-            continue
-        if attached:
-            values.append(value)
-        elif index + 1 < len(args):
-            values.append(args[index + 1])
+        if flag in flags:
+            values.append(value if attached else (args[index + 1] if index + 1 < len(args) else ""))
+        elif token[:2] in flags and not token.startswith("--") and len(token) > 2:
+            values.append(token[2:])
     return values
+
+
+def _node_preload_values(args: "List[str]") -> "List[str]":
+    """The modules node loads before its entry point, in every spelling of its preload flags."""
+    return _flag_values(args, _NODE_PRELOAD_FLAGS)
+
+
+def _foreign_code_result(reason: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="foreign-code",
+        cli_family="interpreter",
+        confidence="high",
+        reason=f"{reason} -- code the screen did not read, requiring approval",
+        rule="sign.foreign-code",
+    )
+
+
+_LUA_PROGRAM_RE = re.compile(r"lua(?:jit)?[\d.]*")
+_PYTHON_MODULE_SUFFIXES: FrozenSet[str] = frozenset({".py", ".pyc", ".pyw", ".so", ".pyd"})
+
+
+def _check_interpreter_loads(
+    base_cmd: str, semantics: "CommandSemantics", cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge the code an interpreter's own flags load before the code it is given; what it cannot read asks."""
+    args = semantics.tokens[1:]
+    for preload in _flag_values(args, _PRELOAD_FLAGS.get(base_cmd, frozenset())):
+        result = detect_mutative_command(f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1)
+        if result.is_mutative:
+            return result
+    if base_cmd == "deno":
+        return _deno_module_map(args, cwd)
+    if _LUA_PROGRAM_RE.fullmatch(base_cmd):
+        tokens = iter(args)
+        for token in tokens:
+            if token.startswith("-l"):
+                return _foreign_code_result(f"{base_cmd} {token} requires a module before the code")
+            if token == "-e":
+                next(tokens, None)
+            elif not token.startswith("-"):
+                break
+    if base_cmd in ("r", "rscript") and _flag_values(args, frozenset({"-f", "--file"})):
+        return _foreign_code_result(f"{base_cmd} --file runs another file")
+    auto_loaded = _AUTO_LOAD_CHECKS.get(base_cmd)
+    if auto_loaded is not None:
+        result = auto_loaded(args, cwd, _depth)
+        if result is not None:
+            return result
+    return _python_local_module_run(base_cmd, args, cwd, _depth)
+
+
+def _bunfig_loads(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Judge the preloads of the bunfig.toml bun reads: the one named, else the cwd's, and the user's global one."""
+    base = Path(cwd or Path.cwd())
+    named = [base / Path(value).expanduser() for value in _flag_values(args, frozenset({"-c", "--config"}))]
+    user_dir = os.environ.get("XDG_CONFIG_HOME") or os.environ.get("HOME") or str(Path.home())
+    for config in (*(named or [base / "bunfig.toml"]), Path(user_dir, ".bunfig.toml")):
+        if not config.is_file():
+            continue
+        if tomllib is None:
+            return _foreign_code_result(f"bun config '{config}' needs a TOML reader this Python lacks")
+        try:
+            table = tomllib.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _foreign_code_result(f"bun config '{config}' cannot be read")
+        if _config_values(table, "plugins"):
+            return _foreign_code_result(f"bun config '{config}' loads plugins")
+        for preload in _config_values(table, "preload"):
+            if not isinstance(preload, str):
+                return _foreign_code_result(f"bun config '{config}' preloads {preload!r}")
+            result = detect_mutative_command(f"node {shlex.quote(preload)}", cwd=str(config.parent), _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+    return None
+
+
+def _config_values(table: object, key: str) -> list:
+    """Every value *key* holds at any depth of a parsed config table, a list flattened to its items."""
+    if not isinstance(table, dict):
+        return []
+    found: list = []
+    for name, value in table.items():
+        if name == key:
+            found.extend(value if isinstance(value, list) else [value])
+        else:
+            found.extend(_config_values(value, key))
+    return found
+
+
+def _node_env_files(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Ask when a ``--env-file`` node reads sets a NODE_OPTIONS that loads code, or cannot be read."""
+    base = Path(cwd or Path.cwd())
+    for flag in ("--env-file", "--env-file-if-exists"):
+        for value in _flag_values(args, frozenset({flag})):
+            path = base / Path(value).expanduser()
+            if flag == "--env-file-if-exists" and not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                return _foreign_code_result(f"node {flag} '{value}' cannot be read")
+            for line in lines:
+                name, assigned, option = line.strip().removeprefix("export ").partition("=")
+                if assigned and name.strip() == "NODE_OPTIONS" and _node_options_load_code(option.strip().strip("'\"")):
+                    return _foreign_code_result(f"node {flag} '{value}' sets NODE_OPTIONS={option.strip()}")
+    return None
+
+
+def _r_startup_files(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Ask when R starts from a ./.Rprofile, or a ./.Renviron that names startup code or cannot be read."""
+    base = Path(cwd or Path.cwd())
+    if not {"--vanilla", "--no-init-file"} & set(args) and (base / ".Rprofile").exists():
+        return _foreign_code_result("R runs ./.Rprofile before the code")
+    environ = base / ".Renviron"
+    if {"--vanilla", "--no-environ"} & set(args) or not environ.exists():
+        return None
+    try:
+        lines = environ.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return _foreign_code_result("R reads ./.Renviron, which cannot be read")
+    names = _CODE_INJECTING_ENVIRONMENT["r"][1]
+    if any(names.fullmatch(line.partition("=")[0].strip()) for line in lines if "=" in line):
+        return _foreign_code_result("./.Renviron points R at a startup file")
+    return None
+
+
+def _ruby_requires(args: "List[str]", cwd: "Optional[str]", _depth: int) -> "Optional[MutativeResult]":
+    """Judge each ``-r`` feature ruby loads from a path or a ``-I`` directory like the script it is."""
+    base = Path(cwd or Path.cwd())
+    load_dirs = [base / Path(value).expanduser() for value in _flag_values(args, frozenset({"-I"}))]
+    for feature in _flag_values(args, frozenset({"-r", "--require"})):
+        is_path = feature.startswith((".", "/", "~"))
+        for directory in [base] if is_path else load_dirs:
+            stem = directory / Path(feature).expanduser()
+            found = next((p for p in (stem, Path(f"{stem}.rb"), Path(f"{stem}.so")) if p.is_file()), None)
+            if found is None and not is_path:
+                continue
+            if found is not None and found.suffix == ".so":
+                return _foreign_code_result(f"ruby -r {feature} loads a compiled extension")
+            result = detect_mutative_command(f"ruby {shlex.quote(str(found or stem))}", cwd=cwd, _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+            break
+    return None
+
+
+# The configuration each interpreter loads without being asked to on the
+# command line, judged before any inline code or script it is given.
+_AUTO_LOAD_CHECKS: "Dict[str, Callable[[List[str], Optional[str], int], Optional[MutativeResult]]]" = {
+    "bun": _bunfig_loads,
+    "node": _node_env_files,
+    "r": _r_startup_files,
+    "rscript": _r_startup_files,
+    "ruby": _ruby_requires,
+}
+
+
+def _python_skips_local_directory(command: str) -> bool:
+    """True when ``-I`` or ``-P`` keeps the cwd and the script's directory off Python's ``sys.path``."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    start = next((i for i, word in enumerate(words) if program_identity(word).lower() in _PYTHON_INTERPRETERS), None)
+    if start is None:
+        return False
+    tokens = iter(words[start + 1:])
+    for token in tokens:
+        if token in _PYTHON_OPTION_VALUE_FLAGS:
+            next(tokens, None)
+            continue
+        if token.startswith("--"):
+            continue
+        if not token.startswith("-") or token == "-":
+            return False
+        switches, value_letter = re.match(r"-([^cmWX]*)([cmWX]?)", token).groups()
+        if {"I", "P"} & set(switches):
+            return True
+        if value_letter in ("c", "m"):
+            return False
+    return False
+
+
+def _deno_module_map(args: "List[str]", cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    """Ask when deno resolves modules through an import map, given directly or inside a config file."""
+    if _flag_values(args, frozenset({"--import-map"})):
+        return _foreign_code_result("deno resolves modules through an import map")
+    configs = _flag_values(args, frozenset({"-c", "--config"}))
+    if not configs and "--no-config" not in args:
+        configs = _discovered_deno_config(Path(cwd or Path.cwd()))
+    for value in configs:
+        try:
+            config = json.loads(Path(cwd or Path.cwd(), Path(value).expanduser()).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _foreign_code_result(f"deno config '{value}' cannot be read as JSON")
+        if not isinstance(config, dict) or {"imports", "scopes", "importMap"} & config.keys():
+            return _foreign_code_result(f"deno config '{value}' maps module specifiers")
+    return None
+
+
+def _discovered_deno_config(directory: Path) -> "List[str]":
+    """The deno.json or deno.jsonc deno finds in *directory* or its nearest parent when no config is named."""
+    for folder in (directory, *directory.parents):
+        for name in ("deno.json", "deno.jsonc"):
+            if (folder / name).is_file():
+                return [str(folder / name)]
+    return []
+
+
+def _local_python_module(name: str, directory: Path) -> "Optional[Path]":
+    """The file or package *name* resolves to in *directory*, a compiled file (``.so``, ``.pyc``, ``__pycache__``) ahead of the source Python may skip for it."""
+    package = directory / name
+    if package.is_dir():
+        return package
+    candidates = [
+        candidate for candidate in sorted(directory.glob(f"{name}.*"))
+        if candidate.suffix in _PYTHON_MODULE_SUFFIXES and candidate.name.split(".")[0] == name
+    ]
+    candidates += sorted((directory / "__pycache__").glob(f"{name}.*.pyc"))
+    compiled = [candidate for candidate in candidates if candidate.suffix != ".py"]
+    return (compiled or candidates or [None])[0]
+
+
+def _python_local_module_run(
+    base_cmd: str, args: "List[str]", cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge ``python -m <module>`` when the module is a file in the working directory, which Python runs first."""
+    if base_cmd not in _PYTHON_INTERPRETERS:
+        return None
+    tokens = iter(args)
+    for token in tokens:
+        if token.startswith("-m"):
+            module = token[2:] or next(tokens, "")
+            break
+        if token in _PYTHON_OPTION_VALUE_FLAGS:
+            next(tokens, None)
+        elif token == "-c" or not token.startswith("-"):
+            return None
+    else:
+        return None
+    local = _local_python_module(module.split(".")[0], Path(cwd or Path.cwd()))
+    if local is None:
+        return None
+    if local.suffix == ".py" and "." not in module:
+        return detect_mutative_command(f"python3 {shlex.quote(str(local))}", cwd=cwd, _depth=_depth + 1)
+    return _foreign_code_result(f"python -m {module} runs {local}")
+
+
+def _python_foreign_module(
+    code: str, directory: "Optional[Path]", family: str, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge the modules *code* loads from *directory* (None: off ``sys.path``): a module file is read like a script."""
+    if _loaded_modules is None:
+        return None
+    names, unnamed = _loaded_modules(code)
+    if unnamed:
+        return _foreign_code_result(
+            "Python loads a file by relative import, runpy.run_path, a site directory or a changed sys.path",
+        )
+    if directory is None:
+        return None
+    for name in sorted(names):
+        local = _local_python_module(name, directory)
+        if local is None:
+            continue
+        if local.suffix != ".py":
+            return _foreign_code_result(f"Python imports '{name}' from {local}")
+        result = detect_mutative_command(f"python3 {shlex.quote(str(local))}", cwd=cwd, _depth=_depth + 1)
+        if result.is_mutative:
+            return result
+    return None
+
+
+# Environment variables that make a program load code before or instead of
+# what its command line shows, keyed by the program they reach.
+_CODE_INJECTING_ENVIRONMENT: "Dict[str, Tuple[re.Pattern[str], re.Pattern[str]]]" = {
+    "node": (re.compile(r"node"), re.compile(r"NODE_OPTIONS")),
+    "python": (re.compile(r"python[\d.]*"), re.compile(r"PYTHONSTARTUP|PYTHONPATH")),
+    "lua": (_LUA_PROGRAM_RE, re.compile(r"LUA_INIT(?:_\d+_\d+)?")),
+    "r": (re.compile(r"r|rscript"), re.compile(r"R_(?:PROFILE|ENVIRON)(?:_USER)?")),
+    "git": (
+        re.compile(r"git"),
+        re.compile(r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|EXTERNAL_DIFF|ASKPASS|PROXY_COMMAND)"),
+    ),
+}
+_ASSIGNMENT_WORD_RE = re.compile(r"([A-Za-z_]\w*)=(.*)", re.DOTALL)
+
+
+def code_injecting_assignments(command: str) -> "Tuple[Tuple[str, str, str], ...]":
+    """Every ``(program, name, value)`` assignment in *command* that injects code into a program, wherever it is set."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ()
+    found = []
+    for word in words:
+        match = _ASSIGNMENT_WORD_RE.fullmatch(word)
+        if match is None:
+            continue
+        for program, (_, names) in _CODE_INJECTING_ENVIRONMENT.items():
+            if names.fullmatch(match.group(1)):
+                found.append((program, match.group(1), match.group(2)))
+    return tuple(found)
+
+
+def runs_under_injected_environment(
+    command: str, assignments: "Tuple[Tuple[str, str, str], ...]", cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """The verdict for *command* when it runs a program one of *assignments* injects code into, or None."""
+    if not assignments:
+        return None
+    programs = set()
+    for reading in _peel_wrapper_readings(command)[0]:
+        try:
+            words = shlex.split(reading)
+        except ValueError:
+            continue
+        if words:
+            programs.add(program_identity(words[0]).lower())
+    for program, name, value in assignments:
+        pattern = _CODE_INJECTING_ENVIRONMENT[program][0]
+        if not value or not any(pattern.fullmatch(candidate) for candidate in programs):
+            continue
+        if program == "git":
+            if value.lower() in _GIT_HARMLESS_CODE_VALUES:
+                continue
+            result = detect_mutative_command(value, cwd=cwd, _depth=_depth + 1)
+            if result.is_mutative:
+                return result
+        elif name == "NODE_OPTIONS":
+            if _node_options_load_code(value):
+                return _foreign_code_result(f"NODE_OPTIONS={value} preloads code into node")
+        elif name != "PYTHONPATH" or _pythonpath_is_writable(value, cwd):
+            return _foreign_code_result(f"{name} makes {program} load {value}")
+    return None
+
+
+def _node_options_load_code(value: str) -> bool:
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return True
+    return "$" in value or "`" in value or bool(_node_preload_values(words))
+
+
+def _pythonpath_is_writable(value: str, cwd: "Optional[str]") -> bool:
+    """True unless every PYTHONPATH entry is an existing directory this process cannot write."""
+    for entry in value.split(os.pathsep):
+        path = Path(cwd or Path.cwd(), Path(entry).expanduser())
+        if not entry or not path.is_dir() or os.access(path, os.W_OK):
+            return True
+    return False
 
 
 # Test-runner options that load no code, checked against the Node CLI and
@@ -7280,6 +9652,45 @@ def sets_node_options(command: str) -> bool:
     return bool(_NODE_OPTIONS_ASSIGNMENT_RE.search(command))
 
 
+_PACKAGE_INPUT_TOKEN_RE = re.compile(r"(?:^|/)(?:package\.json|node_modules)(?:/|$)")
+_PACKAGE_INPUT_READERS: FrozenSet[str] = frozenset({
+    "cat", "grep", "egrep", "fgrep", "rg", "head", "tail", "ls", "stat", "wc", "diff",
+    "jq", "less", "more", "file", "test", "[", "tree", "du", "realpath", "readlink",
+    "sha256sum", "md5sum", "echo", "printf",
+})
+_GIT_PACKAGE_INPUT_READS: FrozenSet[str] = frozenset({
+    "diff", "show", "log", "blame", "status", "ls-files", "cat-file", "grep",
+    "rev-parse", "ls-tree", "describe", "shortlog", "check-ignore",
+})
+_PACKAGE_SCRIPT_RUNNERS: FrozenSet[str] = frozenset({"npm", "bun", "pnpm", "yarn", "npx", "bunx", "pnpx"})
+
+
+def rewrites_package_inputs(command: str) -> bool:
+    """True when *command* names package.json or a node_modules path as anything but a read.
+
+    A script run is classified from package.json and node_modules as they are
+    when the whole command is classified; a chain stage that rewrites either one
+    changes what the later run executes. The test is deliberately by exclusion
+    (a named reader is free, any other command naming the file is not): a
+    writer nobody listed still counts. It does not see a stage that rewrites
+    the tree without naming the file (``git checkout <branch>``).
+    """
+    semantics = analyze_command(command)
+    if not any(_PACKAGE_INPUT_TOKEN_RE.search(token) for token in semantics.tokens[1:]):
+        return False
+    if semantics.base_cmd in _PACKAGE_INPUT_READERS:
+        return False
+    if semantics.base_cmd == "git":
+        subcommand = semantics.non_flag_tokens[0] if semantics.non_flag_tokens else ""
+        return subcommand not in _GIT_PACKAGE_INPUT_READS
+    return True
+
+
+def runs_package_script(command: str) -> bool:
+    """True when *command* is a package manager or local runner whose code package.json or node_modules decides."""
+    return analyze_command(command).base_cmd in _PACKAGE_SCRIPT_RUNNERS
+
+
 def node_test_under_node_options(command: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
     """The T3 verdict for a ``node --test`` suite run that NODE_OPTIONS reaches, or None.
 
@@ -7332,13 +9743,6 @@ def _check_script_file(
     """
     if heredoc_program(command) is not None:
         return None
-    if base_cmd == "node":
-        for preload in _node_preload_values(semantics.tokens[1:]):
-            result = detect_mutative_command(
-                f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1,
-            )
-            if result.is_mutative:
-                return result
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
@@ -7417,7 +9821,7 @@ def _check_script_file(
     # dispatcher and re-dispatch to `gaia <args...>` classification. Returns None
     # for any non-dispatcher script, so ordinary analysis continues.
     gaia_result = _check_gaia_cli_dispatcher(
-        script_path, content, semantics, family, _depth=_depth,
+        script_path, content, semantics, family, _depth=_depth, cwd=cwd,
     )
     if gaia_result is not None:
         return gaia_result
@@ -7449,12 +9853,10 @@ def _check_script_file(
         )
 
     if lane == "python" and _analyze_python_inline is not None:
-        ast_result = _analyze_python_inline(
-            content,
-            argv_is_mutative=lambda argv: _argv_command_is_mutative(
-                argv, cwd=cwd, _depth=_depth + 1,
-            ),
-        )
+        def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
+            return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
+
+        ast_result = _analyze_python_inline(content, argv_is_mutative=argv_is_mutative)
         if ast_result.is_dangerous:
             return MutativeResult(
                 is_mutative=True,
@@ -7467,19 +9869,34 @@ def _check_script_file(
                     f"({ast_result.category})"
                 ),
             )
-        if not ast_result.parse_failed:
+        if ast_result.parse_failed:
+            return _unparsed_code(family, f"Python script '{script_path}'")
+        script_dir = Path(cwd or Path.cwd(), Path(script_path).expanduser()).parent
+        if _python_skips_local_directory(command):
+            script_dir = None
+        foreign = _python_foreign_module(content, script_dir, family, cwd, _depth)
+        if foreign is not None:
+            return foreign
+        if _runs_code_string(content):
             return MutativeResult(
-                is_mutative=False,
-                category=CATEGORY_READ_ONLY,
-                verb="script-file",
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="dynamic-code",
                 cli_family=family,
-                confidence="medium",
-                reason=(
-                    f"Python script '{script_path}' has no mutative invocation "
-                    f"(AST analysis)"
-                ),
+                confidence="high",
+                reason=f"Python script '{script_path}' hands a string to eval/exec/compile",
+                rule="sign.foreign-code",
             )
-        # parse_failed -> fall through to the shell/regex lane below.
+        if not _parse_finds_no_effect(content, argv_is_mutative):
+            return _uncatalogued_python_effect(family, f"Python script '{script_path}'")
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="script-file",
+            cli_family=family,
+            confidence="medium",
+            reason=f"Python script '{script_path}' has no mutative invocation (AST analysis)",
+        )
 
     # JavaScript family (node / .js / .mjs / .cjs): lex the source so comments
     # (``//``, ``/* */``) and string / template-literal CONTENTS are removed
@@ -7492,9 +9909,21 @@ def _check_script_file(
     if lane == "code" and _spec_for_script is not None:
         spec = _spec_for_script(base_cmd, script_path)
         if spec is not None:
-            return _classify_source_with_lexer(
+            entry_stripped = _strip_source(content, spec)
+            entry_result = _classify_source_with_lexer(
                 content, script_path, family, spec, cwd=cwd, _depth=_depth + 1,
+                stripped=entry_stripped,
             )
+            if entry_result.is_mutative:
+                return entry_result
+            if spec.name != "javascript":
+                if _prints_literals_only(entry_stripped.exec_view):
+                    return entry_result
+                return _unparsed_code(family, f"Script '{script_path}'")
+            closure_result = _classify_js_import_closure(
+                script_path, entry_stripped, family, spec, cwd=cwd, _depth=_depth + 1,
+            )
+            return closure_result if closure_result is not None else entry_result
 
     # "code" lane (non-shell source: ruby/perl/php) suppresses camelCase
     # subcommand splitting so language identifiers are not read as CLI verbs;
@@ -7503,10 +9932,13 @@ def _check_script_file(
     # relative script/npm-run resolves against the SAME directory the outer
     # script was read from, not the hook's own cwd (see _classify_script_
     # content_by_regex's docstring).
-    return _classify_script_content_by_regex(
+    regex_result = _classify_script_content_by_regex(
         content, script_path, family, from_source_code=(lane == "code"),
         cwd=cwd, _depth=_depth + 1,
     )
+    if regex_result.is_mutative or base_cmd not in _UNPARSED_CODE_INTERPRETERS or _prints_literals_only(content):
+        return regex_result
+    return _unparsed_code(family, f"Script '{script_path}'")
 
 
 # A process inherits the script's stdin, so an interpreter started without a
@@ -7542,9 +9974,9 @@ def _argv_command_is_mutative(
     argv: Tuple[str, ...], cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> bool:
     """Judge what a script's literal argv runs, as the exec-sink lane does."""
-    if _argv_runs_unnamed_program(argv):
-        return True
     command = shlex.join(argv)
+    if _argv_runs_unnamed_program(argv) or _git_config_programs(command):
+        return True
     if _is_blocked_command is not None and _is_blocked_command(command).is_blocked:
         return True
     return detect_mutative_command(command, cwd=cwd, _depth=_depth).is_mutative
@@ -7553,6 +9985,7 @@ def _argv_command_is_mutative(
 def _classify_source_with_lexer(
     content: str, script_path: str, family: str, spec,
     cwd: "Optional[str]" = None, _depth: int = 0,
+    stripped=None, screen_blocked: bool = True,
 ) -> MutativeResult:
     """Classify lexed non-shell source (currently the JS family) by real effect.
 
@@ -7598,14 +10031,21 @@ def _classify_source_with_lexer(
     guard already applied to camelCase tokens.
 
     The two views share newline positions, so their line lists stay aligned.
+
+    ``stripped`` lets a caller that already lexed *content* share the views.
+    ``screen_blocked=False`` skips step 1, which dominates the cost per line
+    and cannot fire on valid JS; the import-closure walk uses it for imported
+    modules to stay inside the hook's latency budget.
     """
-    stripped = _strip_source(content, spec)
+    if stripped is None:
+        stripped = _strip_source(content, spec)
     verb_lines = stripped.verb_view.splitlines()
     exec_lines = stripped.exec_view.splitlines()
+    scan_direct = _may_mutate_directly(content, spec.name)
 
     for verb_line, exec_line in zip(verb_lines, exec_lines):
         code_line = verb_line.strip()
-        if code_line and _is_blocked_command is not None:
+        if code_line and screen_blocked and _is_blocked_command is not None:
             blocked = _is_blocked_command(code_line)
             if blocked.is_blocked:
                 return MutativeResult(
@@ -7620,7 +10060,7 @@ def _classify_source_with_lexer(
                     ),
                 )
 
-        if code_line:
+        if code_line and scan_direct:
             direct = _scan_direct_mutation(code_line, spec.name)
             if direct is not None:
                 label, category = direct
@@ -7658,6 +10098,8 @@ def _classify_source_with_lexer(
                     ),
                 )
 
+    if spec.name == "javascript" and _js_hidden_effect(stripped.exec_view, stripped.verb_view):
+        return _js_hidden_effect_result(family, f"Script '{script_path}'")
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
@@ -7666,6 +10108,266 @@ def _classify_source_with_lexer(
         confidence="medium",
         reason=f"Script '{script_path}' has no mutative or blocked line",
     )
+
+
+# A node run executes its entry's whole local import closure, so a write in an
+# imported module is as much a write of the run as one inlined in the entry.
+# Both bounds exist to keep the hook fast and the walk finite; reaching either
+# is a failure to prove the closure write-free, so it is retained (T3), never
+# released.  Bare package specifiers (node_modules) are not followed.
+_JS_IMPORT_CLOSURE_MAX_FILES = 100
+_JS_IMPORT_CLOSURE_MAX_DEPTH = 16
+
+_JS_STRING_SLOT = r"""(?P<quote>[`'"])(?P<spec>[^`'"\n]*)(?P=quote)"""
+_JS_IMPORT_SYNTAX_RES: Tuple["_re.Pattern", ...] = (
+    _re.compile(r"""\b(?:import|export)\b[^'"`;()]*?\bfrom\s*""" + _JS_STRING_SLOT),
+    _re.compile(r"\bimport\s*" + _JS_STRING_SLOT),
+    _re.compile(r"\b(?:require|import)\s*\(\s*" + _JS_STRING_SLOT + r"\s*[,)]"),
+)
+_JS_RELATIVE_SPECIFIER_RE = _re.compile(r"(?:\.{1,2}(?:/.*)?|/.*)", _re.DOTALL)
+_JS_IMPORT_EXTENSIONS = (".js", ".mjs", ".cjs", ".json")
+_JS_IMPORT_INDEX_FILES = tuple(f"index{ext}" for ext in _JS_IMPORT_EXTENSIONS)
+
+
+def _js_relative_specifiers(stripped) -> "List[str]":
+    """Return the literal relative import specifiers of a lexed module.
+
+    The import syntax is matched on the ``verb_view``, where comments and the
+    contents of strings are blanked, so ``"usage: require('./x')"`` and a
+    commented-out import are not imports.  The specifier is itself a string,
+    so its text is read back from the same span of the ``exec_view``.  A
+    template literal with ``${}`` is not a literal path and is not followed.
+    """
+    return [text for text in _js_literal_specifiers(stripped) if _JS_RELATIVE_SPECIFIER_RE.fullmatch(text)]
+
+
+def _js_literal_specifiers(stripped) -> "List[str]":
+    found: List[str] = []
+    for pattern in _JS_IMPORT_SYNTAX_RES:
+        for match in pattern.finditer(stripped.verb_view):
+            text = stripped.exec_view[match.start("spec"):match.end("spec")]
+            if "${" not in text:
+                found.append(text)
+    return found
+
+
+def _js_package_mapped_specifier(stripped, importer_dir: str) -> "Optional[str]":
+    """A ``#`` import or self-reference the nearest package.json maps, or any bare specifier when it is unreadable."""
+    bare = [text for text in _js_literal_specifiers(stripped) if not _JS_RELATIVE_SPECIFIER_RE.fullmatch(text)]
+    if not bare:
+        return None
+    directory = Path(importer_dir)
+    manifest = next((d / "package.json" for d in (directory, *directory.parents) if (d / "package.json").is_file()), None)
+    if manifest is None:
+        return None
+    try:
+        package = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return bare[0]
+    if not isinstance(package, dict):
+        return bare[0]
+    name = package.get("name")
+    for specifier in bare:
+        if specifier.startswith("#") and "imports" in package:
+            return specifier
+        if "exports" in package and isinstance(name, str) and specifier.split("/")[: name.count("/") + 1] == name.split("/"):
+            return specifier
+    return None
+
+
+def _first_js_file(path: str) -> "Optional[str]":
+    """The file node's LOAD_AS_FILE picks for *path*: itself, then with an extension."""
+    import os
+
+    for candidate in (path, *(path + ext for ext in _JS_IMPORT_EXTENSIONS)):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _first_js_index(directory: str) -> "Optional[str]":
+    import os
+
+    for name in _JS_IMPORT_INDEX_FILES:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _package_entry_points(manifest) -> "Optional[List[str]]":
+    """Entry paths a ``package.json`` names (``main``, string ``exports`` leaves).
+
+    ``None`` when the manifest is not the shape node reads.  Node ignores
+    ``exports`` for a relative ``require`` of a directory; its string leaves
+    are returned anyway because following an extra file only widens the
+    closure, never narrows it.
+    """
+    if not isinstance(manifest, dict):
+        return None
+    entries: List[str] = []
+    main = manifest.get("main")
+    if isinstance(main, str):
+        entries.append(main)
+    elif main is not None:
+        return None
+    pending = [manifest.get("exports")]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            if value.startswith("./"):
+                entries.append(value)
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, dict):
+            pending.extend(value.values())
+        elif value is not None:
+            return None
+    return entries
+
+
+def _resolve_js_directory(directory: str) -> "Optional[List[str]]":
+    """Files node loads for ``require(<directory>)``, or None if unprovable.
+
+    The ``package.json`` entry points come first and ``index.*`` is the
+    fallback when none resolves.  A ``package.json`` that cannot be read or
+    parsed returns None: node would follow whatever it names, and a fall back
+    to ``index.*`` could miss that file.
+    """
+    import json
+    import os
+
+    entries: List[str] = []
+    manifest_path = os.path.join(directory, "package.json")
+    if os.path.isfile(manifest_path):
+        text = _read_script_content(manifest_path)
+        if text is None:
+            return None
+        try:
+            parsed = _package_entry_points(json.loads(text))
+        except (ValueError, RecursionError):
+            return None
+        if parsed is None:
+            return None
+        entries = parsed
+    loaded: List[str] = []
+    for entry in entries:
+        entry_path = os.path.normpath(os.path.join(directory, entry))
+        hit = _first_js_file(entry_path) or _first_js_index(entry_path)
+        if hit is not None:
+            loaded.append(hit)
+    if loaded:
+        return loaded
+    index = _first_js_index(directory)
+    return [index] if index is not None else None
+
+
+def _resolve_js_relative_import(specifier: str, importer_dir: str) -> "Optional[List[str]]":
+    """Resolve a relative *specifier* to the real files node would load, or None.
+
+    A file (exact, then with an extension) wins over a directory, as in node's
+    LOAD_AS_FILE / LOAD_AS_DIRECTORY.  The extension search is applied to ES
+    imports too, so an extensionless ES import node would refuse is followed,
+    but a file node would load is never skipped.  None means no file is
+    provably the one loaded, which the caller treats as unresolved.
+    """
+    import os
+
+    base = os.path.normpath(os.path.join(importer_dir, specifier))
+    file_hit = _first_js_file(base)
+    loaded = [file_hit] if file_hit is not None else _resolve_js_directory(base)
+    if not loaded:
+        return None
+    return [os.path.realpath(path) for path in loaded]
+
+
+def _import_closure_unproven(verb: str, entry_path: str, family: str, reason: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb=verb,
+        cli_family=family,
+        confidence="low",
+        reason=(
+            f"Script '{entry_path}': {reason} -- cannot prove the import "
+            f"closure free of writes, requiring approval (conservative default)"
+        ),
+    )
+
+
+def _classify_js_import_closure(
+    entry_path: str, entry_stripped, family: str, spec,
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Classify the relative-import closure of a node entry, or None if write-free.
+
+    Every module reachable through literal ``import``/``export ... from``/
+    ``require``/``import()`` of a relative path gets the entry's direct-mutation
+    and exec-sink checks (``_classify_source_with_lexer`` without the blocked
+    screen), so a write in an imported module classifies as if inlined in the
+    entry.  A relative import that cannot be resolved or read, or a closure past
+    either bound, returns a mutative result naming the cause.  Cycles end on the
+    visited set.
+    """
+    import os
+
+    entry_abs = entry_path
+    if not os.path.isabs(entry_abs):
+        entry_abs = os.path.join(cwd if cwd is not None else os.getcwd(), entry_abs)
+    entry_abs = os.path.realpath(entry_abs)
+
+    seen = {entry_abs}
+    queue = [(entry_abs, entry_stripped, 0)]
+    while queue:
+        module, stripped, depth = queue.pop(0)
+        mapped = _js_package_mapped_specifier(stripped, os.path.dirname(module))
+        if mapped is not None:
+            return _foreign_code_result(f"'{module}' imports '{mapped}', which package.json maps to code")
+        for specifier in _js_relative_specifiers(stripped):
+            targets = _resolve_js_relative_import(specifier, os.path.dirname(module))
+            if targets is None and specifier.endswith(".json"):
+                continue
+            if targets is None:
+                return _import_closure_unproven(
+                    "js-import-unresolved", entry_path, family,
+                    f"'{module}' imports '{specifier}', which resolves to no "
+                    f"loadable file (missing, or its package.json is unreadable)",
+                )
+            for target in targets:
+                if target in seen:
+                    continue
+                if depth + 1 > _JS_IMPORT_CLOSURE_MAX_DEPTH:
+                    return _import_closure_unproven(
+                        "js-import-closure-bound", entry_path, family,
+                        f"import chain deeper than depth {_JS_IMPORT_CLOSURE_MAX_DEPTH}",
+                    )
+                if len(seen) >= _JS_IMPORT_CLOSURE_MAX_FILES:
+                    return _import_closure_unproven(
+                        "js-import-closure-bound", entry_path, family,
+                        f"import closure larger than {_JS_IMPORT_CLOSURE_MAX_FILES} files",
+                    )
+                seen.add(target)
+                if target.endswith(".json"):
+                    continue
+                imported = _read_script_content(target)
+                if imported is None or len(imported) >= _MAX_SCRIPT_READ_BYTES:
+                    return _import_closure_unproven(
+                        "js-import-unresolved", entry_path, family,
+                        f"imported module '{target}' is unreadable or over the "
+                        f"{_MAX_SCRIPT_READ_BYTES}-byte read limit",
+                    )
+                imported_stripped = _strip_source(imported, spec)
+                verdict = _classify_source_with_lexer(
+                    imported, target, family, spec, cwd=cwd, _depth=_depth,
+                    stripped=imported_stripped, screen_blocked=False,
+                )
+                if verdict.is_mutative:
+                    return replace(
+                        verdict,
+                        reason=f"Imported by '{entry_path}': {verdict.reason}",
+                    )
+                queue.append((target, imported_stripped, depth + 1))
+    return None
 
 
 def _classify_script_content_by_regex(
@@ -8090,7 +10792,7 @@ def _classify_frozen_install(
             continue
         result = _classify_package_script_body(manager, name, body, family, cwd, _depth)
         if result.is_mutative:
-            return result
+            return replace(result, rule="sign.lifecycle-body-verb")
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_UNKNOWN,
@@ -8197,7 +10899,10 @@ def _check_package_manager(
     return None
 
 
-def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:
+def _check_inline_code(
+    command: str, base_cmd: str, family: str, skip_length_check: bool = False,
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> MutativeResult:
     """Check inline code for dangerous patterns.
 
     Pipeline:
@@ -8208,11 +10913,11 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
     Layer 2 (Python only): Parse the payload with ``ast.parse`` and walk
              ``Call`` nodes.  ``import subprocess; print('hi')`` is **not**
              flagged because ``subprocess.run`` is never invoked, while
-             ``subprocess.run([...])`` is.  When parsing fails we degrade to
-             Layer 2b.
+             ``subprocess.run([...])`` is.  Python that does not parse is
+             UNKNOWN and asks.
 
-    Layer 2b: Universal regex scan for dangerous API keywords (used for non-
-             Python interpreters and as the fallback for un-parseable Python).
+    Layer 2b: Universal regex scan for dangerous API keywords (non-Python
+             interpreters).
 
     Layer 3: Heuristic safety classification (length, sensitive paths, encoding).
 
@@ -8243,10 +10948,18 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                 )
 
     # ---- Layer 2 (Python only): AST-based invocation analysis ----
+    def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
+        return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
+
+    unparsed_source = ""
+    if base_cmd in _UNPARSED_CODE_INTERPRETERS and not _prints_literals_only(
+        _inline_code_text(command, base_cmd, ""),
+    ):
+        unparsed_source = f"Inline {base_cmd} code"
     if base_cmd in _PYTHON_INTERPRETERS and _analyze_python_inline is not None:
         payload = _extract_python_payload(command, base_cmd)
         if payload:
-            ast_result = _analyze_python_inline(payload)
+            ast_result = _analyze_python_inline(payload, argv_is_mutative)
             if ast_result.is_dangerous:
                 return MutativeResult(
                     is_mutative=True,
@@ -8258,29 +10971,40 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                         f"Inline Python invokes {ast_result.detail} "
                         f"({ast_result.category})"
                     ),
+                    rule="sign.foreign-code" if ast_result.category == "DYNAMIC_CODE" else "",
                 )
-            if not ast_result.parse_failed:
-                # AST parsed cleanly and found nothing dangerous: trust it
-                # and skip the regex layer (which would false-positive on
-                # bare ``import subprocess`` or quoted strings).  Fall
-                # through to Layer 3 heuristics for length only.
-                return _layer3_length_check(
-                    command, base_cmd, family, skip_length_check,
-                )
-            # parse_failed=True -> fall through to regex layer 2b below.
+            if ast_result.parse_failed:
+                return _unparsed_code(family, "Inline Python that does not parse")
+            directory = None if _python_skips_local_directory(command) else Path(cwd or Path.cwd())
+            foreign = _python_foreign_module(payload, directory, family, cwd, _depth)
+            if foreign is not None:
+                return foreign
+            if not _parse_finds_no_effect(payload, argv_is_mutative):
+                return _uncatalogued_python_effect(family, "Inline Python")
+            return _layer3_length_check(
+                command, base_cmd, family, skip_length_check, argv_is_mutative,
+            )
 
-    # ---- Layer 2a: Exec-sink string-argument re-classification ----
-    # Shared with the script-file code lane (``_classify_script_content_by_regex``)
-    # so the two lanes cannot diverge on how a command handed to a subprocess
-    # sink is detected.  Runs before the broader Layer 2b keyword scan.  For a
-    # payload that already parsed cleanly as Python this point is unreachable
-    # (the AST block returned above), so Python behavior is unchanged.
-    sink_result = _scan_exec_sink_string_args(command, family)
+    # Layer 2a, shared with the script-file code lane so the two cannot diverge
+    # on exec sinks; a JS backtick is a template literal, not a command.
+    is_js = base_cmd in _JS_INLINE_INTERPRETERS
+    if is_js and _strip_source is not None and _spec_for_script is not None:
+        spec = _spec_for_script("node", "")
+        closure = _classify_js_import_closure(
+            str(Path(cwd or Path.cwd(), "[inline]")),
+            _strip_source(_inline_code_text(command, base_cmd, ""), spec),
+            family, spec, cwd=cwd, _depth=_depth,
+        )
+        if closure is not None:
+            return closure
+    sink_result =_scan_exec_sink_string_args(command, family, shell_backticks=not is_js, cwd=cwd, _depth=_depth)
     if sink_result is not None and sink_result.is_mutative:
         return sink_result
 
     # ---- Layer 2b: Universal dangerous API keyword patterns ----
     for pattern, label, category in _UNIVERSAL_DANGEROUS_PATTERNS:
+        if is_js and label == "backtick-exec":
+            continue
         if pattern.search(command):
             return MutativeResult(
                 is_mutative=True,
@@ -8292,7 +11016,14 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
             )
 
     # ---- Layer 3: Heuristic safety classification (suspicious patterns + length) ----
-    return _layer3_full_check(command, base_cmd, family, skip_length_check)
+    heuristic = _layer3_full_check(command, base_cmd, family, skip_length_check)
+    if heuristic.is_mutative:
+        return heuristic
+    if unparsed_source:
+        return _unparsed_code(family, unparsed_source)
+    if is_js and _js_hidden_effect(_inline_code_text(command, base_cmd, command)):
+        return _js_hidden_effect_result(family, "Inline JavaScript")
+    return heuristic
 
 
 def _layer3_full_check(
@@ -8300,9 +11031,8 @@ def _layer3_full_check(
 ) -> MutativeResult:
     """Run heuristic checks (3a suspicious patterns + 3b length).
 
-    Used as the tail for non-Python interpreters and for Python payloads
-    whose AST parse failed -- the regex layer needs the suspicious-pattern
-    fallback to keep network/encoding heuristics live.
+    Used as the tail for non-Python interpreters -- the regex layer needs the
+    suspicious-pattern fallback to keep network/encoding heuristics live.
     """
     # 3a: Check for suspicious indicators (sensitive paths, encoding, IPs)
     for pattern, label in _SUSPICIOUS_HEURISTICS:
@@ -8319,14 +11049,176 @@ def _layer3_full_check(
     return _layer3_length_check(command, base_cmd, family, skip_length_check)
 
 
+def _uncatalogued_python_effect(family: str, source: str) -> MutativeResult:
+    """The verdict for Python that parses clean of catalogued calls yet carries an effect the catalog does not name."""
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="uncatalogued-effect",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"{source} carries an effect the call catalog does not name (a network, process or "
+            "temp-file module, a write through a bound handle, a SQL write, or a name chosen at runtime)"
+        ),
+    )
+
+
+def _unparsed_code(family: str, source: str) -> MutativeResult:
+    """The verdict for code no parser here can read: its effect is unknown, so it asks."""
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_UNKNOWN,
+        verb="unparsed-code",
+        cli_family=family,
+        confidence="low",
+        reason=f"{source} is not parsed here, so what it does is unknown",
+        rule="unknown.dynamic-span",
+    )
+
+
+def _prints_literals_only(code: str) -> bool:
+    """True when every statement of ruby/perl/php *code* only prints literals (``_PRINT_ONLY_STATEMENT_RE``)."""
+    code = _re.sub(r"^\s*<\?php\b|\?>\s*$", "", code.strip())
+    return bool(code) and all(_PRINT_ONLY_STATEMENT_RE.fullmatch(part) for part in _re.split(r"[;\n]", code))
+
+
+def _js_hidden_effect(code: str, calls_view: "Optional[str]" = None) -> bool:
+    """True when JavaScript *code* (call shapes read in *calls_view*, strings blanked) reaches an unseen effect."""
+    calls = code if calls_view is None else calls_view
+    if _JS_NETWORK_MODULE_RE.search(code) or _JS_HIDDEN_CALL_RE.search(calls):
+        return True
+    if _JS_RUNTIME_MODULE_RE.search(code) or _JS_RUNTIME_EFFECT_RE.search(calls):
+        return True
+    names = {match.group(1) or match.group(2) for match in _JS_EFFECT_BINDING_RE.finditer(code)}
+    if any(_re.search(rf"\b{_re.escape(name)}\s*\[", calls) for name in names):
+        return True
+    if calls_view is None and _strip_source is not None and _spec_for_script is not None:
+        stripped = _strip_source(code, _spec_for_script("node", ""))
+        code, calls = stripped.exec_view, stripped.verb_view
+    return _js_effect_module_unproven(code, calls)
+
+
+# fs, fs/promises and child_process run free only through members named here: an fs read
+# or mkdir (free as shell mkdir is), or a sink whose literal command the exec-sink scan judges.
+_JS_FS_READ_MEMBERS: FrozenSet[str] = frozenset({
+    "mkdirSync", "mkdir", "readFileSync", "readFile", "readdirSync", "readdir", "existsSync", "exists", "statSync", "stat",
+    "lstatSync", "lstat", "accessSync", "access", "realpathSync", "realpath", "readlinkSync", "readlink",
+    "createReadStream", "opendirSync", "opendir", "constants",
+})
+_JS_CHILD_PROCESS_SINKS: FrozenSet[str] = frozenset({
+    "execSync", "execFileSync", "execFile", "spawnSync", "spawn", "exec",
+})
+_JS_EFFECT_SPECIFIER = r"""(?P<q>['"`])(?:node:)?(?P<module>fs|fs/promises|child_process)(?P=q)"""
+_JS_REQUIRE_RE = _re.compile(r"\brequire\s*(?:\?\.\s*)?\(\s*" + _JS_EFFECT_SPECIFIER + r"\s*\)")
+_JS_STATIC_IMPORT_RE = _re.compile(r"\bimport\s+([^'\"`;]+?)\s+from\s*" + _JS_EFFECT_SPECIFIER)
+_JS_ALIAS_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?$")
+_JS_DESTRUCTURE_DECLARATION_RE = _re.compile(r"\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?$")
+_JS_MEMBER_RE = _re.compile(r"\s*\.\s*(?:promises\s*\.\s*)?([A-Za-z_$][\w$]*)")
+_JS_ENV_WRITE_RE = _re.compile(
+    r"\bprocess\s*\.\s*env\s*(?:\.\s*[\w$]+|\[[^\]]*\])\s*(?:=(?!=)|\+=)"
+    r"|\bObject\s*\.\s*assign\s*\(\s*process\s*\.\s*env\b|\bdelete\s+process\s*\.\s*env\b"
+)
+
+
+def _js_effect_module_unproven(code: str, calls: str) -> bool:
+    """True when *code* binds fs, fs/promises or child_process to anything but known members, or sets ``process.env`` before a child process."""
+    if _JS_ENV_WRITE_RE.search(calls) and _re.search(r"child_process", code):
+        return True
+    aliases: "List[Tuple[str, str]]" = []
+    for match in _JS_REQUIRE_RE.finditer(code):
+        module, before = match.group("module"), code[max(0, match.start() - 400):match.start()]
+        alias = _JS_ALIAS_DECLARATION_RE.search(before)
+        destructured = _JS_DESTRUCTURE_DECLARATION_RE.search(before)
+        member = _JS_MEMBER_RE.match(code, match.end())
+        if member:
+            if not _js_member_known(member.group(1), module):
+                return True
+        elif alias:
+            aliases.append((alias.group(1), module))
+        elif destructured:
+            if not _js_destructured_members_known(destructured.group(1), module, ":"):
+                return True
+        else:
+            return True
+    for match in _JS_STATIC_IMPORT_RE.finditer(code):
+        clause, module = match.group(1), match.group("module")
+        braces = _re.search(r"\{([^{}]*)\}", clause)
+        if braces and not _js_destructured_members_known(braces.group(1), module, " as "):
+            return True
+        bare = _re.sub(r"\{[^{}]*\}|\*\s*as\b|,", " ", clause).split()
+        aliases.extend((name, module) for name in bare)
+    for name, module in aliases:
+        for use in _re.finditer(rf"(?<![\w$.]){_re.escape(name)}(?![\w$])", calls):
+            if _re.search(r"\b(?:const|let|var|import|as)\s+$", calls[max(0, use.start() - 16):use.start()]):
+                continue
+            member = _JS_MEMBER_RE.match(calls, use.end())
+            if not (member and _js_member_known(member.group(1), module)):
+                return True
+    return False
+
+
+def _js_member_known(member: str, module: str) -> bool:
+    return member in (_JS_CHILD_PROCESS_SINKS if module == "child_process" else _JS_FS_READ_MEMBERS)
+
+
+def _js_destructured_members_known(entries: str, module: str, rename: str) -> bool:
+    """True when every destructured entry is a known member; a child_process sink must keep its name for the sink scan."""
+    for entry in filter(None, (part.strip() for part in entries.split(","))):
+        key, renamed, _ = entry.partition(rename)
+        key = key.strip()
+        if key.startswith("...") or not _js_member_known(key, module) or (renamed and module == "child_process"):
+            return False
+    return True
+
+
+def _js_hidden_effect_result(family: str, source: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="js-hidden-effect",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"{source} builds code at runtime, opens a network module, indexes an effect "
+            "module by a computed name, or sends a request body"
+        ),
+    )
+
+
+def _inline_code_text(command: str, base_cmd: str, fallback: str) -> str:
+    """The code an interpreter's inline flag hands it, unquoted as the shell passes it, else *fallback*."""
+    from ..tools.shell_parser import program_argv
+
+    words = program_argv(command)
+    flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
+    for index, word in enumerate(words[:-1]):
+        if word in flags:
+            return words[index + 1]
+    return fallback
+
+
+def _long_code_judged_by_content(
+    command: str, code_portion: str, base_cmd: str,
+    argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]",
+) -> bool:
+    """True when long Python or JavaScript inline code shows no effect, so its content outranks its length."""
+    if any(pattern.search(command) for pattern, _ in _SUSPICIOUS_HEURISTICS):
+        return False
+    if base_cmd in _PYTHON_INTERPRETERS:
+        return _parse_finds_no_effect is not None and _parse_finds_no_effect(
+            _extract_python_payload(command, base_cmd), argv_is_mutative,
+        )
+    return base_cmd in _JS_INLINE_INTERPRETERS and not _JS_UNSEEN_EFFECT_RE.search(
+        _inline_code_text(command, base_cmd, code_portion),
+    )
+
+
 def _layer3_length_check(
     command: str, base_cmd: str, family: str, skip_length_check: bool,
+    argv_is_mutative: "Optional[Callable[[Tuple[str, ...]], bool]]" = None,
 ) -> MutativeResult:
-    """Run only the length heuristic (3b).
-
-    Used when AST analysis cleared a Python payload -- we trust the AST for
-    semantic safety but still flag suspiciously long inline code.
-    """
+    """Run only the length heuristic (3b), which yields to a content judgment that finds no effect."""
     code_portion = command
     cli_flag_tokens = _INLINE_CODE_MAP.get(base_cmd, frozenset())
     for flag in cli_flag_tokens:
@@ -8336,22 +11228,7 @@ def _layer3_length_check(
             break
 
     if not skip_length_check and len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
-        # AC-9 (Brief: endurecimiento-de-tests-del-security-core): the length
-        # heuristic is a *proxy* for "too complex to vet"; it must not flag
-        # inline code that is PROVABLY read-only just because it is long.  For
-        # Python payloads we re-parse the exact code and require a positive
-        # allowlist match (import + SELECT/PRAGMA + print + local assignments,
-        # no write call, no attribute/subscript assignment, no dynamic
-        # dispatch).  This is the inverse of analyze_python_inline's blocklist:
-        # a mutation never classifies as read-only, so the exemption cannot
-        # open a hole -- an AST-clean-but-mutating payload (``cur.execute(
-        # 'INSERT ...')``, ``con.commit()``) is NOT provably read-only and
-        # stays flagged.  Non-Python payloads are never exempted (no AST).
-        if (
-            base_cmd in _PYTHON_INTERPRETERS
-            and _is_provably_read_only_python is not None
-            and _is_provably_read_only_python(_extract_python_payload(command, base_cmd))
-        ):
+        if _long_code_judged_by_content(command, code_portion, base_cmd, argv_is_mutative):
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_READ_ONLY,
@@ -8359,8 +11236,8 @@ def _layer3_length_check(
                 cli_family=family,
                 confidence="medium",
                 reason=(
-                    f"Inline Python is long ({len(code_portion)} chars) but "
-                    "provably read-only (allowlisted constructs only)"
+                    f"Inline {base_cmd} code is long ({len(code_portion)} chars) "
+                    "but its content judgment finds no effect"
                 ),
             )
         return MutativeResult(

@@ -118,7 +118,6 @@ first use with mode 0700.
 |-----------------|----------------|----------------------------------------|
 | `GAIA_DATA_DIR` | `~/.gaia`      | Override the root data directory (ROOT-scoped: moves the database and every sibling directory) |
 | `GAIA_DB`       | `<root>/gaia.db` | Override the database file alone (FILE-scoped: leaves scratch, evidence and logs under the root) |
-| `GAIA_CLI_ALIASES` | unset (no aliases) | Declare your own wrappers as the CLI they wrap, e.g. `mywrapper=gh` (see below) |
 
 Precedence for the database file, highest first: **`GAIA_DB`**, then
 **`GAIA_DATA_DIR`**, then `~/.gaia/gaia.db`. `GAIA_DB` outranks `GAIA_DATA_DIR`
@@ -131,27 +130,42 @@ Setting both at *different* places prints a warning to stderr naming which one
 won; setting both at the same file is the established isolation idiom and stays
 silent. The ladder is pinned by `tests/paths/test_db_path_precedence.py`.
 
-### Declaring a wrapper as another CLI (`GAIA_CLI_ALIASES`)
+### Declaring a wrapper as another CLI (a tool row)
 
-The security hooks gate some commands by the CLI that runs them -- the
-permanent blocks (`gh repo delete`), consent anchors such as `gh workflow run`,
-`gh run rerun` and `gh pr update-branch`, and the publish-attribution guard on
-`gh pr|issue|release|api`. A wrapper you installed around a CLI (a launcher that
-pins an account, for example) runs the same subcommands under another name, so
-by default those gates do not recognize it. Gaia ships no wrapper names; declare
-yours in the environment the host (Claude Code, OpenCode) is started from:
+The security hooks judge a command by what it does and where it lands, not by
+the binary that runs it.
+
+Opening or editing your own pull request runs free for any forge CLI. Commenting,
+approving, closing, merging or retargeting asks for your signature. So does
+anything that changes production or a protected branch. A force push asks too;
+it is never refused outright.
+
+Some gates are still tied to one CLI's name: the permanent blocks
+(`gh repo delete`) and a few consent anchors, such as `gh workflow run`. A
+wrapper you installed around a CLI (a launcher that pins an account, for
+example) runs the same subcommands under another name, so those gates do not
+recognize it on their own.
+
+A user tool row in memory points them at the wrapper. Gaia ships no wrapper
+names; declare yours once, with the wrapper on PATH:
 
 ```bash
-export GAIA_CLI_ALIASES="mywrapper=gh"          # one wrapper
-export GAIA_CLI_ALIASES="mywrapper=gh,kc=kubectl" # several, comma-separated
+gaia memory add --name=user_tool_mywrapper --type=user --kind=tool \
+  --binary=mywrapper --replaces=gh \
+  --description='mywrapper pr create ...' --body='what it is and why'
 ```
 
-Each pair is `wrapper=cli`, matched against the command's base name. With the
-variable unset there is no alias. A declared wrapper is classified both as
-written and as the CLI it wraps, and the stricter verdict stands: it is blocked
-wherever that CLI is blocked, asks consent wherever that CLI asks, and never
-loses a gate of its own, so a wrong entry can only cost an extra prompt or
-block. A leading `-C <dir>` on a declared `gh` wrapper is skipped
+The hooks read every live tool row's binary and `replaces` once per process,
+matched against the command's base name. With no tool row there is no alias.
+
+A declared wrapper is also read as the CLI it wraps, and the stricter verdict
+stands. It is blocked wherever that CLI is blocked and asks wherever that CLI
+asks. A declared name the classifier already models, such as `kubectl=gh`,
+`ssh=gh` or `shred=gh`, keeps its own gates as well. Only a wrapper name the
+classifier knows nothing about also takes the wrapped CLI's free verdicts.
+The declaration belongs to you: Gaia's installer does not write it, so set it
+in your shell profile or in the `env` block of the host settings you own (for
+Claude Code, `~/.claude/settings.json`). A leading `-C <dir>` on a declared `gh` wrapper is skipped
 before the publish guard reads the subcommand. Malformed pairs are ignored. The
 hooks read the variable at start-up, so restart the host after changing it.
 Implemented in `hooks/modules/security/cli_aliases.py`; pinned by

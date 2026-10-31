@@ -40,14 +40,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from gaia.redaction import has_clear_secret, redact_text
+from gaia.redaction import carries_clear_secret, has_clear_secret, mask_clear_secrets, redact_text
 from gaia.store.writer import APPROVAL_WINDOW_MINUTES as WINDOW_MINUTES
 
-# A sealed request stores its command verbatim, because the grant is bound to
-# those bytes; a credential written into the command would be stored in clear.
 CLEAR_SECRET_REFUSAL = (
-    "the command carries a credential in clear, which the approval record would store; "
-    "pass it through an environment variable or a file and request that command instead"
+    "the request carries a credential in clear, which the approval record would store and show; "
+    "reference it instead of writing its value -- a leading assignment before the program, "
+    "GH_TOKEN=$GH_TOKEN or GH_TOKEN=$(gh auth token) -- and request that command"
 )
 
 DECISION_OPTIONS = frozenset({"approve", "reject", "details"})
@@ -293,6 +292,8 @@ def seal_request(
             scope=SCOPE_FILE_PATH,
             scope_signature=signature.to_dict(),
         )
+    if carries_clear_secret(payload):
+        raise SealError(CLEAR_SECRET_REFUSAL)
     return payload
 
 
@@ -1146,7 +1147,7 @@ def release_call(
     store.record_execution_denial(
         approval_id, HOST_DENIED_REASON, host=host, session_id=session_id or None,
         call_id=tool_use_id or None, command_fingerprint=command_fingerprint(command),
-        detail=detail or None,
+        detail=mask_clear_secrets(detail) or None,
     )
     return released
 
@@ -1198,6 +1199,7 @@ def withdraw(
     if row is not None and row.get("status") == "pending":
         if action == "expire":
             reason = EXPIRED_REASON
+        reason = mask_clear_secrets(reason)
         metadata = {key: value for key, value in (("reason", reason), ("source", source)) if value}
         transition = {"reject": store.reject, "revoke": store.revoke, "expire": store.expire}[action]
         transition(

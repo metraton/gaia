@@ -23,10 +23,15 @@ two-writer wave, end to end, is in `examples.md`.
 
 1. **A goal completes the kernel; it never repeats it.** The kernel is data
    only: it carries the turn's identity, the project and its declared workflow,
-   the read menu, a bound task's gates and the user's standing rows. The contract
+   the read menu, a bound task's gates, the user's standing rows and an index of
+   the project's standing notes (bodies open on demand). The contract
    rules reach the specialist through the `agent-protocol` skill, not the kernel.
    The goal carries what neither can: the references already opened, the
-   premise as a claim the specialist may refute, and the acceptance. What the
+   premise as a claim the specialist may refute, and the acceptance. Where they
+   change the work, it also names the rawest source, the trade's instrument, a
+   target precise enough to miss and the outside check that will show it is
+   right: a specialist born in clean context gets that depth from the goal or
+   not at all, and where they change nothing they are ceremony. What the
    goal repeats costs attention twice and drifts from the kernel the first time
    either one changes; what it omits that the kernel does not supply does not
    exist for the turn.
@@ -77,16 +82,85 @@ two-writer wave, end to end, is in `examples.md`.
 7. **A turn is sized before it starts, and is fresh or resumed by what it must
    know.** A tool-call ceiling fixed in advance, with permission to close
    partially, is what lets a turn report that it ran out; a turn that exhausts
-   its context mid-work cannot. When the previous turn was cut near its close,
-   implementing and integrating split into two turns. A turn is fresh when it
-   must not know something -- a review, a blind check -- and resumed when it
-   executes what it already knows, because rebuilding known state is pure cost.
+   its context mid-work cannot. Sizing names the model too: the lightest one
+   the turn's difficulty allows, through the Agent tool's model override, and
+   a resumed turn keeps the model it was born with. When the previous turn was
+   cut near its close, implementing and integrating split into two turns. A
+   turn is fresh when it must not know something -- a review, a blind check --
+   and resumed when it executes what it already knows, because rebuilding known
+   state is pure cost. Its acceptance names the checks that fit inside it, and
+   it declares only the runs it completed: the whole-tree suite is the shared
+   branch's CI (principle 5), never a step a turn carries forward to the next.
 
 8. **Steering in flight is a channel, not a return.** A turn heading the wrong
    way can be messaged mid-flight, continued once it closes, or replaced by a
    fresh dispatch. Waiting for its return is only one of the three, and usually
    the dearest, because the work done the wrong way meanwhile is paid for either
-   way.
+   way. A message in flight corrects direction within the acceptance the turn
+   was born with; new acceptance -- a plan change, a further check -- waits for
+   the turn to close or goes to a fresh dispatch, since a turn sized for one
+   goal exhausts its ceiling on two.
+
+## What the goal says, beyond the kernel
+
+The orchestrator's identity lists only the tokens a goal literally carries
+(`project=`, `ceiling=`, `parent_handoff_id`, the raw goal, one integration
+at a time); the craft of the rest is here.
+
+- **Acceptance as a property, not a checklist.** A checklist is satisfied by
+  its items; a property makes the specialist find the cases the goal did not
+  name, proven by literal output, never by the agent's assertion -- for a
+  "found nothing", what was searched and how, because an unproven nothing is
+  indistinguishable from not looking. The goal leaves the HOW to the
+  specialist, since the HOW is the pattern choice it was dispatched for, and is
+  written in the affirmative, because naming a forbidden behavior primes it;
+  anything ruled out arrives with the route to the same result.
+- **The premise as a claim.** The goal carries its premise as something the
+  specialist may refute, with the refutation owed back as a deliverable: a
+  competent agent executes a false premise flawlessly, and the goal is the only
+  place it can be caught.
+- **A destination for every class of rationale.** Turn reasoning to the
+  contract, change explanation to the PR body, cross-unit facts to docs, and
+  only the why the code cannot say to code, beside the declaration whose change
+  would falsify it -- a goal that rewards self-explanation without a
+  destination produces comments in proportion to its own quality.
+- **References the orchestrator already opened.** Every reference passed is
+  one it opened itself, with the same verb, the same flag, from the same
+  workspace the recipient will use -- "I saw it in a listing" has twice not
+  meant "it resolves for the specialist". A prior turn's judgment -- a spec, an
+  approved wording -- travels literally in the goal or at a reference that
+  resolves, never only in a return message, because contract rows persist
+  verdicts, not bodies. A sibling's finished contract is handed off by pointing
+  at the rows and fields that hold the evidence. The `project=` in a goal is the
+  name `gaia context project` printed for a ficha opened this session, or
+  `project=none` when the work belongs to no project.
+- **What is already measured, before an investigation.** Before dispatching
+  one, the orchestrator searches prior contract rows, memory and deposited
+  evidence for the part of the question they already answer, and passes each
+  hit as a coordinate -- the handoff id and field, the slug -- with the commit
+  or date it was measured at. A question answered twice costs a turn, and the
+  second answer can disagree with the first with no reason recorded for the
+  disagreement. Where the source changed since that measure, the goal says so,
+  and that part is measured again.
+- **A seeded agent for contract-bearing work.** A host-native agent cannot
+  finalize a contract row, so one is used only when the returned message is the
+  whole deliverable.
+- **A fan-out buys contrast; a lens is an activity.** A question that spans
+  surfaces goes to each owning specialist and comes back as one contrast. Where
+  the perspective needed is a craft rather than a surface, each lens reaches its
+  goal as the activity it performs -- red-team the diff, trace the data lineage
+  -- never as a persona, because a character yields a voice and an activity
+  yields evidence. Several blind turns on one question declare their
+  discriminators before any of them return; a conclusion shared in advance buys
+  only confirmation.
+- **A follow-up is a resume.** A resume names the contract row the turn owns
+  and follows the raw-goal rule. A question about what a specialist just did, a
+  correction, the cleanup after a Reject, a signature that stayed pending is a
+  resume of that same specialist, never a fresh dispatch; a granted T3 survives
+  the resume, so requesting and executing belong in one turn. Claude Code
+  resumes with `SendMessage` to the harness id the dispatch notice prints,
+  never a row's `agent_id`; OpenCode with the `task` tool
+  carrying `task_id`, the session id its last result or Gaia's notice printed.
 
 ## Anti-patterns
 

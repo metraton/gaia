@@ -19,24 +19,23 @@ executes the write. A dispatched subagent never promotes -- `subagent_memory_wri
 rejects `gaia memory add` from any dispatch other than `gaia-operator`,
 categorically and unapprovably (no `approval_id`, not a T3 grant). Its
 participation is to PROPOSE (a `failure_report` in its contract, or a
-`memorialize_suggestions` entry).
+`memory_delta` create proposal).
 
 ## The row: existing flags only, no new schema
 
 | Flag | Value | Why it is fixed |
 |------|-------|-----------------|
 | `--name` / `--type` | `feedback_<component>_<symptom>` / `feedback` | The slug prefix IS the type. `feedback` is the type for a post-mortem the system must remember, and it is one of `MEMORIALIZE_VALID_TYPES`, so a subagent can propose it. |
+| `--kind` | `defect` | What the row claims: Gaia failing in use. Owner gaia holds only lessons and defects, so any other kind is refused with its home. |
 | `--class` | `thread` | A defect is open work, not background knowledge. Only `class=thread` is visible to the initiative digest's query. |
 | `--status` | `carry_forward` | The digest selects `status IN ('carry_forward','open')`; `carry_forward` states the defect must reach the next session, overriding the `log` default that `feedback_*` would otherwise take. |
 | `--initiative` | `gaia_system` | The one grouping key that makes the corpus retrievable in a single query. Normalized to lowercase_snake by the writer. |
 | scope | forced to the host sentinel | `gaia_system` is in `HOST_SCOPED_INITIATIVES`, so `apply_host_scope` (`gaia/store/writer.py::apply_host_scope`) overrides whatever `--workspace` was passed and writes into the sentinel workspace `_gaia_host` instead -- the CLI still accepts `--workspace`, it just is not honored (the write reports the override: `bin/cli/memory.py::_cmd_add`'s `host_scoped_notice`). `--project`/`--project-ref` is not merely discouraged, it is REJECTED: combining it with a host-scoped initiative raises `MemoryHostScopeError` (`code=host_scope_no_project`) before any row is written. |
 | `--description` | one line, the symptom in the reader's words | Listings and the digest render `description`, not the body. |
 
-Nothing here is new schema. `initiative`, `class`, and `status` are columns
-that already exist and flags `gaia memory add` already accepts. A dedicated
-`type=defect` was rejected deliberately: it would require a migration and a
-change to the `memory.type` CHECK, while `initiative='gaia_system'` costs
-neither.
+The type stays `feedback`; the claim is carried by `kind=defect`, and the
+owner by `initiative='gaia_system'`. A bug in a product Gaia works on is not
+this shape: it is that project's `pending`.
 
 ## The body: four named fields, fixed order
 
@@ -95,7 +94,7 @@ defect from that alone. Adding the reproduction is the work promotion does.
 The anomaly's `severity` does not become a body field -- it informs whether
 the defect is worth promoting at all.
 
-**Source B -- a subagent proposal.** A `memorialize_suggestions` entry with
+**Source B -- a subagent proposal.** A `memory_delta` create proposal with
 `type: "feedback"` whose `body` already carries the four headings. The
 suggestion block carries `slug`, `type`, `class`, `description`, `body` and
 `rationale` -- it carries neither `status` nor `initiative`
@@ -110,6 +109,7 @@ The write, identical for both sources:
 gaia memory add \
   --name="feedback_<component>_<symptom>" \
   --type=feedback \
+  --kind=defect \
   --class=thread \
   --status=carry_forward \
   --initiative=gaia_system \

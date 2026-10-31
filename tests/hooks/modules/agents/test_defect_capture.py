@@ -425,6 +425,7 @@ class TestAdapterCapturesTheDefectOnTheProductionRoute:
             {
                 "process_context_updates": lambda *_a, **_k: None,
                 "process_update_contracts": lambda *_a, **_k: {},
+                "proposal_notice": lambda *_a, **_k: None,
             },
         )
 

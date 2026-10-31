@@ -192,6 +192,7 @@ bootstrap side effect -- useful for isolated testing).
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import sys
@@ -211,7 +212,10 @@ if str(_REPO_ROOT) not in sys.path:
 # from the one the envelope itself is checked against.
 from gaia.contract.validator import (  # noqa: E402
     AGENT_ID_PATTERN_TEXT,
+    LEGACY_CONCLUSION_FIELD,
     canonicalize_envelope,
+    envelope_as_read,
+    harness_written_changes,
     sanitize_envelope,
 )
 
@@ -633,9 +637,15 @@ def _write_if_valid(
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
+    from gaia.store.proposals import refusal_message
+
+    refusal = refusal_message(envelope)
+    if refusal:
+        _print_error(refusal, as_json)
+        return 1
     # What gets persisted is what got VALIDATED. Every enum in the envelope is
-    # compared normalized (agent_state upper-cased, work_phase stripped and
-    # lower-cased, verification.result lower-cased), and persisting the raw
+    # compared normalized (agent_state upper-cased, verification.result
+    # lower-cased), and persisting the raw
     # spelling instead left two spellings of one value in the database for
     # every reader downstream to reconcile. Canonicalizing here, after the
     # verdict and before the write, is the one point where the validated value
@@ -1211,6 +1221,18 @@ def cmd_init(args) -> int:
     )
 
 
+def _refused_harness_write(before: dict, after: dict, as_json: bool) -> bool:
+    """Print the refusal and return True when an agent write changed a harness-stamped path."""
+    changed = harness_written_changes(before, after)
+    if changed:
+        _print_error(
+            f"Refused: {', '.join(changed)} is harness-written -- the harness stamps it "
+            "at birth, finalize or a rescue lane, never an agent. No changes were persisted.",
+            as_json,
+        )
+    return bool(changed)
+
+
 def cmd_set(args) -> int:
     """Set a scalar field by dotted path (validate-on-write)."""
     draft_id, envelope, as_json, continuation = _load_target_draft(
@@ -1219,10 +1241,13 @@ def cmd_set(args) -> int:
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
+    before = copy.deepcopy(envelope)
     try:
         _set_nested(envelope, args.field, value)
     except ValueError as exc:
         _print_error(str(exc), as_json)
+        return 1
+    if _refused_harness_write(before, envelope, as_json):
         return 1
     return _write_if_valid(
         envelope, draft_id, as_json, mirror=True, continuation=continuation
@@ -1237,10 +1262,13 @@ def cmd_add(args) -> int:
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
+    before = copy.deepcopy(envelope)
     try:
         _append_nested(envelope, args.field, value)
     except ValueError as exc:
         _print_error(str(exc), as_json)
+        return 1
+    if _refused_harness_write(before, envelope, as_json):
         return 1
     return _write_if_valid(
         envelope, draft_id, as_json, mirror=True, continuation=continuation
@@ -1333,6 +1361,62 @@ def _other_identifier_hint(value: str) -> str:
     return "".join(hints)
 
 
+def _open_other_identifier(value: str, as_json: bool) -> Optional[tuple]:
+    """Open the row that a value names as its handoff id, harness id or
+    agent_id, through the ``contract:`` resolver of ``gaia.refs``.
+
+    Returns ``(contract_id, resume_harness_id, opened_from)``; ``opened_from``
+    says which row opened and, for a resumed turn, every link of its chain
+    with the opened one marked, as ``--harness-id`` lists them in ``links``.
+    Prints why and returns None when nothing opens.
+    """
+    from gaia.refs import Ref, RefError, resolve
+    from gaia.store.writer import ContinuationChainUnreadable, continuation_chain
+
+    try:
+        resolution = resolve(Ref("contract", "", value))
+    except RefError as exc:
+        _print_error(f"{exc}.{_other_identifier_hint(value)}", as_json)
+        return None
+    contract_id = resolution.ids.get("contract")
+    resume_id = resolution.ids.get("resume")
+    opened_from = (
+        f"opened handoff {resolution.ids.get('handoff')}, "
+        f"contract_id={contract_id or 'none'}, "
+        f"resume harness id {resume_id or 'none'} ({resolution.notes[0]})"
+    )
+    try:
+        chain = continuation_chain(contract_id)
+    except ContinuationChainUnreadable:
+        return contract_id, resume_id, f"{opened_from}; chain links unreadable"
+    if len(chain) > 1:
+        links = ", ".join(
+            f"{link.get('contract_id') or 'handoff ' + str(link.get('id'))}"
+            f"{' (opened)' if link.get('contract_id') == contract_id else ''}"
+            for link in chain
+        )
+        opened_from += f"; chain of {len(chain)} links, oldest first: {links}"
+    return contract_id, resume_id, opened_from
+
+
+def _dispatch_row(row: dict) -> dict:
+    """The dispatch columns of one row: what the turn was asked, by whom, where, and how it stands."""
+    return {
+        "handoff_id": row.get("id"),
+        "contract_id": row.get("contract_id"),
+        "agent_id": row.get("agent_id"),
+        "harness_agent_id": row.get("harness_agent_id"),
+        "agent_name": _birth_agent_name(row),
+        "project": row.get("dispatch_project"),
+        "session_id": row.get("session_id"),
+        "agent_state": row.get("agent_state"),
+        "cut_reason": row.get("cut_reason"),
+        "created_at": row.get("created_at"),
+        "description": row.get("dispatch_description"),
+        "goal": row.get("dispatch_prompt"),
+    }
+
+
 def _view_by_harness_id(args, harness_id: str) -> int:
     """Resolve and print a turn's contract by the HARNESS's per-run agent id.
 
@@ -1359,9 +1443,13 @@ def _view_by_harness_id(args, harness_id: str) -> int:
 
     as_json = bool(getattr(args, "json", False))
     links = sorted(
-        list_agent_contract_handoffs(harness_agent_id=harness_id),
+        list_agent_contract_handoffs(harness_agent_id=harness_id)
+        or list_agent_contract_handoffs(agent_id=harness_id),
         key=lambda link: (link.get("created_at") or "", link.get("id") or 0),
     )
+    if links and getattr(args, "row", False):
+        print(json.dumps(_dispatch_row(collapse_continuation_chains(links)[-1]), indent=2))
+        return 0
     if not links:
         _print_error(
             f"no contract row carries harness_agent_id={harness_id!r}. "
@@ -1377,6 +1465,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
     row = collapse_continuation_chains(links)[-1]
     contract_id = row.get("contract_id")
     envelope, source = _freshest_envelope(contract_id, row)
+    envelope = envelope_as_read(envelope)
 
     field = getattr(args, "field", None)
     if field is not None:
@@ -1456,6 +1545,40 @@ def cmd_view(args) -> int:
         return _view_by_harness_id(args, harness_id)
 
     as_json = bool(getattr(args, "json", False))
+    opened_from = None
+    requested = getattr(args, "draft_id", None)
+    if (
+        requested
+        and "." not in requested
+        and not _draft_exists(requested)
+        and _lookup_handoff_row_by_contract_id(requested) is None
+    ):
+        opened = _open_other_identifier(requested, as_json)
+        if opened is None:
+            return 1
+        contract_id, resume_id, opened_from = opened
+        print(opened_from, file=sys.stderr)
+        if not contract_id:
+            if not resume_id:
+                _print_error(f"{opened_from}: the row has no id to read it by.", as_json)
+                return 1
+            return _view_by_harness_id(args, resume_id)
+        args = argparse.Namespace(**{**vars(args), "draft_id": contract_id})
+
+    if getattr(args, "row", False):
+        contract_id = getattr(args, "draft_id", None)
+        if not contract_id:
+            _print_error("--row needs --harness-id or --contract-id.", as_json)
+            return 1
+        row = _lookup_handoff_row_by_contract_id(contract_id)
+        if row is None:
+            _print_error(f"no contract row carries contract_id={contract_id!r}.", as_json)
+            return 1
+        dispatch = _dispatch_row(row)
+        if opened_from:
+            dispatch["opened_from"] = opened_from
+        print(json.dumps(dispatch, indent=2))
+        return 0
     draft_id = _resolve_target_draft_id(args, as_json)
     if draft_id is None:
         return 1
@@ -1496,6 +1619,7 @@ def cmd_view(args) -> int:
             )
             return 1
 
+    envelope = envelope_as_read(envelope)
     field = getattr(args, "field", None)
     if field is not None:
         if not isinstance(envelope, dict):
@@ -1514,6 +1638,8 @@ def cmd_view(args) -> int:
         return 0
 
     payload = {"draft_id": draft_id, "envelope": envelope}
+    if opened_from:
+        payload["opened_from"] = opened_from
     if source != "draft":
         # Recovered from the persisted row's raw_handoff_json, not the live
         # draft file -- labelled so a consumer can tell "the in-flight
@@ -1524,6 +1650,11 @@ def cmd_view(args) -> int:
             payload["handoff_id"] = row.get("id")
             payload["agent_state"] = row.get("agent_state")
             payload["cut_reason"] = row.get("cut_reason")
+    from gaia.store.proposals import list_proposals
+
+    decisions = list_proposals(status=None, contract_id=draft_id)
+    if decisions:
+        payload["proposals"] = decisions
     print(json.dumps(payload, indent=2))
     return 0
 
@@ -1679,6 +1810,8 @@ def cmd_list(args) -> int:
         plan_task_ids=plan_task_ids,
         since=since,
         until=until,
+        text=getattr(args, "grep", None),
+        agent_name=getattr(args, "agent_name", None),
         limit=args.limit,
     )
 
@@ -1834,6 +1967,59 @@ def _finalize_worktree_scope() -> str:
     return "managed" if root is not None else "shared"
 
 
+def _work_binding(contract_id: str) -> dict:
+    """The briefs and plan task a cited evidence row must belong to: the row's brief, the brief of its plan or plan task, and the plan task inherited along its continuation chain.
+
+    The evidence table records no contract id (created_by_agent is a free-form slug), so authorship by this
+    turn cannot be read; the brief and plan task are the coordinates both tables hold.
+    """
+    from gaia.store.writer import _connect, dispatched_binding_plan_task_id_by_contract
+
+    plan_task_id = dispatched_binding_plan_task_id_by_contract(contract_id)
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT brief_id, plan_id FROM agent_contract_handoffs WHERE contract_id = ?", (contract_id,),
+        ).fetchone()
+        briefs = {row["brief_id"]} if row is not None else set()
+        plans = {row["plan_id"]} if row is not None else set()
+        if plan_task_id is not None:
+            task = con.execute("SELECT plan_id FROM tasks WHERE id = ?", (plan_task_id,)).fetchone()
+            plans.add(task["plan_id"] if task is not None else None)
+        for plan_id in plans - {None}:
+            plan = con.execute("SELECT brief_id FROM plans WHERE id = ?", (plan_id,)).fetchone()
+            briefs.add(plan["brief_id"] if plan is not None else None)
+    finally:
+        con.close()
+    tasks = {str(plan_task_id)} if plan_task_id is not None else set()
+    return {"brief_ids": frozenset(briefs - {None}), "task_ids": frozenset(tasks)}
+
+
+def _content_rejected(envelope: dict, draft_id: str, found: dict, as_json: bool) -> bool:
+    """Refuse a close whose cited commands, excerpts or evidence ids the record refutes; a row closed clean before these checks existed (no content_checks) is not checked again."""
+    from gaia.contract.content_checks import check_content
+    from gaia.evidence.store import get_evidence
+    from gaia.store.writer import agent_contract_handoff_closed_clean, agent_contract_handoff_envelope
+
+    envelope.pop("content_checks", None)
+    if agent_contract_handoff_closed_clean(draft_id) and "content_checks" not in (agent_contract_handoff_envelope(draft_id) or {}):
+        return False
+    errors, skipped = check_content(
+        envelope, found["records"], bound=bool(found["harness_agent_id"]),
+        evidence=get_evidence, binding=_work_binding(draft_id),
+    )
+    if not errors:
+        envelope["content_checks"] = {"skipped": skipped}
+        return False
+    if as_json:
+        print(json.dumps({"status": "rejected", "reason": "content_unverified", "errors": errors}))
+    else:
+        print("Rejected: the contract cites what this turn's record does not hold:", file=sys.stderr)
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+    return True
+
+
 def cmd_finalize(args) -> int:
     """Validate the draft as final AND write it to the store (T7 -- the SOLE
     idempotent writer of the agent_contract_handoffs row).
@@ -1880,32 +2066,19 @@ def cmd_finalize(args) -> int:
         _print_rejection(result, as_json=as_json)
         return 1
 
+    from gaia.contract.tool_record import stamp_harness_fields
+
+    try:
+        found = stamp_harness_fields(envelope, draft_id, worktree_scope=_finalize_worktree_scope())
+    except Exception as exc:
+        _print_error(f"finalize could not read the harness tool record: {exc}", as_json)
+        return 1
+    if _content_rejected(envelope, draft_id, found, as_json):
+        return 1
     agent_status = envelope.get("agent_status") or {}
     agent_id = agent_status.get("agent_id")
     agent_state = agent_status.get("agent_state")
     workspace = _resolve_workspace(getattr(args, "workspace", None))
-
-    # Identity coherence, made VISIBLE at the last seam before the row lands.
-    # A draft id IS ``{agent_id}.{token}`` and resolution globs on that prefix
-    # (gaia.contract.drafts._agent_of / list_draft_ids), so an envelope whose
-    # agent_id disagrees with its own file name is already unaddressable by
-    # --agent-id -- it just fails silently today. Since `gaia contract init`
-    # now mints and prints the handle, the only way to reach this state is to
-    # overwrite agent_status.agent_id after init with a different value, and a
-    # terminal row is immutable once written: refuse now rather than persist a
-    # row nothing can join back to its draft.
-    draft_agent_id = draft_id.split(".", 1)[0]
-    if agent_id and draft_agent_id and agent_id != draft_agent_id:
-        _print_error(
-            f"agent_id mismatch: the draft is keyed to {draft_agent_id!r} but "
-            f"agent_status.agent_id is {agent_id!r}. The draft id is "
-            f"'{{agent_id}}.{{token}}', so these must agree or the finalized "
-            f"row cannot be joined back to its draft. Set "
-            f"agent_status.agent_id to {draft_agent_id!r}, or run "
-            f"'gaia contract init' for a fresh draft under the id you want.",
-            as_json,
-        )
-        return 1
 
     # Closing-state floor (live finding: handoff row 10955). finalize is the
     # turn's CLEAN close -- it clears cut_reason and ends the row's life. A
@@ -1996,21 +2169,47 @@ def cmd_finalize(args) -> int:
                 print(f"Rejected: {msg}", file=sys.stderr)
             return 1
 
-    from gaia.store.writer import finalize_agent_contract_handoff
+    conclusion = envelope.get("conclusion")
+    legacy = envelope.get(LEGACY_CONCLUSION_FIELD)
+    alias_used = (
+        (not isinstance(conclusion, str) or not conclusion.strip())
+        and isinstance(legacy, str) and bool(legacy.strip())
+    )
+    if alias_used:
+        conclusion = envelope["conclusion"] = envelope.pop(LEGACY_CONCLUSION_FIELD)
+        envelope["conclusion_alias"] = LEGACY_CONCLUSION_FIELD
+        if not as_json:
+            print(
+                f"Note: {LEGACY_CONCLUSION_FIELD} was stored as conclusion; "
+                "write conclusion from now on.",
+                file=sys.stderr,
+            )
+    if not isinstance(conclusion, str) or not conclusion.strip():
+        msg = (
+            "conclusion is empty, but it is your verdict for the orchestrator, "
+            "which validates it before answering the user. Write it in your "
+            f"technical register: gaia contract set --draft-id {draft_id} "
+            "conclusion '<what holds, on what evidence, what is open>', then "
+            "finalize."
+        )
+        if as_json:
+            print(json.dumps({
+                "status": "rejected",
+                "reason": "conclusion_required",
+                "error": msg,
+            }))
+        else:
+            print(f"Rejected: {msg}", file=sys.stderr)
+        return 1
 
-    # Detection surface for the agent-protocol rule that a turn implementing
-    # work runs inside its own Gaia-managed worktree rather than the shared
-    # checkout: DETECT AND REGISTER ONLY, never a gate -- adoption today is
-    # zero, so refusing a close on this would block the whole fleet at
-    # install time. Stamped on EVERY finalize (not only a turn that
-    # committed), because raw_handoff_json is the only queryable surface a
-    # later count can join against; a query that also wants "did this turn
-    # commit" filters evidence_report.commands_run itself, so this needs no
-    # commit-detection logic of its own. Best-effort by construction: the
-    # process cwd at finalize time is the only signal available without
-    # trusting anything the agent self-reports, so it degrades to "unknown"
-    # rather than raise when the worktree root cannot be resolved.
-    envelope["worktree_scope"] = _finalize_worktree_scope()
+    from gaia.context_drift import stale_context_warning
+
+    drift_warning = stale_context_warning(envelope)
+    if drift_warning:
+        envelope.setdefault("content_checks", {})["warnings"] = [drift_warning]
+        print(f"Warning: {drift_warning}", file=sys.stderr)
+
+    from gaia.store.writer import finalize_agent_contract_handoff
 
     try:
         outcome = finalize_agent_contract_handoff(
@@ -2033,13 +2232,22 @@ def cmd_finalize(args) -> int:
 
     handoff_id = outcome.get("handoff_id")
     created = bool(outcome.get("created"))
+    if created:
+        from gaia.contract.tool_record import commit_harness_record
+
+        commit_harness_record(envelope)
     if as_json:
-        print(json.dumps({
+        payload = {
             "status": "finalized",
             "draft_id": draft_id,
             "handoff_id": handoff_id,
             "created": created,
-        }))
+        }
+        if alias_used:
+            payload["conclusion_alias"] = LEGACY_CONCLUSION_FIELD
+        if drift_warning:
+            payload["warnings"] = [drift_warning]
+        print(json.dumps(payload))
     else:
         if created:
             print(f"OK: draft {draft_id} finalized (handoff_id={handoff_id}).")
@@ -2094,7 +2302,10 @@ def cmd_fill(args) -> int:
     if overwrites:
         _print_error(_list_overwrite_message(overwrites), as_json)
         return 1
+    before = copy.deepcopy(envelope)
     _deep_merge(envelope, patch)
+    if _refused_harness_write(before, envelope, as_json):
+        return 1
     return _write_if_valid(
         envelope, draft_id, as_json, mirror=True, continuation=continuation
     )
@@ -2357,6 +2568,38 @@ def cmd_reap(args) -> int:
 # Argparse wiring (shared by register() and the standalone shim)
 # ---------------------------------------------------------------------------
 
+def cmd_fill_rate(args) -> int:
+    """Report surface and conclusion fill rates over a window; exit 1 under ``--min``."""
+    from gaia.store.reader import parse_when
+    from gaia.store.writer import contract_fill_rate
+
+    try:
+        since = parse_when(args.since)
+        until = _until_bound(args.until) if args.until else None
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    report = contract_fill_rate(since=since, until=until, workspace=args.workspace)
+    fields = ("surface", "conclusion")
+    rates = [report[field]["rate"] for field in fields]
+    if args.min is not None:
+        report["min"] = args.min
+        report["pass"] = all(rate is not None and rate >= args.min for rate in rates)
+
+    if args.json:
+        print(json.dumps(report))
+    else:
+        print(f"rows: {report['rows']} clean closes since {since}")
+        for field in fields:
+            entry = report[field]
+            shown = "n/a" if entry["rate"] is None else f"{entry['rate']:.1%}"
+            print(f"  {field}: {entry['filled']}/{report['rows']} ({shown})")
+        if args.min is not None:
+            print(f"  min {args.min:.1%}: {'pass' if report['pass'] else 'FAIL'}")
+    return 1 if report.get("pass") is False else 0
+
+
 def _add_common_draft_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--draft-id",
@@ -2467,6 +2710,22 @@ def _build_subcommands(sub) -> None:
         ),
     )
     _add_common_draft_arg(p_view)
+    p_view.add_argument(
+        "--contract-id", dest="draft_id", metavar="ID", default=None,
+        help=(
+            "Same as --draft-id: the row's contract_id. A value that is "
+            "none is read as the row's handoff id, harness id or agent_id; "
+            "the output says which row it opened"
+        ),
+    )
+    p_view.add_argument(
+        "--row", action="store_true", default=False,
+        help=(
+            "Print the row's dispatch columns instead of its envelope: goal "
+            "(dispatch_prompt), description, agent name, project, session and "
+            "state. Needs --harness-id or --contract-id"
+        ),
+    )
     _add_agent_scope_arg(p_view)
     p_view.add_argument(
         "--harness-id",
@@ -2511,10 +2770,15 @@ def _build_subcommands(sub) -> None:
             "  gaia contract list --plan-task 824\n"
             "  gaia contract list --brief my-brief --since 24h\n"
             "  gaia contract list --cut --until 2026-09-30\n"
+            "  gaia contract list --grep 'approval' --since 7d\n"
+            "  gaia contract list --agent-name gaia-system --state DISPATCHED\n"
+            "\n"
+            "A row's goal and dispatch columns: "
+            "gaia contract view --row --contract-id ID\n"
         ),
     )
     p_list.add_argument(
-        "--plan-task", dest="plan_task", type=int, metavar="TASK_ID", default=None,
+        "--plan-task", "--task", dest="plan_task", type=int, metavar="TASK_ID", default=None,
         help=(
             "Turns of one plan task (tasks.id, the task_id=<N> of a dispatch), "
             "including resumed turns whose continuation chain leads back to it"
@@ -2531,6 +2795,22 @@ def _build_subcommands(sub) -> None:
             "a<hex> handle). Dispatch agent type/name is not stored on legacy "
             "rows and cannot be inferred by this filter; the agent_name column "
             "shows the dispatched name where the birth envelope recorded it."
+        ),
+    )
+    p_list.add_argument(
+        "--agent-name", dest="agent_name", metavar="NAME", default=None,
+        help=(
+            "Filter by the dispatched agent's name (gaia-system, developer, ...). "
+            "Matches open and cut rows only: a cleanly finalized row no longer "
+            "records the name"
+        ),
+    )
+    p_list.add_argument(
+        "--grep", dest="grep", metavar="PATTERN", default=None,
+        help=(
+            "Case-insensitive substring of the goal (dispatch_prompt), the "
+            "dispatch description or the conclusion; combine with --since and "
+            "--limit to bound the scan"
         ),
     )
     p_list.add_argument(
@@ -2777,6 +3057,34 @@ def _build_subcommands(sub) -> None:
     p_reap.add_argument("--json", action="store_true", help="JSON output")
     p_reap.set_defaults(func=cmd_reap)
 
+    p_fill_rate = sub.add_parser(
+        "fill-rate",
+        help="Share of clean closes carrying a surface and a conclusion (read-only)",
+        description=(
+            "Over rows created in the window that closed clean (no cut_reason, "
+            "not DISPATCHED, not hook-backstop residue), report how many carry a "
+            "surface and how many a conclusion (user_facing_summary on rows "
+            "closed before the rename). With --min, exit 1 "
+            "when either rate is below it or the window holds no rows."
+        ),
+    )
+    p_fill_rate.add_argument("--since", default="7d", metavar="DUR_OR_DATE",
+                             help="Window start: a duration (24h, 7d) or a date (default: 7d)")
+    p_fill_rate.add_argument("--until", metavar="DUR_OR_DATE",
+                             help="Window end, same forms as --since; a bare date includes its day")
+    p_fill_rate.add_argument("--workspace", metavar="NAME", help="Filter by workspace")
+    p_fill_rate.add_argument("--min", type=float, metavar="RATE",
+                             help="Fail (exit 1) when a rate is below this fraction, e.g. 0.95")
+    p_fill_rate.add_argument("--json", action="store_true", help="JSON output")
+    p_fill_rate.set_defaults(func=cmd_fill_rate)
+
+    try:
+        from cli.contract_proposals import register_proposals
+    except ModuleNotFoundError:
+        from contract_proposals import register_proposals
+
+    register_proposals(sub)
+
 
 def _contract_default(args) -> int:
     print("Usage: gaia contract SUBCOMMAND [options]")
@@ -2798,6 +3106,7 @@ def _contract_default(args) -> int:
     print("                               never changes agent_state, refuses an agent's own cut row")
     print("  reap --older-than-seconds N -- promote stale DISPATCHED rows with no live host evidence")
     print("                               (production caller for dispatch_lifecycle.reap_stale_turn)")
+    print("  fill-rate [--since 7d] [--min RATE] -- share of clean closes with a surface and a summary")
     print("")
     print("Run 'gaia contract --help' for more information.")
     return 0
@@ -2847,7 +3156,9 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="contract_cmd", metavar="SUBCOMMAND")
     sub.required = True
     _build_subcommands(sub)
-    return parser
+    from gaia.cli_parsing import refuse_abbreviations
+
+    return refuse_abbreviations(parser)
 
 
 if __name__ == "__main__":

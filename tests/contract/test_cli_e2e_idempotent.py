@@ -110,6 +110,7 @@ def _build_complete_draft(env: dict) -> str:
     assert add.returncode == 0, add.stderr
 
     patch = json.dumps({
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": {
             "verification": {
                 "method": "pytest",

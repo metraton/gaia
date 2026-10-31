@@ -423,7 +423,7 @@ class TestNonceEndToEnd:
         """
         from modules.tools.bash_validator import BashValidator
 
-        command = "git push origin feat/auth"
+        command = "git push origin main"
         session_id = "test-nonce-flow"
         validator = BashValidator()
 
@@ -448,7 +448,7 @@ class TestNonceEndToEnd:
         """
         from modules.tools.bash_validator import BashValidator
 
-        result = BashValidator().validate("git push origin feat/auth")
+        result = BashValidator().validate("git push origin main")
         assert result.allowed is False
         assert result.block_response is not None
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
@@ -525,7 +525,7 @@ class TestBashValidatorIntegration:
         """
         from modules.tools.bash_validator import BashValidator
 
-        result = BashValidator().validate("git push origin feat/test")
+        result = BashValidator().validate("git push origin main")
         assert result.allowed is False
         assert result.block_response is not None
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"

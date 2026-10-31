@@ -115,6 +115,14 @@ push. A failed step freezes the rest of an approved set (`execution`).
 - The ceiling is a number of tool calls written in the goal, beside explicit
   permission to close partially. For reference, a nine-file identity-and-skills
   change with one integration was dispatched with a ceiling of about 110.
+- Model: chosen per turn through the Agent tool's model override, favoring
+  speed and just enough; a resume keeps the model the turn was born with.
+
+  | Band | Turns |
+  |---|---|
+  | Light | Read-only checks, polling, verifications |
+  | Middle | Routine edits, PR mechanics |
+  | Default (no override) | Design, root cause, anything security-sensitive |
 - Split: when a turn was cut near its close, the next dispatch implements and
   commits, and a separate one integrates.
 - Steering: `SendMessage` is queued for the turn's next tool round; a resume

@@ -76,7 +76,9 @@ tests/
 ├── cli/                             # CLI subcommand tests
 ├── e2e/                             # E2E installation and lifecycle tests
 └── fixtures/                        # JSON fixtures (project-context AWS/GCP/full) +
-                                     #   agent_ids.py (minted conforming agent_id handles)
+                                     #   agent_ids.py (minted conforming agent_id handles) +
+                                     #   comment_repo.py (throwaway git repos with a known comment count;
+                                     #   used by test_comment_lint.py and hooks/modules/security/test_comment_push_gate.py)
 ```
 
 ## Convenciones

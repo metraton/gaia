@@ -11,6 +11,8 @@ one place that vocabulary is written down; everywhere else points here.
 ## Two rules that decide whether any of it resolves
 
 **A read by slug starts from a WORKSPACE, and the workspace comes from the current directory.** A
+workspace is a folder the user declared, a group is a folder inside it holding
+one product's, client's or theme's projects, and a project is one git repository. A
 memory slug verb (`show`, `story`, `append`, `reclassify`, `delete`, `link`) looks in your
 workspace, then in the user and host scopes, then in whichever workspace holds the slug as a row of
 a project (`bin/cli/memory.py::_workspace_holding`): a project's memory follows the project, so a
@@ -40,9 +42,10 @@ transcript.
 
 | Verb | Addressing | What comes back |
 |---|---|---|
-| `gaia contract list` | `--harness-id`, `--contract-id`, `--session`, `--agent-id`, `--state`, `--cut [reason]`, `--workspace`, `--since`/`--until`, `--limit`, `--json` | One row per turn: id, agent, state, cut reason, session. The searchable handle when you know the front but not the row. |
-| `gaia contract view` | `--draft-id <contract_id>` or `--harness-id <harness_agent_id>`; `--field <dotted.path>`; `--json` | The whole envelope, or exactly one subtree named by the same schema keys the envelope uses (`evidence_report.open_gaps`, `agent_status.agent_state`). Never writes. |
+| `gaia contract list` | `--harness-id`, `--contract-id`, `--session`, `--agent-id`/`--agent`, `--agent-name`, `--grep <text>`, `--plan-task`/`--task`, `--state`, `--cut [reason]`, `--workspace`, `--since`/`--until`, `--limit`, `--json` | One row per turn: id, agent, state, cut reason, session. The searchable handle when you know the front but not the row; `--grep` matches the goal, description or conclusion, `--agent-name` the dispatched name (open and cut rows only). |
+| `gaia contract view` | `--draft-id`/`--contract-id <contract_id>` or `--harness-id <harness_agent_id>`; `--field <dotted.path>`; `--row`; `--json` | The whole envelope, or exactly one subtree named by the same schema keys the envelope uses (`evidence_report.open_gaps`, `agent_status.agent_state`); `--row` prints the row's goal, description, agent name, project, session and state instead. Never writes. |
 | `gaia contract chain` | `--contract-id <any link>` | Every contract in one continuation chain, oldest first, walking back to the root and forward to the live link. A turn that was never resumed prints as one link. |
+| `gaia contract proposals list` | `--contract-id`, `--kind memory\|context\|thread`, `--all`, `--json` | What closed turns proposed and nobody has decided yet, oldest first, each with its id and proposing contract; `--all` adds the accepted and dismissed. Deciding one (`accept`/`dismiss`) is the orchestrator's write, not a read. |
 
 `--field` is the difference between inheriting a conclusion and inheriting a whole turn. An absent
 path is a clean error: `Error: no such field 'evidence_report.nope': no key 'nope' under
@@ -57,23 +60,35 @@ persisting. It belongs to the write cycle, not to a coordinate; that cycle is in
 | Verb | Addressing | What comes back |
 |---|---|---|
 | `gaia memory show <slug>` | `--links` (graph edges), `--history` (versions: when, which fields, body delta), `--workspace`, `--json` | One curated row, whole. The verb a slug in a goal is meant for. |
-| `gaia memory search '<term>'` | `--workspace` | FTS5 across curated rows and episodes, scored. The handle to use when you have a topic and not a name. |
-| `gaia memory list` | `--type project\|user\|feedback\|atom\|decision\|negative`, `--json` | Name, type and one-line description per row -- the index, not the bodies. |
+| `gaia memory search '<term>'` | `--workspace`, `--type`, `--class`, `--all`, `--include-superseded` | FTS5 across curated rows and episodes. Plain words match a row holding ANY of them, rows holding more of them first, stopwords dropped from a multi-word query; `--all` requires every word; FTS5 syntax passes as written; a superseded row is hidden unless `--include-superseded`. Searches description and body, not the slug. The handle to use when you have a topic and not a name. |
+| `gaia memory list` | `--type project\|user\|feedback\|atom\|decision\|negative`, `--include-superseded`, `--json` | Name, type and one-line description per live row -- the index, not the bodies. A superseded row shows only with `--include-superseded`, naming its successor. |
 | `gaia memory story <slug>` | `--workspace` | The row's lineage as one fused timeline: related/derivative/graduated nodes with depth, then events in order. |
 | `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` or `--project <name>` | The compact block SessionStart injects, on demand; with a project, its whole live-pending set from every workspace; `--initiative <k> --sections anchor` returns that project's live standing notes with their bodies, from every workspace, a superseded one excluded. |
-| `gaia memory stats` / `gaia memory conflicts` | -- | Counts and FTS coverage; contradiction scan across rows. |
+| `gaia memory stats` | `--json` | Counts per type (live and superseded) and FTS coverage, no conflicts scan. |
+| `gaia memory conflicts` | `--owner`, `--exclude-class`, `--limit`, `--threshold` | Candidate contradictions across rows, with one slug held in two workspaces listed apart as duplicates. |
 | `gaia memory episode-show <episode_id>` | -- | One episode with score, age, tags and retrieval count. Episode ids come from `gaia query --surface episodes`. |
 
 ## Project knowledge -- two namespaces that share section names and are not the same
 
-Nothing from the project is preloaded. The kernel's `can_read` is a MENU, pulled on demand -- and it
-is pulled with exactly one verb.
+The dispatch project's `can_read` sections are preloaded as the kernel's `# Project context` block
+(whole when they fit, else pointer lines, else one line; a group dispatch gets one pointer per
+member section). What the block only points at is pulled
+with exactly one verb.
 
-- `gaia context get-contract --section <s> [--workspace <w>] [--text]` is the ONLY verb that reaches
-  `project_context_contracts` -- the names the `can_read`/`can_write` menu lists. `--section` is
-  required; `--workspace` when the workspace is not the cwd's; `--text` for the human form. It
-  returns the contract payload; an unknown name exits 1 listing the available ones.
-- `gaia context project <name>` returns the complete project sheet by name or basename, read-only.
+- `gaia context get-contract --section <s> [--project <name>] [--workspace <w>] [--text]` is the ONLY
+  verb that reaches `project_context_contracts` -- the names the `can_read`/`can_write` menu lists.
+  `--section` is required; `--project` reads that project's section and falls back to the workspace
+  row; `--workspace` when the workspace is not the cwd's; `--text` for the human form. It returns
+  the contract payload; an unknown name exits 1 listing the available ones.
+- `gaia context project <name>` returns one project's sheet by name or basename, exact before
+  ignoring case, read-only: its `projects` row and facets, its `project_identity` entry, and an
+  index (slug and description) of at most 10 memory rows anchored to it. It prints no other section;
+  read those with `get-contract --project <name> --section <s>`. A group name answers as its
+  members instead: each with the sections it holds itself and the
+  `get-contract --project <member> --section <s>` line that reads one, plus the workspace sections
+  a member without its own falls back to (`--json` for the same as data). `get-contract --project
+  <group>` exits 1 naming the members. Both verbs are in the orchestrator's lane, so the
+  orchestrator reads any project's sections itself.
 - `gaia context get --section <s>` and `gaia context show` resolve against the workspace SHAPE
   (`apps`, `services`, `stack`, `git`, ...). The names OVERLAP without meaning the same thing:
   `gaia context get --section stack` returns the scanner placeholder `{}` while the real `stack`
@@ -91,7 +106,7 @@ is pulled with exactly one verb.
 | `gaia plan show\|list` | brief slug | The plan attached to that brief, with plan_id, status, version and pause reason; or every plan in the workspace. |
 | `gaia plan history <brief>` | `--content` | Every replaced version of the plan with the reason it was replaced. |
 | `gaia plan change list <brief>` | `--json` | The plan's managed changes: justification, status, and the proposed tasks with their reasons. |
-| `gaia task list <brief>` | `--status`, `--format table\|json\|count` | One row per task: ORDER (plan position) and TASK_ID (`tasks.id`) -- they are different numbers and dispatch wants the second. |
+| `gaia task list <brief>` | `--plan <brief>` (same as the positional), `--status`, `--format table\|json\|count` | One row per task: ORDER (plan position) and TASK_ID (`tasks.id`) -- they are different numbers and dispatch wants the second. |
 | `gaia task show <brief> <order>` | `--json` | One task, printing both numbers with that distinction stated. |
 | `gaia task gate list <brief> <order>` | `--json` | The task's verification gates: id, type, status; `--json` adds the shape, the stale mark and the fail cause. |
 | `gaia evidence list --brief <b>` / `gaia evidence show <id>` | -- | Recorded per-AC evidence. |
@@ -109,20 +124,24 @@ is pulled with exactly one verb.
 | `gaia metrics` | `--range`, `--since`/`--until`, `--agent` | The aggregate dashboard behind those rows: tier usage, commands, per-agent totals, anomalies. |
 | `gaia usage show --plan <id>` / `--session <id>` | `--since`/`--until`, `--json` | Tokens per session and agent, one row per API message from the transcripts; for a plan, split into bound, unbound and main (main is an upper bound). |
 | `gaia now` | `--json` | The machine's local time, UTC offset and zone name; `--json` adds the UTC instant. Opens no database. The clock to read before fixing a reminder's absolute time. |
+| `gaia open` | a reference KIND:SCOPE/ID#FIELD, `--line`, `--json` | One stored thing by reference, from any id spelling of its kind: the canonical reference, its labelled sibling ids, the per-kind verb and the row or one field; `--line` prints only its why line. Never writes. |
+| `gaia map` | an intent key, e.g. remember | Computed from the database, never writes: NOW (only what has live state -- due reminders and routines, pending proposals, turns dispatched and never closed, unread signals for this session, active plans with their next task -- each with the verb that moves it; omitted when empty), the five habits, and the intent-first YOU WANT -> USE table. With an intent, that one row with its exact command and one example. On demand, not a signal channel. |
 | `gaia status` | `--json` | What Gaia has wired into this workspace: last agent, pending context updates, contract success rate. |
 | `gaia doctor` | `--workspace <path>`, `--json` | Health checks, read-only. `--fix` MUTATES and is a different verb in every sense that matters. |
+| `gaia lint comments` | `--repo`, `--head`, `--base`, `--json` | Net comment and docstring lines a branch adds over its merge-base against max(2, 2% of added code); lists each offender as file:line. The check a `git push` of the branch is gated on. |
 
 ## Consent state, and the channels that outlive the turn
 
 | Verb | What comes back |
 |---|---|
-| `gaia approvals pending` / `gaia approvals list` | Live requests awaiting a decision; `list` adds grant state and command count. |
+| `gaia approvals pending` / `gaia approvals list` | This session's live requests awaiting a decision, with a trailer counting what the scope hides; `list` adds grant state and command count. `--all-sessions` adds other sessions' requests, `--include-stale` the orphaned and expired ones, `--session` names the session. |
 | `gaia approvals show <P-id>` | One approval: its derived State and Outcome, requester, window, directory, grant and sealed payload. `--json` returns the same as machine detail. |
 | `gaia approvals question <P-id> [<P-id> ...]` | The exact question-tool input for 1 to 4 pending commands, one `[ GAIA-SECURITY ]` line per command (`--details`: each command's Details line); it records which signature it handed out at which position, and the hook accepts only that object asked unchanged. Run it again at any time for the approvals still pending. |
 | `gaia approvals history [<P-id>]` | The N most recent approvals, or one approval's full event chain. |
 | `gaia approvals stats` | Totals by outcome and the pending verb breakdown. |
 | `gaia notifications show <id>` | One report, reminder or routine in full. |
 | `gaia notifications list` | Reports, reminders and routines: what is due now, and with `--upcoming` what is coming. |
+| `gaia signals` | The curated memory rows other sessions changed, newest first, each with the command that opens it; by default from the start of the last `~ changed:` line, `--since <id>` for another range, `--json`. Never moves the session's cursor. |
 | `gaia session preview` | The SessionStart injection manifest — what the orchestrator receives at session start, built read-only with no side effects. |
 | `gaia session snapshot --session-id <id>` | One session's open contracts, pending signatures, active brief/plan/task and resume point -- the block compaction carries forward. `--json` returns it structured. Never writes. |
 | `gaia workspace current` / `gaia workspace info` | Which workspace a read will resolve against, and where its storage actually is. |

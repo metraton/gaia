@@ -96,13 +96,28 @@ exit "${{FAKE_EXIT:-0}}"
 """
 
 
+FAKE_WATCH = """#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do [[ "$1" == -n ]] && shift; shift; done
+exec bash -c "$*"
+"""
+
+
+FAKE_SCRIPT = """#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do
+  case "$1" in -*c|--command) exec bash -c "$2" ;; esac
+  shift
+done
+"""
+
+
 @pytest.fixture()
 def world(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     for name, body in (
         ("kubectl", FAKE_KUBECTL), ("vault", FAKE_STORE), ("bao", FAKE_STORE),
-        ("gcloud", FAKE_GCLOUD), ("aws", FAKE_AWS), ("sops", FAKE_SOPS),
+        ("gcloud", FAKE_GCLOUD), ("aws", FAKE_AWS), ("sops", FAKE_SOPS), ("watch", FAKE_WATCH),
+        ("script", FAKE_SCRIPT),
     ):
         binary = fake_bin / name
         binary.write_text(body, encoding="utf-8")
@@ -246,6 +261,140 @@ def test_secret_values_read_that_cannot_be_redacted_is_refused(world, host, comm
 
     assert verdict["decision"] == "deny", verdict
     assert _stored_sentinels(world) == []
+
+
+# Each wrapping of a read the redactor already knows, with the exit code the
+# whole command line ends in: None is the read's own, xargs reports 123 for a
+# failing command, and a substitution inside echo never fails the echo.
+REDACTED_SPELLINGS = [
+    ("echo `sops -d app.enc.yaml`", 0),
+    ('echo "$(sops -d app.enc.yaml)"', 0),
+    ('echo "`gcloud secrets versions access latest --secret=db-password`"', 0),
+    ('echo "$(aws secretsmanager get-secret-value --secret-id app)"', 0),
+    ("cat <(sops -d app.enc.yaml)", 0),
+    ("command sops -d app.enc.yaml", None),
+    ("exec sops -d app.enc.yaml", None),
+    ("command kubectl get deployment api -o yaml", None),
+    ("exec vault kv get secret/app", None),
+    ("echo secret/app | xargs vault kv get", 123),
+    ("echo app.enc.yaml | xargs -I{} sops -d {}", 123),
+    ("watch -n 5 kubectl get cm app -o yaml", None),
+    ("env sops -d app.enc.yaml", None),
+    ("env FOO=1 vault kv get secret/app", None),
+    ("nice -n 5 aws secretsmanager get-secret-value --secret-id app", None),
+    ("timeout 10 gcloud secrets versions access latest --secret=db-password", None),
+    ("command kubectl describe secret db", None),
+    ("echo 'sops -d app.enc.yaml' | bash", None),
+    ("bash <<'EOF'\nsops -d app.enc.yaml\nEOF", None),
+    ("script -qc 'sops -d app.enc.yaml' /dev/null", None),
+    ("script --command 'sops -d app.enc.yaml' /dev/null", None),
+    ("flock REPO/.lock sops -d app.enc.yaml", None),
+    ("flock -w 5 REPO/.lock -c 'sops -d app.enc.yaml'", None),
+    ("env -S 'sops -d app.enc.yaml'", None),
+    ("nice -n 5 env -S 'sops -d app.enc.yaml'", None),
+    ("aws secretsmanager batch-get-secret-value --secret-id-list a b", None),
+    ("aws ssm get-parameter-history --name /app/db --with-decryption", None),
+]
+
+
+@pytest.mark.parametrize("host", sorted(HOSTS))
+@pytest.mark.parametrize("read,expected_exit", REDACTED_SPELLINGS)
+def test_a_wrapped_secret_read_is_redacted_whatever_the_wrapping(world, host, read, expected_exit):
+    verdict = HOSTS[host](read.replace("REPO", str(world["repo"])))
+    assert verdict["decision"] == "allow", verdict
+
+    result = _execute(world, verdict["run"], 3)
+
+    shown = result.stdout + result.stderr
+    assert shown.strip(), "the redacted read printed nothing"
+    assert not [s for s in SENTINELS if s in shown], shown
+    assert result.returncode == (3 if expected_exit is None else expected_exit)
+    assert _stored_sentinels(world) == []
+
+
+@pytest.mark.parametrize("host", sorted(HOSTS))
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sops exec-env app.enc.yaml env",
+        "sops exec-file app.enc.yaml 'cat {}'",
+        "find REPO -name settings.py -exec sops -d {} \\;",
+    ],
+)
+def test_a_granted_t3_wrapping_of_a_secret_read_runs_under_the_redactor(world, host, command, monkeypatch):
+    """These are T3 and the rewrite follows the grant, so the grant is stood in for."""
+    from modules.security.tiers import SecurityTier
+    from modules.tools import bash_validator
+
+    monkeypatch.setattr(
+        bash_validator.BashValidator, "validate",
+        lambda self, cmd, **_: bash_validator.BashValidationResult(
+            allowed=True, tier=SecurityTier.T3_BLOCKED, reason="granted",
+        ),
+    )
+    verdict = HOSTS[host](command.replace("REPO", str(world["repo"])))
+    assert verdict["decision"] == "allow", verdict
+
+    result = _execute(world, verdict["run"], 0)
+
+    shown = result.stdout + result.stderr
+    assert shown.strip() and CLOUD_SENTINEL not in shown, shown
+
+
+REFUSED_SPELLINGS = [
+    "env kubectl get secret db -o jsonpath={.data.password}",
+    "nice -n 5 kubectl get secret db -o yaml",
+    "timeout 5 kubectl get secret db -o json",
+    "command kubectl get secret db -o yaml",
+    "exec kubectl get secret db -o yaml",
+    "xargs kubectl get secret -o yaml",
+    "watch kubectl get secret db -o yaml",
+    'echo "$(kubectl get secret db -o jsonpath={.data.password})"',
+    "echo `kubectl get secret db -o jsonpath={.data.password}`",
+    "find . -name x -exec kubectl get secret db -o json {} \\;",
+    "echo 'kubectl get secret db -o yaml' | bash",
+    "kubectl get secret db -o go-template-file=/tmp/t",
+    "kubectl get secret db -o jsonpath-file=/tmp/t",
+    "kubectl get secret db -o templatefile=/tmp/t",
+    "kubectl get secret db -o custom-columns-file=/tmp/t",
+    "script -qc 'kubectl get secret db -o yaml' /dev/null",
+    "flock /tmp/gaia.lock kubectl get secret db -o yaml",
+    "env -S 'kubectl get secret db -o yaml'",
+    "kubectl get --raw /api/v1/namespaces/x/secrets/db",
+    "bash -c 'sops -d app.enc.yaml'",
+    "sh -c 'gcloud secrets versions access latest --secret=db-password'",
+    "eval 'aws secretsmanager get-secret-value --secret-id app'",
+    "env bash -c 'kubectl get secret db -o yaml'",
+    "timeout 5 bash -c 'vault kv get secret/app'",
+]
+
+
+@pytest.mark.parametrize("host", sorted(HOSTS))
+@pytest.mark.parametrize("command", REFUSED_SPELLINGS)
+def test_a_wrapped_secret_read_that_cannot_be_redacted_is_refused(world, host, command):
+    verdict = HOSTS[host](command)
+
+    assert verdict["decision"] == "deny", verdict
+    assert verdict["reason"].strip()
+    assert _stored_sentinels(world) == []
+
+
+@pytest.mark.parametrize("host", sorted(HOSTS))
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo 'sops -d notes'",
+        "git log --oneline --grep='sops -d' -1",
+        "cat <<'EOF'\nsops -d notes\nEOF",
+        "echo $(date) 2>&1",
+        "kubectl get pods -n prod -o yaml",
+    ],
+)
+def test_text_that_only_mentions_a_secret_read_runs_unchanged(world, host, command):
+    verdict = HOSTS[host](command)
+
+    assert verdict["decision"] == "allow", verdict
+    assert "secret_reads" not in (verdict["run"] or "")
 
 
 @pytest.mark.parametrize("host", sorted(HOSTS))

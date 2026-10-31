@@ -72,3 +72,37 @@ def test_redact_tree_recurses_without_mutating_the_source():
     assert redacted["metadata"] == source["metadata"]
     assert redacted["nested"] == [{"api_key": REDACTED}, f"token={REDACTED}"]
     assert redacted["secret_object"]["data"] == {"arbitrary-name": REDACTED}
+
+
+def test_a_password_in_a_url_is_redacted_and_the_rest_of_the_url_kept():
+    command = f"psql postgres://app:{SYNTHETIC_PASSWORD}@db.internal:5432/app -c 'select 1'"
+    heredoc = f"cat > app.env <<'EOF'\nDATABASE_URL=redis://:{SYNTHETIC_PASSWORD}@cache:6379/0\nEOF"
+    output = f"connected to https://deploy:{SYNTHETIC_PASSWORD}@git.example/repo.git\n"
+
+    for source in (command, heredoc, output):
+        redacted = redact_text(source)
+        assert SYNTHETIC_PASSWORD not in redacted, redacted
+        assert f":{REDACTED}@" in redacted
+
+    assert redact_text(command).startswith(f"psql postgres://app:{REDACTED}@db.internal:5432/app")
+    assert redact_text("see https://example.com:8443/path and user@host") == (
+        "see https://example.com:8443/path and user@host"
+    )
+
+
+def test_a_private_key_block_is_redacted_whole_terminated_or_not():
+    body = "MIIEowIBAAKCAQEA" + "Zk9" * 40
+    closed = f"before\n-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\nafter\n"
+    heredoc = f"cat > id <<'EOF'\n-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n-----END OPENSSH PRIVATE KEY-----\nEOF"
+    unterminated = f"-----BEGIN PRIVATE KEY-----\n{body}"
+
+    for source in (closed, heredoc, unterminated):
+        redacted = redact_text(source)
+        assert body[:16] not in redacted, redacted
+        assert REDACTED in redacted
+
+    assert redact_text(closed).startswith("before\n-----BEGIN RSA PRIVATE KEY-----")
+    assert redact_text(closed).endswith("-----END RSA PRIVATE KEY-----\nafter\n")
+    assert redact_text(heredoc).endswith("EOF")
+    public = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQ\n-----END PUBLIC KEY-----"
+    assert redact_text(public) == public

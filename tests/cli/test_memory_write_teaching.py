@@ -58,13 +58,13 @@ def _add(gaia, *argv: str) -> set[str]:
 
 def test_add_help_lists_the_claim_vocabulary_the_three_owners_and_the_skill(gaia):
     """A writer reading `gaia memory add --help` learns every claim kind, whose row it is, and where the judgment lives."""
-    from gaia.store.memory_claims import MEMORY_CLAIM_KINDS
+    from gaia.store.memory_placement import KIND_MEANING
 
     result = gaia("memory", "add", "--help")
 
     assert result.returncode == 0, result.stderr
-    for kind in MEMORY_CLAIM_KINDS:
-        assert f"{kind}:" in result.stdout
+    for kind, meaning in KIND_MEANING.items():
+        assert kind in result.stdout and meaning.split(";")[0] in result.stdout
     for owner in ("--type=user", "--project=", "--initiative=gaia_system"):
         assert owner in result.stdout
     assert "Skill('memory')" in result.stdout
@@ -78,11 +78,11 @@ def test_a_description_or_body_over_its_threshold_warns_and_still_writes(gaia):
     long_body = "b" * (_BODY_WARN_CHARS + 1)
 
     codes = _add(
-        gaia, "--name", "atom_long", "--type", "atom", "--initiative", "demo",
+        gaia, "--name", "atom_long", "--type", "atom", "--kind", "fact", "--initiative", "demo",
         "--workspace", "demo", "--description", long_description, "--body", long_body,
     )
     short = _add(
-        gaia, "--name", "atom_short", "--type", "atom", "--initiative", "demo",
+        gaia, "--name", "atom_short", "--type", "atom", "--kind", "fact", "--initiative", "demo",
         "--workspace", "demo", "--description", "Hecho: corto.", "--body", "corto",
     )
 
@@ -91,24 +91,24 @@ def test_a_description_or_body_over_its_threshold_warns_and_still_writes(gaia):
     assert gaia("memory", "show", "atom_long", "--workspace", "demo").returncode == 0
 
 
-def test_a_non_user_row_scoped_only_by_workspace_warns_that_it_has_no_owner(gaia):
-    """A container is not an owner: a workspace-only row warns, the same row with a project key does not."""
-    ownerless = _add(
-        gaia, "--name", "feedback_ownerless", "--type", "feedback",
-        "--workspace", "demo", "--description", "Hecho: x.", "--body", "x",
+def test_a_row_scoped_only_by_workspace_is_told_the_workspace_owns_it(gaia):
+    """A workspace-only row lands on the workspace owner and says so; the same row with a group key does not."""
+    workspace_owned = _add(
+        gaia, "--name", "atom_ws", "--type", "atom", "--kind", "fact",
+        "--workspace", "demo", "--description", "x holds.", "--body", "x",
     )
-    owned = _add(
-        gaia, "--name", "feedback_owned", "--type", "feedback", "--initiative", "demo",
-        "--workspace", "demo", "--description", "Hecho: x.", "--body", "x",
+    group_owned = _add(
+        gaia, "--name", "atom_group", "--type", "atom", "--kind", "fact", "--initiative", "demo",
+        "--workspace", "demo", "--description", "x holds.", "--body", "x",
     )
 
-    assert "no_owner" in ownerless
-    assert "no_owner" not in owned
+    assert "workspace_owner" in workspace_owned
+    assert "workspace_owner" not in group_owned
 
 
 def test_adding_over_an_existing_name_with_another_body_warns_of_an_in_place_rewrite(gaia):
     """A changed fact written over the old row is flagged and pointed at a new row plus a supersedes link."""
-    base = ("--name", "atom_fact", "--type", "atom", "--initiative", "demo",
+    base = ("--name", "atom_fact", "--type", "atom", "--kind", "fact", "--initiative", "demo",
             "--workspace", "demo", "--description", "Hecho: x.")
     first = _add(gaia, *base, "--body", "version one")
     same = _add(gaia, *base, "--replace", "--body", "version one")
@@ -124,30 +124,45 @@ def test_adding_over_an_existing_name_with_another_body_warns_of_an_in_place_rew
     assert "--kind=supersedes" in message
 
 
-def test_a_user_preference_is_asked_whether_it_would_hold_if_gaia_worked_perfectly(gaia):
-    """The perfect-Gaia question follows a user preference and not a user fact."""
+def test_a_user_preference_is_asked_whether_it_is_his_difference(gaia):
+    """The difference question follows the preference kind, whatever the description opens with."""
     preference = _add(
-        gaia, "--name", "user_pref_x", "--type", "user",
-        "--description", "Preference: short answers.", "--body", "Prefers short answers.",
+        gaia, "--name", "user_pref_x", "--type", "user", "--kind", "preference",
+        "--description", "Answers: keep them short.", "--body", "Prefers short answers.",
     )
     fact = _add(
-        gaia, "--name", "user_fact_x", "--type", "user",
-        "--description", "Fact: lives in Chile.", "--body", "Lives in Chile.",
-    )
-    spanish_era = _add(
-        gaia, "--name", "user_pref_legacy", "--type", "user",
-        "--description", "Preferencia: respuestas breves.", "--body", "Prefiere respuestas breves.",
+        gaia, "--name", "user_fact_x", "--type", "user", "--kind", "fact",
+        "--description", "Preference words aside, lives in Chile.", "--body", "Lives in Chile.",
     )
 
     assert "preference_or_bug" in preference
     assert "preference_or_bug" not in fact
-    assert "preference_or_bug" in spanish_era
+
+
+def test_the_difference_question_routes_a_universal_rule_to_the_harness_and_keeps_walls_out(gaia):
+    """What any user would want goes to gaia_system, a bend needs his agreement, and a wall is never stored."""
+    result = gaia(
+        "memory", "add", "--name", "user_pref_msg", "--type", "user", "--kind", "preference",
+        "--description", "Preference: short answers.", "--body", "Prefers short answers.",
+        "--json",
+    )
+    message = next(
+        w["message"] for w in json.loads(result.stdout)["warnings"]
+        if w["code"] == "preference_or_bug"
+    )
+
+    assert "his difference from what Gaia does for anyone" in message
+    assert "any user would want" in message
+    assert "--type=feedback --kind=defect --initiative=gaia_system" in message
+    assert "agreed" in message
+    assert "consent, security or the contract" in message
+    assert "worked perfectly" not in message
 
 
 def test_a_preference_that_mentions_a_hook_gets_no_extra_warning(gaia):
     """Whether a preference is really a harness rule is judgment the CLI does not guess at."""
     codes = _add(
-        gaia, "--name", "user_pref_hook", "--type", "user",
+        gaia, "--name", "user_pref_hook", "--type", "user", "--kind", "preference",
         "--description", "Preferencia: que el hook recuerde code-standards.",
         "--body", "El hook de PreToolUse debe recordarle al subagente code-standards.",
     )

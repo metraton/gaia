@@ -797,7 +797,9 @@ def register(subparsers) -> None:
             "  gaia task list my-brief --format=json\n"
         ),
     )
-    list_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+    list_p.add_argument("brief", metavar="BRIEF", nargs="?", default=None, help="Parent brief slug.")
+    list_p.add_argument("--plan", metavar="SLUG", default=None,
+                        help="Same as BRIEF: a plan is named by its brief's slug.")
     list_p.add_argument("--status", default=None,
                         choices=("pending", "done", "skipped"),
                         help="Filter by task status.")
@@ -1153,6 +1155,13 @@ def cmd_task(args) -> int:
         "depend":     _cmd_link,
         "gate":       _cmd_gate,
     }
+    if action == "list":
+        plan = getattr(args, "plan", None)
+        if plan and args.brief and plan != args.brief:
+            return _err(f"--plan {plan!r} contradicts BRIEF {args.brief!r}; give one", as_json=args.json)
+        args.brief = args.brief or plan
+        if not args.brief:
+            return _err("task list needs BRIEF or --plan SLUG", as_json=args.json)
     if action in handlers:
         from cli._brief_scope import follow_brief
 

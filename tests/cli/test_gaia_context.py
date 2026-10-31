@@ -590,55 +590,15 @@ class TestCmdProject:
         assert data["project_identity_contract"]["slug"] == "demo"
         assert data["project_identity_contract"]["entry"]["description"] == "curated summary"
 
-    def test_memory_index_is_slug_and_description_only(self, seeded_db, capsys):
-        rc, captured = self._run(capsys, name="demo", workspace="ws-a", json_output=True)
-        assert rc == 0
-        data = json.loads(captured.out)
-        names = {m["name"] for m in data["memory_index"]}
-        assert names == {"project_demo_notes", "thread_demo_open"}
-        for m in data["memory_index"]:
-            assert "body" not in m
-
-    def test_pending_footer_names_the_sweep_command(self, seeded_db, capsys):
+    def test_pending_count_names_the_read_that_opens_them(self, seeded_db, capsys):
         rc, captured = self._run(capsys, name="demo", workspace="ws-a")
         assert rc == 0
-        assert "gaia memory get-relevant --initiative demo" in captured.out
+        assert "pending=1  read=gaia memory get-relevant --initiative demo" in captured.out
 
-    def test_memory_index_caps_to_ten_with_overflow_line(self, seeded_db, capsys):
-        """>10 curated rows: show exactly 10, plus a counted overflow line
-        naming the real total and the sweep command -- the P2-style refinement
-        (never a silent dump, never a lie about completeness)."""
-        from gaia.store.writer import _connect
-
-        con = _connect(seeded_db)
-        try:
-            for i in range(12):
-                con.execute(
-                    "INSERT INTO memory (workspace, name, type, description, "
-                    "body, class, status, project_ref, initiative, updated_at) "
-                    "VALUES ('ws-a', ?, 'atom', ?, 'body', 'log', NULL, NULL, "
-                    "'demo', ?)",
-                    (f"atom_overflow_{i}", f"overflow row {i}",
-                     f"2026-0{(i % 9) + 1}-01T00:00:00Z"),
-                )
-            con.commit()
-        finally:
-            con.close()
-
-        # seeded_db already carries 2 demo-initiative rows -> 14 total.
-        rc, captured = self._run(capsys, name="demo", workspace="ws-a")
-        assert rc == 0
-        assert "curated memory (14, showing 10 most recent)" in captured.out
-        assert captured.out.count("\n  - ") == 10
-        assert "... and 4 more -- full index: `gaia memory get-relevant --initiative demo`" in captured.out
-
+    def test_rows_owned_by_no_level_stay_out_of_the_index(self, seeded_db, capsys):
         rc, captured = self._run(capsys, name="demo", workspace="ws-a", json_output=True)
         assert rc == 0
-        data = json.loads(captured.out)
-        assert len(data["memory_index"]) == 10
-        assert data["memory_index_total"] == 14
-        assert data["memory_index_truncated"] is True
-        assert data["memory_index_sweep_command"] == "gaia memory get-relevant --initiative demo"
+        assert json.loads(captured.out)["memory_index"] == []
 
     def test_ambiguous_exact_match_exits_1_with_workspaces(self, seeded_db, capsys):
         rc, captured = self._run(capsys, name="dup")
@@ -701,6 +661,120 @@ class TestCmdProject:
 
         with pytest.raises(SystemExit):
             parser.parse_args(["context", "project"])
+
+
+_DEMO_REF = "github.com/org/demo"
+
+
+class TestCmdProjectMemoryByKind:
+    @pytest.fixture()
+    def card_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        from gaia.paths import db_path
+        from gaia.store.writer import USER_WORKSPACE, _connect, upsert_memory
+
+        con = _connect(db_path())
+        try:
+            con.execute("INSERT INTO workspaces (name, identity, created_at) VALUES ('ws-a', 'ws-a', '2026-01-01T00:00:00Z')")
+            for name in ("demo", "other"):
+                con.execute(
+                    "INSERT INTO projects (workspace, name, path, status, group_name, project_identity) "
+                    "VALUES ('ws-a', ?, ?, 'active', 'grp', ?)",
+                    (name, f"/repos/{name}", f"github.com/org/{name}"),
+                )
+            con.commit()
+        finally:
+            con.close()
+
+        def add(workspace, name, type_, kind, description, **flags):
+            upsert_memory(workspace, name, type=type_, body="BODY-MUST-NOT-APPEAR", kind=kind,
+                          description=description, class_=flags.pop("class_", "anchor"), **flags)
+
+        add("ws-a", "decision_ws_utc", "decision", "preference", "Preference: Reports: UTC only.")
+        add("ws-a", "decision_ws_flux", "decision", "decision", "Decision: Flux is the deploy path.")
+        add("ws-a", "decision_grp_fact", "decision", "fact", "Fact: grp deploys with Flux.", initiative="grp")
+        add("ws-a", "decision_demo_english", "decision", "preference", "Preference: Reports: UTC and English.",
+            project_ref=_DEMO_REF)
+        add("ws-a", "atom_demo_port", "atom", "fact", "Fact: demo listens on 8080.", project_ref=_DEMO_REF)
+        add("ws-a", "decision_demo_sqlite", "decision", "decision", "Decision: demo keeps SQLite.",
+            project_ref=_DEMO_REF)
+        add("ws-a", "negative_demo_retries", "negative", "lesson", "Lesson: retries hide the fault.",
+            project_ref=_DEMO_REF)
+        add("ws-a", "negative_demo_mocks", "negative", "lesson", "Lesson: mocks drift.", project_ref=_DEMO_REF)
+        add("ws-a", "atom_demo_probe", "atom", "pending", "Pending: close the probe.",
+            project_ref=_DEMO_REF, class_="thread", status="open")
+        add("ws-a", "decision_other_rule", "decision", "preference", "Preference: other project rule.",
+            project_ref="github.com/org/other")
+        add("ws-a", "decision_demo_expired", "decision", "preference", "Preference: expired rule.",
+            project_ref=_DEMO_REF, until="2020-01-01")
+        add(USER_WORKSPACE, "user_pref_pr", "user", "preference", "Preference: PRs: seven headings.")
+        return db_path()
+
+    def _card(self, capsys):
+        rc = _cmd_project(_MockArgs(name="demo", workspace="ws-a", json=False))
+        assert rc == 0
+        return capsys.readouterr().out
+
+    def _section(self, out):
+        lines = out.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("memory: "))
+        end = next((i for i in range(start + 1, len(lines)) if not lines[i]), len(lines))
+        return lines[start:end]
+
+    def test_the_index_is_grouped_by_kind_most_specific_scope_first(self, card_db, capsys):
+        assert self._section(self._card(capsys)) == [
+            "memory: ws-a > grp > demo",
+            "kind=preference",
+            '  "Reports: UTC and English."  scope=project  ref=memory:ws-a/decision_demo_english',
+            '  "Reports: UTC only."  scope=workspace  ref=memory:ws-a/decision_ws_utc',
+            "kind=fact",
+            '  "demo listens on 8080."  scope=project  ref=memory:ws-a/atom_demo_port',
+            '  "grp deploys with Flux."  scope=group  ref=memory:ws-a/decision_grp_fact',
+            "kind=decision",
+            '  "demo keeps SQLite."  scope=project  ref=memory:ws-a/decision_demo_sqlite',
+            '  "Flux is the deploy path."  scope=workspace  ref=memory:ws-a/decision_ws_flux',
+            "lessons=2  read=gaia memory get-relevant --initiative demo --sections anchor",
+            "pending=1  read=gaia memory get-relevant --initiative demo",
+        ]
+
+    def test_every_indexed_line_marks_its_scope(self, card_db, capsys):
+        rows = [line for line in self._section(self._card(capsys)) if line.startswith('  "')]
+        assert len(rows) == 6
+        assert all(("scope=workspace" in r) or ("scope=group" in r) or ("scope=project" in r) for r in rows)
+
+    def test_the_users_rows_never_appear(self, card_db, capsys):
+        out = self._card(capsys)
+        assert "memory:user/" not in out and "seven headings" not in out
+
+    def test_other_projects_and_expired_preferences_stay_out(self, card_db, capsys):
+        out = self._card(capsys)
+        assert "other project rule" not in out and "expired rule" not in out
+
+    def test_no_body_and_no_lesson_or_pending_title_appears(self, card_db, capsys):
+        out = self._card(capsys)
+        assert "BODY-MUST-NOT-APPEAR" not in out
+        assert "retries hide" not in out and "close the probe" not in out
+
+    def test_json_carries_the_same_index_and_counts(self, card_db, capsys):
+        rc = _cmd_project(_MockArgs(name="demo", workspace="ws-a", json=True))
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert [(r["kind"], r["scope"], r["ref"]) for r in data["memory_index"]][:2] == [
+            ("preference", "project", "memory:ws-a/decision_demo_english"),
+            ("preference", "workspace", "memory:ws-a/decision_ws_utc"),
+        ]
+        assert len(data["memory_index"]) == 6
+        assert data["lessons"] == {"count": 2, "read": "gaia memory get-relevant --initiative demo --sections anchor"}
+        assert data["pending"] == {"count": 1, "read": "gaia memory get-relevant --initiative demo"}
+        assert "BODY-MUST-NOT-APPEAR" not in json.dumps(data)
+
+    def test_another_project_gets_the_chain_rows_but_none_of_demos(self, card_db, capsys):
+        rc = _cmd_project(_MockArgs(name="other", workspace="ws-a", json=False))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "scope=workspace" in out and "scope=group" in out
+        assert "other project rule" in out and "demo listens" not in out
+        assert "lessons=" not in out and "pending=" not in out
 
 
 # ---------------------------------------------------------------------------

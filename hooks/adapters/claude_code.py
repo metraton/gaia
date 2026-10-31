@@ -107,7 +107,7 @@ _HOOK_SPECIFIC_OUTPUT = "hookSpecificOutput"
 # policy (delegate mode, call ceiling). No hook ran for the others before, so they keep the verdict they had.
 _POLICY_TOOLS = frozenset({
     "bash", "powershell", "monitor", "task", "agent", "sendmessage", "askuserquestion",
-    "read", "edit", "write", "glob", "grep", "websearch", "webfetch", "notebookedit",
+    "read", "edit", "multiedit", "write", "glob", "grep", "websearch", "webfetch", "notebookedit",
 })
 
 # Claude Code's two distribution channels and the env var that distinguishes
@@ -254,6 +254,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
     PRIMARY_AGENT_TYPE = PRIMARY_AGENT
     HOST_NAME = HOST_NAME
+    AGENT_ID_NAMES_SCRATCH = True
 
     # ------------------------------------------------------------------ #
     # parse_event: stdin JSON -> HookEvent
@@ -1666,8 +1667,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         What a freshly dispatched subagent receives is the KERNEL
         rendered from its claimed born row (# Your Contract / # Your CLI /
         # How the user works) plus, when present, the cached session-events
-        digest. Project context is NOT preloaded (pulled on demand via the
-        CLI) and surface routing is neither computed nor injected.
+        digest. The kernel carries # Project context, the dispatch project's
+        can_read sections; surface routing is neither computed nor injected.
 
         Contributions, all optional, joined when present:
         1. Cache hit (normal start via Task/Agent tool): PreToolUse:Agent
@@ -1722,7 +1723,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             kernel_context = self._maybe_claim_dispatch_kernel(raw)
             if kernel_context:
                 context_text = "\n\n".join(filter(None, [
-                    context_text, kernel_context,
+                    kernel_context, context_text,
                 ]))
             return ContextResult(
                 context_injected=True,

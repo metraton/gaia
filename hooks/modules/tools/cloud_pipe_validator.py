@@ -324,6 +324,12 @@ def build_block_response(violation: PipeViolation, command: str) -> dict:
     return build_hook_permission_response("deny", reason)
 
 
+def violation_kind(command: str) -> str:
+    """Return the rule the first pipe, redirect or chaining violation in *command* breaks, or ""."""
+    violation = _find_violation(command)
+    return violation.rule if violation is not None else ""
+
+
 def validate_cloud_pipe(command: str) -> Optional[dict]:
     """
     Check a command for cloud pipe/redirect/chaining violations.

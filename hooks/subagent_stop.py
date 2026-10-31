@@ -167,15 +167,38 @@ def subagent_stop_hook(task_info, agent_output):
         # Process update_contracts array from the agent_contract_handoff envelope.
         context_update_result = None
         if parsed_contract is not None:
+            born = None
+            if isinstance(parsed_contract, dict):
+                try:
+                    from gaia.store.writer import dispatch_row_for_identity
+
+                    born = dispatch_row_for_identity(
+                        session_id, (parsed_contract.get("agent_status") or {}).get("agent_id"),
+                        db_path=task_info.get("db_path"),
+                    )
+                except Exception:
+                    logger.warning("dispatch row lookup failed", exc_info=True)
+            dispatch_project = task_info.get("dispatch_project") or (born or {}).get("dispatch_project")
             update_contracts_task_info = {
                 "agent": agent_type,
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
                 "workspace": task_info.get("workspace"),
+                "project": dispatch_project,
             }
             update_contracts_result = process_update_contracts(
                 parsed_contract, update_contracts_task_info
             )
+            if update_contracts_result.get("errors") and born and born.get("contract_id"):
+                try:
+                    from gaia.store.writer import record_update_contracts_outcome
+
+                    record_update_contracts_outcome(
+                        born["contract_id"], refused=update_contracts_result["errors"],
+                        db_path=task_info.get("db_path"),
+                    )
+                except Exception:
+                    logger.warning("update_contracts refusal not stamped", exc_info=True)
             if update_contracts_result.get("updated"):
                 context_update_result = {
                     "updated": True,

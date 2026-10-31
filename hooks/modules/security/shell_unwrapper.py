@@ -23,10 +23,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .mutative_verbs import (
-    _WrapperGrammar,
     _consume_shell_word,
     _peel_leading_command_wrappers,
-    _skip_wrapper_arguments,
 )
 
 
@@ -45,16 +43,6 @@ class UnwrapResult:
         return self.inner
 
 
-# Launchers that run a shell unchanged but are absent from the shared
-# _COMMAND_WRAPPERS table; kept here so recognising them widens wrapper
-# detection without widening every other consumer of that table.
-_SHELL_LAUNCHERS = {
-    "exec": _WrapperGrammar(value_flags=frozenset({"-a"})),
-    "setsid": _WrapperGrammar(),
-    "strace": _WrapperGrammar(value_flags=frozenset({"-e", "-o", "-p", "-s", "-u", "-E"})),
-    "ltrace": _WrapperGrammar(value_flags=frozenset({"-e", "-o", "-p", "-s", "-u"})),
-}
-
 _SHELLS = frozenset({
     "sh", "bash", "dash", "ash", "ksh", "mksh", "zsh", "csh", "tcsh", "fish",
 })
@@ -67,14 +55,7 @@ _MAX_DEPTH = 10
 
 def _peel_launchers(command: str) -> str:
     """Return *command* without its leading assignments, wrappers and launchers."""
-    s = command.strip()
-    while True:
-        s, _ = _peel_leading_command_wrappers(s)
-        word_end = _consume_shell_word(s, 0)
-        grammar = _SHELL_LAUNCHERS.get(s[:word_end].rsplit("/", 1)[-1])
-        if grammar is None:
-            return s
-        s = s[_skip_wrapper_arguments(s, word_end, grammar):]
+    return _peel_leading_command_wrappers(command.strip())[0]
 
 
 def _next_word_end(s: str, i: int) -> int:

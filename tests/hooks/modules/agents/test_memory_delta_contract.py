@@ -57,10 +57,18 @@ def test_invalid_entries_are_advisory_and_skipped() -> None:
     assert len(block.warnings) == 2
 
 
-def test_new_delta_wins_over_legacy_without_duplication() -> None:
+def test_delta_and_legacy_both_land_without_duplication() -> None:
+    shared = {"description": "D", "body": "B"}
     contract = {
-        "memory_delta": {"version": 1, "proposals": []},
-        "memorialize_suggestions": [{"description": "D", "body": "B"}],
+        "memory_delta": {"version": 1, "proposals": [
+            {"operation": "create", "create": dict(shared)},
+            {"operation": "append", "target": {"slug": "s"}, "append": {"body": "N"}},
+        ]},
+        "memorialize_suggestions": [dict(shared), {"description": "E", "body": "F"}],
     }
     block = parse_memory_delta("", parsed_contract=contract)
-    assert block.proposals == []
+    assert block.proposals == [
+        {"operation": "create", "create": shared},
+        {"operation": "append", "target": {"slug": "s"}, "append": {"body": "N"}},
+        {"operation": "create", "create": {"description": "E", "body": "F"}},
+    ]

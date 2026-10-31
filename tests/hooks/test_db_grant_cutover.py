@@ -76,6 +76,12 @@ def _sealed_payload(
     )
 
 
+def _lookup_requester(payload: dict) -> dict:
+    """The requester a hook retry presents for ``payload``: the sealed cwd and requesting session and agent."""
+    by = payload["requested_by"]
+    return {"cwd": payload["items"][0]["cwd"], "session_id": by["session_id"], "agent_id": by["agent_id"]}
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -336,7 +342,7 @@ class TestCrossSessionGrant:
         assert result.success, f"Cross-session activation must succeed: {result.reason}"
 
         # Check with session B -- must find the grant.
-        grant = check_approval_grant(command, session_id=session_b)
+        grant = check_approval_grant(command, session_id=session_b, requester=_lookup_requester(payload))
         assert grant is not None, (
             "check_approval_grant() must find the grant activated under session B"
         )
@@ -689,7 +695,7 @@ class TestGrantReuse:
         assert row[0] == "PENDING", "an un-presented grant must stay PENDING"
 
         # A fresh validate() within the window still matches the live grant...
-        grant = check_approval_grant(command, session_id=session_id)
+        grant = check_approval_grant(command, session_id=session_id, requester=_lookup_requester(payload))
         assert grant is not None, (
             "an unconsumed grant must be matchable by a fresh check within its TTL"
         )

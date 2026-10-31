@@ -94,7 +94,6 @@ class TestBashValidator:
         "aws eks delete-cluster my-cluster",
         "gcloud container clusters delete my-cluster",
         "kubectl delete namespace production",
-        "git push --force origin main",
     ])
     def test_blocks_deny_list_commands(self, validator, command):
         """Test permanently blocked commands from deny list."""
@@ -645,13 +644,12 @@ class TestBlockedCommandsPriority:
         assert "security policy" in result.reason.lower()
         assert result.block_response is None
 
-    def test_git_force_push_with_git_c_flag_still_uses_exit_2(self, validator):
-        """git global flags must not hide force pushes from the deny list."""
+    def test_git_force_push_with_git_c_flag_signs_instead_of_exit_2(self, validator):
+        """A force push toward the default branch asks for a signature naming what it destroys."""
         result = validator.validate("git -C repo push origin main --force")
         assert result.allowed is False
-        assert result.tier == SecurityTier.T3_BLOCKED
-        assert "security policy" in result.reason.lower()
-        assert result.block_response is None
+        assert "security policy" not in result.reason.lower()
+        assert "Rule: sign.destroys." in result.reason
 
 
 class TestCloudPipeValidation:

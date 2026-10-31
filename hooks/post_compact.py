@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostCompact hook — logging stub; real re-injection happens elsewhere.
+"""PostCompact hook — closes the session's compaction bracket; re-injection happens elsewhere.
 
 The event input carries the ``compact_summary`` the compaction produced, which
 this hook does not read. PLATFORM LIMITATION: Claude Code's hook-output schema
@@ -17,14 +17,10 @@ The real, valid delivery mechanism is ``SessionStart`` with
 ``source == "compact"``: Claude Code's SessionStart matcherMetadata lists
 ``compact`` as one of its accepted `source` values (alongside `startup`,
 `resume`, `clear`, `fork`), and SessionStart's `hookSpecificOutput` DOES
-support `additionalContext`. ``hooks/session_start.py`` is now wired for
-``startup|resume|clear|compact|fork`` and builds the SAME compact-context refresh
-(via ``modules.context.compact_context_builder.build_compact_context``)
-when it fires with ``source == "compact"``. This file stays registered
-for the ``PostCompact`` event as a harmless, schema-valid no-op (parallel
-to pre_compact.py) purely for observability -- it no longer calls
-``build_compact_context()`` itself, to avoid a second, discarded read of
-the same DB queries on every compaction.
+support `additionalContext`. ``hooks/session_start.py`` is wired for
+``startup|resume|clear|compact|fork`` and delivers the session birth block
+for every one of them. This file stays registered for the ``PostCompact``
+event as a schema-valid no-op, purely for observability.
 """
 
 import sys
@@ -55,6 +51,12 @@ def _handle_post_compact(event) -> None:
         "SessionStart(source=compact) instead -- see session_start.py"
     )
 
+    try:
+        from modules.session.compaction_bracket import close_bracket
+
+        close_bracket(event.session_id)
+    except Exception:
+        logger.warning("PostCompact: compaction bracket not closed", exc_info=True)
     # No hookSpecificOutput: PostCompact does not accept one. An empty
     # object is the schema-valid "nothing to report" response.
     print(json.dumps({}))

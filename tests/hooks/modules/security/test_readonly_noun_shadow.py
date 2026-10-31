@@ -91,7 +91,9 @@ GIT_WRITES = [
     ("git-edit", "git config --edit"),
 ]
 
-ALL_WRITES = ANCHORED_WRITES + GIT_WRITES
+LEXICON_WRITES = [("kubectl-use-context", "kubectl config use-context prod")]
+
+ALL_WRITES = ANCHORED_WRITES + GIT_WRITES + LEXICON_WRITES
 
 # --- Face (b): reads of the SAME noun, which must keep costing nothing ------
 # Not optional. Without it the suite cannot tell this work from an
@@ -122,13 +124,9 @@ READS = [
 ]
 
 # --- Declared and left open: the shadow covers no mutative verb here --------
-# ``use`` and ``activate`` are absent from the verb taxonomy, so withdrawing the
-# noun does not move these -- the shadow is not what holds them at T0. They
-# redirect as hard as anything in face (a), which is why they are recorded here
-# rather than left unmentioned, and they need a decision of their own.
+# ``activate`` and ``unset`` are absent from the effect lexicon; each needs a decision of its own.
 STILL_OPEN = [
     ("gcloud-configurations-activate", "gcloud config configurations activate other"),
-    ("kubectl-use-context", "kubectl config use-context prod"),
     ("gcloud-unset", "gcloud config unset project"),
     ("kubectl-unset", "kubectl config unset current-context"),
 ]
@@ -159,13 +157,15 @@ def without_the_config_anchors(monkeypatch):
     Anchors whose path starts with another token are left in place, so a CLI
     that was already anchored for unrelated reasons keeps those verdicts and
     the counterfactual measures this entry rather than the fixture. Also stands
-    down the any-binary `config <write verb>` rule.
+    down the any-binary `config <write verb>` rule and the group-word deferral.
     """
     monkeypatch.setattr(
         mutative_verbs_module,
         "_check_generic_cli_shape",
         lambda base_cmd, family, semantics: None,
     )
+    monkeypatch.setattr(mutative_verbs_module, "GROUP_READ_WORDS", frozenset())
+    monkeypatch.setattr(mutative_verbs_module, "_later_head_mutates", lambda *_: False)
     for base_cmd, anchors in list(COMMAND_PATH_MUTATIVE_UPGRADES.items()):
         survivors = tuple(a for a in anchors if a.path[0] != SHADOWING_NOUN)
         if len(survivors) == len(anchors):

@@ -43,26 +43,39 @@ empty role" are kept distinct rather than collapsed by a default.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import json
 import shlex
 import shutil
 import logging
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, Tuple
+from dataclasses import dataclass, field
 
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
 from ..security.mutative_verbs import (
+    _peel_leading_command_wrappers,
     account_path_redirect_target,
     detect_mutative_command,
     build_t3_block_response,
+    LocalWorkCaller,
+    local_work_callers,
     cwd_after_component,
+    git_under_injected_config,
+    injects_git_config,
     node_test_under_node_options,
+    code_injecting_assignments,
+    runs_under_injected_environment,
+    rewrites_package_inputs,
+    runs_package_script,
     sets_node_options,
+    target_under_line,
 )
+from ..security.nested_executors import targets_set_on_line
+from ..security.targets import naming_variables_on_line, production_target_verdict
 from ..security.flag_classifiers import (
     classify_by_flags,
     OUTCOME_BLOCKED as FLAG_BLOCKED,
@@ -84,23 +97,36 @@ from ..security.approval_messages import (
     build_t3_degraded_block_message,
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
+from ..security.verdict import COMPOSITION_RULES, UNDETERMINED, UNKNOWN_SPAN, blocked_rule, render, signing_rule
 from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
-from ..security.shell_substitution import extract_substitutions, extract_substitutions_truncated
+from ..security.shell_substitution import (
+    _read_heredoc_opener, extract_substitutions, extract_substitutions_truncated,
+)
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
+from ..security.memory_skill_guard import check as check_memory_skill_loaded
 from ..security.subagent_memory_write_guard import (
+    COMPUTED_WORDS_REJECTION,
+    IDENTITY_REJECTION,
     check as check_subagent_memory_write,
 )
+
+_MEMORY_GUARD_RULES = {
+    IDENTITY_REJECTION: "floor.dispatch-identity",
+    COMPUTED_WORDS_REJECTION: "floor.computed-gaia-words",
+}
 from ..security.contract_ownership_guard import check as check_contract_ownership
 from ..security.protected_path_guard import (
     check as check_protected_path_write,
+    unprovable_write_target,
 )
 from ..security.shell_write_guard import check as check_shell_write
-from ..security.sensitive_read_guard import check as check_sensitive_read
+from ..security.sensitive_read_guard import check as check_sensitive_read, remote_copy_destination
 from ..security.publish_attribution_guard import check as check_publish_attribution
+from ..security.comment_push_gate import check as check_comment_push
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
 # `..tools.stage_decomposer`, which (via this package's own __init__.py
 # eagerly importing bash_validator) closes a circular-import loop back to
@@ -111,10 +137,11 @@ from ..security.publish_attribution_guard import check as check_publish_attribut
 from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
+    redirected_into_sender,
     CompositionDecision,
 )
 from .shell_parser import get_shell_parser
-from .cloud_pipe_validator import validate_cloud_pipe
+from .cloud_pipe_validator import validate_cloud_pipe, violation_kind
 from .hook_response import (
     build_hook_permission_response,
     inject_updated_input,
@@ -149,10 +176,229 @@ class BashValidationResult:
     # The pending approval a T3 denial asks consent for, named structurally so
     # no adapter reads it back out of the denial text.
     approval_id: Optional[str] = None
+    rule: str = ""
+    undetermined: str = ""
 
     def __post_init__(self):
         if self.suggestions is None:
             self.suggestions = []
+
+
+def _carries_ruling(validate):
+    """Make every refusal and signature request a validator returns name its rule and remediation."""
+    @functools.wraps(validate)
+    def wrapper(self, command: str, *args, **kwargs) -> BashValidationResult:
+        result = validate(self, command, *args, **kwargs)
+        if result.allowed:
+            return result
+        line = render(result.rule or "floor.unclassified")
+        if result.undetermined:
+            line = f"{result.undetermined[:1].upper()}{result.undetermined[1:]} {UNDETERMINED}. {line}"
+        result.reason = f"{result.reason}\n{line}"
+        if result.block_response is not None:
+            decision = read_permission_decision(result.block_response) or "deny"
+            result.block_response = build_hook_permission_response(
+                decision, f"{read_permission_reason(result.block_response)}\n{line}",
+                updated_input=result.modified_input if decision == "ask" else None,
+            )
+        return result
+    return wrapper
+
+
+_COMPOUND_T3_DENIAL = (
+    "Compound T3 execution is disabled. Create a plan-first "
+    "request-set and run each command directly as a separate Bash "
+    "call, with no wrapper (bash -c, sh -c, eval)."
+)
+_HEREDOC_DATA_READERS = frozenset({
+    "cat", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "nl", "rev", "fold", "tee", "jq",
+})
+_BASE64_DECODE_ARGS = frozenset({"-d", "--decode", "-i", "--ignore-garbage"})
+_GREPS = frozenset({"grep", "egrep", "fgrep"})
+_GREP_PATTERN_FILE = frozenset({"-f", "--file"})
+_XARGS_VALUE_FLAGS = frozenset({"-a", "--arg-file", "-E", "-I", "-L", "-n", "-P", "-s", "-d"})
+_PATH_VALUE_OPTIONS = frozenset({"-C", "-c", "-R", "--repo"})
+_HEREDOC_MESSAGE_FLAGS = {
+    "git": (
+        frozenset({("commit",), ("tag",), ("notes",)}),
+        frozenset({"-F", "--file"}),
+    ),
+    "gh": (
+        frozenset({(noun, verb) for noun in ("pr", "issue") for verb in ("create", "edit", "comment")})
+        | {("release", "create"), ("release", "edit")},
+        frozenset({"--body-file", "--notes-file", "-F"}),
+    ),
+    "glab": (
+        frozenset({(noun, verb) for noun in ("mr", "issue") for verb in ("create", "update", "note")}),
+        frozenset({"--description"}),
+    ),
+}
+
+
+def _flag_values(args: List[str], flags: frozenset) -> List[str]:
+    values = []
+    for arg, following in zip(args, args[1:] + [""]):
+        if arg in flags:
+            values.append(following)
+        elif arg.startswith("--") and arg.split("=", 1)[0] in flags:
+            values.append(arg.split("=", 1)[1] if "=" in arg else "")
+        elif arg[:1] == "-" and arg[:2] in flags:
+            values.append(arg[2:])
+        elif arg[:1] == "-" and arg[1:2] != "-" and f"-{arg[-1:]}" in flags:
+            values.append(following)
+    return values
+
+
+def _command_path(args: List[str], length: int) -> Tuple[str, ...]:
+    path, skip_value = [], False
+    for arg in args:
+        if skip_value:
+            skip_value = False
+        elif arg in _PATH_VALUE_OPTIONS:
+            skip_value = True
+        elif not arg.startswith("-"):
+            path.append(arg)
+            if len(path) == length:
+                break
+    return tuple(path)
+
+
+def _reads_message_from_stdin(program: str, args: List[str]) -> bool:
+    if program not in _HEREDOC_MESSAGE_FLAGS:
+        return False
+    paths, flags = _HEREDOC_MESSAGE_FLAGS[program]
+    return _command_path(args, len(next(iter(paths)))) in paths and "-" in _flag_values(args, flags)
+
+
+def _xargs_payload(reader: str) -> Optional[str]:
+    words = _peel_leading_command_wrappers(reader)[0].split()
+    if not words or os.path.basename(words[0]) != "xargs":
+        return None
+    return " ".join(_xargs_target(words[1:])) or "echo"
+
+
+def _xargs_target(args: List[str]) -> List[str]:
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] == "--":
+            return args[index + 1:]
+        index += 2 if args[index] in _XARGS_VALUE_FLAGS else 1
+    return args[index:]
+
+
+def _heredoc_reader(head: str) -> bool:
+    words = _peel_leading_command_wrappers(head)[0].split()
+    if not words:
+        return False
+    program, args = os.path.basename(words[0]), words[1:]
+    if program in _GREPS:
+        return not _flag_values(args, _GREP_PATTERN_FILE)
+    if program == "base64":
+        return set(args) <= _BASE64_DECODE_ARGS
+    return _reads_message_from_stdin(program, args) or program in _HEREDOC_DATA_READERS
+
+
+@dataclass
+class _Heredoc:
+    reader: str
+    delimiter: str
+    strip_tabs: bool
+    expands: bool
+    segment: int
+    piped: bool = False
+    body: List[str] = field(default_factory=list)
+
+    @property
+    def is_data(self) -> bool:
+        return _heredoc_reader(self.reader)
+
+
+def _starts_command(line: str, index: int) -> bool:
+    if line[index] != "&":
+        return line[index] in "|;("
+    return not ((index and line[index - 1] in "<>") or line[index + 1:index + 2] == ">")
+
+
+def _heredoc_openers(line: str) -> List[_Heredoc]:
+    openers, quote, index, start = [], "", 0, 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            quote = "" if char == quote else quote
+        elif char == "\\":
+            index += 1
+        elif char in "'\"`":
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1] in " \t"):
+            break
+        elif line.startswith(("||", "&&"), index):
+            index = start = index + 2
+            continue
+        elif _starts_command(line, index):
+            for heredoc in openers:
+                heredoc.piped = heredoc.piped or (char == "|" and heredoc.segment == start)
+            start = index + 1
+        elif line.startswith("<<<", index):
+            index += 2
+        elif line.startswith("<<", index):
+            opener = _read_heredoc_opener(line, index)
+            if opener is not None:
+                openers.append(_Heredoc(line[start:index].strip(), opener[0], opener[2], opener[1], start))
+                index = opener[3]
+                continue
+        index += 1
+    return openers
+
+
+def _heredoc_as_program(heredoc: _Heredoc) -> Optional[str]:
+    quote = "" if heredoc.expands else "'"
+    command = f"{heredoc.reader} <<{quote}GAIA_BODY_END{quote}\n" + "".join(f"{b}\n" for b in heredoc.body) + "GAIA_BODY_END"
+    program = heredoc_program(command)
+    return command if program is not None and program.is_readable else None
+
+
+def _heredoc_lines(body: List[str]) -> List[str]:
+    return [line for line in (b.strip() for b in body) if line]
+
+
+def _scan_heredocs(command: str) -> Tuple[str, List[_Heredoc]]:
+    lines, pending, code = [], [], []
+    for line in command.split("\n"):
+        if not pending:
+            lines.append(line)
+            pending = _heredoc_openers(line)
+            for heredoc in pending if line.endswith("\\") else []:
+                heredoc.piped = True
+            continue
+        heredoc = pending[0]
+        text = line.lstrip("\t") if heredoc.strip_tabs else line
+        if text != heredoc.delimiter:
+            heredoc.body.append(text)
+            continue
+        if heredoc.is_data and not heredoc.piped:
+            lines.extend(f"echo {b}" for b in heredoc.body if heredoc.expands and set("$`") & set(b))
+        else:
+            lines.extend(heredoc.body)
+        code.extend([] if heredoc.is_data else [heredoc])
+        lines.append(line)
+        pending.pop(0)
+    for heredoc in pending:
+        lines.extend(heredoc.body)
+        code.extend([] if heredoc.is_data else [heredoc])
+    return "\n".join(lines), code
+
+
+def _rules_t3_outcome(decide):
+    """Name the rule of a T3 outcome; an undeterminable span the decision reads makes it UNKNOWN."""
+    @functools.wraps(decide)
+    def wrapper(command: str, verb: str, category: str, *, rule: str = "", **kwargs) -> BashValidationResult:
+        result = decide(command, verb, category, **kwargs)
+        if not result.rule:
+            result.rule, result.undetermined = signing_rule(verb, category, command, rule)
+            if result.rule.startswith("unknown.") and not result.undetermined:
+                result.undetermined = "the span the decision reads"
+        return result
+    return wrapper
 
 
 # Patterns for AI tool attribution footers (auto-stripped from commits).
@@ -198,20 +444,19 @@ FORBIDDEN_FOOTER_PATTERNS = [
     r"Co-authored-by:\s+Gemini\b",
 ]
 
-# Indirect execution other than a shell's command string, which
-# shell_command_string recognises: eval, inline interpreter code and a
-# process substitution fed to a shell.
-_WRAPPER_PREFIX = r"(?:(?:nohup|sudo|env|nice|ionice|setsid|strace|ltrace|time)\s+)*"
+# Indirect execution other than a shell's command string (which
+# shell_command_string recognises): eval, inline interpreter code and a
+# process substitution fed to a shell, matched as written and wrapper-peeled.
 
 INDIRECT_EXEC_PATTERNS = [
     re.compile(r"^\s*eval\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"python3?\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"node\s+-e\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"perl\s+-e\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"ruby\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^\s*python3?\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^\s*node\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^\s*perl\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^\s*ruby\s+-e\s+", re.IGNORECASE),
     # Process substitution and heredoc piped to shell
-    re.compile(r"^" + _WRAPPER_PREFIX + r"bash\s+<\(", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"sh\s+<\(", re.IGNORECASE),
+    re.compile(r"^\s*bash\s+<\(", re.IGNORECASE),
+    re.compile(r"^\s*sh\s+<\(", re.IGNORECASE),
 ]
 
 def _plan_grant_for_denial(command: str) -> Optional[dict]:
@@ -288,8 +533,11 @@ class BashValidator:
     composition -> aggregate.  See module docstring for phase details.
     """
 
-    def __init__(self):
-        """Initialize validator with parser, unwrapper, and decomposer."""
+    last_warning = ""
+
+    def __init__(self, agent_names_scratch: bool = False):
+        """Initialize the validator; only a host whose agent id names scratch entries passes *agent_names_scratch*, the ownership local-work relief keys on."""
+        self.agent_names_scratch = agent_names_scratch
         self.shell_parser = get_shell_parser()
         self._unwrapper = ShellUnwrapper()
         self._decomposer = StageDecomposer()
@@ -367,8 +615,9 @@ class BashValidator:
         Returns BashValidationResult if indirect execution detected, else None.
         """
         shell_string = shell_command_string(command)
+        peeled = _peel_leading_command_wrappers(command)[0]
         if shell_string is None and not any(
-            pattern.search(command) for pattern in INDIRECT_EXEC_PATTERNS
+            pattern.search(text) for pattern in INDIRECT_EXEC_PATTERNS for text in (command, peeled)
         ):
             return None
 
@@ -388,6 +637,7 @@ class BashValidator:
                     suggestions=[
                         blocked.suggestion or "Run the command directly instead of via a shell wrapper.",
                     ],
+                    rule="floor.indirect-execution",
                 )
 
         logger.info("Indirect execution detected: %s", command[:80])
@@ -434,6 +684,7 @@ class BashValidator:
                 block_response=build_hook_permission_response(
                     "deny", deny_msg,
                 ),
+                rule="floor.indirect-execution",
             )
         dialog_msg = (
             "Indirect execution detected. The command uses a shell "
@@ -448,6 +699,7 @@ class BashValidator:
             tier=SecurityTier.T2_DRY_RUN,
             reason=reason_msg,
             block_response=hook_block,
+            rule="floor.indirect-execution",
         )
 
     def _extract_inner_command(self, command: str) -> Optional[str]:
@@ -618,6 +870,7 @@ class BashValidator:
 
         return cleaned, stripped_parts
 
+    @_carries_ruling
     def validate(
         self,
         command: str,
@@ -625,6 +878,7 @@ class BashValidator:
         session_id: str = "",
         agent_type: str = "",
         hook_payload: Optional[Dict[str, Any]] = None,
+        cwd: Optional[str] = None,
     ) -> BashValidationResult:
         """
         Validate a Bash command through the 5-phase pipeline.
@@ -652,6 +906,7 @@ class BashValidator:
                 leaving it unset -- `None`, never a substituted `{}` -- is
                 what keeps the guard below correctly inert for them instead
                 of misreading their absence as an empty orchestrator role.
+            cwd: The caller's directory when no hook_payload carries one.
 
         Returns:
             BashValidationResult with validation details
@@ -665,6 +920,8 @@ class BashValidator:
         # guard can return early, and an early return must not be a way for the
         # stale mark to survive. See modules.security.fail_open.
         clear_classification()
+        self.last_warning = ""
+        cwd = (hook_payload or {}).get("cwd") or cwd
 
         # ================================================================
         # PHASE 0: GAIA CLI ONLY GUARD (orchestrator role closure)
@@ -712,6 +969,7 @@ class BashValidator:
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
                     reason=guard_reason,
+                    rule="floor.gaia-cli-only",
                 )
 
         if not command or not command.strip():
@@ -719,6 +977,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason="Empty command not allowed",
+                rule="floor.empty-command",
             )
 
         command = command.strip()
@@ -731,7 +990,7 @@ class BashValidator:
         # ahead of the sealed-retry lane so no signature can carry them.
         # ================================================================
         consent_verb_allowed, consent_verb_reason = check_host_consent_verb(
-            command, cwd=(hook_payload or {}).get("cwd") or None,
+            command, cwd=cwd,
         )
         if not consent_verb_allowed:
             logger.warning("BLOCKED host consent verb from a shell: %s", command[:120])
@@ -739,6 +998,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=consent_verb_reason,
+                rule="floor.host-consent-verb",
             )
 
         sealed = self._sealed_elsewhere(command, session_id, agent_type, hook_payload)
@@ -772,7 +1032,7 @@ class BashValidator:
         # approval; a granted retry re-reads its body files.
         # ================================================================
         attribution_allowed, attribution_reason = check_publish_attribution(
-            command, (hook_payload or {}).get("cwd") or None,
+            command, cwd,
         )
         if not attribution_allowed:
             logger.warning("BLOCKED Claude attribution in published text: %s", command[:100])
@@ -780,7 +1040,21 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=attribution_reason,
+                rule="floor.publish-attribution",
             )
+
+        # Ahead of tier classification so a refused push mints no approval; a
+        # counter failure allows it and leaves its warning in `last_warning`.
+        comment_push = check_comment_push(command, cwd)
+        if not comment_push.allowed:
+            logger.warning("BLOCKED push over the comment limit: %s", command[:100])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=comment_push.reason,
+                rule="floor.comment-push-gate",
+            )
+        self.last_warning = comment_push.warning or ""
 
         # A data heredoc's body is stdin the shell never runs, so the write
         # guards below read only its command line; a command line carrying a
@@ -802,6 +1076,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=db_write_reason,
+                rule="floor.gaia-db-write",
                 suggestions=[
                     "Use the `gaia context` CLI or emit update_contracts.",
                 ],
@@ -814,13 +1089,13 @@ class BashValidator:
         # context, EXCEPT for the sanctioned writers (gaia-operator). The
         # orchestrator (is_subagent False) is never blocked here. Categorical
         # deny, NOT approvable: the correct subagent path is to PROPOSE via a
-        # `memorialize_suggestions` block, not to escalate. Runs on the full
+        # `memory_delta` proposal, not to escalate. Runs on the full
         # (footer-normalized) command BEFORE unwrap/decompose so compound
         # chains and wrappers are inspected intact. See the memory skill's
         # "Who writes" section for the contract this enforces.
         # ================================================================
         mem_write_allowed, mem_write_reason = check_subagent_memory_write(
-            command, is_subagent=is_subagent, agent_type=agent_type,
+            write_guard_scope, is_subagent=is_subagent, agent_type=agent_type,
         )
         if not mem_write_allowed:
             logger.warning(
@@ -831,10 +1106,23 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=mem_write_reason,
-                suggestions=[
-                    "Write a `memorialize_suggestions` block into your "
-                    "contract row with `gaia contract fill --json` instead.",
+                rule=_MEMORY_GUARD_RULES.get(mem_write_reason, "floor.subagent-memory-write"),
+                suggestions=[] if mem_write_reason in _MEMORY_GUARD_RULES else [
+                    "Propose it in your contract row's `memory_delta` "
+                    "with `gaia contract set memory_delta '<json>'` instead.",
                 ],
+            )
+
+        skill_allowed, skill_reason = check_memory_skill_loaded(
+            command, is_subagent=is_subagent, session_id=session_id,
+        )
+        if not skill_allowed:
+            logger.warning("BLOCKED memory write without Skill('memory'): %s", command[:100])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=skill_reason,
+                rule="floor.memory-skill-not-loaded",
             )
 
         resume_allowed, resume_reason = check_subagent_resume_point(
@@ -849,6 +1137,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=resume_reason,
+                rule="floor.subagent-resume-point",
             )
 
         # ================================================================
@@ -871,6 +1160,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=ownership_reason,
+                rule="floor.contract-ownership",
                 suggestions=[
                     "Address your own contract with --draft-id <contract_id>.",
                 ],
@@ -890,7 +1180,7 @@ class BashValidator:
         # chains and quoted forms are inspected intact.
         # ================================================================
         pp_write_allowed, pp_write_reason = check_protected_path_write(
-            write_guard_scope
+            write_guard_scope, cwd=cwd
         )
         if not pp_write_allowed:
             logger.warning(
@@ -900,6 +1190,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=pp_write_reason,
+                rule="floor.protected-path",
                 suggestions=[
                     "Edit the SOURCE under gaia/ and run `gaia install` to "
                     "propagate; never modify .claude/ directly.",
@@ -920,7 +1211,7 @@ class BashValidator:
         # the destination before this guard could see it.
         # ================================================================
         shell_write_allowed, shell_write_reason = check_shell_write(
-            write_guard_scope, cwd=(hook_payload or {}).get("cwd") or None,
+            write_guard_scope, cwd=cwd,
         )
         if not shell_write_allowed:
             logger.warning(
@@ -930,10 +1221,25 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=shell_write_reason,
+                rule="floor.shell-write",
                 suggestions=[
                     "Use the Write or Edit tool on the file instead; a "
                     "throwaway dump belongs under ~/.gaia/scratch.",
                 ],
+            )
+
+        # A sensitive read is refused before any check that can ask, and before the
+        # sanitizer, which would strip a `< file` input with the trailing redirect.
+        sensitive_allowed, sensitive_reason = check_sensitive_read(
+            _scan_heredocs(command)[0], cwd, program=command,
+        )
+        if not sensitive_allowed:
+            logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=sensitive_reason,
+                rule="floor.secret-read",
             )
 
         # ================================================================
@@ -956,6 +1262,39 @@ class BashValidator:
                     f"[T3_APPROVAL_REQUIRED] This command writes "
                     f"'{account_write_target}', which grants access to your "
                     f"own account."
+                ),
+                session_id=session_id,
+                agent_type=agent_type,
+            )
+
+        unprovable_target = unprovable_write_target(write_guard_scope, cwd)
+        if unprovable_target:
+            return decide_t3_outcome(
+                command,
+                verb="unprovable-write-target",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                native_ask_reason=(
+                    f"[T3_APPROVAL_REQUIRED] This command writes '{unprovable_target[:80]}', "
+                    f"a path only the shell can resolve, so Gaia cannot tell where it lands."
+                ),
+                session_id=session_id,
+                agent_type=agent_type,
+            )
+
+        # A file fed by redirect into a sender, or copied to another host, leaves the
+        # machine; decided before the sanitizer, which strips the `< file` it rests on.
+        redirect_sender = (redirected_into_sender(write_guard_scope)
+                           or remote_copy_destination(write_guard_scope))
+        if redirect_sender:
+            return decide_t3_outcome(
+                command,
+                verb="egress",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                native_ask_reason=(
+                    f"[T3_APPROVAL_REQUIRED] '{redirect_sender[:80]}' sends "
+                    f"data off this machine."
                 ),
                 session_id=session_id,
                 agent_type=agent_type,
@@ -1036,6 +1375,7 @@ class BashValidator:
                     f"Obfuscated shell nesting detected: {unwrap_result.depth} "
                     f"wrapper layers exceeds limit of {_OBFUSCATION_DEPTH_LIMIT}"
                 ),
+                rule="floor.obfuscated-nesting",
             )
 
         indirect_result = self._detect_indirect_execution(
@@ -1051,7 +1391,8 @@ class BashValidator:
         # phase 4 (composition rules, T4) and provides operator context
         # that ShellCommandParser.parse() discards.
         # ================================================================
-        decomposed = self._decomposer.decompose(command)
+        classified, code_heredocs = _scan_heredocs(command)
+        decomposed = self._decomposer.decompose(classified)
 
         # ================================================================
         # PHASE 3: CLASSIFY STAGES
@@ -1069,17 +1410,18 @@ class BashValidator:
         # short-circuiting past it.
         # ================================================================
 
-        # 3a. Blocked commands check on FULL command (exit 2).
-        # This MUST run before any other classifier to ensure permanently
-        # blocked commands (kubectl delete namespace, etc.) are caught
-        # with a reliable exit 2.
-        blocked_result = is_blocked_command(command)
+        # 3a. Blocked commands check on the command minus its data-heredoc
+        # bodies (exit 2). This MUST run before any other classifier to ensure
+        # permanently blocked commands (kubectl delete namespace, etc.) are
+        # caught with a reliable exit 2.
+        blocked_result = is_blocked_command(classified)
         if blocked_result.is_blocked:
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=f"Command blocked by security policy: {blocked_result.category}",
                 suggestions=[blocked_result.suggestion] if blocked_result.suggestion else [],
+                rule=blocked_rule(blocked_result.category),
             )
 
         # 3b. Parse compound commands and check each component against the
@@ -1088,7 +1430,7 @@ class BashValidator:
         has_operators = self._has_operators(command)
         parsed_components = None
         if has_operators:
-            parsed_components = self.shell_parser.parse(command)
+            parsed_components = self.shell_parser.parse(classified)
             # Check each component against the deny list.
             # This catches "ls && kubectl delete namespace prod" early.
             for component in parsed_components:
@@ -1099,18 +1441,18 @@ class BashValidator:
                         tier=SecurityTier.T3_BLOCKED,
                         reason=f"Command blocked by security policy: {comp_blocked.category}",
                         suggestions=[comp_blocked.suggestion] if comp_blocked.suggestion else [],
+                        rule=blocked_rule(comp_blocked.category),
                     )
 
-        secret_components = parsed_components if parsed_components is not None else [command]
-        for component in secret_components:
-            secret_violation = check_kubectl_secret_output(component.strip())
-            if secret_violation is not None:
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=secret_violation.reason,
-                    suggestions=[secret_violation.suggestion],
-                )
+        secret_violation = check_kubectl_secret_output(classified)
+        if secret_violation is not None:
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=secret_violation.reason,
+                suggestions=[secret_violation.suggestion],
+                rule="floor.kubectl-secret-output",
+            )
 
         # 3c. Validate git commit messages (on the potentially cleaned command).
         if "git commit" in command and "-m" in command:
@@ -1119,7 +1461,7 @@ class BashValidator:
                 return commit_validation
 
         # 3d. Cloud pipe/redirect/chaining check.
-        pipe_block = validate_cloud_pipe(command)
+        pipe_block = validate_cloud_pipe(classified)
         if pipe_block is not None:
             return BashValidationResult(
                 allowed=False,
@@ -1128,6 +1470,7 @@ class BashValidator:
                 suggestions=[],
                 modified_input=None,
                 block_response=pipe_block,
+                rule="floor.shell-write" if violation_kind(classified) == "redirect" else "floor.cloud-pipe",
             )
 
         # ================================================================
@@ -1144,27 +1487,11 @@ class BashValidator:
             is_subagent=is_subagent,
             session_id=session_id,
             agent_type=agent_type,
+            tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
+            cwd=(hook_payload or {}).get("cwd") or None,
         )
         if _composition_result is not None:
             return _composition_result
-
-        # ================================================================
-        # SENSITIVE READ GUARD
-        # Reading or listing a path on the shared sensitive list is refused
-        # with the same reason Read/Glob/Grep get, and no approval. Runs after
-        # composition so the exfiltration pipe keeps its own verdict, and
-        # after the account-path write above so a write keeps its signature.
-        # ================================================================
-        sensitive_allowed, sensitive_reason = check_sensitive_read(
-            command, (hook_payload or {}).get("cwd") or None,
-        )
-        if not sensitive_allowed:
-            logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=sensitive_reason,
-            )
 
         # ================================================================
         # PHASE 5: AGGREGATE
@@ -1186,26 +1513,34 @@ class BashValidator:
         # cwd is already in effect), so the already-covered "behind a cd"
         # case is unaffected.
         # ================================================================
-        payload_cwd = (hook_payload or {}).get("cwd") or None
+        payload_cwd = cwd
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
+        program = heredoc_program(command)
         # An interpreter's heredoc is its program: splitting it into shell
         # components would validate the body's lines one by one and never
         # show the classifier the program whose effect decides the tier.
-        if not has_operators or heredoc_program(command) is not None:
+        agent_id = str((hook_payload or {}).get("agent_id") or "") if self.agent_names_scratch else ""
+        if not has_operators or program is not None:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
+                caller=LocalWorkCaller(agent_id, payload_cwd),
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=payload_cwd,
-                command=command, tool_use_id=tool_use_id,
+                command=command, tool_use_id=tool_use_id, agent_id=agent_id,
             )
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
+                caller=LocalWorkCaller(agent_id, payload_cwd),
+            )
+        if code_heredocs:
+            result = self._fail_closed_on_code_heredoc(
+                code_heredocs, result, is_subagent=is_subagent, cwd=payload_cwd,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
@@ -1223,6 +1558,66 @@ class BashValidator:
                 inject_updated_input(result.block_response, {"command": command})
 
         return result
+
+    def _fail_closed_on_code_heredoc(
+        self, heredocs: List[_Heredoc], result: BashValidationResult, *, is_subagent: bool, cwd: Optional[str],
+    ) -> BashValidationResult:
+        """Hold a heredoc no pure data reader reads to at least UNKNOWN; a body reading on a floor blocks, a mutative one signs."""
+        readings, xargs_commands, unread, unplaced = [], [], False, False
+        for heredoc in heredocs:
+            program, payload = _heredoc_as_program(heredoc), _xargs_payload(heredoc.reader)
+            if program:
+                readings.append(program)
+            elif payload is not None:
+                lines = _heredoc_lines(heredoc.body)
+                xargs_commands.extend(f"{payload} {line}" for line in lines)
+                unplaced = unplaced or (cwd is None and any(w[:1] not in "/~-" for line in lines for w in line.split()))
+            else:
+                unread = True
+                readings.extend(_heredoc_lines(heredoc.body))
+        signed = None
+        for xargs_command in xargs_commands:
+            verdict = BashValidator.validate.__wrapped__(self, xargs_command, cwd=cwd)
+            asks = verdict.block_response is not None and read_permission_decision(verdict.block_response) == "ask"
+            if not (verdict.allowed or asks):
+                return verdict
+            signed = signed or (None if verdict.allowed else verdict)
+        for reading in readings:
+            blocked = is_blocked_command(reading)
+            if blocked.is_blocked:
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"Command blocked by security policy: {blocked.category}",
+                    suggestions=[blocked.suggestion] if blocked.suggestion else [],
+                    rule=blocked_rule(blocked.category),
+                )
+        if not result.allowed:
+            return result
+        rule, undetermined = UNKNOWN_SPAN, "the program its heredoc feeds"
+        if unplaced and not unread:
+            undetermined = "the directory a relative xargs argument resolves against"
+        tripped = signed is not None
+        if tripped:
+            rule, undetermined = signed.rule, signed.undetermined
+        for reading in [] if tripped else readings:
+            detected = detect_mutative_command(reading, cwd=cwd)
+            if detected.is_mutative:
+                rule, undetermined = signing_rule(detected.verb, detected.category, reading, detected.rule)
+                if rule.startswith("unknown.") and not undetermined:
+                    undetermined = "the span the decision reads"
+                tripped = True
+                break
+        if not (tripped or unread or unplaced):
+            return result
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T3_BLOCKED,
+            reason=_COMPOUND_T3_DENIAL,
+            block_response=build_hook_permission_response("deny" if is_subagent else "ask", _COMPOUND_T3_DENIAL),
+            rule=rule,
+            undetermined=undetermined,
+        )
 
     def _validate_data_heredoc(
         self,
@@ -1320,8 +1715,9 @@ class BashValidator:
         agent_type: str = "",
         cwd: Optional[str] = None,
         tool_use_id: str = "",
+        caller: Optional[LocalWorkCaller] = None,
     ) -> BashValidationResult:
-        """Validate a single command (no operators).
+        """Validate a single command (no operators); *caller* is what the local-work relief needs.
 
         Simplified pipeline:
         0. Indirect execution detection (for compound command components)
@@ -1355,7 +1751,8 @@ class BashValidator:
         # folded from a preceding ``cd`` component of the chain (see
         # _validate_compound_command), so a relative script path resolves
         # against the workspace the chain navigated to, not the hook's own cwd.
-        result = detect_mutative_command(command, cwd=cwd)
+        result = detect_mutative_command(command, cwd=cwd, caller=caller)
+        result = production_target_verdict(command, result, cwd=cwd) or result
         if result.is_mutative:
             from gaia.store.writer import find_pending_plan_command
             if not session_id or not tool_use_id:
@@ -1364,7 +1761,7 @@ class BashValidator:
                 except Exception as exc:
                     return BashValidationResult(
                         allowed=False, tier=SecurityTier.T3_BLOCKED,
-                        reason=f"COMMAND_SET persistence failed closed: {exc}",
+                        reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
                     )
                 if pending_set is not None:
                     _record_plan_command_denial(
@@ -1388,7 +1785,7 @@ class BashValidator:
                 return BashValidationResult(
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
-                    reason=f"COMMAND_SET persistence failed closed: {exc}",
+                    reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
                 )
             if cs_match is not None:
                 return BashValidationResult(
@@ -1487,6 +1884,7 @@ class BashValidator:
                     agent_type=agent_type,
                     guidance=result.guidance,
                     cwd=cwd,
+                    rule=result.rule,
                 )
 
         # Flag-dependent classification (sed -i, find -exec, tar -x, etc.)
@@ -1499,7 +1897,7 @@ class BashValidator:
         # detect_mutative_command() already has deliberate git handling.  If it
         # chose not to block a git command, that decision should be respected.
         # Git BLOCKED results still fire as a safety net (force push, etc.).
-        flag_result = classify_by_flags(command)
+        flag_result = classify_by_flags(command, caller)
         if flag_result is not None:
             if flag_result.outcome == FLAG_BLOCKED:
                 return BashValidationResult(
@@ -1531,7 +1929,7 @@ class BashValidator:
                         return BashValidationResult(
                             allowed=False,
                             tier=SecurityTier.T3_BLOCKED,
-                            reason=f"COMMAND_SET persistence failed closed: {exc}",
+                            reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
                         )
                     if cs_match is not None:
                         return BashValidationResult(
@@ -1638,6 +2036,7 @@ class BashValidator:
         cwd: Optional[str] = None,
         command: str = "",
         tool_use_id: str = "",
+        agent_id: str = "",
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
@@ -1679,12 +2078,35 @@ class BashValidator:
         scan_cwd: Optional[str] = cwd
         # A NODE_OPTIONS set by an earlier component reaches every later node.
         node_options_set = False
-        for comp in components:
-            detected = detect_mutative_command(comp, cwd=scan_cwd)
+        # Code-injecting variables an earlier component set (export, assignment) reach every later program.
+        injected_environment: tuple = ()
+        git_config_injected = False
+        # A package.json or node_modules path rewritten by an earlier component
+        # changes the script a later run executes, which was read before the chain ran.
+        package_inputs_rewritten = False
+        line_targets = targets_set_on_line(command or "\n".join(components))
+        line_naming = naming_variables_on_line(command or "\n".join(components))
+        tripped, tripped_command = None, command
+        callers = local_work_callers(command, components, cwd, agent_id)
+        for comp, caller in zip(components, callers):
+            detected = detect_mutative_command(comp, cwd=scan_cwd, caller=caller)
+            if package_inputs_rewritten and runs_package_script(comp):
+                has_t3 = True
+                break
+            package_inputs_rewritten = package_inputs_rewritten or rewrites_package_inputs(comp)
             if node_options_set and not detected.is_mutative:
                 detected = node_test_under_node_options(comp, scan_cwd) or detected
             node_options_set = node_options_set or sets_node_options(comp)
-            flagged = classify_by_flags(comp)
+            if injected_environment and not detected.is_mutative:
+                detected = runs_under_injected_environment(comp, injected_environment, scan_cwd) or detected
+            injected_environment += code_injecting_assignments(comp)
+            if git_config_injected and not detected.is_mutative:
+                detected = git_under_injected_config(comp) or detected
+            git_config_injected = git_config_injected or injects_git_config(comp)
+            if not detected.is_mutative:
+                detected = target_under_line(comp, line_targets, cwd=scan_cwd) or detected
+            detected = production_target_verdict(comp, detected, cwd=scan_cwd, inherited=line_naming) or detected
+            flagged = classify_by_flags(comp, caller)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (
                 flagged is not None
@@ -1692,6 +2114,7 @@ class BashValidator:
                 and not flagged.command_family.startswith("git_")
             ):
                 has_t3 = True
+                tripped, tripped_command = detected, comp
                 break
         if not has_t3:
             has_t3 = self._has_mutative_substitution_outside_components(command, components, cwd)
@@ -1702,17 +2125,21 @@ class BashValidator:
             )
             if signed is not None:
                 return signed
-            reason = (
-                "Compound T3 execution is disabled. Create a plan-first "
-                "request-set and run each command directly as a separate Bash "
-                "call, with no wrapper (bash -c, sh -c, eval)."
-            )
+            reason = _COMPOUND_T3_DENIAL
             decision = "deny" if is_subagent else "ask"
+            rule, undetermined = (
+                signing_rule(tripped.verb, tripped.category, tripped_command, tripped.rule)
+                if tripped is not None else signing_rule("", "MUTATIVE", command)
+            )
+            if rule.startswith("unknown.") and not undetermined:
+                undetermined = "the span the decision reads"
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=reason,
                 block_response=build_hook_permission_response(decision, reason),
+                rule=rule,
+                undetermined=undetermined,
             )
 
         component_results: List[BashValidationResult] = []
@@ -1731,7 +2158,7 @@ class BashValidator:
             # and must never be reserved as one component of a chain.
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type, cwd=running_cwd,
+                agent_type=agent_type, cwd=running_cwd, caller=callers[i - 1],
             )
             # Advance the cwd AFTER classifying this component, so a `cd` only
             # affects subsequent components (POSIX chain semantics).
@@ -1828,7 +2255,7 @@ class BashValidator:
         except Exception as exc:
             return BashValidationResult(
                 allowed=False, tier=SecurityTier.T3_BLOCKED,
-                reason=f"COMMAND_SET persistence failed closed: {exc}",
+                reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
             )
         if cs_match is None:
             return None
@@ -1845,6 +2272,8 @@ class BashValidator:
         is_subagent: bool = False,
         session_id: str = "",
         agent_type: str = "",
+        tool_use_id: str = "",
+        cwd: Optional[str] = None,
     ) -> Optional[BashValidationResult]:
         """Check cross-stage composition patterns (Phase 4).
 
@@ -1877,9 +2306,19 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=f"Dangerous pipe composition blocked: {result.reason}",
+                rule=COMPOSITION_RULES.get(result.pattern, "floor.unclassified"),
             )
 
         if result.decision == CompositionDecision.ESCALATE:
+            # A signable pipe runs on its grant here: returning the T3 outcome
+            # first would leave the signed set item unreachable.
+            if check_sensitive_read(decomposed.raw, cwd)[0]:
+                signed = self._match_signed_pipeline(
+                    decomposed.raw, decomposed.stages, session_id=session_id,
+                    agent_type=agent_type, tool_use_id=tool_use_id, cwd=cwd,
+                )
+                if signed is not None:
+                    return signed
             # Converge on the single T3 decision point.  A file_to_exec
             # composition in a subagent must route to deny+approval_id (Gaia
             # approval flow) rather than escaping to the native ask dialog;
@@ -2036,6 +2475,7 @@ class BashValidator:
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"Commit message validation failed: {validation.errors[0]['message']}",
+                    rule="floor.commit-message",
                     suggestions=suggestions[:3]  # Limit to 3 suggestions
                 )
 
@@ -2485,6 +2925,21 @@ def _build_sealed_payload(
     )
 
 
+def _categorical_refusal(command: str, cwd: str | None) -> BashValidationResult | None:
+    """The refusal *command* carries anywhere in it, which outranks every signature request."""
+    written, command = command, _scan_heredocs(command)[0]
+    parts = [command, *(part.strip() for part in get_shell_parser().parse(command))]
+    blocked = next((verdict for verdict in map(is_blocked_command, parts) if verdict.is_blocked), None)
+    if blocked is not None:
+        reason, rule = f"Command blocked by security policy: {blocked.category}", "floor.blocked"
+    else:
+        reason, rule = check_sensitive_read(command, cwd, program=written)[1], "floor.secret-read"
+    if not reason:
+        return None
+    return BashValidationResult(allowed=False, tier=SecurityTier.T3_BLOCKED, reason=reason, rule=rule)
+
+
+@_rules_t3_outcome
 def decide_t3_outcome(
     command: str,
     verb: str,
@@ -2550,6 +3005,10 @@ def decide_t3_outcome(
         A blocked BashValidationResult (allowed=False, tier T3) whose
         block_response is either a "deny" (with approval_id) or an "ask".
     """
+    refusal = _categorical_refusal(command, cwd)
+    if refusal is not None:
+        return refusal
+
     # Breadcrumb for the fail-open path. Reaching this function IS the moment
     # the command becomes known to require consent, so from here on a failure
     # anywhere in the gate must not degrade it into a permission -- see
@@ -2568,6 +3027,7 @@ def decide_t3_outcome(
             tier=SecurityTier.T3_BLOCKED,
             reason=reason,
             block_response=build_hook_permission_response("deny", reason),
+            rule="floor.clear-secret",
         )
 
     # A genuine multi-command chain is a set of >= 2 items. Anything else
@@ -2599,6 +3059,7 @@ def decide_t3_outcome(
                 tier=SecurityTier.T3_BLOCKED,
                 reason=reason,
                 block_response=build_hook_permission_response("deny", reason),
+                rule="floor.no-requester",
             )
 
         # Subagent-under-orchestrator: deny + persisted approval_id so the
@@ -2723,6 +3184,7 @@ def decide_t3_outcome(
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"Command blocked by security policy: {_blocked.category}",
                     suggestions=[_blocked.suggestion] if _blocked.suggestion else [],
+                    rule=blocked_rule(_blocked.category),
                 )
 
             # ---- Degradation sensor (always-on) ------------------------------
@@ -2768,6 +3230,7 @@ def decide_t3_outcome(
                 tier=SecurityTier.T3_BLOCKED,
                 reason="T3 degraded-block: approval persistence failed",
                 block_response=hook_deny,
+                rule="floor.approval-store",
             )
         reason = build_t3_blocked_denial_message(
             approval_id=approval_id,

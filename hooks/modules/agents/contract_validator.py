@@ -39,10 +39,6 @@ Provides:
     - extract_plan_status_from_output(): Extract agent_state string
     - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS
     - parse_update_contracts(): Parse update_contracts array clause
-    - parse_rollback_executed(): Parse rollback_executed clause (advisory)
-    - parse_context_consumption(): Parse context_consumption clause (advisory)
-    - parse_memory_suggestions(): Parse memory_suggestions clause (advisory)
-    - parse_user_facing_summary(): Parse user_facing_summary clause (advisory)
     - parse_failure_report(): Parse the optional failure_report clause (advisory)
 
 memory_delta is parsed by response_contract.parse_memory_delta, not here; the
@@ -667,85 +663,11 @@ def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
     return results
 
 
-def parse_rollback_executed(contract: dict) -> Optional[str]:
-    """Parse the ``rollback_executed`` clause from a contract dict (advisory).
+def parse_conclusion(contract: dict) -> Optional[str]:
+    """The specialist's verdict for the orchestrator, read from ``user_facing_summary`` on rows closed before the rename."""
+    from gaia.contract.validator import conclusion_of
 
-    Returns the string value (or None) when present, or ``"ABSENT"`` sentinel
-    when the key is not in the contract at all.
-
-    The return value is purely informational; the validator never rejects based
-    on this field.
-    """
-    if "rollback_executed" not in contract:
-        return "ABSENT"
-    val = contract.get("rollback_executed")
-    return str(val) if val is not None else None
-
-
-def parse_context_consumption(contract: dict) -> Optional[Dict[str, Any]]:
-    """Parse the ``context_consumption`` clause from a contract dict (advisory).
-
-    Expected shape::
-
-        { "tokens_used": int|null, "pct_window": float|null }
-
-    Returns the parsed dict, or None when absent or malformed.  The validator
-    never rejects based on this field.
-    """
-    raw = contract.get("context_consumption")
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        logger.warning("context_consumption: expected object, got %s", type(raw).__name__)
-        return None
-
-    tokens_raw = raw.get("tokens_used")
-    pct_raw = raw.get("pct_window")
-
-    try:
-        tokens_used = int(tokens_raw) if tokens_raw is not None else None
-    except (TypeError, ValueError):
-        tokens_used = None
-
-    try:
-        pct_window = float(pct_raw) if pct_raw is not None else None
-    except (TypeError, ValueError):
-        pct_window = None
-
-    return {"tokens_used": tokens_used, "pct_window": pct_window}
-
-
-def parse_memory_suggestions(contract: dict) -> List[str]:
-    """Parse the ``memory_suggestions`` clause from a contract dict (advisory).
-
-    Returns a list of suggestion strings. Non-string entries are coerced to
-    strings. Returns empty list when the clause is absent or malformed.  The
-    validator never rejects based on this field.
-    """
-    raw = contract.get("memory_suggestions")
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        logger.warning("memory_suggestions: expected array, got %s", type(raw).__name__)
-        return []
-    return [str(item) for item in raw if item is not None]
-
-
-def parse_user_facing_summary(contract: dict) -> Optional[str]:
-    """Parse the optional top-level ``user_facing_summary`` clause (advisory).
-
-    The single human-audience field in the contract: a short prose summary the
-    subagent writes once for the user. The orchestrator relays it near-verbatim
-    on a single-agent COMPLETE (N=1) instead of re-synthesizing ``key_outputs``.
-
-    Strictly additive and advisory -- the validator never rejects based on this
-    field. Returns the trimmed string when present and non-empty, else None.
-    """
-    raw = contract.get("user_facing_summary")
-    if not isinstance(raw, str):
-        return None
-    text = raw.strip()
-    return text or None
+    return conclusion_of(contract)
 
 
 def parse_failure_report(contract: dict) -> Optional[Dict[str, Any]]:
@@ -753,8 +675,7 @@ def parse_failure_report(contract: dict) -> Optional[Dict[str, Any]]:
 
     The block is the failure axis: a concrete defect the turn suffered --
     what it attempted, what broke, and the observed proof -- kept separate
-    from ``open_gaps`` (the unknown, not a defect) and ``rollback_executed``
-    (a rollback, not a defect).
+    from ``open_gaps`` (the unknown, not a defect).
 
     Advisory means advisory: absent, explicit null, or malformed all return
     None -- the "no hay" signal, never a raised exception and never a

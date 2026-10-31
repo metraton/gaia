@@ -19,6 +19,8 @@ Composition rules (permanent block, exit 2):
 Escalation (route to T3 ask, not permanent block):
   4. File-to-exec:    file_read | exec_sink
                       e.g. cat script.sh | bash
+  6. Egress:          any other stage | network_write
+                      e.g. git diff | curl --data-binary @- host
 
 Transparent suffix rule:
   If every stage after the first is a safe_filter, no composition rule fires
@@ -37,6 +39,7 @@ Dependencies: Python stdlib only.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from enum import Enum
@@ -224,8 +227,15 @@ _FILE_READ_EXECUTABLES = frozenset({
 _NETWORK_EXECUTABLES = frozenset({
     "curl", "wget", "http", "https",
     "nc", "ncat", "netcat",
+    "socat", "telnet", "sftp",
     "fetch",
 })
+_STDIN_REDIRECTS = frozenset({"<", "<>", "<<", "<<<", "<<-"})
+_COMPONENT_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
+
+# ssh options taking a value, and the ones that keep stdin from the remote side.
+_SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
+_SSH_NO_STDIN_FLAGS = frozenset("fNn")
 
 _ENV_DUMP_EXECUTABLES = frozenset({
     "env", "printenv", "set", "export",
@@ -341,7 +351,7 @@ def classify_stage(command: str) -> StageType:
     #    real executable at tokens[0] (e.g. "curl -X POST ..." not "sudo curl ...").
     stripped_command = " ".join(tokens)
     if exe in _NETWORK_EXECUTABLES:
-        flag_result = classify_by_flags(stripped_command)
+        flag_result = classify_by_flags(stripped_command, wrapped=len(tokens) != len(_tokenize_safe(command)))
         if flag_result is not None:
             if flag_result.outcome == OUTCOME_MUTATIVE:
                 return StageType.NETWORK_WRITE
@@ -350,7 +360,12 @@ def classify_stage(command: str) -> StageType:
         if exe in ("nc", "ncat", "netcat"):
             if len(tokens) >= 3:
                 return StageType.NETWORK_WRITE
+        if exe in ("socat", "telnet", "sftp") and len(tokens) >= 2:
+            return StageType.NETWORK_WRITE
         return StageType.NETWORK_READ
+
+    if exe == "openssl" and "s_client" in tokens:
+        return StageType.NETWORK_WRITE
 
     # 3. Exec sink (before safe_filter so bash/sh/python are caught)
     if exe in _EXEC_SINK_EXECUTABLES:
@@ -389,6 +404,52 @@ def classify_stage(command: str) -> StageType:
         return StageType.FILE_READ
 
     return StageType.UNKNOWN
+
+
+def redirected_into_sender(command: str) -> str:
+    """The sender in *command* whose stdin a ``<`` redirect or a heredoc feeds, or ""."""
+    for component in _COMPONENT_SPLIT.split(command):
+        lexer = shlex.shlex(component, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        tokens = [t for i, t in enumerate(tokens)
+                  if not (t == "/dev/null" and i and tokens[i - 1] == "<") and tokens[i + 1:i + 2] != ["/dev/null"]]
+        if not _STDIN_REDIRECTS.intersection(tokens):
+            continue
+        cut = min(tokens.index(op) for op in _STDIN_REDIRECTS.intersection(tokens))
+        words = " ".join(shlex.quote(token) for token in tokens[:cut])
+        if classify_stage(words) == StageType.NETWORK_WRITE or _ssh_sends_stdin(words):
+            return component.strip()
+    return ""
+
+
+def _pipe_run_start(stages: List[CompositionStage], index: int) -> int:
+    """The first stage of the unbroken pipe that feeds stage *index*."""
+    while index > 0 and stages[index - 1].operator == "|":
+        index -= 1
+    return index
+
+
+def _ssh_sends_stdin(command: str) -> bool:
+    """True when *command* is an ssh that forwards its stdin to the remote host."""
+    tokens = _strip_transparent_prefixes(_tokenize_safe(command))
+    if not tokens or _get_executable(tokens) != "ssh":
+        return False
+    options = iter(tokens[1:])
+    for token in options:
+        if not token.startswith("-") or token == "--":
+            return True
+        for position, flag in enumerate(token[1:], start=2):
+            if flag in _SSH_NO_STDIN_FLAGS:
+                return False
+            if flag in _SSH_VALUE_FLAGS:
+                if position == len(token):
+                    next(options, None)
+                break
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +506,8 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
       3. RCE:          network_read   | exec_sink             -> BLOCK
       4. Obfuscated:   decode         | exec_sink             -> BLOCK
       5. Net-write RCE: network_write | exec_sink             -> BLOCK
-      6. File-to-exec: file_read      | exec_sink             -> ESCALATE
+      6. Egress:       any other      | network_write         -> ESCALATE
+      7. File-to-exec: file_read      | exec_sink             -> ESCALATE
 
     Returns a CompositionResult.  If no rule fires, decision is ALLOW.
     """
@@ -491,16 +553,20 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
         src_type = src.stage_type
         dst_type = dst.stage_type
 
-        # Rule 1: Exfiltration -- sensitive_read | network_write
-        if src_type == StageType.SENSITIVE_READ and dst_type == StageType.NETWORK_WRITE:
+        sends = dst_type == StageType.NETWORK_WRITE or _ssh_sends_stdin(dst.command)
+        upstream = range(_pipe_run_start(stages, src_idx), dst_idx)
+        secret_idx = next((k for k in upstream if stages[k].stage_type == StageType.SENSITIVE_READ), None)
+
+        # Rule 1: Exfiltration -- sensitive_read | ... | network_write, through any filter
+        if sends and secret_idx is not None:
             return CompositionResult(
                 decision=CompositionDecision.BLOCK,
                 pattern="exfiltration",
                 reason=(
-                    f"Exfiltration detected: '{src.command[:60]}' reads sensitive data "
+                    f"Exfiltration detected: '{stages[secret_idx].command[:60]}' reads sensitive data "
                     f"and pipes it to network write '{dst.command[:60]}'"
                 ),
-                matched_stages=[src_idx, dst_idx],
+                matched_stages=[secret_idx, dst_idx],
                 stage_types=all_types,
             )
 
@@ -544,24 +610,24 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
                 stage_types=all_types,
             )
 
-        # Rule 6 (formerly 4): File-to-exec -- file_read | exec_sink (escalate, not block)
+        if sends:
+            return CompositionResult(
+                decision=CompositionDecision.ESCALATE,
+                pattern="egress",
+                reason=(
+                    f"Data piped to a network sender: '{src.command[:60]}' feeds "
+                    f"'{dst.command[:60]}', which sends it off this machine"
+                ),
+                matched_stages=[src_idx, dst_idx],
+                stage_types=all_types,
+            )
+
+        # Rule 4: File-to-exec -- file_read | exec_sink (escalate, not block)
         if src_type == StageType.FILE_READ and dst_type == StageType.EXEC_SINK:
-            # False-positive reduction: when the FILE_READ side reads only local
-            # workspace data file(s) (.json/.yaml/.yml/.csv/.txt), the exec sink
-            # is consuming structured DATA on stdin, not executing file content
-            # as a program (e.g. `cat config.json | python3 -c '...json.load...'`).
-            # That is benign -> ALLOW.  Scripts and extension-less files still
-            # ESCALATE, and network/decode/network_write -> exec still BLOCK above.
+            # A local data file (.json/.yaml/.csv/.txt) feeds DATA to the sink, not a
+            # program; the later pairs of the pipe are still judged.
             if _file_read_is_local_data_file(src.command):
-                return CompositionResult(
-                    decision=CompositionDecision.ALLOW,
-                    reason=(
-                        f"File-to-exec with local data file: '{src.command[:60]}' "
-                        f"feeds data to '{dst.command[:60]}' -- benign data consumption"
-                    ),
-                    matched_stages=[src_idx, dst_idx],
-                    stage_types=all_types,
-                )
+                continue
             return CompositionResult(
                 decision=CompositionDecision.ESCALATE,
                 pattern="file_to_exec",

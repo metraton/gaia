@@ -17,9 +17,9 @@ Two constraints shape the design:
 - **PreToolUse cannot see what the agent already loaded this turn.** The
   Claude Code payload for a subagent's Write/Edit call carries no
   ``transcript_path`` (only SubagentStop gets ``agent_transcript_path``), and
-  the ``Skill`` tool itself is not wired into any PreToolUse matcher in
-  ``hooks/hooks.json`` -- a ``Skill(...)`` call never reaches this hook at
-  all. So this module does not attempt to answer "was the skill already
+  the ``Skill`` tool is wired into no PreToolUse matcher in
+  ``hooks/hooks.json``; its PostToolUse matcher records only a main-session
+  ``Skill('memory')`` load (``memory_skill_guard``). So this module does not attempt to answer "was the skill already
   loaded?" (unanswerable from here); it answers a narrower, always-answerable
   question instead -- "does this file's class require a skill, and have we
   already said so this turn?" -- and reminds unconditionally on the first

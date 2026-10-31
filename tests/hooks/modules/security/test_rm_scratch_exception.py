@@ -2,12 +2,13 @@
 """Tests for the `rm` scratch-directory tier exception (Option A).
 
 `rm` (including `rm -rf`) is downgraded from T3 to T0 ONLY when every target
-path resolves strictly inside the Gaia scratch directory (`~/.gaia/scratch`,
-or the equivalent under a GAIA_DATA_DIR override).  Everything else stays T3,
-and the catastrophic floor (`rm -rf /`, `/*`, `~`) remains intact.
+path resolves inside a scratch entry named after the calling agent, under the
+Gaia scratch directory (`~/.gaia/scratch`, or the equivalent under a
+GAIA_DATA_DIR override).  Everything else stays T3, and the catastrophic floor
+(`rm -rf /`, `/*`, `~`) remains intact.
 
 Covered surfaces:
-  * strict tier check      -- mutative_verbs._rm_targets_only_scratch / Step 1
+  * strict tier check      -- mutative_verbs._rm_scratch_confined_targets / Step 1
   * floor cooperation      -- blocked_commands._rm_confined_to_scratch + ordering
   * end-to-end pipeline    -- bash_validator.BashValidator.validate
 """
@@ -23,8 +24,9 @@ sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(REPO_ROOT))  # for the `gaia` package (resolver)
 
 from modules.security.mutative_verbs import (
+    LocalWorkCaller,
     detect_mutative_command,
-    _rm_targets_only_scratch,
+    _rm_scratch_confined_targets,
     _gaia_scratch_root,
 )
 from modules.security.blocked_commands import (
@@ -35,20 +37,28 @@ from modules.tools.bash_validator import BashValidator
 from modules.security.tiers import SecurityTier
 
 
+OWNER = "armowner01"
+CALLER = LocalWorkCaller(OWNER, None)
+
+
+def _detect(command):
+    return detect_mutative_command(command, caller=CALLER)
+
+
 @pytest.fixture
 def scratch(monkeypatch, tmp_path):
-    """Isolated GAIA_DATA_DIR with a populated scratch tree.
+    """Isolated GAIA_DATA_DIR with a populated scratch entry owned by OWNER.
 
-    Returns the realpath of the scratch root as a string. Creates:
-      scratch/foo         (file)
-      scratch/sub/        (dir)
-      scratch/link -> OUTSIDE   (symlink escaping scratch)
+    Returns the realpath of that entry as a string. Creates:
+      entry/foo         (file)
+      entry/sub/        (dir)
+      entry/link -> OUTSIDE   (symlink escaping scratch)
     """
     data = tmp_path / "gaia-data"
     monkeypatch.setenv("GAIA_DATA_DIR", str(data))
     from gaia.paths import ensure_layout, scratch_dir
     ensure_layout()
-    root = scratch_dir()
+    root = scratch_dir() / f"{OWNER}.token"
     (root / "sub").mkdir(parents=True, exist_ok=True)
     (root / "foo").touch()
     outside = tmp_path / "outside"
@@ -68,7 +78,7 @@ def _tier(validator, cmd):
     Returns one of: 'T0', 'T3', 'BLOCKED'.
     """
     detect_mutative_command.cache_clear()
-    r = validator.validate(cmd)
+    r = validator.validate(cmd, hook_payload={"agent_id": OWNER})
     if not r.allowed:
         if r.tier == SecurityTier.T3_BLOCKED and r.block_response is None:
             return "BLOCKED"  # permanent floor block (exit 2, never approvable)
@@ -83,7 +93,7 @@ def _tier(validator, cmd):
 # ---------------------------------------------------------------------------
 
 def test_scratch_root_resolves_under_data_dir(scratch, tmp_path):
-    assert scratch == os.path.realpath(str(tmp_path / "gaia-data" / "scratch"))
+    assert os.path.dirname(scratch) == os.path.realpath(str(tmp_path / "gaia-data" / "scratch"))
 
 
 def test_scratch_root_never_under_dot_claude(scratch):
@@ -106,20 +116,21 @@ def test_gaia_scratch_root_fail_closed(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_rm_file_in_scratch_is_t0(scratch):
-    result = detect_mutative_command(f"rm {scratch}/foo")
+    result = _detect(f"rm {scratch}/foo")
     assert result.is_mutative is False
     assert result.category == "READ_ONLY"
 
 
 def test_rm_rf_subdir_in_scratch_is_t0(scratch):
-    result = detect_mutative_command(f"rm -rf {scratch}/sub/")
+    result = _detect(f"rm -rf {scratch}/sub/")
     assert result.is_mutative is False
     assert result.category == "READ_ONLY"
 
 
-def test_rm_rf_scratch_root_itself_is_t0(scratch):
-    result = detect_mutative_command(f"rm -rf {scratch}")
-    assert result.is_mutative is False
+def test_rm_rf_the_shared_scratch_root_or_across_entries_stays_t3(scratch):
+    root = os.path.dirname(scratch)
+    for command in (f"rm -rf {root}", f"rm -f {scratch}/x {root}/b.token/y"):
+        assert _detect(command).is_mutative is True, command
 
 
 # ---------------------------------------------------------------------------
@@ -128,68 +139,68 @@ def test_rm_rf_scratch_root_itself_is_t0(scratch):
 
 def test_rm_symlink_escaping_scratch_stays_t3(scratch):
     # scratch/link -> OUTSIDE ; realpath resolves outside scratch.
-    result = detect_mutative_command(f"rm {scratch}/link")
+    result = _detect(f"rm {scratch}/link")
     assert result.is_mutative is True
     assert result.category == "MUTATIVE"
 
 
 def test_rm_traversal_out_of_scratch_stays_t3(scratch):
-    result = detect_mutative_command(f"rm {scratch}/../../etc/x")
+    result = _detect(f"rm {scratch}/../../etc/x")
     assert result.is_mutative is True
 
 
 def test_rm_glob_in_scratch_stays_t3(scratch):
     # Unexpanded glob is ambiguous -> no T0 exception.
-    result = detect_mutative_command(f"rm -rf {scratch}/*")
+    result = _detect(f"rm -rf {scratch}/*")
     assert result.is_mutative is True
 
 
 def test_rm_relative_outside_stays_t3(scratch):
-    result = detect_mutative_command("rm ./repo-real/x")
+    result = _detect("rm ./repo-real/x")
     assert result.is_mutative is True
 
 
 def test_rm_absolute_outside_stays_t3(scratch):
-    result = detect_mutative_command("rm /home/user/ws/algo")
+    result = _detect("rm /home/user/ws/algo")
     assert result.is_mutative is True
 
 
 def test_rm_no_positional_path_stays_t3(scratch):
-    result = detect_mutative_command("rm -rf")
+    result = _detect("rm -rf")
     assert result.is_mutative is True
 
 
 def test_rm_only_flags_stays_t3(scratch):
-    result = detect_mutative_command("rm -f --")
+    result = _detect("rm -f --")
     assert result.is_mutative is True
 
 
 def test_rm_mixed_scratch_and_outside_stays_t3(scratch):
     # One outside path is enough to deny the T0 exception (all-or-nothing).
-    result = detect_mutative_command(f"rm {scratch}/foo /etc/passwd")
+    result = _detect(f"rm {scratch}/foo /etc/passwd")
     assert result.is_mutative is True
 
 
 # ---------------------------------------------------------------------------
-# _rm_targets_only_scratch predicate directly
+# _rm_scratch_confined_targets predicate directly
 # ---------------------------------------------------------------------------
 
 def test_predicate_true_for_scratch_file(scratch):
-    assert _rm_targets_only_scratch(("rm", f"{scratch}/foo")) is True
+    assert _rm_scratch_confined_targets(("rm", f"{scratch}/foo"), CALLER) is not None
 
 
 def test_predicate_false_for_glob(scratch):
-    assert _rm_targets_only_scratch(("rm", "-rf", f"{scratch}/*")) is False
+    assert _rm_scratch_confined_targets(("rm", "-rf", f"{scratch}/*"), CALLER) is None
 
 
 def test_predicate_false_for_traversal(scratch):
-    assert _rm_targets_only_scratch(("rm", f"{scratch}/../x")) is False
+    assert _rm_scratch_confined_targets(("rm", f"{scratch}/../x"), CALLER) is None
 
 
 def test_predicate_false_without_scratch_root(monkeypatch):
     # No resolver failure, but empty token list -> no positional path.
     monkeypatch.setenv("GAIA_DATA_DIR", "/nonexistent-xyz")
-    assert _rm_targets_only_scratch(("rm", "-rf")) is False
+    assert _rm_scratch_confined_targets(("rm", "-rf"), CALLER) is None
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +212,8 @@ def test_predicate_false_without_scratch_root(monkeypatch):
     "rm -rf /*",
     "rm -rf ~",
     "rm -rf ~/",
-    "rm -rf ~/Documents",      # non-scratch home subpath: floor unchanged
+    "rm -rf ~/*",
+    "rm -r $HOME",
 ])
 def test_catastrophic_floor_still_blocks(cmd, scratch):
     # scratch fixture is active but these are NOT scratch paths, so the
@@ -242,7 +254,7 @@ def test_floor_confinement_predicate(scratch):
 
 @pytest.fixture
 def validator():
-    return BashValidator()
+    return BashValidator(agent_names_scratch=True)
 
 
 def test_e2e_scratch_file_is_t0(validator, scratch):
@@ -352,7 +364,7 @@ def test_gated_reason_names_the_object(scratch):
         SQLITE_SIGNATURE,
     )
     detect_mutative_command.cache_clear()
-    result = detect_mutative_command(f"rm -f {target}")
+    result = _detect(f"rm -f {target}")
     assert result.is_mutative is True
     assert "live_copy.db" in result.reason
     assert "SQLite database" in result.reason

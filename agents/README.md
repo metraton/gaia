@@ -44,9 +44,10 @@ agent's .md frontmatter and spawns the subagent with:
     that frontmatter's skills: list. No Gaia hook performs this load.
         |
 [subagent_start.py] claims the born row, injects the dispatch KERNEL
-(# Your Contract incl. can_read/can_write menu, # Your CLI, # What I
-know about you). Project context is NOT preloaded here either -- the
-agent pulls sections on demand within its can_read menu.
+(# Your Contract incl. can_read/can_write menu, # Scope memory,
+# Project context, # Standing notes, # Environment, # Your CLI). # Project context carries the
+dispatch project's can_read sections: whole when they fit, else one get-contract pointer per
+section, else a single count line; the agent pulls what the block only points at on demand.
         |
 Agent executes, closing its agent_contract_handoffs row with
 `gaia contract finalize`; the orchestrator reads that row
@@ -81,6 +82,7 @@ agents/
 | `model` | Yes | Use `inherit` unless the agent needs a specific model |
 | `permissionMode` | Most agents | Set `acceptEdits` for agents that write files |
 | `routing` | Surface owners | Declares the agent's surface (`surface`, `adjacent_surfaces`, `signals` with `commands`/`artifacts`, `required_checks`, optional `sub_surfaces`); seeded into the `surface_routing` table by `tools/scan/seed_surface_routing.py`. Keywords were retired as a signal source — the matcher scores `commands` and `artifacts` only, and a legacy `keywords` key is ignored. The surface's `intent` is the `description`; `contract_sections` derives from `project_context_contracts.read`. Omit for the orchestrator (it IS the router). |
+| `surface` | Agents with no `routing:` block | The surface a dispatch of this agent is born with when it owns no `surface_routing` row (`gaia-verifier` declares `verification`). Read by `tools/context/context_provider.py::_declared_surface`, which also falls back to `routing.surface` when the table was not reseeded. `gaia contract fill-rate` reports how many clean closes carry a surface and a `conclusion` (the specialist's verdict for the orchestrator; `user_facing_summary` on rows closed before the rename). `gaia contract finalize` still accepts `user_facing_summary` as an alias, stores it as `conclusion` and stamps `conclusion_alias`, so agents born with older skills keep closing; remove the alias one release after the one that ships the rename. |
 | `contract_handoff_writer` | Fleet-seeded agents | `true` opts this agent into the handoff-writer fleet: the write-guard (`_assert_dispatch_can_write_handoff` in `gaia/store/writer.py`) allows `gaia contract finalize` to write this agent's `agent_contract_handoffs` row only when its `name:` carries this marker. Seeded by `gaia/state/permissions.py::handoff_writer_fleet`, which enumerates `agents/*.md`; every agent under `agents/` is expected to carry it (drift-checked by `tests/contract/test_finalize_store.py`). |
 | `skills` | Every agent except the orchestrator | First two are always `agent-protocol`, `security-tiers`. Read and preloaded by the HOST (Claude Code) before the first turn — no Gaia hook loads skills. Applies to a dispatched subagent only; the primary agent (`gaia-orchestrator.md`) carries no `skills:` field, since Claude Code inherits only "system prompt, tool restrictions, and model" on the main thread. |
 | `cli` | No agent currently declares it | Optional list of extra CLI lines. The one frontmatter field Gaia itself reads, at subagent birth (`hooks/modules/context/kernel_builder.py::_agent_cli_extras`) — its entries are appended verbatim to the "# Your CLI" kernel block. |

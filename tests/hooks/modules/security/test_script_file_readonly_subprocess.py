@@ -127,7 +127,7 @@ def scratch(monkeypatch, tmp_path):
 
 @pytest.fixture
 def validator():
-    return BashValidator()
+    return BashValidator(agent_names_scratch=True)
 
 
 def _write(directory: Path, name: str, body: str) -> Path:
@@ -167,9 +167,14 @@ def test_twin_that_mutates_or_hides_its_argv_still_asks(validator, scratch, twin
 
 def test_cp_into_scratch_runs_free(validator, scratch, tmp_path):
     source = _write(tmp_path, "helper.py", HELPER_SHAPE)
+    entry = scratch / "aentryowner01.token"
+    entry.mkdir()
 
-    for destination in (scratch / "helper.py", scratch):
-        verdict = _validate(validator, f"cp {source} {destination}")
+    for destination in (entry / "helper.py", entry):
+        detect_mutative_command.cache_clear()
+        verdict = validator.validate(
+            f"cp {source} {destination}", hook_payload={"agent_id": "aentryowner01", "cwd": str(tmp_path)},
+        )
         assert verdict.allowed, verdict.reason
         assert verdict.tier == SecurityTier.T0_READ_ONLY
 

@@ -11,14 +11,29 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 ## Evidence ladder
 
 1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
-   `project` and its declared `workflow`, the `can_read` menu) and
-   `# How the user works`. Do not
-   re-derive facts it already supplies.
-2. Pull what the goal needs from the substrate on demand -- none of it is
-   preloaded, and a coordinate in the goal (a contract id, a memory slug, a
+   `project` and its declared `workflow`, the `can_read` menu),
+   `# Scope memory`, and `# Project context`: the dispatch project's
+   `can_read` sections, whole when they fit, else one
+   `gaia context get-contract` pointer per section, else a single count
+   line. Do not re-derive facts it
+   already supplies. This is the first move, before any live query: when the
+   goal names a component the block does not carry whole (a cluster, a
+   namespace, a service, another project), fetch its section with
+   `gaia context get-contract --project <p> --section <s>` before
+   investigating live. No block at all means the `project` in
+   `# Your Contract` resolved to no project, the turn has no `can_read`
+   section, none of them is stored, or the read failed; record that in
+   `open_gaps` instead of working as if the context were empty.
+2. Pull the rest of what the goal needs from the substrate on demand -- memory,
+   briefs and other contracts are not preloaded, and a coordinate in the goal (a contract id, a memory slug, a
    brief) is an instruction to go read it. The verbs, their addressing, and the
    workspace rule that decides whether they resolve are in
    `agent-protocol/read-map.md`. Do not read Gaia's database directly.
+   A fact a coordinate already holds is reused, cited in `key_outputs` by the
+   handoff id it came from; measure again only what the coordinates leave
+   uncovered, or a fact whose source changed after the commit or date it was
+   measured at. A re-measured fact that disagrees with its coordinate is a
+   finding for `open_gaps`, naming both.
 3. Inspect the smallest relevant source files, tests, configuration, git diff,
    or runtime query. Prefer authoritative implementation over prose. Never
    search from the home directory (`~`) or from `/`: a search rooted there
@@ -37,19 +52,16 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    retention rule can attribute and reclaim it once the contract closes, then
    deposit it as evidence through the contract's evidence clause -- see
    `agent-contract-handoff` -- rather than leaving it as a loose file.
-5. Two rules apply here, at two different levels, and they do not compete.
-   Entering this phase at all is `agent-protocol`'s phase-transition floor: the
-   instant work becomes investigation, write `work_phase=investigating` once
-   (or fold it into the first evidence write) -- that mark is not optional
-   when this phase genuinely runs. WITHIN the phase, what else gets
-   checkpointed is governed by value-at-risk, not a fixed list: write a
+5. What gets checkpointed is governed by value-at-risk, not a fixed list; the
+   orchestrator reads your progress from the evidence lists you have written
+   (`agent-protocol` principle 6), so there is no phase mark to set: write a
    finding the instant re-deriving it would cost more than recording it. A
    long synthesis that runs with no tool calls in between is the costliest
    case: checkpoint the gathered evidence and hypotheses before you start it
    (you cannot predict where it lands), then fill the conclusion the instant
    you reach it -- before composing the report that states it, not after. A
    one-file read that never reaches a costly-to-redo finding earns zero
-   mid-turn checkpoints beyond the one phase mark; do not add ritual where
+   mid-turn checkpoints; do not add ritual where
    nothing is at risk.
 
 ## Forecast mutations after read-only work
@@ -59,7 +71,10 @@ accepted plan predictably requires. Classify every command through
 `security-tiers` before execution.
 
 Request every predictable T3 command before attempting it, the instant it is
-known, rather than waiting for the policy gate to block it. The forecast is what
+known, rather than waiting for the policy gate to block it. Only a command
+`security-tiers` classifies T3 belongs in a request: pushing a named feature
+branch, opening a PR and editing one without `--base` run free, so run them
+instead of requesting them. The forecast is what
 the request is built from -- what each command does, its impact, how it is
 undone and checked: `subagent-request-approval` says which phrases to write and
 how to group the commands into the fewest signatures, leaving for a later
@@ -75,3 +90,15 @@ A finding names the source and observation. A failed command records its exact
 text, exit status, stdout/stderr, and what remains unknown. An exit code alone
 does not establish desired state; verification must query or inspect the result.
 Keep assumptions visibly separate from confirmed facts.
+
+## Deeper, not bigger
+
+Depth stays inside the goal: each move is a read, a check, or an offer.
+
+- Restate the acceptance measurably before working.
+- Use the trade's real instrument, not a summary of what it would say.
+- Prefer the raw output to a description of it.
+- Predict what a read you have not yet seen will show, then run it and compare.
+- The judge is something you did not write in order to pass.
+- What an expert would add and the goal did not ask for, you name in one line
+  as an offer, and do not do.

@@ -4,7 +4,7 @@ Hooks are the event-driven spine of Gaia. Every significant moment in a Claude C
 
 Each hook is a Python script that reads a JSON event from stdin, processes it, and writes a JSON response to stdout. Claude Code calls these scripts synchronously before or after each tool execution, which means the hook can allow, modify, or block the operation. The hook cannot do complex async work — it runs inline, in the critical path, so every module it calls must complete quickly.
 
-The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` manifest (Environment, Projects, Contract Index, due notifications, workspace memory) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), it builds a different, lighter manifest — a post-compaction context refresh (an orchestrator identity line, the birth block's `## Environment` section again -- the compaction discarded the message that carried its `gaia CLI:` path -- and the session's own snapshot -- its open contracts, pending signatures, active brief/plan/task and last resume point, keyed by the event's `session_id` -- from `compact_context_builder.build_compact_context`) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`. The question itself is Gaia's: the orchestrator opens exactly what `gaia approvals question <approval_id>` printed -- one one-line question per command, opened by `[ GAIA-SECURITY ]`, at most four per signature (`gaia/approvals/surface.py`) -- and the PreToolUse `AskUserQuestion` matcher refuses any other shape.
+The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` birth block for the orchestrator, the same one for every source, compaction included (see "The birth block and the kernel" below). Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`. The question itself is Gaia's: the orchestrator opens exactly what `gaia approvals question <approval_id>` printed -- one one-line question per command, opened by `[ GAIA-SECURITY ]`, at most four per signature (`gaia/approvals/surface.py`) -- and the PreToolUse `AskUserQuestion` matcher refuses any other shape.
 
 Every registered command runs through `hooks/launch.sh`, which picks the first of `python3`, `python` or `py -3` that is Python 3. OpenCode loads none of these entry points: `opencode/plugin.ts` forwards the host's events to `opencode/bridge.py`, and `adapters/opencode.py` maps them onto the same host-neutral cores (session lifecycle, tool policy, the SubagentStop close). There the plugin, not a hook, checks the `question` call, and only the orchestrator may open a signature question.
 
@@ -21,7 +21,7 @@ Session opens
         |  gaia.db at most once per 24 h, sweeps idle worktrees;
         |  on the plugin channel, migrates a database that is behind
         |  Emits one-shot hookSpecificOutput.additionalContext birth block
-        |  (## Projects + ## Environment + ## The user + ## User preferences,
+        |  (## The user + ## User preferences + ## Due + ## Environment + ## Workspaces I manage,
         |   and ## Database schema when the database and the code disagree)
         v
 User sends prompt
@@ -50,10 +50,14 @@ Orchestrator dispatches agent (Task/Agent tool call)
         |
 Tool executes
         |
-[post_tool_use.py] <- fires on PostToolUse for: Bash, Task, AskUserQuestion,
+[post_tool_use.py] <- fires on PostToolUse for: Bash, Task, AskUserQuestion, Skill,
         |                 and on PostToolUseFailure for: Bash
         |  Audits result, logs to the data home's logs/ (~/.gaia/logs, or GAIA_DATA_DIR); a signed call closes on its own
         |        terminal event (success or failure), matched by tool_use_id
+        |  Every gaia CLI call appends a `cli.invoked` harness event (verb, flag names, agent, role, session,
+        |        outcome, exit code; never argument values); a call PreToolUse denied is recorded there instead,
+        |        since no terminal event follows it. Every skill load appends `skill.loaded`
+        |        (modules/events/capability_usage.py)
         v
 [subagent_stop.py] <- fires on SubagentStop for all agents
         |  Validates the turn's own agent_contract_handoffs row
@@ -63,6 +67,29 @@ Tool executes
 [subagent_start.py] <- fires on SubagentStart for all agents
         |  Can inject additional context (e.g. persisted memory output)
 ```
+
+## The birth block and the kernel
+
+Claude Code replaces a hook's `additionalContext` over 10,000 chars with a 2,000-char preview and a file path, and never asks the model to read the file. Everything Gaia injects is therefore held under `CONTEXT_BUDGET` (9,500, `modules/context/user_sections.py`) on both hosts, so the model always reads it whole.
+
+**The birth block** (`modules/session/session_manifest.py::build_session_context`) is one assembler for every start source. A compaction is one more birth of the same session, not a special refresh: `session_lifecycle.start_context` calls the same function for `startup`, `resume`, `clear`, `fork` and `compact`, and OpenCode's `adapt_session_start` calls it for its first message and for the first message after a compaction. `modules/context/compact_context_builder.py` keeps only the instructions for the summarizer, which end the summary with the same `gaia map` pointer. The block reads, in order:
+
+1. a heading naming the source (`# Gaia session context (source: compact)`), which is the orchestrator's cue that the context was compacted;
+2. the alarms that condition every write (database upgrade, data home, workspace, schema mismatch);
+3. `## The user` and `## User preferences`, each row whole (`user_sections`, shared with the kernel);
+4. `## Due`: the reminders and routines due now (`build_due_section`), absent when none is;
+5. `## Resume point`: the session's snapshot (`gaia/session_snapshot.py::render_resume_section`) with the resume point whole, the active task, pending signatures and open contracts. It is absent when the session has nothing to resume;
+6. `## Environment` (`build_environment_section`): values only. `machine=`, `os=`, `arch=`, `wsl=` and `host=`; `gaia=` and `channel=`; `cli=`; `cwd=` relative to the home as `~/…`; `session=`; `zone=`; `data=` and `db=`; `tools=`, which is Gaia's detected catalog plus the binaries of the detected user `kind=tool` rows; then one `tool=<binary> "<title>" [replaces=<cli>] ref=memory:user/<slug>` line per such row;
+7. `## Workspaces I manage`.
+
+The order defends what matters most if the block is ever cut. Over the budget it shrinks in a fixed order, and each step runs only when the previous one was not enough:
+
+1. the `## Leftovers` notice leaves the model context; the host still shows it to the user as a system message;
+2. the project index (names only: each workspace as its groups, each group as its projects) degrades to one line per workspace naming its groups, then one line naming every group, then a line that counts projects, groups and workspaces; each level is tried first with the line pointing at `gaia map <word>`, then without it, so the line never costs a richer level. When user rows are trimmed, the index takes the richest of these that fits what they leave;
+3. the snapshot lists become counts plus the `gaia session snapshot --session-id` command;
+4. whole user rows leave, stalest first (the reader orders them by `updated_at`), and one line names them. No row is ever cut mid-text, and only the rows the block carries count an injection.
+
+**The kernel** (`modules/context/kernel_builder.py::build_kernel_context`) holds the same budget, with OpenCode's `# Your skills` block counted inside it (`with_skills=True`). It carries none of the user's own rows: those reach the orchestrator through the birth block. In order it renders `# Your Contract`, `# Scope memory: <workspace > group > project>`, `# Project context`, `# Standing notes`, `# Environment` and `# Your CLI`, then `# Your skills` where the host asks for it. `# Scope memory` holds the live preferences, facts and lessons of the dispatch's workspace, group and project (`gaia.store.reader.scope_memory_rows`), and `# Environment` one line (`<OS>; host <host>; gaia CLI <path>; tools on PATH: <names>`, capped at 400 chars, carrying the host but no cwd or session) plus up to `KERNEL_TOOL_LINES` of the user's `tool=` lines. `# Project context` carries the dispatch project's `can_read` sections in the room left once every other block, `# Scope memory` included, is at full size. It degrades in three stages: sections whole where they fit and a `gaia context get-contract --section <s> --project <name>` line for the rest, then pointer lines only, then one line that counts the sections and is shown whatever the room. Then the kernel shrinks in this order: `# Your CLI` becomes its `gaia --help` line, which rebuilds the rest, the skills lose their descriptions, `# Standing notes` keeps only the command that lists them, and `# Scope memory` drops rows from the end of the reader's order until it fits the room left. Only the rows it still carries count a kernel access. `# Your Contract` is never shrunk, so a dispatch prompt over about 8,000 chars can still exceed the cap.
 
 ## Entry point -> adapter -> module
 
@@ -107,6 +134,8 @@ hooks/
 
 **`hooks.json` is a generated artifact — do not edit it by hand.** Its single source of truth is `build/gaia.manifest.json` (`hooks.matchers` + `hooks.entries`); the file is produced by `generate_hooks_json()` in `scripts/build-plugin.py` and regenerated by `npm run generate:plugin-root`. A hand edit that is not also made in the manifest is reverted by the next regeneration, silently: the file comes back byte-identical to its committed state, so `git status` shows nothing and only the runtime behaviour changes. To change a matcher or add an event, edit `build/gaia.manifest.json` and regenerate. Two guards enforce this: `scripts/check_hooks_drift.py` at publish time (via `bin/pre-publish-validate.js`), and `TestHooksJsonManifestSync` in `tests/hooks/adapters/test_plugin_manifests.py` in the suite.
 
+**`modules/events/gaia_cli_grammar.py` is generated too.** It holds the `gaia` CLI's subcommand tree and declared options, which the `cli.invoked` recorder uses to name a call without storing argument values. Its source of truth is `bin/gaia`'s argparse parser; after adding or renaming a subcommand or an option, regenerate it with `python3 scripts/generate_gaia_cli_grammar.py` (`--check` reports drift without writing). `test_the_grammar_is_the_cli_parser_tree_and_its_declared_options` in `tests/hooks/modules/events/test_capability_usage.py` fails on any drift and names that command.
+
 Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additionalContext`: Claude Code's hook-output validator has no `PreCompact`/`PostCompact` case in its discriminated union, and its response-consumption switch never applies their output even when the JSON is otherwise well-formed — so both now emit a schema-valid empty `{}` no-op. The real post-compaction context delivery happens via `session_start.py` when SessionStart fires with `source == "compact"` (see above). The pre-compaction window — injecting anything in the narrow moment *before* compaction erases context — remains a genuine platform limitation: no hook shape can inject there, which is why `pre_compact.py` is a registered no-op rather than a carrier.
 
 ## Conventions
@@ -141,6 +170,45 @@ recover the lost work. `agent.contract_rejected` means the full-verdict gate
 rejected the emitted contract; its substantive output may have been preserved
 by `rejected_turn_relay.py` as described above. Both are warning-grade by
 default and can be isolated with `gaia defects --type=<event>`.
+
+## Project context is keyed by project (schema v69)
+
+A context section describes one project, so it is stored under that project's
+identity in `project_context` (`gaia/store/project_context.py`). Before v69 it was
+keyed by workspace in `project_context_contracts`, and a section proposed from a
+session opened in another workspace landed where no reader of the project looked.
+
+- **Routing** (`modules/context/context_writer.py::_route`): a proposal lands
+  under the project the entry names (`"project"`), else, for `project_identity`,
+  the project each key names, else the dispatch project of the proposing turn.
+  Nothing falls back to the caller's workspace. A part with no resolvable
+  project is refused, and SubagentStop stamps the reason on the proposing row
+  as `update_contracts_refused`, so the proposal and the refusal both stay on
+  the contract for a later proposal store.
+- **History**: the writer, not a trigger, appends to `project_context_history`
+  on every write, the first insert included, naming the agent and the
+  proposing contract id (`gaia context accept` passes both).
+- **Fallback per section, not per project**: until the old rows are moved
+  (plan 94, task 2) and the old table is retired, a project reads its own row
+  for a section and otherwise the old row of its workspace. A per-project
+  fallback would hide every unmoved section of a project as soon as one
+  section was written. For the same reason a first write merges into the
+  section the project's readers saw, so a delta never hides old keys.
+- **A workspace is a container, not an owner**: `project_context` holds
+  project facts only. Scanner promotion (`tools/scan/promote.py`) moves each
+  `project_identity` entry that resolves to a project (path, then name) into
+  that project's row. The `_workspace` reserved key, anything describing the
+  workspace itself, and any entry no project owns (reported as a warning)
+  stay in the workspace-keyed row, which remains the store for
+  workspace-level data. `gaia context accept` and SubagentStop both stamp
+  refusals on the proposing row as `update_contracts_refused`.
+- **Workspace readers** (`workspace_sections`: the context provider, the
+  contracts loader, freshness, the session roster, `get-contract --workspace`)
+  read the old row merged with the rows of that workspace's projects.
+- **Compatibility**: `v68_to_v69.sql` is declared breaking. Code older than v69
+  would keep writing the old table, which readers no longer prefer, so it must
+  stop writing. Ship it with an install of every local host that shares
+  `gaia.db` (Claude Code and OpenCode).
 
 ## See also
 

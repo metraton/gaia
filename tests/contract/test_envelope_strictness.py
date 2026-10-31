@@ -12,8 +12,8 @@ the live population before it was closed:
       (root orphans: commands_run x62, key_outputs x59, files_checked x48, ...)
     * a mistyped field name (files_checkd)   -> UNKNOWN_FIELD, naming the
       nearest declared key
-    * a lower-case agent_state and a spaced/upper-case work_phase, both of
-      which validated NORMALIZED and persisted RAW
+    * a lower-case agent_state, which validated NORMALIZED and persisted RAW
+      (work_phase had the same defect until it left the envelope)
 
 The last group is the delicate one and has its own section: several top-level
 keys are written by the SYSTEM, not by an agent, and rejecting one of them
@@ -55,6 +55,7 @@ def _valid_envelope() -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
 
 
@@ -191,14 +192,14 @@ def test_lowercase_agent_state_is_persisted_uppercase():
     assert env["agent_status"]["agent_state"] == "in_progress"
 
 
-def test_spaced_uppercase_work_phase_is_persisted_canonical():
+def test_work_phase_in_any_spelling_is_rejected_as_unknown():
     env = _valid_envelope()
     env["work_phase"] = "  Investigating  "
 
-    assert validate_form(env).ok is True
-    canonical = _canonicalize(env)
+    result = validate_form(env)
 
-    assert canonical["work_phase"] == "investigating"
+    assert result.ok is False
+    assert FormErrorCode.UNKNOWN_FIELD in result.codes
 
 
 def test_verification_result_and_type_are_persisted_canonical():
@@ -323,6 +324,11 @@ def test_a_continuation_can_still_be_minted_end_to_end(tmp_path):
         capture_output=True, text=True, env=env, cwd=str(_REPO_ROOT),
     )
     assert closed.returncode == 0, closed.stderr
+    summarized = subprocess.run(
+        [sys.executable, cli, "set", "user_facing_summary", "Blocked.", "--draft-id", draft_id],
+        capture_output=True, text=True, env=env, cwd=str(_REPO_ROOT),
+    )
+    assert summarized.returncode == 0, summarized.stderr
 
     finalized = subprocess.run(
         [sys.executable, cli, "finalize", "--draft-id", draft_id, "--json"],

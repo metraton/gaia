@@ -32,14 +32,14 @@ number. The twelve run the arc of a turn:
 ```
 Ground   what already governs this -- injected context, memory, the code, the skills
 Plan     what "done" means, what the pieces are, which exits need one signature
-Work     declare the phase, write each finding as you reach it
+Work     write each finding as you reach it; progress is read from the record
 Verify   close each increment verified; on failure, back to the sources
 Close    declare a state, finalize, degrade honestly
 ```
 
 Two doors open onto that arc. **A fresh dispatch** arrives with a kernel --
-`# Your Contract`, `# Your CLI`, `# How the user works`. Your contract is
-named there, already open. Start at Ground.
+`# Your Contract`, `# Scope memory`, `# Project context`, `# Standing notes`,
+`# Environment`, `# Your CLI`. Your contract is named there, already open. Start at Ground.
 
 **A resumed turn** arrives as a message from the orchestrator inside a turn that
 already began. There is no second kernel: `# Your Contract` is rendered once, at
@@ -63,8 +63,8 @@ gate decides between, and why the final message is not an input to it.
 
 It exists before you read your goal. `# Your Contract` shows it to you, and your
 first `gaia contract set/add/fill --draft-id <contract_id>` adopts it; there is
-no separate adoption step. Pass `--draft-id` on every later call and copy
-`agent_id` verbatim.
+no separate adoption step. Pass `--draft-id` on every later call; the harness
+stamps `agent_id`.
 
 The gate checks that identifier's shape. Nothing checks that it is *yours*. A
 `gaia contract init` run on a turn that already has a contract mints a second,
@@ -129,19 +129,18 @@ summary written from memory at the end is a second telling, produced under the
 pressure that ends the turn, and it drops fields. What the contract already
 holds gets queried later, at whatever granularity the question needs.
 
-### 6. Declaring the phase before the phase's work
+### 6. Progress read from the record, not announced
 
-`framing`, `investigating`, `planning`, `executing`, `verifying` -- write the
-phase before that phase's work, not after. It is what makes half a turn legible
-from outside: a turn observed mid-flight either reads as "investigating, four
-files in" or as an opaque box, and that difference decides whether the
-orchestrator waits or dispatches again over the top of you.
+Half a turn is legible from outside only through what it already wrote: the
+evidence lists, `pending_steps`, and the harness record of each tool call. A
+turn observed mid-flight either reads as "four files in, two findings, one step
+left" or as an opaque box, and that difference decides whether the orchestrator
+waits or dispatches again over the top of you.
 
-Write only the phases you actually entered. A turn answered from framing alone
-never touches the other four, and a phase written to satisfy a checklist makes
-the record state something that did not happen -- worse than a gap, because a
-reader cannot tell it from a true one. A phase's spelling is validated when it
-is present (`WORK_PHASE_SHAPE`); that it is present at all is never checked.
+There is no phase field to set. A self-declared phase was never read by any
+code, and a label written to satisfy a checklist states something the record
+cannot back -- worse than a gap, because a reader cannot tell it from a true
+one. Keep `pending_steps` naming what is left; the lists show what is done.
 
 ### 7. Verified increments, and which search a failure calls for
 
@@ -235,9 +234,7 @@ thought it was -- into work another agent had in flight. `gaia worktree
 create`/`release` (T0, see `security-tiers`) is the isolation that removes
 both failure shapes at the source: one tree, one index, one writer.
 
-## The two state machines
-
-A turn runs two machines at once, and they never collapse into one.
+## The state machine
 
 **`agent_status.agent_state` -- the communication machine.** How the turn
 currently reports back. It feeds routing and the finalize gate.
@@ -254,20 +251,13 @@ currently reports back. It feeds routing and the finalize gate.
 Canonical list: `VALID_PLAN_STATUSES` in `gaia/state/__init__.py`, re-exported
 by `hooks/modules/agents/response_contract.py`.
 
-**`work_phase` -- the work machine.** Where the producer is in the work itself:
-`framing` -> `investigating` -> `planning` -> `executing` -> `verifying`
-(`VALID_WORK_PHASES` in `gaia/contract/validator.py`).
-
-The two are orthogonal: a turn sits at `agent_state=IN_PROGRESS` through every
-one of its five work phases. `work_phase` is optional at the schema level --
-`WORK_PHASE_SHAPE` fires only when the field is present and outside the enum --
-which is what makes it safe to omit a phase that did not happen rather than
-simulate it.
+A turn sits at `agent_state=IN_PROGRESS` through all of its work; where it
+stands inside that work is read from the record (principle 6), not from a field.
 
 ## Where each moment's answer lands
 
-The envelope is a form with one section active at a time. This maps the work
-machine's moments onto the sections they fill; several sections span more than
+The envelope is a form with one section active at a time. This maps a turn's
+moments onto the sections they fill; several sections span more than
 one moment, because the work does.
 
 | Moment | Section |
@@ -295,21 +285,35 @@ and as an on-disk draft -- before you run anything.
 | Field | Meaning |
 |---|---|
 | `contract_id` | The id passed as `--draft-id <contract_id>` on every `gaia contract` call. It addresses both the row and the draft. |
-| `agent_id` | Copied verbatim into `agent_status.agent_id` whenever state is declared. Shape: `a` plus 16 or more lowercase hex characters. |
+| `agent_id` | Stamped into `agent_status.agent_id` by the harness; the CLI refuses an agent write to it. Shape: `a` plus 16 or more lowercase hex characters. |
 | `goal` | The assignment, whole and bounded. Nothing outside it belongs to this turn. |
 | `role` / `surface` | The turn's relationship to the task, and the surface that owns it. |
 | `project` | The project this turn is about, as `name (/abs/path)`. Dispatch data first (the orchestrator's `project=<name>` token), cwd resolution only as fallback. A name the substrate does not know yet appears bare, with no path suffix. Absent when the dispatch named no project and the cwd matched none. |
 | `workflow` | Indented under `project`: how work lands in that project -- integration, target branch, channel -- as the `workflow` key of its `project_identity` entry declares it (`gaia/identity_shape.py::DECLARED_WORKFLOW_KEY`). A value to obey, not to rediscover. Present only when the entry declares one; a project that declares nothing gets no line and no guessed default. |
-| `can_read` / `can_write` | The menu of project-knowledge sections this turn may pull on demand and cite, and the ones it may propose updates to. Nothing from the menu arrives preloaded. |
+| `can_read` / `can_write` | The menu of project-knowledge sections this turn may pull on demand and cite, and the ones it may propose updates to. The `can_read` sections the dispatch project holds also arrive in `# Project context`: whole when they fit the budget, else one `gaia context get-contract` pointer per section. |
 | `plan_task_id` + `acceptance` | Present only on a plan-task-bound turn: the binding and the verifiable floor the increment must clear -- the assertions principle 7 loops against. Such a turn cannot self-`COMPLETE`; it closes `NEEDS_VERIFICATION`. |
 
-Two blocks follow `# Your Contract`. `# Your CLI` is the index of what the turn
-can look up on its own. `# How the user works` carries the user's standing rows
-with their bodies, minus those whose audience is the orchestrator alone
-(`hooks/modules/context/kernel_builder.py::build_memory_block`); nothing of any
-project's memory arrives, so a decision or thread the turn needs travels as a
-reference in the goal, or is read with `gaia memory get-relevant --initiative
-<k> --sections anchor`.
+Five blocks follow `# Your Contract`, in this order. `# Scope memory: <chain>`
+indexes the live preferences, facts and lessons of the dispatch's workspace,
+group and project, grouped by kind, each line a title, `scope=` and the
+`ref=memory:...` that `gaia memory show` opens
+(`hooks/modules/context/kernel_builder.py::build_memory_block`). The user's own
+rows never reach a kernel: the preferences that touch the output travel in the
+goal.
+`# Standing notes` is one line per live anchor of the dispatch project, absent
+when it has none. `# Project context` carries the dispatch project's `can_read`
+sections: whole when they fit what the budget leaves, else one pointer line per
+section naming its `gaia context get-contract` verb, else a single count line
+(`hooks/modules/context/kernel_builder.py::_readable_project_sections`).
+`# Environment` is one line capped at 400 chars, `<OS>; host <host>; gaia CLI
+<path>; tools on PATH: <names>`, with no cwd (`session_manifest.build_environment_line`).
+The names are Gaia's detected catalog, then the binaries of the user's detected
+`kind=tool` rows. Under the line come at most five of those rows, each as
+`tool=<binary> "<title>" [replaces=<cli>] ref=memory:user/<slug>`. `# Your CLI` is the index of what
+the turn can look up on its own, last because `gaia --help` rebuilds it. Beyond
+the standing notes nothing of the project's memory arrives, so a decision or
+thread the turn needs travels as a reference in the goal, or is read with `gaia
+memory get-relevant --initiative <k> --sections anchor`.
 
 ### The agent_id floor is measured
 
@@ -325,13 +329,19 @@ The floor gates what an agent may mint for a NEW turn. Historical rows keyed by
 a shorter handle are read back by exact string and never re-validated, so no
 grandfathering window exists or is needed.
 
-### Project knowledge is pulled, not preloaded
+### Project knowledge arrives as far as the budget allows, the rest is pulled
 
-The kernel deliberately carries data about the turn, not about the project.
-`can_read` is a menu of section names, and nothing behind it arrives with the
-dispatch -- the turn pulls what the goal needs. Which verb reaches those
-sections, why its sibling with the same `--section` flag does not, and what each
-returns: `read-map.md`, "Project knowledge -- two namespaces".
+`can_read` is a menu of section names. The kernel's `# Project context` block
+injects the ones the dispatch project holds, whole when they fit and as
+`gaia context get-contract` pointers when they do not; a pointer, and any
+section of another project, is pulled when the goal needs it. Which verb reaches
+those sections, why its sibling with the same `--section` flag does not, and
+what each returns: `read-map.md`, "Project knowledge -- two namespaces".
+
+An injected or pulled value is a claim about the world, not the world. When a
+read this turn ran shows a different value, the turn proposes the correction
+(principle 3); a guarded subset of those proposals is applied at the close
+without the orchestrator, as `agent-contract-handoff` states.
 
 ## Storage and recovery
 
@@ -374,6 +384,8 @@ final-message text is read:
 3. No row reachable at all -> reject (`GATE_SOURCE_ROW_MISSING`), softened the
    same way on a harness truncation.
 
+A gate that raises yields a non-rejecting verdict recorded as `GATE_SOURCE_GATE_ERROR`, never as a missing row.
+
 No fenced block is required in the final message: the fence was retired as an
 input to the close, and the row is the only source the gate reads. The fence
 survives solely as one of four identity lanes in
@@ -399,7 +411,7 @@ silent: each is printed on stderr and carried in `--json`, because a write that
 lands differently from what you sent is exactly what must not happen quietly.
 
 1. **Canonicalization on write.** A validated value is persisted in its canonical
-   spelling -- `work_phase: ' Verifying ' -> 'verifying'`, reported under
+   spelling -- `agent_state: 'in_progress' -> 'IN_PROGRESS'`, reported under
    `canonicalized`. What you read back is the canonical form, not your input.
 2. **Repair of an inherited draft.** A draft carrying a key from an older
    vocabulary would otherwise reject every write, including the one that would
@@ -431,9 +443,9 @@ rejected write leaves the draft at its last-known-good state, but a terminal row
 is immutable once `finalize` persists it.
 
 **The turn that never leaves framing.** A question answered entirely from
-already-known context sets `work_phase=framing` once and closes `COMPLETE`
-having touched no other phase. `COMPLETE` has no `work_phase` precondition --
-only `COMPLETE_SHAPE` and `VERIFICATION_RESULT` gate it. `finalize` still runs.
+already-known context closes `COMPLETE` with short evidence lists, and that is
+honest: only `COMPLETE_SHAPE` and `VERIFICATION_RESULT` gate it. `finalize`
+still runs.
 
 **No contract at dispatch.** A dispatch outside this harness, or one whose born
 row could not be claimed, arrives with no `# Your Contract` block. Then and only

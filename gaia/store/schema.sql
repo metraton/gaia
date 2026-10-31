@@ -1014,12 +1014,19 @@ CREATE TABLE IF NOT EXISTS memory (
     last_kernel_at     TEXT,  -- v50: ISO8601 timestamp of the most recent kernel injection; NULL = never injected into a kernel. Column added v50.
     measured_at        TEXT,  -- v67: ISO8601 date (or datetime) the fact in the row was measured. NULL = the row states no measurement, or predates v67 and its date is unknown; never backfilled. Column added v67.
     method             TEXT,  -- v67: how the fact was measured (command, query, sample). NULL as for measured_at. Column added v67.
+    kind               TEXT,  -- v71: fact | preference | decision | lesson | pending | defect | tool (v72). Backfilled from the claim word, else the type's default (scripts/migrations/v70_to_v71.sql); which kinds an owner may hold is the matrix in trg_memory_placement_* below and gaia/store/memory_placement.py.
+    owner_level        TEXT,  -- v71: user | workspace | group | project | gaia. NULL only on a legacy row with neither initiative nor project_ref, listed for hand placement. Precedence at read time: gaia < user < workspace < group < project.
+    until              TEXT,  -- v71: a preference's expiry -- an ISO date, or memory:<ws>/<slug> (holds while that row is live). NULL = standing.
+    binary             TEXT,  -- v72: a tool's executable on PATH; the writer verifies it resolves. One live tool row per (workspace, binary).
+    replaces           TEXT,  -- v72: the CLI the hooks judge a tool as (hooks/modules/security/cli_aliases.py); only a CLI the classifier models.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_workspace ON memory(workspace);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_tool_binary
+    ON memory(workspace, binary) WHERE binary IS NOT NULL AND deleted_at IS NULL;
 -- Note: idx_memory_class_status is NOT declared here. It is created by
 -- scripts/migrations/v3_to_v4.sql after the columns exist on the live DB.
 -- Declaring it here would parse-fail on v3 DBs during the schema.sql replay
@@ -1066,6 +1073,68 @@ BEGIN
     VALUES ('delete', old.rowid, old.workspace, old.name, old.description, old.body);
     INSERT INTO memory_fts(rowid, workspace, name, description, body)
     VALUES (new.rowid, new.workspace, new.name, new.description, new.body);
+END;
+
+-- v71: the kind-per-owner matrix, judged on insert and on a placement change
+-- only, so a telemetry update never fires it and a legacy row the matrix
+-- forbids stays readable until it is curated. The messages are the ones
+-- gaia/store/memory_placement.py::placement_refusal teaches.
+CREATE TRIGGER IF NOT EXISTS trg_memory_placement_insert
+BEFORE INSERT ON memory
+WHEN NEW.kind IS NOT NULL OR NEW.owner_level IS NOT NULL OR NEW.until IS NOT NULL
+   OR NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect', 'tool')
+            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending, defect or tool')
+        WHEN NEW.owner_level NOT IN ('user', 'workspace', 'group', 'project', 'gaia')
+            THEN RAISE(ABORT, 'memory owner_level must be user, workspace, group, project or gaia')
+        WHEN NEW.kind = 'tool' AND NEW.owner_level IS NOT 'user'
+            THEN RAISE(ABORT, 'a tool belongs to the user (--type=user --kind=tool --binary=<name>): it is a program built for him, whichever project it serves')
+        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference', 'tool')
+            THEN RAISE(ABORT, 'the user owns facts, preferences and tools only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
+        WHEN NEW.owner_level = 'workspace' AND NEW.kind NOT IN ('fact', 'preference', 'decision')
+            THEN RAISE(ABORT, 'a workspace owns facts, preferences and decisions; a lesson or pending belongs to a group or project, a defect to gaia')
+        WHEN NEW.owner_level IN ('group', 'project') AND NEW.kind = 'defect'
+            THEN RAISE(ABORT, 'a defect is Gaia failing in use and belongs to gaia; a bug in the product is this project''s pending')
+        WHEN NEW.owner_level = 'gaia' AND NEW.kind NOT IN ('lesson', 'defect')
+            THEN RAISE(ABORT, 'gaia owns lessons and defects only; a fact, decision or pending about Gaia belongs to the gaia project')
+        WHEN NEW.until IS NOT NULL AND NEW.kind IS NOT 'preference'
+            THEN RAISE(ABORT, 'until belongs to a preference only: the date or the memory:<ws>/<slug> row while which it holds')
+        WHEN NEW.kind = 'tool' AND NEW.binary IS NULL
+            THEN RAISE(ABORT, 'a tool names its program: binary is required')
+        WHEN NEW.kind IS NOT 'tool' AND (NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL)
+            THEN RAISE(ABORT, 'binary and replaces belong to kind=tool only')
+    END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memory_placement_update
+BEFORE UPDATE OF kind, owner_level, until, binary, replaces ON memory
+WHEN NEW.kind IS NOT NULL OR NEW.owner_level IS NOT NULL OR NEW.until IS NOT NULL
+   OR NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind NOT IN ('fact', 'preference', 'decision', 'lesson', 'pending', 'defect', 'tool')
+            THEN RAISE(ABORT, 'memory kind must be fact, preference, decision, lesson, pending, defect or tool')
+        WHEN NEW.owner_level NOT IN ('user', 'workspace', 'group', 'project', 'gaia')
+            THEN RAISE(ABORT, 'memory owner_level must be user, workspace, group, project or gaia')
+        WHEN NEW.kind = 'tool' AND NEW.owner_level IS NOT 'user'
+            THEN RAISE(ABORT, 'a tool belongs to the user (--type=user --kind=tool --binary=<name>): it is a program built for him, whichever project it serves')
+        WHEN NEW.owner_level = 'user' AND NEW.kind NOT IN ('fact', 'preference', 'tool')
+            THEN RAISE(ABORT, 'the user owns facts, preferences and tools only; a decision, lesson or pending belongs to a workspace, group or project, a defect to gaia')
+        WHEN NEW.owner_level = 'workspace' AND NEW.kind NOT IN ('fact', 'preference', 'decision')
+            THEN RAISE(ABORT, 'a workspace owns facts, preferences and decisions; a lesson or pending belongs to a group or project, a defect to gaia')
+        WHEN NEW.owner_level IN ('group', 'project') AND NEW.kind = 'defect'
+            THEN RAISE(ABORT, 'a defect is Gaia failing in use and belongs to gaia; a bug in the product is this project''s pending')
+        WHEN NEW.owner_level = 'gaia' AND NEW.kind NOT IN ('lesson', 'defect')
+            THEN RAISE(ABORT, 'gaia owns lessons and defects only; a fact, decision or pending about Gaia belongs to the gaia project')
+        WHEN NEW.until IS NOT NULL AND NEW.kind IS NOT 'preference'
+            THEN RAISE(ABORT, 'until belongs to a preference only: the date or the memory:<ws>/<slug> row while which it holds')
+        WHEN NEW.kind = 'tool' AND NEW.binary IS NULL
+            THEN RAISE(ABORT, 'a tool names its program: binary is required')
+        WHEN NEW.kind IS NOT 'tool' AND (NEW.binary IS NOT NULL OR NEW.replaces IS NOT NULL)
+            THEN RAISE(ABORT, 'binary and replaces belong to kind=tool only')
+    END;
 END;
 
 -- ---------------------------------------------------------------------------
@@ -1203,6 +1272,79 @@ BEGIN
         OLD.initiative, NEW.initiative,
         OLD.deleted_at, NEW.deleted_at,
         strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    );
+END;
+
+-- ---------------------------------------------------------------------------
+-- signals (v68): one pointer row per curated change another session should
+-- hear about, read through a per-session cursor kept outside the database
+-- (gaia/signals.py). The triggers name the subject; the writing session is
+-- stamped by a TEMP trigger each writer connection installs
+-- (gaia/store/writer.py::_stamp_signals_with_session). The memory UPDATE
+-- trigger's column list must exclude the telemetry counters, as
+-- trg_memory_history's does, or every read would announce a change.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS signals (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    subject    TEXT NOT NULL,  -- 'user' | 'project:<initiative>'
+    source     TEXT NOT NULL,  -- table the change landed in
+    workspace  TEXT,
+    ref        TEXT,           -- the changed row's key within source
+    op         TEXT NOT NULL CHECK (op IN ('insert', 'update', 'delete')),
+    session_id TEXT            -- writing host session; NULL = unattributed writer
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_insert
+AFTER INSERT ON memory
+WHEN NEW.type = 'user' OR NEW.initiative IS NOT NULL
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE WHEN NEW.type = 'user' THEN 'user' ELSE 'project:' || NEW.initiative END,
+        'memory', NEW.workspace, NEW.name, 'insert'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_update
+AFTER UPDATE ON memory
+WHEN (NEW.type = 'user' OR NEW.initiative IS NOT NULL
+      OR OLD.type = 'user' OR OLD.initiative IS NOT NULL)
+ AND (OLD.name IS NOT NEW.name
+   OR OLD.body IS NOT NEW.body
+   OR OLD.type IS NOT NEW.type
+   OR OLD.description IS NOT NEW.description
+   OR OLD.status IS NOT NEW.status
+   OR OLD.class IS NOT NEW.class
+   OR OLD.project_ref IS NOT NEW.project_ref
+   OR OLD.initiative IS NOT NEW.initiative
+   OR OLD.deleted_at IS NOT NEW.deleted_at
+   OR OLD.audience IS NOT NEW.audience
+   OR OLD.measured_at IS NOT NEW.measured_at
+   OR OLD.method IS NOT NEW.method)
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE
+            WHEN NEW.type = 'user' THEN 'user'
+            WHEN NEW.initiative IS NOT NULL THEN 'project:' || NEW.initiative
+            WHEN OLD.type = 'user' THEN 'user'
+            ELSE 'project:' || OLD.initiative
+        END,
+        'memory', NEW.workspace, NEW.name,
+        CASE WHEN OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
+             THEN 'delete' ELSE 'update' END
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_signals_memory_delete
+AFTER DELETE ON memory
+WHEN OLD.deleted_at IS NULL AND (OLD.type = 'user' OR OLD.initiative IS NOT NULL)
+BEGIN
+    INSERT INTO signals (subject, source, workspace, ref, op)
+    VALUES (
+        CASE WHEN OLD.type = 'user' THEN 'user' ELSE 'project:' || OLD.initiative END,
+        'memory', OLD.workspace, OLD.name, 'delete'
     );
 END;
 
@@ -1681,6 +1823,60 @@ BEGIN
         strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
     );
 END;
+
+-- ---------------------------------------------------------------------------
+-- project_context: context sections keyed by the project they describe (v69).
+-- Replaces project_context_contracts, which readers keep as a per-section
+-- fallback until its rows are moved; history is written by the writer
+-- (gaia/store/project_context.py::write_section), inserts included.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS project_context (
+    project_identity TEXT NOT NULL,
+    contract_name    TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    metadata         TEXT,
+    updated_at       TEXT,
+    PRIMARY KEY (project_identity, contract_name)
+);
+
+CREATE TABLE IF NOT EXISTS project_context_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_identity    TEXT NOT NULL,
+    contract_name       TEXT NOT NULL,
+    before_payload_json TEXT,
+    after_payload_json  TEXT NOT NULL,
+    changed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    changed_by_agent    TEXT,
+    proposed_by         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_context_history_section
+    ON project_context_history(project_identity, contract_name);
+
+-- ---------------------------------------------------------------------------
+-- proposals: what a closed turn proposed for the orchestrator to decide (v70).
+-- One row per memory_delta proposal or update_contracts entry, recorded by
+-- every close lane (gaia/store/proposals.py::record_proposals); the decision
+-- stays here, joined to the proposing row through handoff_id.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS proposals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    handoff_id    INTEGER NOT NULL,
+    item_index    INTEGER NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('memory', 'context', 'thread')),
+    project       TEXT,
+    payload       TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'accepted', 'dismissed')),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at    TEXT,
+    decided_by    TEXT,
+    decision_note TEXT,
+    UNIQUE (handoff_id, kind, item_index),
+    FOREIGN KEY (handoff_id) REFERENCES agent_contract_handoffs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, id);
 
 -- ---------------------------------------------------------------------------
 -- approvals: durable approval lifecycle records (v12 / approval-model-redesign)

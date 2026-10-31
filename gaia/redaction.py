@@ -60,6 +60,18 @@ _BEARER_VALUE = re.compile(
     r"(?P<prefix>\bBearer\s+)(?P<value>[A-Za-z0-9._~+/=-]+)",
     re.IGNORECASE,
 )
+TOKEN_SHAPE = re.compile(
+    r"\b(?:gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|ya29\.[A-Za-z0-9._~-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,})"
+)
+_URL_PASSWORD = re.compile(r"(?P<prefix>\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)(?P<value>[^\s/@]+)(?=@)")
+# An unterminated block is withheld to the end of the text: its END line may sit past an excerpt's cut.
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"(?P<begin>-----BEGIN (?P<label>[A-Z0-9 ]*PRIVATE KEY)-----)"
+    r"(?:.*?(?P<end>-----END (?P=label)-----)|.*\Z)",
+    re.DOTALL,
+)
 _SECRET_KIND = re.compile(r"(?m)^\s*kind\s*:\s*Secret\s*(?:#.*)?$")
 _YAML_DOCUMENT = re.compile(r"(?m)(^---\s*$)")
 _YAML_SECTION = re.compile(r"^(?P<indent>\s*)(?:data|stringData)\s*:\s*(?:#.*)?$")
@@ -77,12 +89,15 @@ def redact_text(text: str) -> str:
     if parsed is not None:
         return json.dumps(redact_tree(parsed), ensure_ascii=False)
 
-    redacted = _redact_secret_yaml(text)
+    redacted = _PRIVATE_KEY_BLOCK.sub(_replace_private_key, text)
+    redacted = _URL_PASSWORD.sub(rf"\g<prefix>{REDACTED}", redacted)
+    redacted = _redact_secret_yaml(redacted)
     redacted = _YAML_ENV_PAIR.sub(_replace_env_pair, redacted)
     redacted = _BEARER_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
     redacted = _QUOTED_VALUE.sub(_replace_quoted_value, redacted)
     redacted = _PLAIN_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
-    return _FLAG_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
+    redacted = _FLAG_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
+    return TOKEN_SHAPE.sub(REDACTED, redacted)
 
 
 def redact_tree(value: Any) -> Any:
@@ -158,15 +173,39 @@ def has_clear_secret(text: str) -> bool:
     """
     if not isinstance(text, str) or not text:
         return False
+    if TOKEN_SHAPE.search(text):
+        return True
     for pattern in (_BEARER_VALUE, _QUOTED_VALUE, _PLAIN_VALUE, _FLAG_VALUE):
         for match in pattern.finditer(text):
             value = match.group("value").strip("'\"")
             name = re.sub(r"[^a-z]", "", match.group("prefix").lower())
             if name == "key":
                 continue
-            if value and not value.startswith("$") and value != REDACTED:
+            if value and not value.startswith(("$", REDACTED[:-1])):
                 return True
     return False
+
+
+def carries_clear_secret(value: Any) -> bool:
+    """Say whether any string inside ``value`` carries a secret in clear (:func:`has_clear_secret`)."""
+    if isinstance(value, str):
+        return has_clear_secret(value)
+    if isinstance(value, Mapping):
+        return any(carries_clear_secret(child) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(carries_clear_secret(child) for child in value)
+    return False
+
+
+def mask_clear_secrets(value: Any) -> Any:
+    """Return ``value`` with every string that carries a clear secret redacted and the rest untouched."""
+    if isinstance(value, str):
+        return redact_text(value) if has_clear_secret(value) else value
+    if isinstance(value, Mapping):
+        return {key: mask_clear_secrets(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [mask_clear_secrets(child) for child in value]
+    return value
 
 
 def _redact_data_leaves(value: Any) -> Any:
@@ -207,6 +246,11 @@ def _redact_all_leaves(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_redact_all_leaves(child) for child in value)
     return REDACTED
+
+
+def _replace_private_key(match: re.Match[str]) -> str:
+    end = f"\n{match.group('end')}" if match.group("end") else ""
+    return f"{match.group('begin')}\n{REDACTED}{end}"
 
 
 def _replace_quoted_value(match: re.Match[str]) -> str:

@@ -420,12 +420,10 @@ def _grant_to_display(g: dict, decision_status: str | None = None) -> dict:
 def cmd_list(args) -> int:
     """List approval grants and pending approvals from the DB.
 
-    Without ``--session``, all grants are shown.  With ``--session SESSION_ID``,
-    only that session's grants are shown.
-
     ``--orphans-only`` keeps the pending approvals whose reading is
     ``orphaned`` -- the one rule every reader applies -- so a request past its
-    TTL reads expired here too, never orphaned.
+    TTL reads expired here too, never orphaned. An orphan belongs to a session
+    that is gone, so it is looked for in every session.
 
     Each DB-grants row carries two independent statuses -- ``status``, the
     consent decision resolved from the approvals table (batched below via
@@ -436,14 +434,17 @@ def cmd_list(args) -> int:
     commands still live (``grant_state='PENDING'``), which is not a pending
     decision.
     """
-    session_id = getattr(args, "session", None)
+    from gaia.approvals.reading import scope_trailer, session_scope
+
     orphans_only = getattr(args, "orphans_only", False)
+    all_sessions = getattr(args, "all_sessions", False) or orphans_only
+    session_id = _scope_session(args)
 
     # DB-backed grant listing (primary path for COMMAND_SET grants)
     try:
         writer = _import_writer()
         db_grants = writer.list_approval_grants(
-            session_id=session_id,
+            session_id=None if all_sessions else session_id or None,
             limit=200,
         )
     except Exception:
@@ -484,6 +485,10 @@ def cmd_list(args) -> int:
         db_items.append(item)
     for p in pending_rows:
         p["state"] = readings.get(p.get("approval_id"), {}).get("state")
+    pending_rows, tally = session_scope(
+        pending_rows, session_id, all_sessions=all_sessions,
+        include_stale=getattr(args, "include_stale", False) or orphans_only,
+    )
     if orphans_only:
         from gaia.approvals.reading import ORPHANED
 
@@ -499,11 +504,13 @@ def cmd_list(args) -> int:
             # since Task E. New consumers must use `pending`.
             "pending_fs": pending_items,
             "count": len(db_items) + len(pending_items),
+            "scope": tally,
         }, indent=2))
         return 0
 
     if not db_items and not pending_display_items:
         print("No active grants or pending approvals.")
+        print(scope_trailer(tally))
         return 0
 
     if db_items:
@@ -547,6 +554,7 @@ def cmd_list(args) -> int:
             )
         print(f"\n{len(pending_display_items)} pending approval(s).")
 
+    print(scope_trailer(tally))
     return 0
 
 
@@ -1241,50 +1249,36 @@ def _not_pending(approval: dict) -> str:
 # T3.1: gaia approvals pending -- shortcut for list --status=pending
 # ---------------------------------------------------------------------------
 
+def _scope_session(args) -> str:
+    """``--session``, else the host session, resolved like ``_requester_identity`` so a dispatched agent's request lists with its dispatcher."""
+    from gaia.agent_identity import host_session_from_env
+
+    return getattr(args, "session", None) or host_session_from_env()
+
+
 def cmd_pending(args) -> int:
-    """Show pending approvals from the new approvals table.
-
-    With no arguments, returns all pending approvals from all sessions on this
-    machine (the DB is per-machine, so all-sessions is the correct default
-    scope).  This avoids the Bug B / P-a11d14e0 silent-drop: inside a
-    subagent ``$CLAUDE_SESSION_ID`` is the subagent's own session id, not the
-    orchestrator session id stored on the approval row, so an exact-match
-    filter would silently return nothing.
-
-    With ``--session SESSION_ID``, filters to that explicit session id only
-    (useful when the caller holds a known-good orchestrator session id).
-    With ``--all-sessions``, same as the default (kept for backwards
-    compatibility with callers that pass the flag explicitly).
-
-    Exits 0 on success, 1 on error.
-    """
-    all_sessions = getattr(args, "all_sessions", False)
-    session_id = getattr(args, "session", None)
-    output_json = getattr(args, "json", False)
-
-    # No auto-derivation from $CLAUDE_SESSION_ID.  Inside a subagent that env
-    # var holds the subagent's own session id, which does NOT match the
-    # orchestrator session_id stored on approval rows -- exact-match filtering
-    # would silently drop all pending rows.  When no explicit --session is
-    # supplied, pass session_id=None so get_pending() uses the all-sessions
-    # query (``WHERE status='pending'`` with no session filter).
+    """Show this session's live pending approvals, with a trailer counting what the scope hides."""
+    from gaia.approvals.reading import scope_trailer, session_scope
 
     try:
         store = _import_approval_store()
-        rows = _with_reading(store.list_pending(
-            all_sessions=all_sessions,
-            session_id=session_id,
-        ))
+        rows = _with_reading(store.list_pending(all_sessions=True))
     except Exception as exc:
         _print_error(f"Failed to query pending approvals: {exc}", args)
         return 1
+    shown, tally = session_scope(
+        rows, _scope_session(args),
+        all_sessions=getattr(args, "all_sessions", False),
+        include_stale=getattr(args, "include_stale", False),
+    )
 
-    if output_json:
-        print(json.dumps(rows, indent=2, default=str))
+    if getattr(args, "json", False):
+        print(json.dumps(shown, indent=2, default=str))
         return 0
 
     display = _import_approval_display()
-    display.print_approvals_table(rows)
+    display.print_approvals_table(shown)
+    print(scope_trailer(tally))
     return 0
 
 
@@ -1760,6 +1754,30 @@ def _request_set_items(args) -> list[dict]:
         }
         for index, (command, cwd) in enumerate(zip(commands, cwds))
     ]
+
+
+def cmd_audit_secrets(args) -> int:
+    """Count, read-only, the stored approval text that carries a clear secret; ``--emit-sql`` prints the scrub."""
+    from gaia.approvals import secret_audit
+    from gaia.paths.resolver import db_path
+
+    path = args.db or str(db_path())
+    con = secret_audit.open_read_only(path)
+    try:
+        findings = list(secret_audit.scan(con))
+        if args.emit_sql:
+            print(secret_audit.scrub_sql(con, findings), end="")
+            return 0
+    finally:
+        con.close()
+    rows = [{"table": f.table, "key": f.key, "column": f.column} for f in findings]
+    if getattr(args, "json", False):
+        print(json.dumps({"db": path, "count": len(rows), "findings": rows}))
+    else:
+        print(f"{len(rows)} stored value(s) carry a clear secret in {path}")
+        for row in rows:
+            print(f"  {row['table']}.{row['column']} {row['key']}")
+    return 0
 
 
 def cmd_request_set(args) -> int:
@@ -2422,6 +2440,10 @@ def register(subparsers) -> None:
         ),
     )
     p_list.add_argument("--json", action="store_true", help="JSON output")
+    p_list.add_argument("--all-sessions", action="store_true", dest="all_sessions",
+                        help="Include other sessions' approvals (default: this session's only)")
+    p_list.add_argument("--include-stale", action="store_true", dest="include_stale",
+                        help="Include orphaned and expired pending approvals (default: live only)")
     p_list.add_argument("--session", metavar="SESSION_ID", help="Filter by session ID")
     p_list.add_argument(
         "--orphans-only",
@@ -2437,18 +2459,18 @@ def register(subparsers) -> None:
         help="List pending approvals from the new approvals table",
         description=(
             "Show pending T3 approvals from the DB-backed approvals table.\n\n"
-            "Default (no flags): returns ALL pending approvals on this machine\n"
-            "across every session.  The DB is per-machine so all-sessions is the\n"
-            "correct default scope.  This avoids a silent-drop that occurred when\n"
-            "the command ran inside a subagent (whose $CLAUDE_SESSION_ID differs\n"
-            "from the orchestrator session_id stored on the approval row).\n\n"
-            "Use --session SESSION_ID to filter to one specific session when you\n"
-            "hold a known-good orchestrator session id.\n\n"
-            "--all-sessions is accepted for backwards compatibility but is\n"
-            "equivalent to the default behaviour."
+            "Default (no flags): this session's live pending approvals, including\n"
+            "those its dispatched agents requested, plus a trailer counting what\n"
+            "the scope hides.  A shell outside any host session sees every\n"
+            "session's.\n\n"
+            "--all-sessions adds other sessions' requests; --include-stale adds\n"
+            "orphaned and expired ones; --session SESSION_ID scopes to that\n"
+            "session instead."
         ),
     )
     p_pending.add_argument("--json", action="store_true", help="JSON output")
+    p_pending.add_argument("--include-stale", action="store_true", dest="include_stale",
+                           help="Include orphaned and expired requests (default: live only)")
     p_pending.add_argument(
         "--session",
         metavar="SESSION_ID",
@@ -2462,7 +2484,7 @@ def register(subparsers) -> None:
         "--all-sessions",
         action="store_true",
         dest="all_sessions",
-        help="Show pending from all sessions (default; kept for backwards compatibility)",
+        help="Include other sessions' requests (default: this session's and its agents' only)",
     )
     p_pending.set_defaults(func=cmd_pending)
 
@@ -2555,6 +2577,15 @@ def register(subparsers) -> None:
     p_approve.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
     p_approve.add_argument("--json", action="store_true", help="JSON output")
     p_approve.set_defaults(func=cmd_approve)
+
+    p_audit = sub.add_parser(
+        "audit-secrets",
+        help="Read-only: count stored approval text carrying a clear secret (values never printed)",
+    )
+    p_audit.add_argument("--db", help="Database file to scan (a copy); default: the live database")
+    p_audit.add_argument("--emit-sql", action="store_true", help="Print the scrub transaction instead of the report")
+    p_audit.add_argument("--json", action="store_true")
+    p_audit.set_defaults(func=cmd_audit_secrets)
 
     p_request_set = sub.add_parser(
         "request-set", help="Create a governed plan-first COMMAND_SET request"
@@ -2874,6 +2905,7 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_pending.add_argument("--json", action="store_true")
     p_pending.add_argument("--session", metavar="SESSION_ID")
     p_pending.add_argument("--all-sessions", action="store_true", dest="all_sessions")
+    p_pending.add_argument("--include-stale", action="store_true", dest="include_stale")
     p_pending.set_defaults(func=cmd_pending)
 
     p_show = subparsers.add_parser("show", help="Show approval detail")
@@ -2930,7 +2962,9 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_stats.add_argument("--json", action="store_true")
     p_stats.set_defaults(func=cmd_stats)
 
-    return parser
+    from gaia.cli_parsing import refuse_abbreviations
+
+    return refuse_abbreviations(parser)
 
 
 if __name__ == "__main__":

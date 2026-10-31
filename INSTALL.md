@@ -103,7 +103,7 @@ npx gaia scan --workspace <name> <path>             # <path> defaults to the cur
 npx gaia scan --workspace <name> <path> --dry-run   # reports the classification, writes nothing
 ```
 
-Outside every declared workspace, `gaia install` and the session start print `<folder> is not inside a declared workspace.` followed by `Declare one with: gaia workspace declare <name> <path>`. `gaia scan` only indexes: it never installs Gaia, creates links or declares a workspace, and applying it to an undeclared name is refused. What counts as a project, a group and the owning workspace, and what happens when a repository moves or is cloned twice, is in [README.md, Workspaces and projects](./README.md#workspaces-and-projects).
+Outside every declared workspace, `gaia install` and the session start print `<folder> is not inside a declared workspace.` followed by `Declare one with: gaia workspace declare <name> <path>`. `gaia scan` only indexes: it never installs Gaia, creates links or declares a workspace, and applying it to an undeclared name is refused. What counts as a project, a group and the owning workspace, and what happens when a repository moves or is cloned twice, is in [README.md, Workspaces, groups and projects](./README.md#workspaces-groups-and-projects).
 
 ---
 
@@ -477,7 +477,7 @@ Gaia is designed with these principles:
 ### Frequently Asked Questions
 
 **Q: Can I use Gaia in multiple projects?**  
-A: Yes. Every git repository is a project, and one install serves them all. Gather them under workspaces you declare (`npx gaia workspace declare <name> <path>`) and index each with `npx gaia scan --workspace <name> <path>`; a repository belongs to the nearest declared workspace that contains it. One database, `~/.gaia/gaia.db`, holds every workspace. See [README.md, Workspaces and projects](./README.md#workspaces-and-projects).
+A: Yes. Every git repository is a project, and one install serves them all. Gather them under workspaces you declare (`npx gaia workspace declare <name> <path>`) and index each with `npx gaia scan --workspace <name> <path>`; a repository belongs to the nearest declared workspace that contains it. One database, `~/.gaia/gaia.db`, holds every workspace. See [README.md, Workspaces, groups and projects](./README.md#workspaces-groups-and-projects).
 
 **Q: Do symlinks work on Windows?**  
 A: Symlinks need Windows developer mode or an administrator shell. Without that privilege, `gaia install` copies each directory into `.claude/` instead and records the package version of each copy in `.claude/.gaia-symlink-fallback.json`; the next `gaia install` or `gaia update` refreshes a copy whose recorded version differs from the package, and `gaia doctor` checks it. A Windows junction is treated as a link.

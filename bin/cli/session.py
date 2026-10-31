@@ -34,10 +34,12 @@ if str(_HOOKS_DIR) not in sys.path:
 
 
 def _cmd_preview(args) -> int:
-    """Handle `gaia session preview`: print the birth block for this folder, writing nothing."""
+    """Handle `gaia session preview`: print the birth block for this folder, with the named session's resume section, writing nothing."""
     from modules.session.session_manifest import build_session_context
 
-    text = build_session_context()
+    from gaia.agent_identity import host_session_from_env
+
+    text = build_session_context(session_id=args.session_id or host_session_from_env())
     print(text if text else "(empty -- every block returned nothing)")
     return 0
 
@@ -107,6 +109,7 @@ def register(subparsers):
     actions = session_parser.add_subparsers(dest="session_action", metavar="<action>")
 
     preview_p = actions.add_parser("preview", help="Print the session birth block; writes nothing")
+    preview_p.add_argument("--session-id", default=None, help="Session whose resume section the block carries; default: the host session this process runs under")
     preview_p.set_defaults(func=_cmd_preview)
 
     snapshot_p = actions.add_parser(

@@ -33,7 +33,7 @@ class StartOutcome:
 
 
 def start_session(start: SessionStart) -> StartOutcome:
-    """Run the start maintenance, then build the birth block or, for ``compact``, the refresh."""
+    """Run the start maintenance, then build the birth block for the start's source."""
     run_start_maintenance(start)
 
     from modules.core.plugin_setup import mark_data_home, run_first_time_setup
@@ -55,11 +55,12 @@ def start_session(start: SessionStart) -> StartOutcome:
         "## Leftovers": _leftovers_notice(start.workspace_dir),
     }
     shown = {title: text for title, text in notices.items() if text}
-    alarms = [f"{title}\n{text}" for title, text in shown.items()]
+    alarms = [f"{title}\n{text}" for title, text in shown.items() if title != "## Leftovers"]
+    leftovers = [f"{title}\n{text}" for title, text in shown.items() if title == "## Leftovers"]
     return StartOutcome(
         setup_message=setup_message,
         notices=shown,
-        context=start_context(start.source, alarms, start.session_id),
+        context=start_context(start.source, alarms, start.session_id, notices=leftovers),
     )
 
 
@@ -72,6 +73,11 @@ def run_start_maintenance(start: SessionStart) -> None:
     worktrees it owns.
     """
     from modules.session.session_registry import SessionRegistryError, register_session
+
+    if start.source == "compact":
+        from modules.security.memory_skill_guard import record_skill_dropped
+
+        record_skill_dropped(start.session_id)
 
     try:
         if start.session_id and start.session_id != "default":
@@ -117,9 +123,9 @@ def run_start_maintenance(start: SessionStart) -> None:
 
     try:
         from modules.session.db_backup import maybe_backup_db
-        snapshot = maybe_backup_db()
-        if snapshot:
-            logger.info("db_backup: created SessionStart snapshot %s", snapshot)
+        pid = maybe_backup_db()
+        if pid:
+            logger.info("db_backup: SessionStart backup started detached (pid %s)", pid)
     except Exception as exc:
         logger.debug("maybe_backup_db failed (non-fatal): %s", exc)
 
@@ -141,6 +147,14 @@ def run_start_maintenance(start: SessionStart) -> None:
             )
     except Exception as exc:
         logger.debug("sweep_repo_worktrees failed (non-fatal): %s", exc)
+
+    try:
+        from gaia import conclusions, signals
+        if start.session_id != "default":
+            signals.baseline(start.session_id)
+            conclusions.baseline(start.session_id)
+    except Exception as exc:
+        logger.debug("signals or conclusions baseline failed (non-fatal): %s", exc)
 
 
 def _leftovers_notice(workspace_dir: Path) -> str:
@@ -190,19 +204,13 @@ def _reconcile_install() -> tuple[str, str]:
     return upgrade_notice, workspace_notice
 
 
-def start_context(source: str, alarms: list, session_id: str = "") -> str:
-    """Return the birth block, or after compaction the refresh carrying ``session_id``'s snapshot; "" when building fails.
-
-    Compaction takes the refresh because the birth block's scan and memory
-    were already delivered at the true start; its environment comes back with
-    the refresh, since the compaction discarded the message that carried it.
-    """
+def start_context(source: str, alarms: list, session_id: str = "", notices: list = ()) -> str:
+    """Return ``session_id``'s birth block for ``source``, a compaction included; "" when building fails."""
     try:
-        if source == "compact":
-            from modules.context.compact_context_builder import build_compact_context
-            return "\n\n".join(b for b in (*alarms, build_compact_context(session_id=session_id)) if b)
         from modules.session.session_manifest import build_session_context
-        return build_session_context(alarms=alarms, record_injection=True, session_id=session_id)
+        return build_session_context(
+            source=source, alarms=alarms, notices=notices, record_injection=True, session_id=session_id,
+        )
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)
         return ""
@@ -211,7 +219,8 @@ def start_context(source: str, alarms: list, session_id: str = "") -> str:
 def prompt_context(session_id: str, workspace: Optional[str]) -> str:
     """Refresh the session heartbeat, then return the context a user prompt carries."""
     refresh_heartbeat(session_id)
-    return notifications_counter(workspace)
+    lines = (notifications_counter(workspace), signals_line(session_id), conclusions_lines(session_id))
+    return "\n".join(line for line in lines if line)
 
 
 def refresh_heartbeat(session_id: str) -> None:
@@ -240,6 +249,31 @@ def notifications_counter(workspace: Optional[str]) -> str:
         return ""
 
 
+def signals_line(session_id: str) -> str:
+    """Return the line naming what other sessions changed since this one last looked; "" when none or on failure."""
+    if session_id == "default":
+        return ""
+    try:
+        from gaia.signals import take_line
+        return take_line(session_id)
+    except Exception as exc:
+        logger.warning("signals line failed (advisory, skipping): %s", exc)
+        return ""
+
+
+def conclusions_lines(session_id: str) -> str:
+    """Return the conclusions of this session's specialists that closed undelivered; "" when none or on failure."""
+    if session_id == "default":
+        return ""
+    try:
+        from gaia.conclusions import take_lines
+        from modules.agents.proposal_notices import background_notice
+        return take_lines(session_id, background_notice)
+    except Exception as exc:
+        logger.warning("conclusions lines failed (advisory, skipping): %s", exc)
+        return ""
+
+
 def end_session(session_id: Optional[str]) -> None:
     """Remove the session from the registry so liveness filters stop counting it."""
     from modules.session.session_registry import SessionRegistryError, unregister_session
@@ -250,3 +284,9 @@ def end_session(session_id: Optional[str]) -> None:
             logger.info("SessionEnd: unregistered session %s", session_id)
     except SessionRegistryError as exc:
         logger.debug("session_registry unregister failed (non-fatal): %s", exc)
+
+    try:
+        from gaia.signals import forget
+        forget(session_id)
+    except Exception as exc:
+        logger.debug("signals cursor not removed (non-fatal): %s", exc)

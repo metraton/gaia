@@ -129,7 +129,7 @@ def test_specialist_skills_absent_for_an_agent_that_preloads_none(monkeypatch):
 
 
 def test_specialist_skills_claude_code_kernel_is_unchanged(monkeypatch):
-    monkeypatch.setattr(kernel_builder, "build_memory_block", lambda **_kw: "")
+    monkeypatch.setattr(kernel_builder, "build_memory_block", lambda *_a, **_kw: "")
     kernel = kernel_builder.build_kernel_context(_row("do the thing"), agent_name="gaia-system")
 
     assert kernel_builder.SKILLS_HEADING not in kernel
@@ -142,15 +142,16 @@ def _headers(text: str) -> list[str]:
 def test_specialist_skills_task_prompt_carries_the_claude_code_kernel(monkeypatch):
     monkeypatch.setattr(
         kernel_builder, "build_memory_block",
-        lambda **_kw: f"{kernel_builder.MEMORY_HEADING}\n\n- a standing rule",
+        lambda *_a, **_kw: f"{kernel_builder.MEMORY_HEADING}\n\n- a standing rule",
     )
     prompt = _dispatched_prompt(monkeypatch, "gaia-system")
 
     assert kernel_builder.build_kernel_context(_row("do the thing"), agent_name="gaia-system") in prompt
     assert _headers(prompt) == [
         kernel_builder.KERNEL_HEADING,
-        kernel_builder.CLI_HEADING,
         kernel_builder.MEMORY_HEADING,
+        kernel_builder.ENVIRONMENT_HEADING,
+        kernel_builder.CLI_HEADING,
         kernel_builder.SKILLS_HEADING,
         "# Closing this turn",
     ]
@@ -168,7 +169,7 @@ def test_specialist_skills_survive_child_compaction(monkeypatch):
     context = "\n\n".join(OpenCodeAdapter().adapt_pre_compact(event).output["updated_input"]["context"])
 
     assert kernel_builder.build_skills_block("gaia-system") in context
-    assert _headers(context)[:2] == [kernel_builder.KERNEL_HEADING, kernel_builder.CLI_HEADING]
+    assert _headers(context)[:2] == [kernel_builder.KERNEL_HEADING, kernel_builder.ENVIRONMENT_HEADING]
 
 
 def test_specialist_skills_parity_alarm_no_longer_holds_the_gap():

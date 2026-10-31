@@ -15,6 +15,7 @@ from typing import Optional, Tuple, Union
 
 from .command_semantics import analyze_command, tokenize_command
 from .mutative_verbs import CATEGORY_UNKNOWN, CLI_FAMILY_LOOKUP, detect_mutative_command
+from .targets import UNDETERMINED, grant_target
 
 APPROVAL_SCOPE_VERSION = 2
 
@@ -31,7 +32,7 @@ SUPPORTED_SCOPE_TYPES = frozenset({
 
 @dataclass(frozen=True)
 class ApprovalSignature:
-    """Stable representation of an approved command scope."""
+    """Stable representation of an approved command scope; *target* is where the command landed when it was approved."""
 
     version: int = APPROVAL_SCOPE_VERSION
     scope_type: str = SCOPE_SEMANTIC_SIGNATURE
@@ -43,6 +44,7 @@ class ApprovalSignature:
     normalized_flags: Tuple[str, ...] = ()
     dangerous_flags: Tuple[str, ...] = ()
     exact_tokens: Tuple[str, ...] = ()
+    target: str = ""
 
     def to_dict(self) -> dict:
         """Return a JSON-serializable payload."""
@@ -62,6 +64,7 @@ class ApprovalSignature:
             normalized_flags=tuple(data.get("normalized_flags", ())),
             dangerous_flags=tuple(data.get("dangerous_flags", ())),
             exact_tokens=tuple(data.get("exact_tokens", ())),
+            target=data.get("target", ""),
         )
 
 
@@ -71,6 +74,7 @@ def build_approval_signature(
     *,
     danger_verb: str = "",
     danger_category: str = CATEGORY_UNKNOWN,
+    cwd: Optional[str] = None,
 ) -> Optional[ApprovalSignature]:
     """Build a stable scope signature for a command."""
     if scope_type not in SUPPORTED_SCOPE_TYPES:
@@ -107,10 +111,11 @@ def build_approval_signature(
         normalized_flags=_sorted_unique(semantics.flag_tokens_raw),
         dangerous_flags=_sorted_unique(danger.dangerous_flags),
         exact_tokens=exact_tokens,
+        target=grant_target(stripped, cwd=cwd),
     )
 
 
-def matches_approval_signature(signature: ApprovalSignature, command: str) -> bool:
+def matches_approval_signature(signature: ApprovalSignature, command: str, cwd: Optional[str] = None) -> bool:
     """Return True when a command falls inside an approved scope."""
     stripped = command.strip() if command else ""
     exact_tokens = tuple(tokenize_command(stripped))
@@ -143,10 +148,10 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     if signature.scope_type == SCOPE_SEMANTIC_SIGNATURE:
         incoming_semantic_tokens = _approval_identity_tokens(semantics)
         incoming_flags = _sorted_unique(semantics.flag_tokens_raw)
-        return (
-            incoming_semantic_tokens == signature.semantic_tokens
-            and incoming_flags == signature.normalized_flags
-        )
+        if incoming_semantic_tokens != signature.semantic_tokens or incoming_flags != signature.normalized_flags:
+            return False
+        current = grant_target(stripped, cwd=cwd)
+        return current != UNDETERMINED and current == signature.target
 
     return False
 

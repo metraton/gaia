@@ -5,7 +5,7 @@ description: Use when the user wants to be reminded of something at a time, or w
 
 # Reminders
 
-A reminder is a row that comes due, not a job that starts. Gaia has no scheduler, no daemon, no system timer and no unattended AI session: nothing runs while the user is away. A row is due when a read finds it open with its time passed, and the reads happen when the user is present -- the `Recurring work pending` line at session start and the `N notifications due` counter on the next prompt. A reminder for 16:00 shows after 16:00, the next time Gaia is used.
+A reminder is a row that comes due, not a job that starts. Gaia has no scheduler, no daemon, no system timer and no unattended AI session: nothing runs while the user is away. A row is due when a read finds it open with its time passed, and the reads happen when the user is present -- the `## Due` section at session start and the `N notifications due` counter on the next prompt. A reminder for 16:00 shows after 16:00, the next time Gaia is used.
 
 ## The three kinds
 

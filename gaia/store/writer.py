@@ -569,10 +569,29 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # Materialize the schema based on ACTUAL presence (not file existence),
     # serialized so a concurrent first-write can never observe a missing table.
     _ensure_schema_materialized(con, db_path)
+    _stamp_signals_with_session(con)
     con.schema_ahead = _schema_ahead(con, db_path)
     if con.schema_ahead:
         con.set_authorizer(_refuse_main_writes)
     return con
+
+
+def _stamp_signals_with_session(con: sqlite3.Connection) -> None:
+    """Attribute the signals this connection's writes raise to the host session it runs in."""
+    # A main-schema trigger cannot read the environment, and one calling a function
+    # only this factory registers would break every other connection writing memory.
+    from gaia.agent_identity import host_session_from_env
+
+    session = host_session_from_env()
+    if not session:
+        return
+    con.create_function("gaia_writer_session", 0, lambda: session, deterministic=True)
+    with contextlib.suppress(sqlite3.OperationalError):
+        con.execute(
+            "CREATE TEMP TRIGGER IF NOT EXISTS trg_signals_session "
+            "AFTER INSERT ON signals WHEN NEW.session_id IS NULL BEGIN "
+            "UPDATE signals SET session_id = gaia_writer_session() WHERE id = NEW.id; END"
+        )
 
 
 def _is_locked_error(exc: BaseException) -> bool:
@@ -1732,28 +1751,12 @@ def write_harness_event(
     Returns:
         Integer primary key of the inserted row.
     """
-    payload = json.dumps(meta, separators=(",", ":")) if meta else None
     con = _connect(db_path)
     try:
-        cur = con.execute(
-            """
-            INSERT INTO harness_events
-                (workspace, ts, type, source, agent, result, severity, payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                workspace,
-                _now_iso(),
-                event_type,
-                source,
-                agent,
-                result,
-                severity,
-                payload,
-            ),
+        row_id = _insert_harness_event(
+            con, event_type, source, agent, result, severity, meta, workspace,
         )
         con.commit()
-        row_id = cur.lastrowid
     finally:
         con.close()
     # Automatic retention (mirrors episodes): occasionally prune events older
@@ -1761,6 +1764,62 @@ def write_harness_event(
     # committed and this one is closed, behind a 1/N gate, and swallows any
     # failure so it can never mask the successful append.
     _maybe_prune_harness_events(db_path=db_path)
+    return row_id
+
+
+def _insert_harness_event(
+    con: sqlite3.Connection,
+    event_type: str,
+    source: str | None,
+    agent: str | None,
+    result: str | None,
+    severity: str | None,
+    meta: Mapping[str, Any] | None,
+    workspace: str | None,
+) -> int:
+    payload = json.dumps(meta, separators=(",", ":")) if meta else None
+    cur = con.execute(
+        """
+        INSERT INTO harness_events
+            (workspace, ts, type, source, agent, result, severity, payload)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (workspace, _now_iso(), event_type, source, agent, result, severity, payload),
+    )
+    return cur.lastrowid
+
+
+def write_harness_event_lean(
+    *,
+    event_type: str,
+    source: str | None = None,
+    agent: str | None = None,
+    result: str | None = None,
+    severity: str | None = "info",
+    meta: Mapping[str, Any] | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Append one ``harness_events`` row on a bare connection, for events raised on every tool call.
+
+    Against ``write_harness_event`` it skips the schema materialization check
+    (the database must already exist, else the insert raises), the retention
+    sweep, and the commit fsync: ``synchronous=NORMAL`` in WAL mode keeps the
+    database consistent and can lose only the last commits to a power cut.
+    A database past this code's schema window is still refused.
+    """
+    path = db_path or _db_path()
+    assert_schema_writable(path)
+    con = sqlite3.connect(str(path))
+    try:
+        con.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+        con.execute("PRAGMA synchronous = NORMAL")
+        row_id = _insert_harness_event(
+            con, event_type, source, agent, result, severity, meta, workspace,
+        )
+        con.commit()
+    finally:
+        con.close()
     return row_id
 
 
@@ -2482,10 +2541,22 @@ def upsert_memory(
     replace: bool = False,
     measured_at: str | None = None,
     method: str | None = None,
+    kind: str | None = None,
+    until: str | None = None,
+    binary: str | None = None,
+    replaces: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
     """Write a curated-memory row; an existing name needs ``replace``.
+
+    ``kind`` defaults to the claim word of ``description``, else the type's
+    default (``memory_placement.default_kind``); the owner level is derived
+    from the placement flags, and the pair must be one the matrix allows.
+    ``until`` is a preference's expiry, a date or ``memory:<ws>/<slug>``.
+    ``binary`` and ``replaces`` belong to a tool: the executable on PATH it
+    is about (verified, one live row per workspace) and the CLI the hooks
+    judge it as (``memory_placement.tool_refusal``).
 
     Without ``replace`` an existing name, live or deleted, raises
     :class:`MemoryNameExistsError`; a ``type='user'`` name raises
@@ -2579,8 +2650,32 @@ def upsert_memory(
     if origin_session_id is None:
         origin_session_id = os.environ.get("GAIA_SESSION_ID") or None
 
+    from gaia.store.memory_placement import (
+        default_kind, derive_owner_level, parse_until, placement_refusal, tool_refusal,
+    )
+
+    if until is not None:
+        until = parse_until(until)
+    kind = kind or default_kind(type, description, born_class)
+
     con = _connect(db_path)
     try:
+        owner_level = derive_owner_level(type, initiative, project_ref, con)
+        refusal = placement_refusal(owner_level, kind, until) or tool_refusal(
+            kind, description, binary, replaces)
+        if refusal:
+            raise ValueError(f"cannot write {name!r} as {kind} owned by {owner_level}: {refusal}")
+        if binary:
+            holder = con.execute(
+                "SELECT name FROM memory WHERE workspace = ? AND binary = ? AND name != ? "
+                "AND deleted_at IS NULL", (workspace, binary, name),
+            ).fetchone()
+            if holder:
+                raise ValueError(
+                    f"cannot write {name!r}: {binary!r} already has a tool row, {holder[0]}; a "
+                    f"changed tool is a new row plus `gaia memory link {name} {holder[0]} "
+                    f"--kind=supersedes` after retitling, or --replace on {holder[0]} to correct it"
+                )
         con.execute("BEGIN")
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
@@ -2594,8 +2689,9 @@ def upsert_memory(
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
                                     updated_at, audience, created_at, class,
-                                    measured_at, method)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?)
+                                    measured_at, method, kind, owner_level, until,
+                                    binary, replaces)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2606,7 +2702,12 @@ def upsert_memory(
                     updated_at        = excluded.updated_at,
                     audience          = COALESCE(?, audience),
                     measured_at       = COALESCE(excluded.measured_at, measured_at),
-                    method            = COALESCE(excluded.method, method)
+                    method            = COALESCE(excluded.method, method),
+                    kind              = excluded.kind,
+                    owner_level       = excluded.owner_level,
+                    until             = excluded.until,
+                    binary            = excluded.binary,
+                    replaces          = excluded.replaces
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no
@@ -2625,12 +2726,17 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, born_class, measured_at, method, audience),
+                 now, born_class, measured_at, method, kind, owner_level, until,
+                 binary, replaces, audience),
             )
             result = {
                 "status": "applied",
                 "action": action,
                 "name": name,
+                "kind": kind,
+                "owner_level": owner_level,
+                "binary": binary,
+                "replaces": replaces,
                 "updated_at": now,
                 # The workspace actually written -- may differ from the
                 # caller's requested workspace when host-scope forced it.
@@ -2924,6 +3030,67 @@ def set_memory_audience(
 VALID_MEMORY_LINK_KINDS = ("relates_to", "supersedes", "derived_from", "graduated_to")
 
 
+def _supersedes_refusal(
+    con: sqlite3.Connection, workspace: str, src_name: str, dst_home: str, dst_name: str,
+) -> str | None:
+    """Why ``src`` may not supersede ``dst`` (itself, a row of another owner or kind, or one that already supersedes ``src``), or ``None``."""
+    pair = f"{src_name!r} -> {dst_name!r}"
+    src, dst = (workspace, src_name), (dst_home, dst_name)
+    if src == dst:
+        return f"cannot link {pair}: a row cannot supersede itself"
+    placements = {
+        (row["workspace"], row["name"]): (row["owner_level"], row["kind"])
+        for row in con.execute(
+            "SELECT workspace, name, owner_level, kind FROM memory "
+            "WHERE (workspace = ? AND name = ?) OR (workspace = ? AND name = ?)",
+            (*src, *dst),
+        )
+    }
+    if src in placements and dst in placements and placements[src] != placements[dst]:
+        (src_owner, src_kind), (dst_owner, dst_kind) = placements[src], placements[dst]
+        return (
+            f"cannot link {pair}: a row supersedes only a row of its own owner and kind "
+            f"({src_owner or 'unplaced'} {src_kind} -> {dst_owner or 'unplaced'} {dst_kind}); "
+            f"a more specific owner overrides at read time, a kind change is graduated_to or derived_from"
+        )
+    seen, frontier = {dst}, [dst]
+    while frontier:
+        ws, name = frontier.pop()
+        for row in con.execute(
+            "SELECT COALESCE(dst_workspace, workspace) AS dst_home, dst_name "
+            "FROM memory_links WHERE kind = 'supersedes' AND workspace = ? AND src_name = ?",
+            (ws, name),
+        ):
+            nxt = (row["dst_home"], row["dst_name"])
+            if nxt == src:
+                return (
+                    f"cannot link {pair}: {dst_name!r} already supersedes "
+                    f"{src_name!r}, directly or through a chain, and this would close a loop"
+                )
+            if nxt not in seen:
+                seen.add(nxt)
+                frontier.append(nxt)
+    return None
+
+
+def check_supersedes_link(
+    workspace: str,
+    src_name: str,
+    dst_name: str,
+    *,
+    dst_workspace: str | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Raise ``ValueError`` naming the pair when ``src`` superseding ``dst`` would loop; writes nothing."""
+    con = _connect(db_path)
+    try:
+        reason = _supersedes_refusal(con, workspace, src_name, dst_workspace or workspace, dst_name)
+    finally:
+        con.close()
+    if reason:
+        raise ValueError(reason)
+
+
 def insert_memory_link(
     workspace: str,
     src_name: str,
@@ -3022,6 +3189,10 @@ def insert_memory_link(
             "src_born": born["src"],
             "dst_born": born["dst"],
         }
+        if kind == "supersedes":
+            reason = _supersedes_refusal(con, workspace, src_name, dst_home, dst_name)
+            if reason:
+                raise ValueError(reason)
         existing = con.execute(
             "SELECT created_at, COALESCE(dst_workspace, workspace) AS dst_home "
             "FROM memory_links "
@@ -3649,16 +3820,34 @@ def close_session_memory(
 
 import re as _re_for_fts
 
-_MEMORY_FTS_SAFE = _re_for_fts.compile(r"^[A-Za-z0-9_*\s\"]+$")
+_MEMORY_FTS_SYNTAX = _re_for_fts.compile(r'["()*^]|\b(?:AND|OR|NOT|NEAR)\b')
 
 
-def _prepare_memory_fts_query(query: str) -> str:
+_MEMORY_QUERY_STOPWORDS = frozenset(
+    "a an and are as at be by for from in is it of on or that the this to with "
+    "al con de del el en es la las lo los para por que se su un una y".split()
+)
+
+
+def _memory_fts_terms(query: str, *, literal: bool = False) -> list[str] | None:
+    """Each plain word of ``query`` as a quoted FTS5 term (stopwords dropped), or ``None`` for an empty query or, unless ``literal``, an FTS5-syntax one."""
     q = (query or "").strip()
-    if not q:
-        return q
-    if _MEMORY_FTS_SAFE.match(q):
-        return q
-    return '"' + q.replace('"', '""') + '"'
+    if not q or (not literal and _MEMORY_FTS_SYNTAX.search(q)):
+        return None
+    words = q.split()
+    if len(words) > 1:
+        words = [w for w in words if w.lower() not in _MEMORY_QUERY_STOPWORDS] or words
+    return ['"' + word.replace('"', '""') + '"' for word in words]
+
+
+def _prepare_memory_fts_query(
+    query: str, *, match_all: bool = False, literal: bool = False,
+) -> str:
+    """The FTS5 expression for ``query``: its words quoted one by one, joined by OR (or by implicit AND when ``match_all``), or the query as written when it already uses FTS5 syntax and not ``literal``."""
+    terms = _memory_fts_terms(query, literal=literal)
+    if terms is None:
+        return (query or "").strip()
+    return (" " if match_all else " OR ").join(terms)
 
 
 def search_memory_curated(
@@ -3667,35 +3856,82 @@ def search_memory_curated(
     *,
     limit: int = 10,
     with_user_scope: bool = False,
+    type: str | None = None,
+    class_: str | None = None,
+    match_all: bool = False,
+    include_superseded: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
-    ``with_user_scope`` adds the workspace-less :data:`USER_WORKSPACE` rows."""
-    fts_q = _prepare_memory_fts_query(query)
+    """Curated rows matching ``query`` (any plain word, most words first; every word with ``match_all``), superseded ones only when asked; FTS5 syntax SQLite rejects is searched as plain words, and an empty query matches nothing."""
+    if not (query or "").strip():
+        return []
+    args = (workspace, query)
+    kwargs = dict(
+        limit=limit, with_user_scope=with_user_scope, type=type, class_=class_,
+        match_all=match_all, include_superseded=include_superseded, db_path=db_path,
+    )
+    try:
+        return _search_memory_curated(*args, **kwargs)
+    except sqlite3.OperationalError:
+        if _memory_fts_terms(query) is not None:
+            raise
+        return _search_memory_curated(*args, literal=True, **kwargs)
+
+
+def _search_memory_curated(
+    workspace: str,
+    query: str,
+    *,
+    limit: int,
+    with_user_scope: bool,
+    type: str | None,
+    class_: str | None,
+    match_all: bool,
+    include_superseded: bool,
+    db_path: Path | None,
+    literal: bool = False,
+) -> list[dict]:
+    """One FTS5 attempt of :func:`search_memory_curated`; ``literal`` quotes every word even when the query reads as FTS5 syntax."""
+    fts_q = _prepare_memory_fts_query(query, match_all=match_all, literal=literal)
+    ranked_terms = [] if match_all else (_memory_fts_terms(query, literal=literal) or [])
+    hits_sql = " + ".join(
+        "(m.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?))"
+        for _ in ranked_terms
+    ) or "0"
     workspaces = [workspace]
     if with_user_scope and workspace != USER_WORKSPACE:
         workspaces.append(USER_WORKSPACE)
+    from gaia.store.reader import not_superseded
+
+    filters = "" if include_superseded else f" AND {not_superseded('m')}"
+    params: list = [*ranked_terms, fts_q, *workspaces]
+    for column, value in (("type", type), ("class", class_)):
+        if value is not None:
+            filters += f" AND m.{column} = ?"
+            params.append(value)
     con = _connect(db_path)
     try:
         rows = con.execute(
             f"""
-            SELECT m.name, m.type, m.description,
+            SELECT m.name, m.type, m.class, m.description,
                    snippet(memory_fts, -1, '[', ']', '...', 16) AS snippet,
-                   bm25(memory_fts) AS rank
+                   bm25(memory_fts) AS rank,
+                   {hits_sql} AS hits
             FROM memory_fts
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
               AND m.workspace IN ({', '.join('?' for _ in workspaces)})
-              AND m.deleted_at IS NULL
-            ORDER BY rank
+              AND m.deleted_at IS NULL{filters}
+            ORDER BY hits DESC, rank
             LIMIT ?
             """,
-            (fts_q, *workspaces, limit),
+            (*params, limit),
         ).fetchall()
         return [
             {
                 "name": r["name"],
                 "type": r["type"],
+                "class": r["class"],
                 "description": r["description"],
                 "snippet": r["snippet"],
                 "rank": r["rank"],
@@ -3734,7 +3970,8 @@ def get_memory(
             "SELECT workspace, name, type, description, body, project_ref, "
             "       initiative, origin_session_id, updated_at, deleted_at, "
             "       audience, injection_count, deliberate_count, "
-            "       last_injected_at, last_deliberate_at, measured_at, method "
+            "       last_injected_at, last_deliberate_at, measured_at, method, "
+            "       kind, owner_level, until "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
         if not include_deleted:
@@ -3769,17 +4006,21 @@ def list_memory(
     *,
     type: str | None = None,
     audience: str | None = None,
+    kind: str | None = None,
     class_: str | None = None,
     status: str | None = None,
     include_deleted: bool = False,
+    include_superseded: bool = True,
     order_by: str = "name",
     direction: str | None = None,
     with_user_scope: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
     """List curated memory rows, optionally filtered by ``type``/``audience``/
-    ``class_``/``status``. ``with_user_scope`` adds the workspace-less
+    ``kind``/``class_``/``status``. ``with_user_scope`` adds the workspace-less
     :data:`USER_WORKSPACE` rows to the listing of ``workspace``.
+
+    Every row carries ``superseded_by``; ``include_superseded=False`` drops those rows.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
@@ -3833,6 +4074,9 @@ def list_memory(
         if audience is not None:
             where.append("audience = ?")
             params.append(audience)
+        if kind is not None:
+            where.append("kind = ?")
+            params.append(kind)
         if class_ is not None:
             where.append("class = ?")
             params.append(class_)
@@ -3841,10 +4085,14 @@ def list_memory(
             params.append(status)
         if not include_deleted:
             where.append("deleted_at IS NULL")
+        from gaia.store.reader import not_superseded, superseded_by
+        if not include_superseded:
+            where.append(not_superseded())
         sql = (
-            "SELECT name, type, description, updated_at, audience, class, "
+            "SELECT name, type, kind, description, updated_at, audience, class, "
             "       status, injection_count, deliberate_count, "
-            "       last_injected_at, last_deliberate_at "
+            "       last_injected_at, last_deliberate_at, "
+            f"      {superseded_by()} AS superseded_by "
             "FROM memory WHERE " + " AND ".join(where) +
             " ORDER BY " + order_clause
         )
@@ -4142,9 +4390,15 @@ def upsert_plan(
     Raises ContentWriteForbidden when GAIA_DISPATCH_AGENT names a dispatched
     agent not authorized to author plan content (plan content is authored by
     the planner). A human CLI call / orchestrator main session (no dispatch
-    identity) is always allowed.
+    identity) is always allowed. Raises StateTransitionForbidden when the save
+    would move the plan to a status other than the one it holds (``draft`` for a
+    plan that does not exist yet) and the dispatched agent is not a curator: the
+    planner authors content, it does not advance the plan.
     """
-    from gaia.state.permissions import _assert_dispatch_can_write_content
+    from gaia.state.permissions import (
+        _assert_dispatch_can_advance_state,
+        _assert_dispatch_can_write_content,
+    )
     _assert_dispatch_can_write_content("plans")
 
     if status not in VALID_PLAN_LIFECYCLE_STATUSES:
@@ -4179,6 +4433,10 @@ def upsert_plan(
             "SELECT id, status, content FROM plans WHERE brief_id = ?",
             (brief_id,),
         ).fetchone()
+
+        held_status = (existing["status"] if existing is not None else None) or "draft"
+        if status != held_status:
+            _assert_dispatch_can_advance_state("plans")
 
         now = _now_iso()
         if existing is None:
@@ -8649,7 +8907,7 @@ def check_db_semantic_grant(
 
             try:
                 signature = ApprovalSignature.from_dict(sig_dict)
-                if matches_approval_signature(signature, command):
+                if matches_approval_signature(signature, command, (requester or {}).get("cwd")):
                     return row_dict
             except Exception:
                 continue
@@ -9372,6 +9630,12 @@ def finalize_agent_contract_handoff(
 
     _assert_dispatch_can_write_handoff()
 
+    spool_key = None
+    if cut_reason is not None:
+        raw_handoff_json, spool_key = _seal_cut_harness_record(
+            contract_id, raw_handoff_json, db_path,
+        )
+
     def _work() -> dict:
         con = _connect(db_path)
         try:
@@ -9499,6 +9763,9 @@ def finalize_agent_contract_handoff(
                 returned = cur.fetchone()
                 if returned is not None:
                     handoff_id = returned["id"]
+                    from gaia.store.proposals import record_close
+
+                    record_close(con, handoff_id, raw_handoff_json)
                     con.commit()
                     # Automatic retention (mirrors episodes): occasionally prune
                     # handoffs older than the 90-day window. Runs on its own
@@ -9532,7 +9799,34 @@ def finalize_agent_contract_handoff(
         finally:
             con.close()
 
-    return _retry_on_locked(_work)
+    outcome = _retry_on_locked(_work)
+    if spool_key and outcome["created"]:
+        from gaia.contract import read_spool
+
+        read_spool.discard(spool_key)
+    return outcome
+
+
+def _seal_cut_harness_record(
+    contract_id: str, raw_handoff_json: str, db_path: "Path | None",
+) -> "tuple[str, str | None]":
+    """A cut row's envelope carrying its spooled paths and harness_record, and the harness id whose spool it consumes.
+
+    Every cut lane (reap, backstop capture, truncation salvage) writes through
+    finalize, so sealing here is what keeps a turn resumed under the same
+    harness id from inheriting the cut turn's calls. Failing to read the tool
+    record leaves the envelope as the lane built it: the cut row is still written.
+    """
+    from gaia.contract.tool_record import seal_cut_record
+
+    try:
+        envelope = json.loads(raw_handoff_json)
+        if not isinstance(envelope, dict):
+            return raw_handoff_json, None
+        key = seal_cut_record(envelope, contract_id, db_path=db_path)
+    except (TypeError, ValueError, sqlite3.Error):
+        return raw_handoff_json, None
+    return (json.dumps(envelope), key) if key else (raw_handoff_json, None)
 
 
 # ---------------------------------------------------------------------------
@@ -9887,6 +10181,19 @@ def agent_contract_handoff_finalized(
     """
     state = agent_contract_handoff_state(contract_id, db_path=db_path)
     return state is not None and state != "DISPATCHED"
+
+
+def agent_contract_handoff_closed_clean(contract_id: str, *, db_path: "Path | None" = None) -> bool:
+    """True iff the row for ``contract_id`` already holds a clean close: a verdict other than DISPATCHED and no cut mark."""
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT agent_state, cut_reason FROM agent_contract_handoffs WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    return row is not None and row[0] != "DISPATCHED" and row[1] is None
 
 
 def agent_contract_handoff_envelope(
@@ -10741,7 +11048,7 @@ def fill_empty_contract_evidence(
 ) -> dict:
     """Write ``entries`` into the evidence lists a cleanly finalized row left empty.
 
-    The only in-place edit of a closed row: a list that holds anything stays as
+    An in-place edit of a closed row: a list that holds anything stays as
     the agent wrote it, and no column other than ``raw_handoff_json`` changes.
 
     Returns ``{"status": "applied", "fields": [...], "envelope": dict}`` or
@@ -10791,6 +11098,63 @@ def fill_empty_contract_evidence(
                 )
                 con.commit()
                 return {"status": "applied", "fields": fields, "envelope": envelope}
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def record_update_contracts_outcome(
+    contract_id: "str | None",
+    *,
+    refused: "list[str]",
+    db_path: "Path | None" = None,
+) -> dict:
+    """Stamp the reasons SubagentStop refused a row's ``update_contracts`` onto that row.
+
+    Sets ``update_contracts_refused`` (one reason per entry or key not
+    recorded) in ``raw_handoff_json``. Returns ``{"status": "applied"}`` or
+    ``{"status": "skipped", "reason": ...}`` (``no_contract_id`` /
+    ``nothing_to_record`` / ``no_row`` / ``no_envelope``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+    if not refused:
+        return {"status": "skipped", "reason": "nothing_to_record"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                row = con.execute(
+                    "SELECT raw_handoff_json FROM agent_contract_handoffs "
+                    "WHERE contract_id = ? LIMIT 1",
+                    (contract_id,),
+                ).fetchone()
+                if row is None:
+                    con.commit()
+                    return {"status": "skipped", "reason": "no_row"}
+                try:
+                    envelope = json.loads(row["raw_handoff_json"] or "null")
+                except (TypeError, ValueError):
+                    envelope = None
+                if not isinstance(envelope, dict):
+                    con.commit()
+                    return {"status": "skipped", "reason": "no_envelope"}
+                envelope["update_contracts_refused"] = list(refused)
+                con.execute(
+                    "UPDATE agent_contract_handoffs SET raw_handoff_json = ? "
+                    "WHERE contract_id = ?",
+                    (json.dumps(envelope), contract_id),
+                )
+                con.commit()
+                return {"status": "applied"}
             except Exception:
                 con.rollback()
                 raise
@@ -11224,6 +11588,61 @@ def find_dispatch_row_by_harness_agent_id(
     if len(collapsed) != 1:
         return None
     return collapsed[0]
+
+
+def tool_records_for_contract(contract_id: str, *, db_path: "Path | None" = None) -> dict:
+    """The born row's agent_id and harness id, and the tool calls recorded for that harness id since its previous finalized turn.
+
+    A resumed turn shares its harness id with the turn it continues, so the
+    calls an earlier finalize already consumed (its ``harness_record``) are
+    excluded by event id rather than by timestamp, which has one-second grain.
+    """
+    con = _connect(db_path)
+    try:
+        return tool_records_on(con, contract_id)
+    finally:
+        con.close()
+
+
+def tool_records_on(con: sqlite3.Connection, contract_id: str) -> dict:
+    """``tool_records_for_contract`` read through the caller's connection, inside its open transaction."""
+    from gaia.contract.tool_record import TOOL_CALLED
+
+    empty = {"agent_id": None, "harness_agent_id": None, "records": [], "through_event_id": 0}
+    row = con.execute(
+        "SELECT id, agent_id, harness_agent_id, continues_handoff_id "
+        "FROM agent_contract_handoffs WHERE contract_id = ?",
+        (contract_id,),
+    ).fetchone()
+    if row is None:
+        return empty
+    handoff_id, agent_id, harness_agent_id, parent = row[0], row[1], row[2], row[3]
+    while not harness_agent_id and parent:
+        ancestor = con.execute(
+            "SELECT harness_agent_id, continues_handoff_id FROM agent_contract_handoffs WHERE id = ?",
+            (parent,),
+        ).fetchone()
+        harness_agent_id, parent = (ancestor[0], ancestor[1]) if ancestor else (None, None)
+    if not harness_agent_id:
+        return {**empty, "agent_id": agent_id}
+    consumed = con.execute(
+        "SELECT MAX(CAST(json_extract(raw, '$.harness_record.through_event_id') AS INTEGER)) "
+        "FROM (SELECT CASE WHEN json_valid(raw_handoff_json) THEN raw_handoff_json END AS raw "
+        "      FROM agent_contract_handoffs WHERE id != ?) "
+        "WHERE json_extract(raw, '$.harness_record.harness_agent_id') = ?",
+        (handoff_id, harness_agent_id),
+    ).fetchone()[0] or 0
+    events = con.execute(
+        "SELECT id, payload FROM harness_events WHERE type = ? AND id > ? "
+        "AND json_extract(payload, '$.harness_agent_id') = ? ORDER BY id",
+        (TOOL_CALLED, consumed, harness_agent_id),
+    ).fetchall()
+    return {
+        "agent_id": agent_id,
+        "harness_agent_id": harness_agent_id,
+        "records": [json.loads(event[1]) for event in events],
+        "through_event_id": events[-1][0] if events else consumed,
+    }
 
 
 def open_contract_continuation(
@@ -12360,6 +12779,8 @@ def list_agent_contract_handoffs(
     plan_task_ids: "Sequence[int] | None" = None,
     since: str | None = None,
     until: str | None = None,
+    text: str | None = None,
+    agent_name: str | None = None,
     limit: int = 100,
     db_path: "Path | None" = None,
 ) -> list[dict]:
@@ -12392,6 +12813,10 @@ def list_agent_contract_handoffs(
             nearest-ancestor binding ``_inherited_plan_task_id`` resolves.
         since / until: Inclusive ``created_at`` bounds, as ISO-8601 UTC
             strings. Applied in SQL, so ``limit`` counts only matching rows.
+        text:        Substring of the goal, description or conclusion; ASCII
+            case-insensitive, ``%`` and ``_`` literal.
+        agent_name:  Read from the birth marker (:data:`BIRTH_AGENT_NAME_KEY`),
+            so a finalized row, whose envelope replaced it, does not match.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
@@ -12455,6 +12880,18 @@ def list_agent_contract_handoffs(
         if until is not None:
             clauses.append("created_at <= ?")
             params.append(until)
+        if text is not None:
+            literal = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append(
+                "(dispatch_prompt LIKE ? ESCAPE '\\' "
+                "OR dispatch_description LIKE ? ESCAPE '\\' "
+                "OR (CASE WHEN json_valid(raw_handoff_json) "
+                "THEN json_extract(raw_handoff_json, '$.conclusion') END) LIKE ? ESCAPE '\\')"
+            )
+            params.extend([f"%{literal}%"] * 3)
+        if agent_name is not None:
+            clauses.append(f"{_BIRTH_AGENT_NAME_SQL} = ?")
+            params.append(agent_name)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
@@ -12468,6 +12905,73 @@ def list_agent_contract_handoffs(
         return []
     finally:
         con.close()
+
+
+def contract_fill_rate(
+    *,
+    since: str,
+    until: str | None = None,
+    workspace: str | None = None,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Count clean closes in a window carrying a surface (own or chain's) and a conclusion."""
+    from gaia.contract.validator import conclusion_of
+
+    clauses = [
+        "cut_reason IS NULL",
+        "agent_state <> 'DISPATCHED'",
+        "contract_id NOT LIKE 'hook-backstop.%'",
+        "created_at >= ?",
+    ]
+    params: list[Any] = [since]
+    if until is not None:
+        clauses.append("created_at <= ?")
+        params.append(until)
+    con = _connect(db_path)
+    try:
+        if workspace is not None:
+            from gaia.store.workspace_retire import workspace_scope
+
+            scope = workspace_scope(con, workspace)
+            clauses.append(f"workspace IN ({','.join('?' * len(scope))})")
+            params.extend(scope)
+        params.append(_MAX_CONTINUATION_LINKS)
+        rows = con.execute(
+            "WITH RECURSIVE closed AS ("
+            f"  SELECT id, raw_handoff_json FROM agent_contract_handoffs WHERE {' AND '.join(clauses)}"
+            "), lineage(root, surface, parent, depth) AS ("
+            "  SELECT h.id, json_extract(h.kernel_sections, '$.surface'),"
+            "         h.continues_handoff_id, 0"
+            "  FROM closed c JOIN agent_contract_handoffs h ON h.id = c.id"
+            "  UNION ALL"
+            "  SELECT l.root, json_extract(p.kernel_sections, '$.surface'),"
+            "         p.continues_handoff_id, l.depth + 1"
+            "  FROM lineage l JOIN agent_contract_handoffs p ON p.id = l.parent"
+            "  WHERE TRIM(COALESCE(l.surface, '')) = '' AND l.depth < ?"
+            ") SELECT c.raw_handoff_json, EXISTS ("
+            "  SELECT 1 FROM lineage l WHERE l.root = c.id"
+            "  AND TRIM(COALESCE(l.surface, '')) <> ''"
+            ") AS has_surface FROM closed c",
+            params,
+        ).fetchall()
+    finally:
+        con.close()
+
+    def has_conclusion(raw: "str | None") -> bool:
+        try:
+            return conclusion_of(json.loads(raw or "{}")) is not None
+        except (TypeError, ValueError):
+            return False
+
+    total = len(rows)
+    counts = {
+        "surface": sum(1 for row in rows if row["has_surface"]),
+        "conclusion": sum(1 for row in rows if has_conclusion(row["raw_handoff_json"])),
+    }
+    report: dict = {"since": since, "until": until, "rows": total}
+    for field, filled in counts.items():
+        report[field] = {"filled": filled, "rate": filled / total if total else None}
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -12845,7 +13349,8 @@ def prune_handoffs(
     Runs a single ``DELETE FROM agent_contract_handoffs WHERE created_at < ?``.
     With foreign_keys ON (set by _connect), the ON DELETE CASCADE on
     agent_contract_handoff_approvals.handoff_id removes the matching join rows
-    automatically -- no separate cleanup needed.
+    automatically -- no separate cleanup needed. A row holding a pending
+    proposal is kept until the proposal is decided, so no proposal is lost.
 
     Returns ``{"status": "applied", "deleted": <n>, "cutoff": <iso>}`` on
     success, or ``{"status": "error", "reason": str}`` on failure.
@@ -12856,7 +13361,8 @@ def prune_handoffs(
         con.execute("BEGIN")
         try:
             cur = con.execute(
-                "DELETE FROM agent_contract_handoffs WHERE created_at < ?",
+                "DELETE FROM agent_contract_handoffs WHERE created_at < ? AND id NOT IN "
+                "(SELECT handoff_id FROM proposals WHERE status = 'pending')",
                 (cutoff,),
             )
             deleted = cur.rowcount

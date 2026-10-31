@@ -203,10 +203,8 @@ class TestSessionStartCompactDeliversRefresh:
         )
         ctx = hso.get("additionalContext", "")
         assert isinstance(ctx, str) and ctx
-        assert "Post-Compaction Context Refresh" in ctx, (
-            "source=compact must build via build_compact_context(), the "
-            "same builder post_compact.py used to own -- not the full "
-            "startup/resume session manifest."
+        assert "(source: compact)" in ctx and "## Environment" in ctx, (
+            "source=compact must build the same birth block as a start."
         )
 
     def test_startup_source_still_uses_full_manifest(self, isolated_workspace):
@@ -238,8 +236,4 @@ class TestSessionStartCompactDeliversRefresh:
         _assert_schema_valid(response)
         hso = response.get("hookSpecificOutput", {})
         ctx = hso.get("additionalContext", "")
-        assert "## Environment" in ctx, (
-            "source=startup must still build the full session manifest "
-            "(Environment section), not the lightweight compact refresh."
-        )
-        assert "Post-Compaction Context Refresh" not in ctx
+        assert "## Environment" in ctx and "(source: startup)" in ctx

@@ -551,40 +551,76 @@ def _select_identity_payload(con, workspace: str) -> Optional[dict]:
     Returns None when there is no row, or when the stored value is not a JSON
     object -- neither carries keys to preserve, so the caller merges into {}.
     """
+    from gaia.store.project_context import workspace_sections
+
+    section = workspace_sections(con, workspace).get(CONTRACT_NAME)
+    data = section["payload"] if section else None
+    return data if isinstance(data, dict) and section else None
+
+
+def _entry_owner(con, workspace: str, slug: str, entry) -> Optional[str]:
+    """Project identity of the ``projects`` row (any status) a map entry describes, else None."""
+    from gaia.store.project_context import name_variants
+
+    path = entry.get("local_path") if isinstance(entry, dict) else None
+    names = name_variants(slug) + ([entry["name"]] if isinstance(entry, dict) and entry.get("name") else [])
+    for where, values in (("path = ?", [path] if path else []), ("name = ? COLLATE NOCASE", names)):
+        for value in values:
+            rows = con.execute(
+                f"SELECT COALESCE(project_identity, path) FROM projects WHERE workspace = ? AND {where}",
+                (workspace, value),
+            ).fetchall()
+            if len(rows) == 1 and rows[0][0]:
+                return rows[0][0]
+    return None
+
+
+def _workspace_row(con, workspace: str) -> Optional[dict]:
     row = con.execute(
-        "SELECT payload FROM project_context_contracts "
-        "WHERE workspace = ? AND contract_name = ?",
+        "SELECT payload FROM project_context_contracts WHERE workspace = ? AND contract_name = ?",
         (workspace, CONTRACT_NAME),
     ).fetchone()
-    if not row:
-        return None
-    try:
-        data = json.loads(row["payload"] or "{}")
-        return data if isinstance(data, dict) else None
-    except (ValueError, TypeError):
-        return None
+    data = json.loads(row[0]) if row and row[0] else None
+    return data if isinstance(data, dict) else None
 
 
-def _upsert_identity_payload(con, workspace: str, payload: dict) -> None:
-    """Upsert the project_identity contract on an ALREADY-OPEN connection.
+def _upsert_identity_payload(con, workspace: str, existing: Optional[dict], payload: dict) -> list:
+    """Move project-owned entries into ``project_context``; keep reserved and unowned ones in the workspace row.
 
-    The AFTER UPDATE trigger ``trg_pcc_history`` records the before/after
-    payload automatically.
+    Returns the non-reserved slugs no project owns.
     """
+    from gaia.store.project_context import write_section
+
     now = _now_iso()
-    con.execute(
-        "INSERT OR IGNORE INTO workspaces (name, identity, created_at) "
-        "VALUES (?, ?, ?)",
-        (workspace, workspace, now),
-    )
-    con.execute(
-        "INSERT INTO project_context_contracts "
-        "(workspace, contract_name, payload, metadata, updated_at) "
-        "VALUES (?, ?, ?, ?, ?) "
-        "ON CONFLICT(workspace, contract_name) DO UPDATE SET "
-        "payload = excluded.payload, updated_at = excluded.updated_at",
-        (workspace, CONTRACT_NAME, json.dumps(payload), None, now),
-    )
+    held = _workspace_row(con, workspace)
+    by_owner: dict = {}
+    kept: dict = {}
+    unowned = []
+    for slug, entry in payload.items():
+        owner = None if slug.startswith("_") else _entry_owner(con, workspace, slug, entry)
+        if owner is None:
+            kept[slug] = entry
+            if not slug.startswith("_"):
+                unowned.append(slug)
+            continue
+        if (existing or {}).get(slug) != entry or slug in (held or {}):
+            by_owner.setdefault(owner, {})[slug] = entry
+    if held is not None and kept != held:
+        con.execute(
+            "UPDATE project_context_contracts SET payload = ?, updated_at = ? "
+            "WHERE workspace = ? AND contract_name = ?",
+            (json.dumps(kept), now, workspace, CONTRACT_NAME),
+        )
+    for identity, entries in by_owner.items():
+        row = con.execute(
+            "SELECT payload FROM project_context WHERE project_identity = ? AND contract_name = ?",
+            (identity, CONTRACT_NAME),
+        ).fetchone()
+        stored = json.loads(row[0]) if row and row[0] else {}
+        stored = stored if isinstance(stored, dict) else {}
+        stored.update(entries)
+        write_section(con, identity, CONTRACT_NAME, json.dumps(stored), now, "gaia-scan", None)
+    return unowned
 
 
 def _read_identity_contract(workspace: str, db_path: Optional[Path]) -> Optional[dict]:
@@ -681,7 +717,7 @@ def _merge_and_write_atomically(
         if payload is None or not _stats_changed(stats):
             con.execute("ROLLBACK")
             return shape, payload, stats, False
-        _upsert_identity_payload(con, workspace, payload)
+        stats["unowned_entries"] = _upsert_identity_payload(con, workspace, existing, payload)
         con.execute("COMMIT")
         return shape, payload, stats, True
     except BaseException:
@@ -778,6 +814,8 @@ def promote_workspace(
     report["refreshed_entries"] = stats["refreshed_entries"]
     report["reclaimed_entries"] = stats["reclaimed_entries"]
     report["marked_missing_entries"] = stats["marked_missing_entries"]
+    for slug in stats.get("unowned_entries", []):
+        report["warnings"].append({"project": slug, "warning": "no projects row owns this entry; not promoted"})
     report["marked_copy_entries"] = stats.get("marked_copy_entries", 0)
     report["collisions"] = stats.get("collisions", [])
     report["preview"] = new_payload

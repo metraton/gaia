@@ -1,25 +1,8 @@
-"""The session birth block: what every session knows the moment it opens.
+"""The session birth block: what every session knows when it opens, and again after each compaction.
 
-``build_session_context`` assembles it with no knowledge of the host; a host
-adapter only delivers the string (Claude Code through its SessionStart hook,
-OpenCode attached to the main session's first message) and ``gaia session
-preview`` prints it. Four sections, in this order:
-
-- Projects -- each project's name, one line about it and its live-pending
-  count, counted by canonical project key across every workspace. A large
-  group is one line with its size. Project memory itself (anchors, threads)
-  never loads here; it arrives when that project is worked on.
-- Environment -- where the session stands: machine, installation (version,
-  channel, root), folder, the `gaia` CLI path, the real data home and its
-  database, the tools on PATH (one line), and one line of pending recurring
-  work when there is any.
-- The user / User preferences -- the user's standing rows, whole (see
-  ``modules.context.user_sections``, shared with the dispatch kernel).
-
-Alarms that condition every write (a database upgrade, a schema mismatch)
-come first, outside the four sections. The whole block is sized under
-``BIRTH_BUDGET`` because the host replaces a longer string with a short
-preview; the user's rows never shrink to fit, the project roster does.
+``build_session_context`` assembles it with no knowledge of the host, for
+every start source; its sections, their order and the order in which the
+block shrinks under ``BIRTH_BUDGET`` are described in hooks/README.md.
 
 Every builder is fail-safe: it returns "" on any error and never raises, so a
 session always starts. Building the block writes nothing unless the caller
@@ -36,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from ..context.user_sections import PREFERENCES_HEADER, USER_HEADER
+from ..context.user_sections import CONTEXT_BUDGET, USER_HEADER, tool_lines
 
 logger = logging.getLogger(__name__)
 
@@ -110,28 +93,63 @@ def _read_workspace_identity() -> Optional[str]:
 
     try:
         from gaia.paths import db_path
+        from gaia.store.project_context import workspace_sections
 
         con = sqlite3.connect(str(db_path()))
         try:
-            row = con.execute(
-                """
-                SELECT json_extract(payload, '$.name')
-                FROM project_context_contracts
-                WHERE workspace = ? AND contract_name = 'project_identity'
-                """,
-                (workspace,),
-            ).fetchone()
+            section = workspace_sections(con, workspace).get("project_identity")
         finally:
             con.close()
     except sqlite3.Error as exc:
         logger.debug("workspace identity read failed (non-fatal): %s", exc)
         return workspace
-    return row[0] if row and row[0] else workspace
+    payload = section["payload"] if section else None
+    name = payload.get("name") if isinstance(payload, dict) else None
+    return name if isinstance(name, str) and name else workspace
+
+
+def _own_package_root() -> Path:
+    """Root of the package this module ships in, whatever the install layout."""
+    return Path(__file__).resolve().parents[3]
+
+
+_MARKETPLACE_CACHE_SHAPE = ("plugins", "cache", "gaia-marketplace", "gaia")
+
+
+def _is_marketplace_cache_entry(root: Path) -> bool:
+    """Whether *root* is a marketplace cache version directory, by path shape (Claude's config dir can move)."""
+    return root.parts[-len(_MARKETPLACE_CACHE_SHAPE) - 1:-1] == _MARKETPLACE_CACHE_SHAPE
+
+
+def _plugin_root_in_use() -> Optional[Path]:
+    """The plugin root this process runs from, or None when it runs from another install.
+
+    A hook gets ``CLAUDE_PLUGIN_ROOT`` from Claude Code; a `gaia` CLI started
+    from the plugin gets none, so there our own package says which channel
+    runs, by sitting in the dev-plugin or marketplace cache. Never the cwd's
+    ``node_modules``: that install may be a second channel that is not the
+    one running.
+    """
+    declared = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if declared:
+        return Path(declared)
+    from gaia.paths import cache_dir
+
+    from ..security.protected_paths import _DEV_PLUGIN_DIR
+
+    container = cache_dir() / _DEV_PLUGIN_DIR
+    own = _own_package_root()
+    in_dev_cache = {Path(os.path.abspath(container)), container.resolve()} & set(own.parents)
+    return own if in_dev_cache or _is_marketplace_cache_entry(own) else None
 
 
 def _on_plugin_channel() -> bool:
-    """Whether Claude Code runs this session from a plugin install."""
-    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip())
+    """Whether this process runs from a plugin install."""
+    try:
+        return _plugin_root_in_use() is not None
+    except Exception as exc:
+        logger.debug("plugin channel unresolved (non-fatal): %s", exc)
+        return False
 
 
 def _declared_install_root() -> Optional[Path]:
@@ -174,17 +192,6 @@ def _scan_live_gaia_installation() -> Optional[dict]:
         return None
 
 
-def _own_package_root() -> Path:
-    """Root of the package this module ships in, whatever the install layout."""
-    return Path(__file__).resolve().parents[3]
-
-
-def _plugin_root() -> Path:
-    """The plugin's real root: the one Claude Code declares, else our own package."""
-    declared = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
-    return Path(declared) if declared else _own_package_root()
-
-
 def _declared_cli_path(package_root: Path) -> Optional[str]:
     """``package_root`` joined with its manifest's ``bin.gaia``, or None."""
     manifest_path = package_root / "package.json"
@@ -205,7 +212,7 @@ def _resolve_gaia_cli_path() -> Optional[str]:
     The guard accepts every genuine copy of the package, so the candidate
     order alone decides which install is published:
 
-    1. Under the plugin channel, the plugin root Claude Code declares.
+    1. Under the plugin channel, the plugin root this process runs from.
     2. Otherwise, the declared workspace's alias
        ``node_modules/@jaguilar87/gaia`` -- never one in a nested folder --
        published as the symlink path, not its realpath, because `gaia
@@ -222,8 +229,9 @@ def _resolve_gaia_cli_path() -> Optional[str]:
         return None
 
     candidates = []
-    if _on_plugin_channel():
-        candidates.append(_plugin_root())
+    plugin_root = _plugin_root_in_use() if _on_plugin_channel() else None
+    if plugin_root is not None:
+        candidates.append(plugin_root)
     else:
         try:
             install_root = _declared_install_root()
@@ -256,264 +264,242 @@ _CANDIDATE_TOOLS: tuple = (
 )
 
 
-def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
-    """Which *candidates* resolve on PATH right now, in declared order.
+USER_EXECUTABLES_MAX = 40
+
+_PACKAGE_TREES = frozenset({
+    "node_modules", ".venv", "venv", ".cargo", ".rustup", "go", ".nvm", ".pyenv",
+    ".rbenv", ".asdf", ".npm", ".npm-global", ".bun", ".volta", ".gem", "gem", ".sdkman",
+})
+
+
+_CONSOLE_SCRIPT_HEAD_BYTES = 1024
+_CONSOLE_SCRIPT_MARKER = rb"-script\.pyw"
+
+
+def _is_package_console_script(path: str) -> bool:
+    """Whether *path* is the python entry-point wrapper pip and uv generate for a package."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_CONSOLE_SCRIPT_HEAD_BYTES)
+    except OSError:
+        return False
+    first_line = head.split(b"\n", 1)[0]
+    return first_line.startswith(b"#!") and b"python" in first_line and _CONSOLE_SCRIPT_MARKER in head
+
+
+def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> tuple:
+    """The user's executables on PATH as (authored, package console scripts), together within *limit*."""
+    home = Path.home()
+    seen = set(exclude)
+    names: list = []
+    packages: list = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = Path(entry)
+        if not directory.is_absolute() or not directory.is_relative_to(home):
+            continue
+        if _PACKAGE_TREES.intersection(directory.relative_to(home).parts):
+            continue
+        try:
+            files = sorted((e.name, e.path) for e in os.scandir(directory)
+                           if not e.name.startswith(".") and e.is_file() and os.access(e.path, os.X_OK))
+        except OSError:
+            continue
+        for name, path in files:
+            if name not in seen:
+                seen.add(name)
+                (packages if _is_package_console_script(path) else names).append(name)
+    names = names[:limit]
+    return names, packages[:limit - len(names)]
+
+
+def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS, user_binaries: Sequence[str] = ()) -> list:
+    """Which *candidates*, then which *user_binaries* (the user's registered tools), resolve on PATH right now.
 
     ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
-    -- so this reflects the current install rather than a snapshot. Never
-    raises: a lookup failure for one name is skipped, not fatal to the rest.
+    -- so this reflects the current install rather than a snapshot. Executables
+    on PATH that no tool row registers are not listed; `gaia doctor` names
+    them. Never raises: a lookup failure for one name is skipped.
     """
     import shutil
 
-    found = []
-    for name in candidates:
+    found: list = []
+    for name in (*candidates, *user_binaries):
         try:
-            if shutil.which(name):
+            if name not in found and shutil.which(name):
                 found.append(name)
         except Exception:
             continue
     return found
 
 
-def _machine_label() -> str:
-    """Return a short machine label like ``hostname (Linux/x86_64)``.
+def _host_label() -> str:
+    """The host this hook runs under, as ``claude-code`` or ``opencode``.
 
-    platform calls return "" rather than raise on unsupported OSes; we just
-    glue the parts we have. Always returns a non-empty string -- worst case
-    it's only the hostname or only the OS.
+    It is the key of the adapter the hook registry selects (``GAIA_HOST``,
+    which OpenCode's plugin and bridge set; Claude Code sets nothing).
     """
+    from adapters.registry import active_host
+
+    return active_host().replace("_", "-")
+
+
+ENVIRONMENT_LINE_MAX = 400
+
+
+def _binaries_of(tool_rows: list) -> list:
+    return [row["binary"] for row in tool_rows if row.get("binary")]
+
+
+def _os_label() -> str:
+    system = platform.system() or "unknown"
+    release = platform.release().lower()
+    if "wsl2" in release:
+        return f"{system}/WSL2"
+    if "microsoft" in release:
+        return f"{system}/WSL"
+    return system
+
+
+def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX, db_path=None) -> str:
+    """The OS, host, gaia CLI path and detected tools as one line within ``limit`` characters."""
     try:
-        host = platform.node() or ""
-        system = platform.system() or ""
-        machine = platform.machine() or ""
-        os_part = "/".join(p for p in (system, machine) if p)
-        if host and os_part:
-            return f"{host} ({os_part})"
-        return host or os_part or "unknown"
-    except Exception:
-        return "unknown"
+        from gaia.store.reader import user_tool_rows
+
+        parts = [_os_label()]
+        try:
+            parts.append(f"host {_host_label()}")
+        except Exception as exc:
+            logger.debug("host unresolved (non-fatal): %s", exc)
+        cli_path = _resolve_gaia_cli_path()
+        if cli_path:
+            parts.append(f"gaia CLI {cli_path}")
+        line = "; ".join(parts)
+        if len(line) > limit:
+            return line[:limit - 1] + "…"
+        label = "; tools on PATH: "
+        kept = ""
+        for name in _scan_available_tools(user_binaries=_binaries_of(user_tool_rows(db_path))):
+            candidate = f"{kept}, {name}" if kept else name
+            if len(line + label + candidate) > limit:
+                break
+            kept = candidate
+        return line + label + kept if kept else line
+    except Exception as exc:
+        logger.debug("build_environment_line failed (non-fatal): %s", exc)
+        return ""
 
 
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
 
-PROJECTS_HEADER = "## Projects"
+PROJECTS_HEADER = "## Workspaces I manage"
 ENVIRONMENT_HEADER = "## Environment"
-BIRTH_SECTION_HEADERS = (PROJECTS_HEADER, ENVIRONMENT_HEADER, USER_HEADER, PREFERENCES_HEADER)
-
-# Claude Code replaces a hook's additionalContext string over 10,000 chars
-# with a 2,000-char preview and a file path, without telling the model; the
-# margin keeps the whole block clear of that cap.
-BIRTH_BUDGET = 9_500
+DUE_HEADER = "## Due"
+RESUME_HEADER = "## Resume point"
+BIRTH_SECTION_HEADERS = (USER_HEADER, DUE_HEADER, ENVIRONMENT_HEADER, PROJECTS_HEADER)
+BIRTH_BUDGET = CONTEXT_BUDGET
 
 
-def _installation_label() -> Optional[str]:
-    """``<version>, <channel> channel, at <root>`` for the Gaia this session runs.
+def _due_item_line(row: dict, now) -> str:
+    """One due reminder or routine as values: its title, when, how late, its ref and its id."""
+    from gaia import notifications_time
 
-    The version comes from a live in-process re-scan of the declared install
-    (never the gaia_installations table, which only refreshes on `gaia
-    scan`), falling back to the package.json ancestor walk, which is the only
-    source under the plugin channel. A declared CLAUDE_PLUGIN_ROOT means the
-    plugin channel; otherwise the scan's install mode names it.
-    """
+    parts = [f"'{row['headline']}'"]
+    due_at = notifications_time.from_iso(row["due_at"]) if row.get("due_at") else None
+    if row.get("recurrence"):
+        parts.append(f"repeat='{notifications_time.describe_recurrence(row['recurrence'])}'")
+        if due_at:
+            parts.append(f"missed={notifications_time.format_value(due_at)}")
+    elif due_at:
+        parts.append(f"due={notifications_time.format_value(due_at)}")
+        late = (now - due_at).days
+        if late > 0:
+            parts.append(f"late={late}d")
+    if row.get("pointer_kind") and row.get("pointer_ref"):
+        scope = f"{row['pointer_workspace']}/" if row.get("pointer_workspace") else ""
+        parts.append(f"ref={row['pointer_kind']}:{scope}{row['pointer_ref']}")
+    parts.append(f"id={row['id']}")
+    return "  ".join(parts)
+
+
+def build_due_section(workspace: Optional[str]) -> str:
+    """Render ``## Due``: the reminders and routines due now, one value line each, or "" when none is."""
+    try:
+        from datetime import datetime, timezone
+
+        from gaia.store.reader import list_unread_notifications
+
+        due = [row for row in list_unread_notifications(workspace=workspace) if row["kind"] != "report"]
+        if not due:
+            return ""
+        now = datetime.now(timezone.utc)
+        return "\n".join([DUE_HEADER, f"overdue={len(due)}", *(_due_item_line(row, now) for row in due)])
+    except Exception as exc:
+        logger.debug("build_due_section failed (non-fatal): %s", exc)
+        return ""
+
+
+def _installation_values() -> list[str]:
+    """``gaia=<version> channel=<channel>`` as values: a live re-scan of the declared install, else the package.json walk; CLAUDE_PLUGIN_ROOT means the plugin channel."""
     installation = _scan_live_gaia_installation() or {}
     version = installation.get("version") or _read_gaia_version()
     if not version:
-        return None
-    if _on_plugin_channel():
-        channel = "plugin"
-    else:
-        channel = installation.get("install_mode")
-    parts = [_describe_gaia_version(version)]
+        return []
+    channel = "plugin" if _on_plugin_channel() else installation.get("install_mode")
+    values = [f"gaia={_describe_gaia_version(version)}"]
     if channel and channel != "unknown":
-        parts.append(f"{channel} channel")
-    parts.append(f"at {_plugin_root()}")
-    return ", ".join(parts)
-
-
-def _recurring_work_line(workspace: Optional[str]) -> str:
-    """One line naming the recurring work that needs the user, or "" when nothing does.
-
-    Each unread report and each due reminder or routine is named, the latter with
-    its pointer so the session can act on it; the detail lives in
-    `gaia notifications list`. Reading evaluates due times against now and
-    writes nothing.
-    """
-    from gaia import notifications_time
-    from gaia.store.reader import list_unread_notifications
-
-    items: list[str] = []
-    verbs: list[str] = []
-    due = list_unread_notifications(workspace=workspace)
-    reports = [row for row in due if row["kind"] == "report"]
-    if reports:
-        items.append(f"{len(reports)} unread task report(s)")
-        verbs.append("`gaia notifications list --unread`")
-    reminders = [row for row in due if row["kind"] != "report"]
-    if reminders:
-        items.extend(f"{notifications_time.summary(row)} is due" for row in reminders)
-        verbs.append("`gaia notifications ack|snooze|cancel <id>`")
-    if not items:
-        return ""
-    return f"- Recurring work pending: {', '.join(items)} — {', '.join(verbs)}"
-
-
-def _local_zone_line() -> str:
-    """The zone only: a time in the birth block goes stale within one long turn."""
-    from gaia import notifications_time
-
-    zone = notifications_time.zone_name() or "unnamed (the offset is in `gaia now`)"
-    return f"- Local zone: {zone}; read the current time with `gaia now`"
+        values.append(f"channel={channel}")
+    return values
 
 
 def build_environment_section(session_id: str = "") -> str:
-    """Render the Environment section: where this session stands, or "" on failure.
+    """Render ``## Environment`` as values only -- machine, Gaia, CLI, cwd, session, zone, data, tools -- or "" on failure.
 
     ``session_id`` is the host's id for the session, the one
     `gaia session resume-point set --session-id` writes under and the
-    compaction snapshot reads; the block publishes it at birth and after every
-    compaction, so the orchestrator can name its own session on any host.
+    compaction snapshot reads. What each value means lives in the
+    orchestrator identity, not here.
     """
     try:
+        from gaia import notifications_time
         from gaia.paths import data_dir, db_path
-        from gaia.project import current
 
-        workspace = _read_workspace_identity()
-        folder = str(Path.cwd())
-        lines = [ENVIRONMENT_HEADER, f"- Machine: {_machine_label()}"]
-        installation = _installation_label()
+        release = platform.release().lower()
+        wsl = "yes" if "microsoft" in release or "wsl" in release else "no"
+        machine = (
+            f"machine={platform.node() or 'unknown'} os={platform.system() or 'unknown'} "
+            f"arch={platform.machine() or 'unknown'} wsl={wsl}"
+        )
+        try:
+            machine += f" host={_host_label()}"
+        except Exception as exc:
+            logger.debug("host unresolved (non-fatal): %s", exc)
+        lines = [ENVIRONMENT_HEADER, machine]
+        installation = " ".join(_installation_values())
         if installation:
-            lines.append(f"- Gaia: {installation}")
-        lines.append(f"- Folder: {folder} (workspace {workspace})" if workspace
-                     else f"- Folder: {folder} (not inside a declared workspace)")
-        if session_id:
-            lines.append(f"- Session id: {session_id}")
-        lines.append(_local_zone_line())
-        # The orchestrator invokes `gaia` by this absolute path: the trust
-        # guard rejects the bare token.
+            lines.append(installation)
         cli_path = _resolve_gaia_cli_path()
         if cli_path:
-            lines.append(f"- gaia CLI: {cli_path}")
-        lines.append(f"- Data home: {data_dir()} (database {db_path()})")
-        tools = _scan_available_tools()
+            lines.append(f"cli={cli_path}")
+        lines.append(f"cwd={_home_relative(str(Path.cwd()))}")
+        if session_id:
+            lines.append(f"session={session_id}")
+        lines.append(f"zone={notifications_time.zone_name() or 'unnamed'}")
+        lines.append(f"data={data_dir()} db={db_path()}")
+        from gaia.store.reader import user_tool_rows
+
+        tool_rows = user_tool_rows()
+        tools = _scan_available_tools(user_binaries=_binaries_of(tool_rows))
         if tools:
-            lines.append(f"- Tools on PATH: {', '.join(tools)}")
-        # Reminders set outside every workspace are filed under current()'s fallback.
-        notification_scope = workspace or current()
-        try:
-            recurring = _recurring_work_line(notification_scope)
-        except Exception as exc:
-            logger.debug("recurring work line failed (non-fatal): %s", exc)
-            recurring = ""
-        if recurring:
-            lines.append(recurring)
+            lines.append(f"tools={','.join(tools)}")
+        lines.extend(tool_lines(tool_rows))
         return "\n".join(lines)
     except Exception as exc:
         logger.debug("build_environment_section failed (non-fatal): %s", exc)
         return ""
-
-
-def _extract_projects_from_identity(
-    payload: dict, workspace: str, path_lookup: dict
-) -> list[tuple[str, str, str, str, str]]:
-    """Pull ``(name, path, type, description, missing_since)`` tuples out of one payload.
-
-    The contract stores two distinct shapes, and this normalizes both:
-
-    * **Map shape** (hand-authored, e.g. the ``me`` workspace's AOS entry):
-      a dict keyed by project slug, each value a dict with ``name`` and an
-      absolute ``local_path``. Detected by the absence of a top-level ``name``
-      and all values being dicts.
-    * **Scanner shape** (e.g. bildwiz/nfi/qxo/rnd): a top-level ``name`` plus an
-      optional ``workspace_repos`` list whose entries carry only a *relative*
-      ``path``. The absolute path is not in the contract, so it is resolved
-      from the ``projects`` table via ``path_lookup``.
-
-    ``path_lookup`` resolves a name to an absolute path through three indexes,
-    tried in descending strictness:
-
-    1. ``by_name`` -- ``(workspace, name)`` -> path, an exact hit.
-    2. ``by_basename`` -- the last path component -> path, and ONLY when that
-       basename is unique across the whole ``projects`` table. This is what
-       reunites a legacy contract (which names the repo by its DIRECTORY, e.g.
-       ``bildwiz-iac``) with the current scan-promoted row (which names the same
-       repo by its uniquified SLUG, e.g. ``bildwiz_2``). Ambiguous basenames are
-       left unresolved rather than guessed.
-    3. ``by_ws`` -- a per-workspace single-path fallback, so a name mismatch
-       (contract says ``nfi`` but the project row is ``nfi-oro-com``) still
-       resolves when the workspace holds exactly one project.
-
-    Entries that cannot resolve a path are still returned (name only) -- the
-    caller decides how to present them.
-
-    ``type`` and ``description`` are carried alongside name and path when the
-    payload holds them (both shapes expose these fields), so the rendered
-    Projects block can label each entry (e.g. "aos-iac (terraform) — Terraform
-    IaC for AOS GCP infra"). Either may be an empty string when absent.
-
-    ``missing_since`` carries the vanished mark that promotion stamps on an
-    entry whose repo left the disk (``tools/scan/promote.py``). The entry is
-    still returned -- a repo that vanished is signal, so the block SHOWS the
-    mark rather than filtering the entry out. Empty string when absent.
-    """
-    out: list[tuple[str, str, str, str, str]] = []
-    by_name: dict = path_lookup.get("by_name", {})
-    by_ws: dict = path_lookup.get("by_ws", {})
-    by_basename: dict = path_lookup.get("by_basename", {})
-
-    def _resolve(name: str) -> str:
-        p = by_name.get((workspace, name))
-        if p:
-            return p
-        # Directory-name match, unique across all workspaces (see docstring).
-        p = by_basename.get(name)
-        if p:
-            return p
-        # Single-project workspace: the one path we have is unambiguous.
-        ws_paths = by_ws.get(workspace) or []
-        if len(ws_paths) == 1:
-            return ws_paths[0]
-        return ""
-
-    from gaia.identity_shape import (
-        MISSING_MARK_KEY,
-        classify_identity_shape,
-        is_reserved_slug,
-    )
-
-    if classify_identity_shape(payload) == "map":
-        for slug, v in payload.items():
-            if is_reserved_slug(slug) or not isinstance(v, dict):
-                continue
-            name = v.get("name") or slug
-            path = v.get("local_path") or _resolve(slug) or _resolve(name)
-            ptype = (v.get("type") or "").strip()
-            desc = (v.get("description") or "").strip()
-            gone = (v.get(MISSING_MARK_KEY) or "").strip()
-            out.append((name, path, ptype, desc, gone))
-        return out
-
-    repos = payload.get("workspace_repos")
-    if isinstance(repos, list) and repos:
-        for r in repos:
-            if not isinstance(r, dict):
-                continue
-            name = r.get("name") or ""
-            if not name:
-                continue
-            ptype = (r.get("type") or "").strip()
-            desc = (r.get("description") or "").strip()
-            gone = (r.get(MISSING_MARK_KEY) or "").strip()
-            out.append((name, _resolve(name), ptype, desc, gone))
-        return out
-
-    name = payload.get("name") or workspace
-    ptype = (payload.get("type") or "").strip()
-    desc = (payload.get("description") or "").strip()
-    gone = (payload.get(MISSING_MARK_KEY) or "").strip()
-    out.append((name, _resolve(name), ptype, desc, gone))
-    return out
 
 
 def _workspace_root(paths: list[str]) -> str:
@@ -535,301 +521,171 @@ def _workspace_root(paths: list[str]) -> str:
     return root
 
 
-def _collect_projects() -> Optional[dict]:
-    """The projects with active project context, grouped by owning workspace.
+_DISPATCH_WINDOW_DAYS = 30
+_FULL_GROUP_CAP = 5
+_NARROW_GROUP_CAP = 3
 
-    Returns ``{"live", "unresolved", "group_order", "roots"}``, or None when
-    there is nothing to index or the database cannot be read.
 
-    This is NOT an index of every git repo on disk. The source is the set of
-    projects that have **active project context** -- a ``project_identity`` row
-    in ``project_context_contracts``. That filter is the point: it includes
-    AOS (which lives only in the ``me`` workspace's hand-authored contract,
-    with absolute ``local_path``) and, since the scan-promotion stage
-    (``tools/scan/promote.py::promote_workspace``), also includes any scanned
-    repo under ``me`` that passed the promotion gate (resolvable
-    ``project_identity``, absolute path, ``status='active'``) and was merged
-    into the contract as a scan-owned entry -- a cloned reference repo is only
-    excluded here if it was never scanned or failed the gate. A flat or scanner
-    (non-map) contract with more than one promotable project is auto-converted
-    to a map (its old top-level metadata preserved under a reserved key), so
-    those projects are included rather than held back. No path-prefix filtering
-    is used.
+def _home_relative(path: str) -> str:
+    """*path* with the user's home directory shown as ``~``."""
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
 
-    The name shown per project is the ON-DISK BASENAME when it differs from the
-    contract's stored name, not the stored name itself (see ``_display_name``).
-    A legacy hand-authored slot (e.g. the ``aaxis`` workspace's map names a repo
-    ``bildwiz-2``) can diverge from the directory the repo actually lives in
-    (``bildwiz-iac``) -- the basename is what the user calls the project and
-    what ``gaia context project`` resolves against as its second-priority match,
-    so showing it is what makes the index actually useful for lookup.
 
-    A project's group is the workspace that owns its ``projects`` row (the
-    scan-verified physical truth), falling back to the contract's own workspace
-    key for a hand-authored entry with no row.
+def _display_name(row: dict) -> str:
+    """The name the user calls a project: its directory's basename, else the stored name."""
+    return os.path.basename(row["path"] or "") or row["name"]
 
-    Two defects of the older flat list are fixed at the source rather than in
-    the render:
 
-    * **Duplicates.** Two generations of contract rows coexist -- the current
-      scan-promoted map (keyed by uniquified slug, e.g. ``bildwiz_2``) and legacy
-      per-directory scanner/flat rows (keyed by the repo's directory name, e.g.
-      ``bildwiz-iac``, with no ``projects`` row under that workspace at all). The
-      old ``(name, path)`` dedup key could not see the collision because BOTH
-      components differed: one side had the slug and a path, the other the
-      directory name and no path. Dedup is now keyed on the RESOLVED ABSOLUTE
-      PATH -- a project's actual identity -- and the basename index in
-      ``_extract_projects_from_identity`` is what lets the legacy side resolve
-      to that path in the first place. Colliding entries are MERGED field by
-      field, so metadata carried by only one of the two survives.
-    * **Vanished repos.** An entry marked ``missing_since`` is not rendered at
-      all. Nothing is deleted -- not from the ``projects`` table, not from the
-      contract -- so the full record (path, type, description, exact timestamp)
-      stays one ``gaia context project`` away for the rare turn that asks about a
-      removed project. It is not worth a line of every session's context.
+def _read_roster() -> list[dict]:
+    """The managed workspaces, each with its root and its active projects; ``[]`` on any error.
+
+    A workspace is managed while it holds a root or a project and has not been
+    retired. A project is its ``projects`` row unless it vanished from disk
+    or is a second clone another project's contract entry marks ``copy_of``.
     """
-    # Ensure the package root (which holds the `gaia/` package) is importable.
-    # At real SessionStart, session_start.py already inserts it; this self-heal
-    # makes the builder robust when called from other entry points or tests.
+    from gaia.identity_shape import COPY_MARK_KEY, classify_identity_shape, is_reserved_slug
+    from gaia.store.project_context import workspace_sections, workspaces_with_section
+    from gaia.store.writer import _connect
+
+    con = _connect()
     try:
-        _pkg_root = str(Path(__file__).resolve().parents[3])
-        if _pkg_root not in sys.path:
-            sys.path.insert(0, _pkg_root)
-    except Exception:
-        pass
+        workspaces = con.execute(
+            "SELECT name, root_path FROM workspaces WHERE status != 'retired' ORDER BY name"
+        ).fetchall()
+        projects = con.execute(
+            "SELECT workspace, name, path, group_name FROM projects WHERE status = 'active'"
+        ).fetchall()
+        copies = set()
+        for ws in workspaces_with_section(con, "project_identity"):
+            payload = workspace_sections(con, ws)["project_identity"]["payload"]
+            if isinstance(payload, dict) and classify_identity_shape(payload) == "map":
+                copies.update(
+                    os.path.normpath(entry["local_path"]) for slug, entry in payload.items()
+                    if not is_reserved_slug(slug) and isinstance(entry, dict)
+                    and entry.get(COPY_MARK_KEY) and entry.get("local_path")
+                )
+    finally:
+        con.close()
 
-    try:
-        from gaia.store.writer import _connect
-    except Exception as exc:
-        logger.debug("project collection import failed: %s", exc)
-        return None
+    members: dict = {}
+    for row in projects:
+        project = {"name": row["name"], "path": row["path"], "group": row["group_name"] or "",
+                   "pending": 0, "dispatches": 0}
+        if not (project["path"] and os.path.normpath(project["path"]) in copies):
+            members.setdefault(row["workspace"], []).append(project)
+    roster = []
+    for ws in workspaces:
+        held = members.get(ws["name"], [])
+        if held:
+            root = ws["root_path"] or _workspace_root([p["path"] for p in held if p["path"]])
+            roster.append({"name": ws["name"], "path": _home_relative(root) if root else "",
+                           "projects": held})
+    return roster
 
-    try:
-        con = _connect()
-        try:
-            identity_rows = con.execute(
-                "SELECT workspace, payload FROM project_context_contracts "
-                "WHERE contract_name = 'project_identity' ORDER BY workspace"
-            ).fetchall()
-            # Path resolution sources: include missing rows -- the on-disk path
-            # may still be valid even if the scanner marked the repo missing.
-            proj_rows = con.execute(
-                "SELECT workspace, name, path FROM projects WHERE path IS NOT NULL"
-            ).fetchall()
-        finally:
-            con.close()
-    except Exception as exc:
-        logger.debug("project collection query failed: %s", exc)
-        return None
 
-    if not identity_rows:
-        return None
+def _count_dispatches(roster: list[dict]) -> None:
+    """Add to each project the turns dispatched to it in the window, matching by path, else by a unique name."""
+    from gaia.store.reader import dispatch_counts_by_project
 
+    every = [p for ws in roster for p in ws["projects"]]
+    by_path = {os.path.normpath(p["path"]): p for p in every if p["path"]}
     by_name: dict = {}
-    by_ws: dict = {}
-    ws_of_path: dict = {}
-    basename_hits: dict = {}
-    for r in proj_rows:
-        d = dict(r)
-        p = d.get("path")
-        if not p:
-            continue
-        by_name[(d["workspace"], d["name"])] = p
-        by_ws.setdefault(d["workspace"], []).append(p)
-        ws_of_path.setdefault(p, d["workspace"])
-        basename_hits.setdefault(os.path.basename(p), set()).add(p)
-    # A basename is only a usable key while it identifies exactly ONE path;
-    # two repos sharing a directory name are left unresolved, never guessed.
-    by_basename = {
-        base: next(iter(paths))
-        for base, paths in basename_hits.items()
-        if len(paths) == 1
-    }
-    path_lookup = {
-        "by_name": by_name,
-        "by_ws": by_ws,
-        "by_basename": by_basename,
-    }
-
-    # Dedup on the RESOLVED PATH -- a project's real identity. Two contract
-    # generations name the same repo differently (promoted slug vs. directory
-    # name), so a name-based key cannot see the collision. Path-less entries
-    # fall back to a name key; they cannot collide with a path-keyed entry.
-    merged: dict = {}
-    order: list = []
-    for r in identity_rows:
-        d = dict(r)
-        contract_ws = d.get("workspace") or ""
-        try:
-            payload = json.loads(d.get("payload") or "{}")
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        for name, path, ptype, desc, gone in _extract_projects_from_identity(
-            payload, contract_ws, path_lookup
-        ):
-            key = path or f"name:{name.lower()}"
-            # The owning workspace is the one holding this path's projects row;
-            # a hand-authored entry with no row keeps its contract's workspace.
-            group = ws_of_path.get(path) or contract_ws
-            prev = merged.get(key)
-            if prev is None:
-                merged[key] = {
-                    "name": name, "path": path, "type": ptype,
-                    "desc": desc, "gone": gone, "ws": group,
-                    "is_ws_identity": not path and name.lower() == contract_ws.lower(),
-                }
-                order.append(key)
-                continue
-            # Same project reached twice: keep every field either side carries.
-            for field, value in (
-                ("type", ptype), ("desc", desc), ("gone", gone),
-            ):
-                if not prev[field] and value:
-                    prev[field] = value
-
-    if not merged:
-        return None
-
-    # Split live from vanished, and pin the per-workspace group order. Roots are
-    # computed from the LIVE paths only: a vanished repo's path should not widen
-    # (or, as the sole member, define) the root every sibling renders against.
-    live: list[dict] = []
-    unresolved: list[str] = []
-    group_order: list[str] = []
-    for key in order:
-        e = merged[key]
-        ws = e["ws"]
-        if e["is_ws_identity"]:
-            # A flat contract whose name IS its own workspace key, with no path
-            # resolvable anywhere in the projects table, is the workspace-identity
-            # form of the contract (see gaia.identity_shape), not a project. It is
-            # skipped as a misclassification rather than reported as a project
-            # whose path was lost -- the contract row itself is untouched.
-            continue
-        if e["gone"]:
-            # A vanished repo is not injected at all. It is asked for, on the
-            # rare occasion someone wants one: `gaia context get` still has the
-            # whole record, and nothing here deletes it. Injecting the names
-            # every session spent budget on a question almost nobody asks.
-            continue
-        if ws and ws not in group_order:
-            group_order.append(ws)
-        if not e["path"]:
-            unresolved.append(e["name"])
-        else:
-            live.append(e)
-
-    roots: dict = {}
-    for ws in group_order:
-        roots[ws] = _workspace_root([e["path"] for e in live if e["ws"] == ws])
-
-    return {"live": live, "unresolved": unresolved, "group_order": group_order, "roots": roots}
-
-
-# A workspace holding more projects than this is one line in the roster: past
-# a screenful of names nobody scans the list, and the group's size is the
-# signal worth its line.
-_LARGE_GROUP = 12
-_PROJECT_LINE_MAX = 120
-
-
-def _display_name(e: dict) -> str:
-    """The identifier shown in the roster -- the on-disk basename, else the stored name.
-
-    See ``_collect_projects`` for why the basename wins when the two differ.
-    """
-    if e["path"]:
-        base = os.path.basename(e["path"])
-        if base:
-            return base
-    return e["name"]
-
-
-def _one_line(text: str) -> str:
-    """``text`` flattened to one line of at most ``_PROJECT_LINE_MAX`` chars."""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= _PROJECT_LINE_MAX else flat[: _PROJECT_LINE_MAX - 1] + "…"
+    for p in every:
+        by_name.setdefault(_display_name(p).lower(), []).append(p)
+    for display, turns in dispatch_counts_by_project(_DISPATCH_WINDOW_DAYS).items():
+        name, _, rest = display.partition(" (")
+        target = by_path.get(os.path.normpath(rest[:-1])) if rest.endswith(")") else None
+        named = by_name.get(name.lower().rstrip("."), [])
+        if target is None and len(named) == 1:
+            target = named[0]
+        if target is not None:
+            target["dispatches"] += turns
 
 
 def build_projects_section(max_chars: int) -> str:
-    """Render the Projects section within ``max_chars``, or "" when there is nothing to index.
+    """Render the Workspaces I manage section within ``max_chars``, or "" when there are none.
 
-    Each project is its name, its live-pending count when it has one, and one
-    line about it. The count is taken by canonical project key over every
-    workspace (``gaia.store.reader.count_pending_by_initiative``), so it
-    equals what ``gaia memory get-relevant --initiative <name>`` returns.
-    When the roster does not fit it degrades in steps -- names without their
-    lines, then every group as one line, then a single count -- and the
-    pointer to a project's ficha always lands.
+    Every workspace with its path, counts and groups; each group lists its
+    projects busiest first (turns dispatched in the window, then live-pending
+    count, then name). When the full section does not fit it degrades in
+    order: three projects per group, only the projects with pending work,
+    group names with counts, one line per workspace. The two pointer lines
+    land whatever ``max_chars`` is.
     """
+    return projects_renderer()(max_chars)
+
+
+def projects_renderer():
+    """``build_projects_section`` as a function of ``max_chars`` over one read of the database."""
     try:
-        collected = _collect_projects()
-        if not collected:
-            return ""
+        roster = _read_roster()
+        if not roster:
+            return lambda max_chars: ""
         from gaia.store.reader import count_pending_by_initiative
         from gaia.store.writer import normalize_initiative
 
-        live = collected["live"]
-        group_order = collected["group_order"]
-        roots = collected["roots"]
-        unresolved = collected["unresolved"]
-        keys = {normalize_initiative(_display_name(e)) for e in live} - {None}
-        counts = count_pending_by_initiative(sorted(keys))
-        # The first command a newborn orchestrator tries: never the bare
-        # `gaia` token the trust guard rejects.
-        cli = _resolve_gaia_cli_path() or "gaia"
-        pointer = f"Ficha de un proyecto: {cli} context project <nombre>"
+        _count_dispatches(roster)
+        every = [p for ws in roster for p in ws["projects"]]
+        pending = count_pending_by_initiative(
+            sorted({normalize_initiative(_display_name(p)) for p in every} - {None})
+        )
+        for p in every:
+            p["pending"] = pending.get(normalize_initiative(_display_name(p)), 0)
 
-        def label(e: dict) -> str:
-            name = _display_name(e)
-            count = counts.get(normalize_initiative(name), 0)
-            return f"{name} ({count})" if count else name
+        def busiest_first(members: list[dict]) -> list[dict]:
+            return sorted(members, key=lambda p: (-p["dispatches"], -p["pending"], _display_name(p)))
 
-        def title(ws: str) -> str:
-            root = roots.get(ws)
-            return f"### {ws} — {root}" if root else f"### {ws}"
+        def listing(members: list[dict], cap: int) -> str:
+            ordered = busiest_first(members)
+            shown = [p for i, p in enumerate(ordered) if i < cap or p["pending"]]
+            items = [f"{_display_name(p)}({p['pending']})" if p["pending"] else _display_name(p)
+                     for p in shown]
+            if len(ordered) > len(shown):
+                items.append(f"+{len(ordered) - len(shown)}")
+            return "[" + ", ".join(items) + "]"
 
-        def group(ws: str, members: list[dict], detail: str) -> str:
-            if detail == "groups" or len(members) > _LARGE_GROUP:
-                pending = [label(e) for e in members if label(e) != _display_name(e)]
-                line = f"{title(ws)}: {len(members)} projects"
-                return line + (f"; pending: {', '.join(pending)}" if pending else "")
-            if detail == "names":
-                return f"{title(ws)}\n{', '.join(label(e) for e in members)}"
-            return "\n".join([title(ws)] + [
-                f"- {label(e)}: {_one_line(e['desc'])}" if e["desc"] else f"- {label(e)}"
-                for e in members
-            ])
+        def groups_of(ws: dict) -> list[tuple[str, list[dict]]]:
+            named: dict = {}
+            for p in ws["projects"]:
+                named.setdefault(p["group"], []).append(p)
+            return [(g, named[g]) for g in sorted(named) if g] + (
+                [("", named[""])] if "" in named else [])
 
-        def render(detail: str) -> str:
-            parts = [PROJECTS_HEADER]
-            for ws in group_order:
-                members = [e for e in live if e["ws"] == ws]
-                if members:
-                    parts.append(group(ws, members, detail))
-            if unresolved and detail != "groups":
-                parts.append(
-                    f"unresolved ({len(unresolved)}): {', '.join(unresolved)} "
-                    f"— no path on disk; 'gaia context get'"
-                )
-            parts.append(pointer)
-            return "\n\n".join(parts)
+        group_total = sum(1 for ws in roster for g, _ in groups_of(ws) if g)
+        total = (f"Total: {len(roster)} workspaces · {group_total} groups · "
+                 f"{len(every)} projects")
 
-        for detail in ("lines", "names", "groups"):
-            text = render(detail)
-            if len(text) <= max_chars:
-                return text
-        return "\n\n".join([
-            PROJECTS_HEADER,
-            f"{len(live)} projects in {len(group_order)} workspaces; list them with "
-            f"`{cli} context get`",
-            pointer,
-        ])
+        def workspace_line(ws: dict) -> str:
+            groups = sum(1 for g, _ in groups_of(ws) if g)
+            location = f" path={ws['path']}" if ws["path"] else ""
+            return f"workspace={ws['name']}{location} groups={groups} projects={len(ws['projects'])}"
+
+        def lines_of(ws: dict, level: str, cap: int) -> list[str]:
+            if level == "workspaces":
+                return []
+            groups = groups_of(ws)
+            if level == "counts":
+                named = [f"{g}={len(members)}" for g, members in groups if g]
+                return [f"  {', '.join(named)}"] if named else []
+            return [f"  {g}={listing(members, cap)}" if g else f"  {listing(members, cap)}"
+                    for g, members in groups]
+
+        def render(level: str, cap: int = 0) -> str:
+            body = [line for ws in roster for line in (workspace_line(ws), *lines_of(ws, level, cap))]
+            return "\n".join([PROJECTS_HEADER, total, *body])
+
+        levels = [render("projects", _FULL_GROUP_CAP), render("projects", _NARROW_GROUP_CAP),
+                  render("projects"), render("counts"), render("workspaces")]
+
+        def fit(max_chars: int) -> str:
+            return next((text for text in levels if len(text) <= max_chars), levels[-1])
+        return fit
     except Exception as exc:
         logger.debug("build_projects_section failed (non-fatal): %s", exc)
-        return ""
+        return lambda max_chars: ""
 
 
 def build_schema_direction_block() -> str:
@@ -874,7 +730,14 @@ def build_schema_direction_block() -> str:
 # Assembler
 # ---------------------------------------------------------------------------
 
-def _record_user_rows_injected(rows: list[dict]) -> None:
+def orchestrator_user_rows() -> list[dict]:
+    """The user rows the orchestrator's context indexes: every live fact and preference of the user."""
+    from gaia.store.reader import user_memory_rows
+
+    return user_memory_rows()
+
+
+def record_user_rows_injected(rows: list[dict]) -> None:
     """Count one injection on each user row the block carried; best-effort."""
     try:
         from gaia.store.writer import record_memory_access
@@ -887,34 +750,66 @@ def _record_user_rows_injected(rows: list[dict]) -> None:
             logger.debug("user row injection telemetry failed (non-fatal)", exc_info=True)
 
 
-def build_session_context(
-    *, alarms: Sequence[str] = (), record_injection: bool = False, session_id: str = "",
-) -> str:
-    """Assemble the session birth block; "" when every part is empty. Never raises.
+def _snapshot(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    try:
+        from gaia.session_snapshot import build_snapshot
 
-    ``alarms`` are notices the host adapter produced before the block (a
-    database upgrade it just ran); they lead, with the schema-mismatch notice,
-    ahead of the four sections, and still ship alone if assembling the rest
-    fails. The project roster gets whatever
-    ``BIRTH_BUDGET`` leaves after everything else, because the user's rows
-    never shrink. Nothing is written unless ``record_injection`` is set, which
-    the session-start hook does and ``gaia session preview`` does not.
+        return build_snapshot(session_id)
+    except Exception as exc:
+        logger.debug("session snapshot failed (non-fatal): %s", exc)
+        return None
+
+
+def _joined(*blocks: str) -> str:
+    return "\n\n".join(b for b in blocks if b)
+
+
+def build_session_context(
+    *, source: str = "startup", alarms: Sequence[str] = (), notices: Sequence[str] = (),
+    record_injection: bool = False, session_id: str = "",
+) -> str:
+    """Assemble the session birth block for any start ``source``; "" when every part is empty. Never raises.
+
+    ``alarms`` still ship alone if assembling the rest fails; ``notices`` ship
+    only while the block has room. ``record_injection`` counts one injection
+    on each user row the block carries.
     """
     try:
-        from gaia.store.reader import user_anchor_rows
+        from gaia.session_snapshot import render_resume_section
 
-        from ..context.user_sections import render_user_sections
+        from ..context.user_sections import fit_user_sections, render_user_sections
 
-        user_rows = [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
-        prefix = [a for a in (*alarms, build_schema_direction_block()) if a]
+        from gaia.project import current
+
+        rows = orchestrator_user_rows()
+        heading = f"# Gaia session context (source: {source})"
+        prefix = [heading, *(a for a in (*alarms, build_schema_direction_block()) if a)]
         environment = build_environment_section(session_id)
-        user = render_user_sections(user_rows)
-        fixed = [b for b in (*prefix, environment, user) if b]
-        roster_budget = BIRTH_BUDGET - sum(len(b) + 2 for b in fixed)
-        projects = build_projects_section(max(0, roster_budget))
-        text = "\n\n".join(b for b in (*prefix, projects, environment, user) if b)
+        due = build_due_section(_read_workspace_identity() or current())
+        snapshot = _snapshot(session_id)
+        resume = render_resume_section(snapshot) if snapshot else ""
+        user, kept = render_user_sections(rows), rows
+        roster = projects_renderer()
+
+        if len(_joined(*prefix, *notices, user, due, resume, environment, roster(sys.maxsize))) > BIRTH_BUDGET:
+            notices = ()
+        floor = roster(0)
+        if snapshot and len(_joined(*prefix, user, due, resume, environment, floor)) > BIRTH_BUDGET:
+            resume = render_resume_section(snapshot, counts_only=True)
+        head = _joined(*prefix, *notices, user, due, resume, environment)
+        projects = roster(BIRTH_BUDGET - len(head) - 2)
+        if len(_joined(*prefix, user, due, resume, environment, floor)) > BIRTH_BUDGET:
+            room = BIRTH_BUDGET - len(_joined(*prefix, due, resume, environment, floor)) - 2
+            user, kept = fit_user_sections(rows, room)
+            head = _joined(*prefix, user, due, resume, environment)
+            projects = roster(BIRTH_BUDGET - len(head) - 2)
+        text = _joined(head, projects)
+        if text == heading:
+            return ""
         if record_injection:
-            _record_user_rows_injected(user_rows)
+            record_user_rows_injected(kept)
         return text
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)

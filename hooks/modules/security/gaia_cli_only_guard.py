@@ -194,25 +194,31 @@ the phrase-matching step below, because that step only checks a PREFIX of the
 non-flag tokens and does not care what comes after. Modifying
 ``stage_decomposer.py`` to close that gap is out of this module's scope (this
 task creates one file and touches nothing else), so this module carries its
-own small, quote-and-substitution-aware scan for a bare ``&`` (and for a
-process-substitution opener) and denies the whole command outright if either
-is found -- duplicated logic, deliberately, rather than a shared file edited
-under a task that forbids editing it.
+own small, quote-and-substitution-aware scan for a bare ``&`` and denies the
+whole command outright if one is found -- duplicated logic, deliberately,
+rather than a shared file edited under a task that forbids editing it. That
+scan is an allowlist of literal characters, not a list of shell forms: the lane
+is one invocation, not a shell, so redirects, comments, escapes and expansions
+are impossible by construction rather than recognized one by one.
 
 Design decision 4 -- flag-level policy, because a phrase cannot express it
 --------------------------------------------------------------------------------
-A phrase matches by PREFIX (see ``match_allowed_phrase``): everything after
-the matched tokens is gaia's own argument grammar and is not re-validated.
-That is the right default -- ids, search strings and per-command flags are
-not this guard's business -- but it means a phrase tuple is structurally
-incapable of saying "this verb, but not with that flag". And one admitted
-verb needs exactly that: ``gaia doctor`` is a read-only diagnostic EXCEPT
-under ``--fix``, which rewrites the settings file and rebuilds the memory
-FTS index.
+A phrase matches by PREFIX (see ``match_allowed_phrase``), so it admits the
+verb but is structurally incapable of saying "this verb, but not with that
+flag". Ids and search strings stay gaia's own argument grammar; the options
+are this guard's business, in two layers applied in ``_check_stage``:
 
-``_READ_PHRASE_FORBIDDEN_FLAGS`` is that missing expressiveness, applied by
-``_validate_read_flags`` in ``_check_stage`` BEFORE the write-shape gate, so
-a forbidden flag is refused whichever allowlist the phrase came from.
+  * ``_KNOWN_SAFE_FLAGS`` lists, per admitted phrase, the only options the
+    orchestrator may pass (``_validate_known_safe_flags``, after the write
+    shape). Anything else is refused, so the lane is closed by default at
+    flag level as it is at verb level. A flag that takes no value is refused
+    with one (``--json=1``), and a phrase whose positional count is fixed
+    (``_FIXED_POSITIONALS``) is refused an extra positional.
+  * ``_READ_PHRASE_FORBIDDEN_FLAGS`` names a flag that makes an admitted verb
+    write -- ``gaia doctor --fix`` rewrites the settings file and rebuilds
+    the memory FTS index -- and is applied BEFORE the write-shape gate, so
+    the denial can say why. It is a rationale layer; the safe table already
+    excludes the flag.
 
 Two properties of the flag scan are load-bearing, and both were measured
 against argparse rather than assumed:
@@ -235,9 +241,10 @@ and needed it to survive ``gaia scan --workspace me -- --dry-run``, where a
 bare ``--`` demotes the flag to a positional and the command writes anyway.
 That whole class of parsing subtlety disappeared with the policy it served:
 ``scan`` refreshes the workspace substrate the orchestrator coordinates
-from, its identity already authorizes the CLI, and a narrower allowlist
-would have removed a capability it needs without adding any safety. The
-verb is admitted whole, as a write, in ``ALLOWED_WRITE_PHRASES``.
+from, its identity already authorizes the CLI, and requiring a flag would
+have removed a capability it needs without adding any safety. The verb is
+admitted as a write in ``ALLOWED_WRITE_PHRASES`` with every option in
+``_KNOWN_SAFE_FLAGS``, and no option is required.
 
 Scope of the check (categorical, NOT approvable)
 --------------------------------------------------
@@ -269,6 +276,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 from ..tools.stage_decomposer import StageDecomposer
@@ -424,6 +432,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("contract", "view"),
     ("contract", "list"),
     ("contract", "validate"),
+    ("contract", "proposals", "list"),
     ("task", "list"),
     # `task show` is the single-task complement of `task list`: a mechanical
     # read of a task row, which the orchestrator's own identity already says
@@ -485,6 +494,8 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # on its own -- see Design decision 4.
     ("doctor",),
     ("now",),
+    ("map",),
+    ("signals",),
     ("status",),
     ("defects",),
     ("query",),
@@ -548,6 +559,9 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("worktree", "list"),
     ("worktree", "show"),
     ("worktree", "show-capture"),
+    ("lint", "comments"),
+    # gaia.refs.resolve reads every kind through gaia.store.reader._ro_connect alone.
+    ("open",),
 })
 
 ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
@@ -556,15 +570,21 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # its own job, not a specialist's. It is listed as a WRITE because it is
     # one: bin/cli/scan.py calls classify_scan(root, workspace,
     # apply=not dry_run), so its DEFAULT mode persists. It is admitted
-    # deliberately and without a flag condition (the orchestrator's identity
-    # is what authorizes the CLI; a narrower allowlist would only remove a
-    # capability it needs), and it carries no bounded-shape check in
-    # _validate_orchestrator_write -- gaia's own argparse owns its grammar.
+    # deliberately and without a required flag (the orchestrator's identity
+    # is what authorizes the CLI), its options are bounded by _KNOWN_SAFE_FLAGS,
+    # and it carries no bounded-shape check in _validate_orchestrator_write.
     ("scan",),
     # The same scan by its other spelling: context._cmd_scan delegates
     # in-process to bin/cli/scan.py's cmd_scan. Admitting one and denying the
     # other would gate a route, not an effect.
     ("context", "scan"),
+    # Project context is the orchestrator's to write; a specialist's
+    # update_contracts is only a proposal until it accepts the contract that
+    # carries it. Each key lands in the workspace owning its project, and a
+    # key nobody owns is refused rather than written.
+    ("context", "accept"),
+    ("contract", "proposals", "accept"),
+    ("contract", "proposals", "dismiss"),
     # ``paths`` only PRINTS resolved paths, and still belongs here rather than
     # in the read set: all three of its handlers call ensure_layout(), which
     # os.makedirs() the ~/.gaia layout (data, workspaces, logs, events, cache,
@@ -761,94 +781,86 @@ def match_allowed_phrase(
 # (Design decision 3 -- see module docstring)
 # ---------------------------------------------------------------------------
 
-def _find_composition_hazard(command: str) -> Optional[str]:
-    """Scan *command* for a bare background ``&`` or a process-substitution
-    opener (``<(`` / ``>(``), outside quotes and outside ``$(...)``/backtick
-    substitution bodies (those are already denied separately by their mere
-    presence -- this scan exists for the hazards a substitution check does
-    NOT cover).
+_UNQUOTED_PUNCTUATION = frozenset(" \t\n_./:=@,+%-")
 
-    Returns a short reason string naming the hazard, or None when clean.
 
-    This duplicates the quote/paren/backtick tracking in
-    ``StageDecomposer._split_with_operators`` rather than extending that
-    shared file -- this task creates exactly one new file and edits nothing
-    else, so a real gap in a shared parser (it does not split on a bare
-    ``&``) is closed here, locally, instead of there.
+def _is_literal_unquoted(ch: str) -> bool:
+    return ch.isalnum() or ch in _UNQUOTED_PUNCTUATION
+
+
+def _unquoted_character_hazard(prev: str, ch: str, nxt: str) -> Optional[str]:
+    """Name an unquoted character outside the lane's allowlist, or None.
+
+    ``#`` is literal mid-word, after a literal non-whitespace character; bash
+    reads it as a comment only at a word start, and the banned backslash means
+    no escaped space can fake one.
     """
-    in_single = False
-    in_double = False
-    paren_depth = 0
-    backtick_depth = 0
-    i = 0
-    n = len(command)
-
-    while i < n:
-        ch = command[i]
-
-        if ch == "\\" and not in_single and i + 1 < n:
-            i += 2
-            continue
-
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            i += 1
-            continue
-
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            i += 1
-            continue
-
-        if in_single or in_double:
-            i += 1
-            continue
-
-        if ch == "$" and i + 1 < n and command[i + 1] == "(":
-            paren_depth += 1
-            i += 2
-            continue
-
-        if ch == "(" and paren_depth > 0:
-            paren_depth += 1
-            i += 1
-            continue
-
-        if ch == ")" and paren_depth > 0:
-            paren_depth -= 1
-            i += 1
-            continue
-
-        if ch == "`":
-            backtick_depth = 0 if backtick_depth else 1
-            i += 1
-            continue
-
-        if paren_depth > 0 or backtick_depth > 0:
-            i += 1
-            continue
-
-        if ch in ("<", ">") and i + 1 < n and command[i + 1] == "(":
+    if _is_literal_unquoted(ch):
+        return None
+    if ch == "#" and prev and not prev.isspace() and _is_literal_unquoted(prev):
+        return None
+    if ch in "<>":
+        if nxt == "(":
             return "process substitution (`<(` / `>(`) detected"
+        return f"shell redirect (`{ch}`) detected"
+    if ch == "&" and nxt == ">":
+        return "shell redirect (`&>`) detected"
+    if ch == "&" and nxt != "&":
+        return "bare background operator (`&`) detected"
+    return f"shell character (`{ch}`) outside quotes detected"
 
-        if ch == "&":
-            prev = command[i - 1] if i > 0 else ""
-            nxt = command[i + 1] if i + 1 < n else ""
-            if prev == ">":
-                # File-descriptor duplication (`>&`, e.g. `2>&1`), not
-                # background execution -- mirrors the same exclusion in
-                # `bash_validator._FD_DUP_RE` and the lookbehind/lookahead in
-                # `cloud_pipe_validator.UNIVERSAL_VIOLATIONS`'s "background"
-                # entry (`(?<![>&])&(?!&)`).
-                i += 1
-                continue
-            if nxt == "&":
-                i += 2
-                continue
-            return "bare background operator (`&`) detected"
 
-        i += 1
+def _double_quoted_hazard(ch: str, nxt: str) -> Optional[str]:
+    """Name what bash would run or expand inside double quotes, or None."""
+    if ch == "`" or (ch == "$" and nxt == "("):
+        return "command substitution detected"
+    if ch == "\\":
+        return "backslash inside double quotes detected"
+    if ch == "$" and (nxt.isalnum() or nxt in "_{[?$!#@*-"):
+        return "shell expansion (`$`) detected"
+    return None
 
+
+def _quoted_program_word(command: str) -> Optional[Tuple[str, int]]:
+    """The leading double-quoted program word bash reads byte for byte, backslashes included, and the index past it."""
+    start = len(command) - len(command.lstrip())
+    end = command.find('"', start + 1) if command[start:start + 1] == '"' else -1
+    word = command[start + 1:end] if end > 0 else ""
+    if "\\" not in word or word.endswith("\\") or any(ch in word for ch in "$`\n"):
+        return None
+    if any(word[i + 1:i + 2] in ('"', "\\") for i, ch in enumerate(word) if ch == "\\"):
+        return None
+    if command[end + 1:end + 2] not in ("", " ", "\t"):
+        return None
+    return word, end + 1
+
+
+def _find_composition_hazard(command: str) -> Optional[str]:
+    """Name the first character of *command* that makes it more than one plain
+    invocation, or None when every character is literal to bash.
+
+    An allowlist, not a scan for shell forms: unquoted text may hold only
+    letters, digits, whitespace, ``_ . / : = @ , + % -`` and a mid-word ``#``; single quotes hold
+    anything; double quotes hold anything but a backtick, a backslash or an
+    expanding ``$``; an unterminated quote is refused.
+    """
+    quote = ""
+    for i, ch in enumerate(command):
+        nxt = command[i + 1:i + 2]
+        if quote == "'":
+            hazard = None
+        elif quote == '"':
+            hazard = None if ch == '"' else _double_quoted_hazard(ch, nxt)
+        elif ch in "'\"":
+            hazard = None
+        else:
+            hazard = _unquoted_character_hazard(command[i - 1:i], ch, nxt)
+        if hazard is not None:
+            return hazard
+        if ch in "'\"" and quote in ("", ch):
+            quote = "" if quote else ch
+    if quote:
+        return "unterminated quote detected"
     return None
 
 
@@ -903,15 +915,6 @@ def check(
     if not command or not command.strip():
         return False, "Empty command is not an allowlisted gaia CLI invocation."
 
-    hazard = _find_composition_hazard(command)
-    if hazard is not None:
-        return False, (
-            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator "
-            f"may run only single, trusted invocations of the gaia CLI -- "
-            f"background execution and process substitution both run more "
-            f"than the gaia CLI and are denied outright, not approvable."
-        )
-
     decomposed = StageDecomposer().decompose(command)
 
     if decomposed.substitutions:
@@ -923,6 +926,21 @@ def check(
             "the orchestrator may run only the gaia CLI, exclusively, with "
             "nothing else executing to feed it. Denied outright, not "
             "approvable."
+        )
+
+    program = _quoted_program_word(command)
+    hazard = _find_composition_hazard(command[program[1]:] if program else command)
+    if hazard is None and program and (
+        not decomposed.stages or decomposed.stages[0].args[:1] != [program[0]]
+    ):
+        hazard = "backslash inside double quotes detected"
+    if hazard is not None:
+        return False, (
+            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator's "
+            f"Bash runs one gaia invocation, not a shell: gaia must receive "
+            f"exactly the words written, and its output already returns "
+            f"through the tool, so no redirect is needed. Denied outright, "
+            f"not approvable."
         )
 
     if not decomposed.stages:
@@ -991,6 +1009,12 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
         if invalid is not None:
             return False, invalid
         invalid = _validate_orchestrator_write(candidate, allowed_phrase)
+        if invalid is not None:
+            return False, invalid
+        invalid = _validate_known_safe_flags(candidate, allowed_phrase, leading_flags)
+        if invalid is not None:
+            return False, invalid
+        invalid = _validate_positional_count(candidate, allowed_phrase)
         if invalid is not None:
             return False, invalid
         return True, None
@@ -1154,6 +1178,278 @@ def _validate_read_flags(
     return None
 
 
+_FlagGrammar = Tuple[FrozenSet[str], FrozenSet[str]]
+
+
+def _flags(valued: str, valueless: str = "") -> _FlagGrammar:
+    return frozenset(valued.split()), frozenset(valueless.split())
+
+
+# Every option an admitted phrase may carry; a flag absent here is refused, so a
+# flag added to a verb tomorrow stays outside the lane until it is vetted.
+# Withheld on purpose although argparse defines them: doctor --fix, memory add
+# --replace, memory link --delete (signed operations), approvals reject --all,
+# task set-status --override/--reason, notifications ack --all-workspaces.
+# tests/hooks/modules/security/test_orchestrator_flag_lane.py pins this table
+# against the live parsers, so a drift in either direction fails there.
+_FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
+    ("approvals", "history"): _flags("--limit --status", "--json"),
+    ("approvals", "list"): _flags("--session", "--json --orphans-only --all-sessions --include-stale"),
+    ("approvals", "pending"): _flags("--session", "--json --all-sessions --include-stale"),
+    ("approvals", "question"): _flags("", "--details"),
+    ("approvals", "reject"): _flags("--reason", "--json"),
+    ("approvals", "revoke"): _flags("--reason", "--yes"),
+    ("approvals", "show"): _flags("", "--json --consent-surface"),
+    ("approvals", "stats"): _flags("", "--json"),
+    ("brief", "ac", "add"): _flags(
+        "--id --description --description-file --evidence-type --evidence-shape "
+        "--evidence-shape-file --artifact --workspace", "--json"),
+    ("brief", "ac", "edit"): _flags(
+        "--id --description --description-file --evidence-type --evidence-shape "
+        "--evidence-shape-file --artifact --workspace", "--json"),
+    ("brief", "ac", "remove"): _flags("--id --workspace", "--json"),
+    ("brief", "close"): _flags("--workspace"),
+    ("brief", "decision", "add"): _flags("--text --rationale --supersedes --workspace", "--json"),
+    ("brief", "decision", "list"): _flags("--workspace", "--json"),
+    ("brief", "deps"): _flags("--workspace", "--json"),
+    ("brief", "edit"): _flags(
+        "--workspace --field --content --content-file", "--headless --append --json"),
+    ("brief", "history"): _flags("--workspace", "--json"),
+    ("brief", "list"): _flags("--status --format --workspace", "--json"),
+    ("brief", "new"): _flags(
+        "--workspace --project --title --objective --objective-file "
+        "--context --context-file --approach --approach-file --out-of-scope "
+        "--out-of-scope-file --status --surface-type", "--headless --json"),
+    ("brief", "search"): _flags("--limit --workspace", "--json"),
+    ("brief", "set-project"): _flags("--workspace", "--clear --force --dry-run --json"),
+    ("brief", "set-status"): _flags("--workspace", "--json"),
+    ("brief", "show"): _flags("--workspace", "--json"),
+    ("brief", "verify"): _flags("--workspace", "--json"),
+    ("context", "accept"): _flags("--workspace", "--dry-run --json"),
+    ("context", "get"): _flags("--workspace --section", "--json --text --include-missing"),
+    ("context", "get-contract"): _flags("--workspace --project --section", "--json --text"),
+    ("context", "project"): _flags("--workspace", "--json"),
+    ("context", "scan"): _flags("", "--dry-run --json"),
+    ("context", "show"): _flags("--section", "--json"),
+    ("contract", "list"): _flags(
+        "--plan-task --brief --agent-id --agent --state --cut --session --contract-id "
+        "--harness-id --workspace --since --until --limit --grep --agent-name --task", "--json"),
+    ("contract", "validate"): _flags("--draft-id --agent-id", "--json"),
+    ("contract", "proposals", "list"): _flags("--kind --contract-id", "--all --json"),
+    ("contract", "proposals", "accept"): _flags("--project --workspace", "--json"),
+    ("contract", "proposals", "dismiss"): _flags("--reason", "--json"),
+    ("contract", "view"): _flags(
+        "--field --draft-id --agent-id --harness-id --contract-id", "--row --json"),
+    ("defects",): _flags(
+        "--origin --type --severity --agent --since --until --limit --workspace", "--count --json"),
+    ("doctor",): _flags("--workspace", "--json"),
+    ("evidence", "list"): _flags("--brief --ac --workspace", "--json"),
+    ("evidence", "show"): _flags("", "--json"),
+    ("history",): _flags("--agent -a --limit -n --workspace", "--today -t --blocked -b --json"),
+    ("memory", "add"): _flags(
+        "--name --type --body --body-file --description --project --project-ref "
+        "--initiative --class --status --measured-at --method --kind --until "
+        "--binary --replaces --workspace", "--json"),
+    ("memory", "append"): _flags("--body --body-file --workspace", "--json"),
+    ("memory", "checkpoint"): _flags(
+        "--file --project --project-ref --initiative --workspace", "--json"),
+    ("memory", "conflicts"): _flags("--threshold --owner --exclude-class --limit", "--json"),
+    ("memory", "episode-show"): _flags("", "--json"),
+    ("memory", "get-relevant"): _flags(
+        "--workspace --limit --max-chars --types --sections --initiative --project --group",
+        "--json --no-pointer"),
+    ("memory", "link"): _flags("--kind --workspace", "--json"),
+    ("memory", "list"): _flags(
+        "--type --kind --class --status --sort --order --workspace --limit --format",
+        "--include-superseded --json"),
+    ("memory", "reclassify"): _flags("--class --status --workspace", "--json"),
+    ("memory", "search"): _flags(
+        "--limit --scope --type --class --workspace", "--all --include-superseded --json"),
+    ("memory", "show"): _flags("--workspace", "--links --history --json"),
+    ("memory", "stats"): _flags("", "--json"),
+    ("memory", "story"): _flags("--max-depth --workspace", "--json"),
+    ("metrics",): _flags("--agent --workspace --range --since --until", "--json"),
+    ("notifications", "ack"): _flags("--workspace", "--all --json"),
+    ("notifications", "add"): _flags(
+        "--kind --task --headline --body --session-id --at --cron --every --skill "
+        "--memory --project --workspace", "--json"),
+    ("notifications", "cancel"): _flags("", "--json"),
+    ("notifications", "list"): _flags(
+        "--limit --workspace", "--unread --upcoming --all-workspaces --json"),
+    ("notifications", "show"): _flags("", "--json"),
+    ("notifications", "snooze"): _flags("--for --until", "--json"),
+    ("lint", "comments"): _flags("--repo --head --base", "--json"),
+    ("now",): _flags("", "--json"),
+    ("open",): _flags("", "--line --json"),
+    ("map",): _flags(""),
+    ("paths",): _flags(""),
+    ("plan", "change", "approve"): _flags("--workspace", "--json"),
+    ("plan", "change", "list"): _flags("--workspace", "--json"),
+    ("plan", "change", "request"): _flags("--reason --workspace", "--json"),
+    ("plan", "history"): _flags("--workspace", "--content --json"),
+    ("plan", "list"): _flags("--brief --status --format --workspace", "--json"),
+    ("plan", "pause"): _flags("--reason --workspace", "--json"),
+    ("plan", "resume"): _flags("--workspace", "--json"),
+    ("plan", "set-status"): _flags("--workspace", "--json"),
+    ("plan", "show"): _flags("--workspace", "--json"),
+    ("query",): _flags(
+        "--surface --workspace --since --until --last --agent --type --command-like "
+        "--group-by --format", "--failed --count --snippets --metrics --json"),
+    ("scan",): _flags("--workspace", "--dry-run --json"),
+    ("session", "preview"): _flags("--session-id"),
+    ("session", "resume-point", "set"): _flags("--session-id --text"),
+    ("session", "snapshot"): _flags("--session-id", "--json"),
+    ("signals",): _flags("--since --limit", "--json"),
+    ("status",): _flags("", "--json"),
+    ("task", "gate", "list"): _flags("--workspace", "--json"),
+    ("task", "gate", "reverify"): _flags("--reason --workspace", "--json"),
+    ("task", "list"): _flags("--status --format --workspace --plan", "--json"),
+    ("task", "set-status"): _flags("--workspace", "--json"),
+    ("task", "show"): _flags("--id --workspace", "--json"),
+    ("usage", "show"): _flags("--plan --session --since --until", "--json"),
+    ("workspace", "current"): _flags(""),
+    ("workspace", "info"): _flags(""),
+    ("worktree", "list"): _flags("--repo", "--json"),
+    ("worktree", "show"): _flags("", "--json"),
+    ("worktree", "show-capture"): _flags("", "--diff --json"),
+}
+_KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    phrase: valued | valueless for phrase, (valued, valueless) in _FLAG_GRAMMAR.items()
+}
+_VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    phrase: valueless for phrase, (_, valueless) in _FLAG_GRAMMAR.items()
+}
+
+# The positional count argparse demands exactly, for the phrases where it is
+# fixed; the test that pins _FLAG_GRAMMAR pins this table too.
+_FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
+    **dict.fromkeys([
+        ("approvals", "list"), ("approvals", "pending"), ("approvals", "stats"),
+        ("brief", "list"), ("context", "get"), ("context", "get-contract"),
+        ("context", "scan"), ("context", "show"), ("contract", "proposals", "list"),
+        ("contract", "validate"), ("contract", "view"), ("defects",), ("doctor",),
+        ("evidence", "list"), ("history",), ("lint", "comments"), ("memory", "add"),
+        ("memory", "checkpoint"), ("memory", "conflicts"), ("memory", "get-relevant"),
+        ("memory", "list"), ("memory", "stats"), ("metrics",), ("notifications", "add"),
+        ("notifications", "list"), ("now",), ("plan", "list"), ("query",),
+        ("session", "preview"), ("session", "resume-point", "set"),
+        ("session", "snapshot"), ("signals",), ("status",), ("usage", "show"),
+        ("workspace", "current"), ("workspace", "info"), ("worktree", "list"),
+    ], 0),
+    **dict.fromkeys([
+        ("approvals", "revoke"), ("approvals", "show"), ("brief", "ac", "add"),
+        ("brief", "ac", "edit"), ("brief", "ac", "remove"), ("brief", "close"),
+        ("brief", "decision", "add"), ("brief", "decision", "list"), ("brief", "deps"),
+        ("brief", "edit"), ("brief", "history"), ("brief", "search"), ("brief", "show"),
+        ("brief", "verify"), ("context", "accept"), ("context", "project"),
+        ("contract", "proposals", "accept"), ("contract", "proposals", "dismiss"),
+        ("evidence", "show"), ("memory", "append"), ("memory", "episode-show"),
+        ("memory", "reclassify"), ("memory", "search"), ("memory", "show"),
+        ("memory", "story"), ("notifications", "cancel"), ("notifications", "show"),
+        ("notifications", "snooze"), ("open",), ("plan", "change", "list"),
+        ("plan", "change", "request"), ("plan", "history"), ("plan", "pause"),
+        ("plan", "resume"), ("plan", "show"), ("worktree", "show"),
+        ("worktree", "show-capture"),
+    ], 1),
+    **dict.fromkeys([
+        ("brief", "set-status"), ("plan", "change", "approve"), ("plan", "set-status"),
+        ("task", "gate", "list"),
+    ], 2),
+    **dict.fromkeys([("task", "gate", "reverify"), ("task", "set-status")], 3),
+}
+
+# The root parser's own options: --json may precede the subcommand, --version
+# only stands alone (ALLOWED_BARE_READ_FLAGS) and -h/--help never reaches here.
+_KNOWN_SAFE_LEADING_FLAGS: FrozenSet[str] = frozenset({"--json"})
+
+_NEGATIVE_NUMBER = re.compile(r"^-\d+$|^-\d*\.\d+$")
+
+
+def _is_option_like(token: str) -> bool:
+    """True iff argparse would read *token* as an option rather than a value.
+
+    A value that starts with a dash and contains a space (``- a bullet``) or is
+    a negative number is a value to argparse, so it must be one here too; a lone
+    ``-`` and ``--`` are not special-cased: ``--`` is option-like and refused,
+    which also closes the demotion of a later flag to a positional.
+    """
+    name = token.split("=", 1)[0]
+    return (
+        len(name) > 1
+        and name[0] == "-"
+        and not _NEGATIVE_NUMBER.match(name)
+        and not any(ch.isspace() for ch in name)
+    )
+
+
+def _validate_known_safe_flags(
+    candidate: Tuple[str, ...],
+    phrase: Tuple[str, ...],
+    leading_flags: Tuple[str, ...] = (),
+) -> Optional[str]:
+    """Deny an option the admitted *phrase* is not known to be safe with.
+
+    Matching is by exact option name, never by abbreviation: ``--wor`` parses
+    to ``--workspace`` in argparse, but an abbreviation is a spelling nobody
+    vetted. Returns None when every option is known safe, else the denial.
+    """
+    safe = _KNOWN_SAFE_FLAGS.get(phrase, frozenset())
+    valueless = _VALUELESS_FLAGS.get(phrase, frozenset())
+    scanned = [(t, _KNOWN_SAFE_LEADING_FLAGS, _KNOWN_SAFE_LEADING_FLAGS) for t in leading_flags]
+    scanned += [(t, safe, valueless) for t in candidate[len(phrase):]]
+    for token, known, takes_no_value in scanned:
+        if not _is_option_like(token):
+            continue
+        name, eq, _ = token.partition("=")
+        if eq and name in takes_no_value:
+            return (
+                f"GAIA CLI ONLY: '{name}' takes no value on 'gaia {' '.join(phrase)}', "
+                f"so '{token}' is refused. Pass the flag alone. Denied outright, "
+                f"not approvable."
+            )
+        if name in known:
+            continue
+        return (
+            f"GAIA CLI ONLY: '{name}' is not a known-safe flag of "
+            f"'gaia {' '.join(phrase)}'. The orchestrator's lane is closed by "
+            f"default at flag level: an admitted verb carries only the options "
+            f"vetted for it (see _KNOWN_SAFE_FLAGS), and the rest belong to a "
+            f"specialist or a signed operation. Denied outright, not approvable."
+        )
+    return None
+
+
+def _positional_count(args: Tuple[str, ...], valueless: FrozenSet[str]) -> int:
+    """Count *args* argparse would bind to positionals, skipping each flag's value."""
+    count = 0
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if not _is_option_like(token):
+            count += 1
+        elif "=" not in token and token not in valueless:
+            i += 1
+        i += 1
+    return count
+
+
+def _validate_positional_count(
+    candidate: Tuple[str, ...], phrase: Tuple[str, ...]
+) -> Optional[str]:
+    """Deny more positionals than an admitted *phrase* with a fixed count takes."""
+    expected = _FIXED_POSITIONALS.get(phrase)
+    if expected is None:
+        return None
+    found = _positional_count(candidate[len(phrase):], _VALUELESS_FLAGS[phrase])
+    if found <= expected:
+        return None
+    return (
+        f"GAIA CLI ONLY: 'gaia {' '.join(phrase)}' takes {expected} positional "
+        f"argument(s) and was given {found}. Run one invocation per reference. "
+        f"Denied outright, not approvable."
+    )
+
+
 _BRIEF_STATUSES = frozenset({"draft", "open", "in-progress", "closed", "archived"})
 _PLAN_STATUSES = frozenset({"draft", "active", "closed"})
 _TASK_STATUSES = frozenset({"pending", "done", "skipped"})
@@ -1267,7 +1563,7 @@ def _validate_orchestrator_write(
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _PLAN_STATUSES
     elif phrase in (("plan", "pause"), ("plan", "change", "request")):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args, "--reason")
-    elif phrase == ("plan", "resume"):
+    elif phrase in (("plan", "resume"), ("context", "accept")):
         valid = bool(args) and not args[0].startswith("-")
     elif phrase == ("plan", "change", "approve"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1].isdigit()

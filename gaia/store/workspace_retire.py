@@ -350,17 +350,24 @@ def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
 
 
+BACKUPS_KEPT = 3
+
+
 def _backup(con: sqlite3.Connection, db_file: Path, label: str) -> Path:
+    """Write a verified gzip copy of the database before a workspace change; keep the newest BACKUPS_KEPT."""
+    from gaia.paths.backup import prune_newest, write_verified_gzip
+
     backup_dir = db_file.parent / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    target = backup_dir / f"{db_file.stem}-pre-workspace-{label}-{stamp}.db"
-    dest = sqlite3.connect(str(target))
-    try:
-        con.backup(dest)
-    finally:
-        dest.close()
+    target = backup_dir / f"{db_file.stem}-pre-workspace-{label}-{stamp}.db.gz"
+    write_verified_gzip(con, target)
+    prune_newest(backup_dir, "*-pre-workspace-*.db.gz", keep=BACKUPS_KEPT)
     return target
+
+
+def _backup_stem(backup: Path) -> str:
+    """The backup's name without its ``.db.gz``/``.db`` suffix, which ledger names extend."""
+    return backup.name[: -len(".db.gz")] if backup.name.endswith(".db.gz") else backup.stem
 
 
 def write_declare_ledger(
@@ -607,7 +614,7 @@ def apply_retire(
             return report
 
         backup = _backup(con, db_file, f"retire-{_safe(source)}-into-{_safe(target)}")
-        ledger_path = backup.with_name(backup.stem + "-ledger.json")
+        ledger_path = backup.with_name(_backup_stem(backup) + "-ledger.json")
         con.execute("BEGIN IMMEDIATE")
         try:
             con.execute("PRAGMA defer_foreign_keys = ON")

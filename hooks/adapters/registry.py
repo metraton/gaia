@@ -136,6 +136,11 @@ register_adapter(
 )
 
 
+def active_host() -> str:
+    """The host key ``get_adapter`` selects when none is named: ``GAIA_HOST``, else :data:`DEFAULT_HOST`."""
+    return os.environ.get(HOST_ENV_VAR) or DEFAULT_HOST
+
+
 def get_adapter(host: Optional[str] = None) -> HookAdapter:
     """Return the shared :class:`HookAdapter` instance for ``host``.
 
@@ -146,7 +151,7 @@ def get_adapter(host: Optional[str] = None) -> HookAdapter:
     Raises:
         KeyError: If ``host`` has no registered adapter class.
     """
-    key = host or os.environ.get(HOST_ENV_VAR, DEFAULT_HOST)
+    key = host or active_host()
     instance = _INSTANCES.get(key)
     if instance is None:
         adapter_cls = _REGISTRY[key]

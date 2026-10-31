@@ -157,6 +157,7 @@ def test_add_view_validate_fill_round_trip(cli_env):
     assert pre_envelope["agent_status"]["pending_steps"] == ["review diff"]
 
     patch = json.dumps({
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": {
             "verification": {"method": "pytest", "result": "pass", "details": "AC-4 green"},
         },

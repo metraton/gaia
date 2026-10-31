@@ -43,7 +43,7 @@ is rather than reading the prose as if it had been persisted.
 | `APPROVAL_REQUEST` | `approval_request`, and nothing else matters until the user signs. Load `orchestrator-present-approval`; do not execute. |
 | `NEEDS_INPUT` | `pending_steps` and `next_action`: the turn is stuck in the ORCHESTRATOR, not the user, and resuming the SAME agent keeps its state. |
 | `BLOCKED` | `failure_report` and `open_gaps`, read with the rule proven true today: the block is usually a stale premise in the dispatch itself — information about the dispatch, not about the agent. Route only when another owner can resolve it. |
-| `NEEDS_VERIFICATION` | Not "done": a plan-task-bound turn cannot seal itself. Dispatch `gaia-verifier`, binding `parent_handoff_id` to this producer row. A verifier pass may promote the work to `COMPLETE`; a fail returns it to `IN_PROGRESS` with evidence. Never accept a plan-task-bound producer's self-asserted `COMPLETE` as independent verification. |
+| `NEEDS_VERIFICATION` | Not "done": a plan-task-bound turn cannot seal itself. First read `open_gaps` and `pending_steps` against the task goal: a gap that contradicts the goal, or a declared check left unrun, resumes the producer -- a verifier would only rediscover it, and a gap declared costs one round where a hidden one costs two. Otherwise dispatch `gaia-verifier`, binding `parent_handoff_id` to this producer row. A verifier pass may promote the work to `COMPLETE`; a fail returns it to `IN_PROGRESS` with evidence. Never accept a plan-task-bound producer's self-asserted `COMPLETE` as independent verification. |
 | `COMPLETE` | `evidence_report.verification` first, then `open_gaps`. Terminal: relay/synthesize the verified result. |
 
 Only `COMPLETE` is terminal. A finalized `IN_PROGRESS`, `APPROVAL_REQUEST`, `BLOCKED`, `NEEDS_INPUT`,
@@ -56,7 +56,12 @@ terminal/frozen grant, and route fresh investigation plus a new request/approval
 retry or remainder.
 
 **Phase 2 — the findings.** `key_outputs`, and `report_prose` when the why is needed or when this
-row's coordinate is about to be handed to another agent.
+row's coordinate is about to be handed to another agent. Read `memory_delta` too: its proposals are
+the specialist's, not yet memory, and what is kept, merged or dropped is yours to curate per
+Skill('memory'). The dispatch result flags a non-empty one with a line, `N project facts proposed
+for <project> — contract <id>`; a result without that line carries none. A project-context proposal
+(`update_contracts`) is curated by you too, flagged by its own line, and if you accept it you apply it
+with `gaia context accept <contract-id>`.
 
 **Phase 3 — evidence on demand, only for the claim about to be made.** `commands_run` and
 `verbatim_outputs` for a positive; `patterns_checked` for a NEGATIVE; `cross_layer_impacts` before
@@ -87,12 +92,14 @@ the owning specialist, never with a reading of the forge of your own.
 
 ## Relaying to the user
 
-On a valid single-agent `COMPLETE`, SubagentStop parses `user_facing_summary` off the same envelope the
-gate treated as authoritative (`parse_user_facing_summary`) and emits it as the turn's `systemMessage`
--- a channel that reaches the USER's display and does NOT continue your conversation (measured by
-suppression; see the comment over the relay in `hooks/adapters/claude_code.py`). Nothing arrived in
-front of you: the field lives on the row, and the one read that fetches it is `contract view --field
-user_facing_summary --harness-id <agentId>`. Read it when the user-facing report needs it and relay it
-near-verbatim. Synthesizing from `key_outputs`, verification, failures and open gaps is the fallback for
-when the field is absent, and at N>1 the per-agent summaries are inputs to one synthesis rather than N
-relays. Preserve ownership boundaries and do not hide evidence the row and the verdict disagree on.
+A specialist answers you, never the user: nothing it writes reaches the user's display before you
+handled it (`decision_gaia_especialistas_responden_al_orquestador_no_al_usuario_20261022`). Its
+`conclusion` is its verdict for you, in its technical register, and arrives once on both hosts: as
+`conclusion: <text>` on the dispatch result's contract summary line when the turn closed before that
+result, otherwise -- a background dispatch -- as `<agentId>: closed <state>, conclusion: <text>` in the
+next prompt's context, at most three per prompt and the rest named by their reader; `contract view --field conclusion
+--harness-id <agentId>` reads it again (a row closed before the rename answers from its
+`user_facing_summary`). Treat it as a claim, not as copy: validate it against the row's evidence, the
+artifacts it names and the user's intent, discuss with the specialist when they disagree, and only then
+answer the user in plain language in your own words. At N>1 the conclusions are inputs to one synthesis.
+Preserve ownership boundaries and do not hide evidence the row and the verdict disagree on.

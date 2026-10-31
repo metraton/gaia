@@ -14,11 +14,12 @@ injected `# Your Contract` block, mutated by `gaia contract set/add/fill`,
 closed by `gaia contract finalize`. A *project context contract* is a
 different thing -- a slice of project knowledge stored per workspace
 (`project_context_contracts`, seeded by `seed_contract_permissions.py`). It
-is NOT injected: the kernel's `can_read` / `can_write` lists (from
-`agent_contract_permissions`) name which of those slices the turn may pull
-on demand (the verb that reaches them, and the same-named sibling that reads a
-different table entirely, are in `agent-protocol/read-map.md`) and which it may
-propose updates to via `update_contracts`. When a message says "contract" without
+reaches the turn as the kernel's `# Project context` block: the dispatch
+project's `can_read` sections (from `agent_contract_permissions`), as far as
+the budget allows; the rest is pulled on demand (the verb that reaches them,
+and the same-named sibling that reads a different table entirely, are in
+`agent-protocol/read-map.md`). Updates to any section are proposed via
+`update_contracts`. When a message says "contract" without
 qualifying it, ask which one it means before assuming.
 
 ## Draft creation is implicit
@@ -45,12 +46,21 @@ See `agent-protocol` for when in the turn's cycle this first write happens.
 The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
 role/surface, `project` with its declared `workflow` line when the project
 declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
-acceptance gates), `# Your CLI`, and `# How the user works` (the user's
-standing rows, minus those addressed to the orchestrator alone).
-Project context is NOT preloaded and no surface routing arrives: pull the
-sections you need on demand, within the `can_read` menu, before querying
-anything wider (`agent-protocol/read-map.md`). Only sections in `can_write`
-may appear in `update_contracts`.
+acceptance gates), `# Scope memory` (an index of the preferences, facts and
+lessons the dispatch's workspace, group and project hold, each line a title and
+its `ref=memory:...`; never the user's rows), `# Standing notes` (the project's live anchors, one line each, when
+it has any), `# Environment` (one line: OS, the gaia CLI path, the tools on
+PATH including the user's own executables), `# Project context` and
+`# Your CLI`. `# Project context` carries the dispatch project's `can_read`
+sections whole when they fit, else one `get-contract` pointer per section,
+else a single count line; it is absent when the row's project does not
+resolve, none of its `can_read` sections is stored, or the read fails
+(`hooks/modules/context/kernel_builder.py::build_project_context_block`).
+No surface routing arrives. Pull what the block only points at on demand
+before querying anything wider (`agent-protocol/read-map.md`).
+`update_contracts` may propose any section: `can_write` does not gate a
+proposal, the orchestrator decides (`hooks/modules/context/context_writer.py`),
+save a drift correction whose every guard holds (see the `drift` paragraph below).
 
 ## Minimal increment
 
@@ -76,8 +86,7 @@ Eight fields hold the lists you write every turn: the seven `evidence_report`
 keys above -- `patterns_checked`, `files_checked`, `commands_run`,
 `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, `open_gaps` -- plus
 `agent_status.pending_steps`. They are not the only lists in the envelope:
-`update_contracts`, `memorialize_suggestions` and `memory_suggestions` are
-list-valued too (`ADVISORY_UNTYPED_FIELDS` in `gaia/contract/validator.py` --
+`update_contracts` is list-valued too (`ADVISORY_UNTYPED_FIELDS` in `gaia/contract/validator.py` --
 allowlisted, and deliberately left untyped so a malformed one never blocks a
 close). Nothing about them is unguarded, which is the next thing a reader asks
 once they know they exist: the overwrite screen is generic, firing on any
@@ -117,6 +126,17 @@ already wrote.
   `NEEDS_VERIFICATION`; the verifier is bound through `parent_handoff_id`.
 - `consolidation_report` is required when input marks consolidation,
   cross-check, or multi-surface work.
+- Every clean close, in any closing state: `conclusion` is a non-blank
+  string -- the specialist's verdict for the orchestrator, in its own technical
+  register: what holds, on what evidence, what is open. The orchestrator reads
+  it on the dispatch result's summary line, validates it against the row and
+  the artifacts, and only then answers the user; it never reaches the user's
+  display directly. `finalize` refuses a close without it
+  (`conclusion_required`) and names the `gaia contract set --draft-id <id>
+  conclusion '...'` call that fills it. During the rename, a close that wrote
+  only `user_facing_summary` is stored as `conclusion` and stamped
+  `conclusion_alias`. Rows closed by the reaper, the SubagentStop backstop or
+  salvage are cut, not clean, and are exempt.
 
 `finalize` persists any valid state and converges the row born at dispatch. It
 does not turn a non-terminal state into `COMPLETE`. `validate` is read-only.
@@ -128,12 +148,61 @@ an OPEN vocabulary: `command`, `code`, `semantic`, `self_review` and `none` are
 the names it knows, and any other word is accepted as written. Declaring a type
 is a claim that a check ran, and the claim is priced in a companion field --
 `command`/`code` require a non-empty `command`, `semantic` a truthy
-`requires_human`, `self_review` a non-empty `reviewed`, any other word at least
-ONE of those three, and `none` (no oracle was required) nothing. An omission is
+`requires_human` (a rubric the verifier judges; a human only in the cases
+`gaia-planner` step 5 names), `self_review` a non-empty `reviewed`, any other
+word at least ONE of those three, and `none` (no oracle was required) nothing. An omission is
 a `VERIFICATION_SHAPE` rejection, escapable in one deep-merging write. Spelling
 folds on separators only, so `self-review` and `self_review` are one type and
 `observation` stays itself. `type` is optional: absent or blank, no evidence is
 demanded, which is what keeps every contract that never declared one valid.
+
+Finalize then checks what the contract cites against the turn's tool record
+(`gaia/contract/content_checks.py`), and refuses a refuted citation as
+`content_unverified`:
+
+- A verification carrying a `command`, whatever its `type` word, names a
+  command this turn ran, exactly as run, or cites evidence in
+  `verification.evidence_ids` (the id `gaia evidence add` prints, a positive
+  integer within SQLite's 64-bit range; anything else is refused as malformed
+  before any lookup) that proves it: the row exists, its polarity is positive, and it
+  was recorded under this turn's brief and, for a turn bound to a plan task,
+  under that task; a turn with no plan task is proven only by its brief's
+  evidence recorded with no task.
+- Verdicts are read after normalization, not by spelling: Unicode folded, check
+  and cross marks read as pass and fail, case, punctuation, emphasis, markup
+  tags, quotes, slashes and spacing dropped. A command made only of verdict
+  words, counts and numbers (`**PASS** ✅`, `<b>pass</b>`, `pass/ok`,
+  `12880 passed, 0 failed`) is a verdict, and always refused.
+- When `result` is `pass` (after the same normalization), the last recorded
+  run of that command must have exited 0, or the exit declared in
+  `verification.expect_exit` when a nonzero exit is the expected outcome
+  (`grep -q` finding nothing). Any other result is not interpreted, and the
+  unmade exit comparison is named in `content_checks.skipped`.
+- In a turn with no bound tool record, the command must be something a shell
+  could run: past leading `NAME=value` words, its first word with markup tags
+  dropped is a path (absolute, `./`, `../` or `~/`), a program on PATH, or a
+  builtin that runs one (`cd`, `source`, `export`), and not a verdict. `PASS.`,
+  `all tests pass`, `exit 0`, `<b>verified</b>`, `[PASS](/ci)` and `n/a` are
+  refused.
+- A `verbatim_outputs` entry written as `{"command": ..., "excerpt": ...}` is
+  attributed: its excerpt (an `output` key is read the same way), with `...`
+  marking elisions, must appear in order in that command's recorded output,
+  each fragment on whole-token boundaries (`5 passed` does not match
+  `15 passed`). An excerpt with nothing but whitespace or elisions is refused,
+  and so is one attributed to a command this turn never ran, unless the entry
+  cites an `evidence_id`. A plain string, or a quote with no `command` and no
+  `evidence_id`, names nothing to compare against: it is kept, uncompared, and
+  named in `content_checks.skipped`. Any other key of the entry (`stdout`,
+  `Output`) and any quote that is not a string is named there too, key and
+  reason. Write the dict form for any output you want proven.
+- An `evidence_id` on a verbatim entry must exist and belong to this turn's
+  work; it may be negative, since a quote can attest a failure.
+
+A comparison the record cannot settle is skipped and named in the row's
+`content_checks.skipped`, never refused: no output or exit kept, or an output
+truncated before the excerpt (the record keeps its first 500 characters). Every
+row these checks closed carries `content_checks`, and is checked again on a
+re-finalize; only a row closed clean before they existed is not.
 
 `verification.method` is a different, free-text field: prose naming HOW the
 check was done, stored verbatim and never read as a classifier. It does not
@@ -141,25 +210,6 @@ substitute for `type` -- a block carrying only `method` declares no type and is
 asked for no evidence. Write both. Use typed COMMAND_SET progress fields only when the
 runtime returns them; do not invent schema. The v42 store exposes ordered
 `next_index`, `consumed_indexes_json`, `failed_index`, and `failure_reason`.
-
-## work_phase -- the observable WORK cycle, orthogonal to agent_state
-
-`work_phase` is an optional top-level field naming where the producer is in
-the WORK cycle: `framing`, `investigating`, `planning`, `executing`,
-`verifying`. It is deliberately a second, separate axis from
-`agent_status.agent_state`: `agent_state` is the COMMUNICATION state machine
-(how this turn currently reports back) that feeds routing and the blind
-finalize/verification gate -- a pure function of `(agent_state,
-plan_task_id)` -- and that gate must never grow a second dimension.
-`work_phase` never widens or narrows it.
-
-Seeded `null` by `gaia contract init` (same discoverability convention as
-`consolidation_report`/`approval_request`/`failure_report`); absence or an
-explicit `null` reaches no check on any `agent_state`. Presence is validated
-in full: a value outside the five names above is a `WORK_PHASE_SHAPE`
-rejection. See `agent-protocol` for the work-cycle discipline that writes
-it at each transition, and for the trivial-turn exemption (a turn with no
-distinguishable phase never sets it).
 
 ## Conditional objects
 
@@ -177,19 +227,64 @@ minted, `approval_id`, copied verbatim from the request's output.
 
 ## Other optional fields
 
-- `user_facing_summary`: human prose, for the end user.
 - `report_prose`: narrow narrative field -- why/discovery-order/purpose-frame/synthesis, never
   evidence, addressed to the orchestrator and the next agent, not the end user; full definition and
-  the line against `user_facing_summary` in `agent-protocol`.
-- `memory_delta`, `memorialize_suggestions`, `memory_suggestions`: proposals,
-  never write authority.
-- `update_contracts`: `{contract, payload}` entries, deep-merged only into the
-  input write allowlist; lists replace whole and no delete sentinel exists.
-  SubagentStop applies them whatever `agent_state` the turn closes in, into
-  the workspace of the turn's dispatch row; an entry it cannot apply comes
-  back on the close as `update_contracts_refused` and in its user message
-  (`hooks/adapters/subagent_stop_core.py::run_subagent_stop`).
-- `rollback_executed`, `context_consumption`: advisory fields.
+  the line against `conclusion` in `agent-protocol`.
+- `memory_delta`: the one memory proposal channel, never write authority --
+  `{"version": 1, "proposals": [...]}`, each proposal an `operation` and its
+  object (`create`, `append`, `reclassify`, `link`).
+- `update_contracts`: `{contract, payload}` entries, a proposal for any
+  section and never write authority: project context is written by the
+  orchestrator alone. SubagentStop writes nothing for them, whatever
+  `agent_state` the turn closes in; it checks the shape, and the dispatch
+  result announces "N project-context updates proposed for <project> — contract <id>"
+  to the orchestrator, which decides and accepts with `gaia context accept <id>`
+  (`--dry-run` shows the target workspaces). Accepting deep-merges the
+  payload; lists replace whole and no delete sentinel exists. A single
+  `{section: payload}` object is read as the array it abbreviates, any other
+  shape is refused with a repair hint. A `project_identity` payload is split
+  by project key: each key is written into the workspace that owns that
+  project, underscore and hyphen spellings alike, and a key no workspace owns
+  is refused, never written to the dispatch's workspace
+  (`hooks/modules/context/context_writer.py::apply_proposal`). Refusals are
+  stamped on the contract row as `update_contracts_refused`, one reason per
+  entry or key (`gaia/store/writer.py::record_update_contracts_outcome`), and
+  the dispatch result names them to the orchestrator beside the proposal
+  notice (`hooks/modules/agents/proposal_notices.py::proposal_notice`).
+  A drift correction (`agent-protocol` principle 3) adds `drift: {key_path,
+  old, new, command, observed_at}` to the entry. At the close it is applied
+  without the orchestrator only when every guard holds
+  (`gaia/context_drift.py::auto_apply_refusals`). Its project is the
+  dispatch's resolved project. It touches HOW keys only: a section or key
+  that is not ASCII after NFKC, or whose name, split at case, hyphen and
+  underscore changes, names an environment, cluster, context, project or
+  namespace (or `ctx`, `proj`, `cl`, `ns`, `env`) is WHAT (`is_what_key`),
+  and so is the `targets` section; keys inside lists count,
+  and so does every key of the STORED subtree a null, a list or a scalar
+  replaces. It deletes or replaces no stored value, and its section name is
+  spelled as the stored one. The harness's own record of the turn (never the
+  agent's `commands_run` or `harness_record`) holds a run of `drift.command`
+  that exited 0, and every value it applies appears as a whole token (bounded
+  by no word character, `.`, `+` or dash, Unicode dashes included) in that
+  run's recorded output excerpt: the redacted first 500 characters of stdout,
+  into which Claude Code folds stderr. So a value shorter than 4 characters,
+  numeric, carrying `[REDACTED]` or `...[truncated]`, or written in the
+  command itself (which stderr can echo) never applies. The command
+  classifies T0 and is one command with nothing written before it, built
+  only from an allowlist: `kubectl`/`oc` `get` or `describe`, at most a
+  resource and a name, `--context`, `-n`/`--namespace` and `-o`/`--output`
+  `json|yaml|wide|name`; `gcloud` in a project-scoped group (`run`,
+  `container`, `compute`, `sql`, `functions`, `pubsub`, `storage`; `config`,
+  `auth`, `projects`, `alpha`, `beta` and any other group stay pending) with
+  a `describe` or `list` verb path,
+  `--project`, `--format json|yaml`, `--region` and `--zone`. Any other
+  option keeps it pending. It names exactly one context and namespace
+  (kube) or project (gcloud), and each is named in the goal. An applied proposal is
+  marked accepted by `auto:<agent_id>` with its evidence in the decision
+  note, and announced in the "changed" signal line as `project context
+  <identity>`. Anything else stays pending with every failed guard in
+  `gaia contract proposals list`; a proposal whose dispatch project did not
+  resolve keeps the goal's project token there.
 
 ## The evidence clause of `update_contracts`
 
@@ -228,8 +323,8 @@ scratch or from a workspace/client repo path directly.
 
 `gaia/contract/validator.py` owns form codes: `MISSING_FIELD`, `PLAN_STATUS`,
 `AGENT_ID_FORMAT`, `VERIFICATION_RESULT`, `VERIFICATION_SHAPE`,
-`APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, `FAILURE_REPORT_SHAPE`, and
-`WORK_PHASE_SHAPE`. `gaia.contract.crosscheck.validate` adds DB cross-checks.
+`APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, and `FAILURE_REPORT_SHAPE`.
+`gaia.contract.crosscheck.validate` adds DB cross-checks.
 Do not reproduce those rules elsewhere.
 
 The CLI draft is the only managed copy. The turn's final message carries no

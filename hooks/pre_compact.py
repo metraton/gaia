@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreCompact hook — a schema-valid no-op registered for the PreCompact event.
+"""PreCompact hook — opens the session's compaction bracket and returns an empty response.
 
 PreCompact can run code and can block compaction (exit code 2, or a top-level
 ``decision: "block"``), but Claude Code neither validates nor consumes
@@ -52,6 +52,12 @@ def _handle_pre_compact(event) -> None:
     diagnosis and returns a schema-valid empty response.
     """
     logger.info("PreCompact: no deliverable payload for this event, returning {}")
+    try:
+        from modules.session.compaction_bracket import open_bracket
+
+        open_bracket(event.session_id)
+    except Exception:
+        logger.warning("PreCompact: compaction bracket not recorded", exc_info=True)
 
     # No hookSpecificOutput: PreCompact does not accept one. An empty object
     # is the schema-valid "nothing to report" response for every hook event.

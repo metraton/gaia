@@ -30,7 +30,7 @@ from gaia.store.writer import (  # noqa: E402
     mirror_partial_contract_handoff,
     stamp_harness_agent_id,
 )
-from modules.agents import contract_validator, rejection_circuit  # noqa: E402
+from modules.agents import rejection_circuit  # noqa: E402
 from modules.audit import workflow_auditor  # noqa: E402
 from modules.memory import episode_writer  # noqa: E402
 from modules.security import approval_cleanup  # noqa: E402
@@ -108,7 +108,6 @@ def calls(monkeypatch):
     spy(episode_writer, "write")
     spy(workflow_auditor, "audit")
     spy(approval_cleanup, "cleanup")
-    spy(contract_validator, "parse_user_facing_summary")
     return seen
 
 
@@ -171,13 +170,12 @@ def test_accepted_close_runs_every_responsibility_from_the_core(db_path, tmp_pat
 
     assert outcome.rejected is False
     assert outcome.result["contract_gate_source"] == "row"
-    assert outcome.user_message == f"Resumen de {AGENT_TYPE} para el usuario: {SUMMARY}"
-    assert outcome.result["user_facing_summary"] == SUMMARY
+    assert outcome.user_message is None
+    assert SUMMARY not in json.dumps(outcome.result)
     assert "systemMessage" not in outcome.result
     assert "hookSpecificOutput" not in outcome.result
     for name in (
-        "_resolve_subagent_stop_gate_full", "reset", "write", "audit",
-        "cleanup", "parse_user_facing_summary",
+        "_resolve_subagent_stop_gate_full", "reset", "write", "audit", "cleanup",
     ):
         assert calls.get(name), f"core never called {name}"
     assert calls["cleanup"][0][0][0] == AGENT_TYPE

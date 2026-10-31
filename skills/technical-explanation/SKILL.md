@@ -13,9 +13,10 @@ the fixed order the model is built in, the two registers it is told in, and the
 drawing rules for the one picture a fenced code block can carry. Whoever produces
 an explanation loads it -- the orchestrator answering "explain X", a specialist
 writing the narrative of a README, the objective of a ticket, or the idea behind
-a deck. The container skills (`readme-writing`, `ticket-writing`,
-`diagram-builder`) own their format and continue from here; this skill owns what
-goes inside when the content explains.
+a deck. The register is `human-register`'s; the container skills
+(`technical-writing`, `ticket-writing`, `deck-builder`, `ghostwriting`) own
+their format and continue from here; this skill owns what goes inside when the
+content explains.
 
 The skill sits mid-flow. Upstream is a finding, a request, or a status already
 established by investigation; it never re-derives those. Downstream is a
@@ -210,7 +211,7 @@ lane, in one line, when a rendered picture would teach more than the text
 the user did not ask for, entering it is the user's call, and nothing is built
 until they make it.
 
-- **`diagram-builder`** -- a deck of nested sections and components, authored in
+- **`deck-builder`** -- a deck of nested sections and components, authored in
   YAML. The explanation lowers into it by a fixed correspondence: a **phase**
   becomes a **section** in reading `order`; a **step** becomes a **component**
   ordered inside its phase; the **path** becomes one **chip** whose members

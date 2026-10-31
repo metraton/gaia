@@ -186,10 +186,15 @@ class TestRedirectNormalization:
 # ---------------------------------------------------------------------------
 
 class TestDoubleApprovalReproduction:
-    def test_redirect_block_then_plain_retry_reuses_grant(self, db_and_store):
+    def test_redirect_block_then_plain_retry_reuses_grant(self, db_and_store, monkeypatch):
         import gaia.approvals.store as astore
+        import modules.tools.bash_validator as bash_validator
         from modules.tools.bash_validator import validate_bash_command
         from modules.security.approval_grants import activate_db_pending_by_id
+        from modules.security.comment_push_gate import GateVerdict
+
+        # The comment gate measures the checkout under the cwd; this test is about grants.
+        monkeypatch.setattr(bash_validator, "check_comment_push", lambda *a, **k: GateVerdict(True))
 
         db_path, assert_con, store = db_and_store
         session_id = "test-dbl-session"

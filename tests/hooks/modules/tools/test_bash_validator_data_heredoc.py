@@ -125,15 +125,29 @@ class TestPlannerRewriteWithQuotedReasonIsData:
 
 class TestQuotedHeaderGainsNoWiderExemption:
     @pytest.mark.parametrize("header", [
-        'gh pr create --title "t" --body-file -',
         'python3 - "arg"',
         'bash -s "arg"',
-    ], ids=["gh-body-file", "python-stdin", "bash-stdin"])
+        'psql',
+    ], ids=["python-stdin", "bash-stdin", "psql"])
     def test_heredoc_to_a_non_gaia_receiver_is_not_allowed(self, checkout, header):
         command = _heredoc(
             header, "'X'", "X", "import shutil; shutil.rmtree('/tmp/x')\nrm -rf /tmp/x\n",
         )
         result = _validate(command)
+        assert result.allowed is False
+
+    @pytest.mark.parametrize("header", [
+        'gh pr create --title "t" --body-file -',
+        'git commit -F -',
+        'git notes add --file=-',
+    ], ids=["gh-body-file", "git-commit-file", "git-notes-file"])
+    def test_a_message_flag_reads_the_body_as_data(self, checkout, header):
+        command = _heredoc(header, "'X'", "X", "import shutil; shutil.rmtree('/tmp/x')\nrm -rf /tmp/x\n")
+        result = _validate(command)
+        assert result.allowed is True, result.reason
+
+    def test_a_message_flag_leaves_the_command_its_own_verdict(self, checkout):
+        result = _validate(_heredoc("git tag -a v1 -F -", "'X'", "X", "release notes\n"))
         assert result.allowed is False
 
     def test_command_chained_after_the_terminator_is_still_analysed(self, checkout):

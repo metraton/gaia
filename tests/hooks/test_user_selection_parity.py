@@ -1,11 +1,4 @@
-"""Every subagent knows the user by the same rows the orchestrator was born with.
-
-A rule the user established must reach a dispatched subagent exactly when it
-reaches the session, unless the user addressed it to the orchestrator alone,
-and a row the user retired -- replaced through a supersedes link, or kept only
-as a log -- must reach neither. Runs against a
-temporary HOME, GAIA_DATA_DIR and GAIA_DB.
-"""
+"""A subagent gets only live executor rows; superseded or log rows reach neither it nor the session."""
 
 from __future__ import annotations
 
@@ -28,7 +21,7 @@ USER_SCOPE = "_gaia_user"
 ROWS = {
     "user_jorge": ("anchor", "any", "Hecho: Jorge runs DevOps for a consultancy."),
     "user_pref_english": ("anchor", "orchestrator", "Preferencia: versioned text is in English."),
-    "user_pref_ghx": ("anchor", "any", "Preferencia: GitHub goes through ghx per command."),
+    "user_pref_ghx": ("anchor", "executor", "Preferencia: GitHub goes through ghx per command."),
     "user_pref_old": ("anchor", "executor", "Preferencia: an older rule, since replaced."),
     "user_retired": ("log", "executor", "Preferencia: a retired note kept as history."),
 }
@@ -84,4 +77,4 @@ def test_the_kernel_carries_exactly_the_birth_blocks_user_rows(tmp_path, monkeyp
     )
 
     assert _present(birth) == LIVE
-    assert _present(kernel) == {name for name in LIVE if ROWS[name][1] != "orchestrator"}
+    assert _present(kernel) == {name for name in LIVE if ROWS[name][1] == "executor"}

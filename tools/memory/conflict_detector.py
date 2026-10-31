@@ -59,17 +59,27 @@ def _summary(row: dict) -> dict:
 def detect_conflicts(
     threshold: float = DEFAULT_THRESHOLD,
     db_path: Path | None = None,
+    owner: str | None = None,
+    exclude_classes: tuple[str, ...] = (),
 ) -> list[dict]:
     """Candidate pairs of live rows of one owner whose wording overlaps above ``threshold``.
 
     Each candidate carries ``owner``, ``score`` (Jaccard over word stems of
     name, description and body) and the two rows as ``a`` and ``b``, the more
     recently updated first; the list is ordered by score, highest first.
+    ``owner`` (``user``, ``project:<key>`` or a bare project key) and
+    ``exclude_classes`` drop rows before pairing.
     """
     from gaia.store.reader import live_owned_memory_rows
 
+    if owner is not None and owner != "user" and not owner.startswith("project:"):
+        owner = f"project:{owner}"
     by_owner: dict[str, list[dict]] = {}
     for row in live_owned_memory_rows(db_path):
+        if row["class"] in exclude_classes:
+            continue
+        if owner is not None and _owner(row) != owner:
+            continue
         by_owner.setdefault(_owner(row), []).append(row)
 
     candidates = []

@@ -10,7 +10,7 @@ Validates:
 1. AWS critical networking/data infrastructure deletes are blocked
 2. GCP project/cluster/database deletes are blocked
 3. Kubernetes critical operations (namespace, pv, node, cluster, CRD, webhooks) are blocked
-4. Git force push is blocked (but not --force-with-lease)
+4. Git force push is not on the floor: it signs, toward any target
 5. Disk destruction operations are blocked
 6. Safe commands and approvable T3 commands are NOT blocked
 """
@@ -24,6 +24,7 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
+from modules.security.mutative_verbs import detect_mutative_command
 from modules.security.blocked_commands import (
     is_blocked_command,
     get_blocked_patterns,
@@ -187,19 +188,19 @@ class TestKubernetesApprovableNotBlocked:
 
 
 class TestGitDestructiveBlockedCommands:
-    """Test Git destructive operations are permanently blocked."""
+    """Git history rewrites sign instead of meeting the permanent floor."""
 
     @pytest.mark.parametrize("command", [
         "git push --force origin main",
         "git push -f origin main",
         "git push origin --force",
         "git push origin -f",
+        "git -C repo push origin main --force",
     ])
-    def test_git_force_push_blocked(self, command):
-        """Test Git force push is blocked."""
-        result = is_blocked_command(command)
-        assert result.is_blocked is True
-        assert result.category == "git_destructive"
+    def test_git_force_push_signs_toward_any_target(self, command):
+        """A force push, to the default branch or an unnamed target, asks instead of being refused."""
+        assert is_blocked_command(command).is_blocked is False
+        assert detect_mutative_command(command).is_mutative is True
 
     def test_git_force_with_lease_not_blocked(self):
         """Test git push --force-with-lease is NOT blocked."""
@@ -211,9 +212,7 @@ class TestGitDestructiveBlockedCommands:
 
         Contract change (rediseño bash_validator): destructive but reversible
         via ``git reflog``, so the user can opt-in via the approval workflow
-        instead of being denied outright.  ``git push --force`` remains
-        permanently blocked because remote history rewrites are not
-        recoverable from the local reflog.
+        instead of being denied outright.
         """
         result = is_blocked_command("git reset --hard HEAD~1")
         assert result.is_blocked is False, (
@@ -235,12 +234,6 @@ class TestGitDestructiveBlockedCommands:
         """``git reset --mixed`` only resets the index, must not be blocked."""
         result = is_blocked_command("git reset --mixed HEAD~1")
         assert result.is_blocked is False
-
-    def test_git_push_force_still_blocked(self):
-        """Sanity check: removing git reset from blocklist did not affect push."""
-        result = is_blocked_command("git push --force origin main")
-        assert result.is_blocked is True
-        assert result.category == "git_destructive"
 
 
 class TestBlockedCommandVariants:
@@ -266,11 +259,6 @@ class TestBlockedCommandVariants:
         )
         assert result.is_blocked is True
         assert result.category == "kubernetes_critical"
-
-    def test_git_force_push_with_worktree_flag_is_blocked(self):
-        result = is_blocked_command("git -C repo push origin main --force")
-        assert result.is_blocked is True
-        assert result.category == "git_destructive"
 
 
 class TestFluxDeleteNotBlocked:
@@ -392,7 +380,6 @@ class TestBlockedPatternsCategories:
         "terragrunt_destroy_all",
         "docker_critical",
         "flux_critical",
-        "git_destructive",
         "repo_delete",
         "npm_critical",
         "sql_critical",
@@ -404,9 +391,9 @@ class TestBlockedPatternsCategories:
         assert category in BLOCKED_PATTERNS
         assert len(BLOCKED_PATTERNS[category]) > 0
 
-    def test_exactly_fourteen_categories(self):
-        """Test there are exactly 14 categories (including email_critical added in v5)."""
-        assert len(BLOCKED_PATTERNS) == 14
+    def test_exactly_thirteen_categories(self):
+        """Test there are exactly 13 categories (git_destructive left the floor in 5.7)."""
+        assert len(BLOCKED_PATTERNS) == 13
 
 
 class TestTerraformDestroyBlocked:
@@ -690,8 +677,6 @@ class TestBlockedCommandsFalsePositiveFix:
         ("rm -rf ~", "rm_critical"),
         ("aws ec2 delete-vpc --vpc-id vpc-123", "aws_critical"),
         ("aws eks delete-cluster --name prod", "aws_critical"),
-        ("git push --force origin main", "git_destructive"),
-        ("git push -f origin main", "git_destructive"),
         ("terragrunt run-all destroy", "terragrunt_destroy_all"),
         ("flux uninstall", "flux_critical"),
         ("dd if=/dev/zero of=/dev/sda", "disk_operations"),

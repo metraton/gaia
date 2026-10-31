@@ -28,7 +28,9 @@ def _build_parser():
 def test_preview_prints_the_builder_output(monkeypatch, capsys):
     import modules.session.session_manifest as manifest_mod
 
-    monkeypatch.setattr(manifest_mod, "build_session_context", lambda: "## Where I am\n- Machine: host")
+    monkeypatch.setattr(
+        manifest_mod, "build_session_context", lambda *, session_id: "## Where I am\n- Machine: host"
+    )
 
     args = _build_parser().parse_args(["session", "preview"])
     exit_code = session_mod.cmd_session(args)
@@ -40,7 +42,7 @@ def test_preview_prints_the_builder_output(monkeypatch, capsys):
 def test_preview_prints_a_placeholder_when_the_manifest_is_empty(monkeypatch, capsys):
     import modules.session.session_manifest as manifest_mod
 
-    monkeypatch.setattr(manifest_mod, "build_session_context", lambda: "")
+    monkeypatch.setattr(manifest_mod, "build_session_context", lambda *, session_id: "")
 
     args = _build_parser().parse_args(["session", "preview"])
     session_mod.cmd_session(args)

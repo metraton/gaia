@@ -497,9 +497,48 @@ def _isolate_claude_session_id(monkeypatch):
     yield
 
 
+_TARGET_CONFIGURATION = (
+    "KUBECONFIG", "CLOUDSDK_CONFIG", "CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_CORE_ACCOUNT",
+    "DOCKER_CONFIG", "DOCKER_CONTEXT", "CONTAINER_CONNECTION", "AZURE_CONFIG_DIR", "AZURE_SUBSCRIPTION_ID",
+    "AWS_PROFILE", "TF_WORKSPACE", "PULUMI_HOME",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_target_configuration(monkeypatch):
+    """Unset every variable targets.py reads to place a command, so verdicts come from the session's private HOME."""
+    for name in _TARGET_CONFIGURATION:
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_alias_cache():
+    """Start and end every test with no alias read, so a tool row of one test never classifies another's command."""
+    def reset():
+        try:
+            from modules.security import cli_aliases
+        except ImportError:
+            return
+        cli_aliases.reset_cache()
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture
+def declare_alias(monkeypatch, tmp_path_factory):
+    """Declare ``wrapper=cli`` pairs as kind=tool rows with ``replaces`` and the binary on PATH."""
+    from tests.alias_support import declare_alias as write_tool_rows
+
+    def declare(*pairs: str) -> None:
+        write_tool_rows(monkeypatch, tmp_path_factory.mktemp("alias_bin"), *pairs)
+    return declare
+
+
 @pytest.fixture(autouse=True)
 def _fresh_mutative_classification_cache():
-    """Drop the classifier's verdict cache after each test.
+    """Drop the classifier's verdict and install-root caches after each test.
 
     The cache is keyed on command and cwd, not on file content, and
     tmp_path_retention_policy deletes a passed test's directory so the next
@@ -508,10 +547,24 @@ def _fresh_mutative_classification_cache():
     """
     yield
     try:
-        from modules.security.mutative_verbs import _detect_mutative_command
+        from modules.security.mutative_verbs import _detect_mutative_command, _root_is_install
         _detect_mutative_command.cache_clear()
+        _root_is_install.cache_clear()
     except ImportError:
         pass
+
+
+@pytest.fixture
+def installed_gaia(tmp_path, monkeypatch):
+    """The path of a ``bin/gaia`` in an npm-location install the classifier's hook root points at."""
+    from modules.security import mutative_verbs
+
+    root = tmp_path / "installed" / "node_modules" / "@jaguilar87" / "gaia"
+    (root / "bin").mkdir(parents=True)
+    (root / "package.json").write_text('{"name": "@jaguilar87/gaia", "bin": {"gaia": "bin/gaia"}}')
+    shutil.copy(Path(__file__).resolve().parents[1] / "bin" / "gaia", root / "bin" / "gaia")
+    monkeypatch.setattr(mutative_verbs, "_HOOK_ROOT", root)
+    return str(root / "bin" / "gaia")
 
 
 def pytest_collection_modifyitems(config, items):

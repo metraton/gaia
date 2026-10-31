@@ -49,6 +49,12 @@ FILE_COMMANDS = [
     "gh api repos/o/r/issues/1/comments -F body=@{f}",
     "git commit -F {f}",
     "git commit --file={f}",
+    "timeout 30 gh pr create --title t --body-file {f}",
+    "nice -n 5 forgectl pr create --body-file {f}",
+    "command glab mr create --description-file {f}",
+    "env -i forgectl pr edit 4 -F {f}",
+    "hub pull-request -F {f}",
+    "hub pull-request --file={f}",
 ]
 
 INLINE_COMMANDS = [
@@ -65,12 +71,13 @@ INLINE_COMMANDS = [
     + FOOTERS["generated_with"] + "\nEOF",
     'gh pr review 9 --approve --body "LGTM\n\n' + FOOTERS["session_link"] + '"',
     'git commit -m "fix: thing\n\n' + FOOTERS["session_link"] + '"',
+    'hub pull-request -m "Done.\n\n' + FOOTERS["session_link"] + '"',
 ]
 
 
 @pytest.fixture(autouse=True)
-def declared_gh_wrapper(monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{GH_WRAPPER}=gh")
+def declared_gh_wrapper(declare_alias):
+    declare_alias(f"{GH_WRAPPER}=gh")
 
 
 @pytest.fixture

@@ -302,3 +302,94 @@ def test_rejection_message_names_path():
     msg = rejection_message(".claude/hooks/x.py")
     assert ".claude/hooks/x.py" in msg
     assert "hard security boundary" in msg
+
+
+class TestRelativeTargetsAnchorAtCwd:
+    HOOKS = "/home/user/proj/.claude/hooks"
+
+    @pytest.mark.parametrize("command,cwd", [
+        ("cp payload.py pre_tool_use.py", HOOKS),
+        ("echo x > pre_tool_use.py", HOOKS),
+        ("cp payload.py hooks/pre_tool_use.py", "/home/user/proj/.claude"),
+        (f"cd {HOOKS} && cp payload.py pre_tool_use.py", "/repo"),
+        ("cd .claude/hooks && cp payload.py pre_tool_use.py", "/home/user/proj"),
+        (f"cd {HOOKS} && echo $(cp payload.py pre_tool_use.py)", "/repo"),
+    ])
+    def test_relative_write_that_lands_in_the_tree_is_refused(self, command, cwd):
+        hit = targets_protected_path(command, cwd)
+        assert hit is not None and ".claude" in hit
+
+    @pytest.mark.parametrize("command,cwd", [
+        ("cp payload.py pre_tool_use.py", "/home/user/proj/src"),
+        ("cp payload.py pre_tool_use.py", None),
+        (f"cd {HOOKS} && cat pre_tool_use.py", "/repo"),
+        (f"cd {HOOKS} && cd /repo && cp payload.py pre_tool_use.py", "/repo"),
+    ])
+    def test_relative_write_elsewhere_or_a_read_passes(self, command, cwd):
+        assert targets_protected_path(command, cwd) is None
+
+
+class TestCdFoldReachesTheTreeByEveryNavigation:
+    HOOKS = "/home/user/proj/.claude/hooks"
+    WRITE = "cp payload.py pre_tool_use.py"
+
+    @pytest.mark.parametrize("command", [
+        f"cd $HOME/proj/.claude/hooks && {WRITE}",
+        f"cd ${{HOME}}/proj/.claude/hooks && {WRITE}",
+        f"cd ~/proj/.claude/hooks && {WRITE}",
+        f"pushd {HOOKS} && {WRITE}",
+        f"pushd ~/proj/.claude/hooks && {WRITE}",
+        f"cd -P {HOOKS} && {WRITE}",
+    ])
+    def test_navigation_into_the_tree_then_a_relative_write_is_refused(self, command):
+        assert targets_protected_path(command, "/repo") is not None
+
+    @pytest.mark.parametrize("command", [
+        f"cd {HOOKS} && cd /tmp && cd - && {WRITE}",
+        f"pushd {HOOKS} && popd && {WRITE}",
+        f"cd - && {WRITE}",
+        "popd && printf x >> notes.txt",
+    ])
+    def test_a_directory_the_fold_cannot_know_refuses_a_relative_write(self, command):
+        assert targets_protected_path(command, "/repo") is not None
+
+    @pytest.mark.parametrize("command", [
+        "cd - && cp /tmp/a /tmp/b",
+        "cd - && cat notes.txt",
+        f"cd {HOOKS} && cd - && cd /repo && {WRITE}",
+        "popd && git status",
+    ])
+    def test_an_unknown_directory_does_not_refuse_what_names_no_relative_target(self, command):
+        assert targets_protected_path(command, "/repo") is None
+
+
+class TestOnlyRealWriteTargetsAreJudged:
+    HOOKS = "/home/user/proj/.claude/hooks"
+    REAL = HOOKS + "/pre_tool_use.py"
+
+    @pytest.mark.parametrize("command", ["ls", "cat pre_tool_use.py", "grep -n x pre_tool_use.py", "git status"])
+    def test_a_read_from_inside_the_tree_is_allowed(self, command):
+        assert targets_protected_path(command, self.HOOKS) is None
+
+    @pytest.mark.parametrize("command", [
+        "sed -i 's/a/b/' pre_tool_use.py",
+        "sed -n -e p -i pre_tool_use.py",
+        "mv /tmp/x pre_tool_use.py",
+        "cp /tmp/x pre_tool_use.py",
+        "printf x >> pre_tool_use.py",
+        "printf x >>pre_tool_use.py",
+        "echo y | tee -a pre_tool_use.py",
+        "dd if=/tmp/x of=pre_tool_use.py",
+    ])
+    def test_the_refusal_names_the_file_written_not_the_command_word(self, command):
+        assert targets_protected_path(command, self.HOOKS) == self.REAL
+        assert self.REAL in check(command, self.HOOKS)[1]
+
+    def test_a_sed_write_command_inside_the_script_names_its_file(self):
+        assert targets_protected_path("sed -n 'w out.py' /tmp/x", self.HOOKS) == self.HOOKS + "/out.py"
+
+    @pytest.mark.parametrize("command", [
+        "sed -n p /tmp/x", "cp /tmp/x /tmp/y", "dd if=pre_tool_use.py of=/tmp/y", "printf x > /tmp/y",
+    ])
+    def test_a_writer_whose_targets_lie_elsewhere_is_allowed_from_inside_the_tree(self, command):
+        assert targets_protected_path(command, self.HOOKS) is None

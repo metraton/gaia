@@ -132,6 +132,7 @@ def _complete_envelope(note: str = "first close") -> dict:
         "evidence_report": {k: [] for k in _EVIDENCE_KEYS},
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
     envelope["evidence_report"]["key_outputs"] = [note]
     envelope["evidence_report"]["verification"] = {
@@ -367,6 +368,7 @@ def test_resumed_turn_finalize_closes_the_continuation_not_the_closed_row(cli_en
 
     assert _run(
         ["fill", "--draft-id", closed_id, "--json", json.dumps({
+            "user_facing_summary": "Resumed work recorded for the test.",
             "evidence_report": {
                 "key_outputs": ["second turn evidence"],
                 "verification": {
@@ -417,6 +419,7 @@ def test_finalize_alone_never_mints_a_link(cli_env):
         ["fill", "--draft-id", closed_id, "--json",
          json.dumps({
              "agent_status": {"agent_state": "COMPLETE", "next_action": "done"},
+             "user_facing_summary": "Resumed work recorded for the test.",
              "evidence_report": {
                  "verification": {
                      "method": "test", "result": "pass", "details": "again",
@@ -596,6 +599,7 @@ def test_subagent_stop_gate_validates_the_resumed_turns_own_record(cli_env):
     ).returncode == 0
     assert _run(
         ["fill", "--draft-id", closed_id, "--json", json.dumps({
+            "user_facing_summary": "Resumed work recorded for the test.",
             "evidence_report": {
                 "key_outputs": ["resumed turn evidence"],
                 "verification": {

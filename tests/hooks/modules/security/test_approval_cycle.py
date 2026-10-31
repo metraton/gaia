@@ -86,6 +86,8 @@ def clean_grants_dir(tmp_path, monkeypatch):
     """Use a temporary directory for grants and clean up after each test."""
     import modules.security.approval_grants as ag
 
+    monkeypatch.setenv("TF_WORKSPACE", "default")
+
     grants_dir = tmp_path / ".claude" / "cache" / "approvals"
     grants_dir.mkdir(parents=True, exist_ok=True)
 
@@ -427,10 +429,10 @@ class TestSubagentRetryReusesPendingNonce:
         This test now uses git push which is still mutative.
         """
         command_with_footer = (
-            'git push origin feat/api\n\n'
+            'git push origin main\n\n'
             'Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>'
         )
-        command_without_footer = 'git push origin feat/api'
+        command_without_footer = 'git push origin main'
         session_id = "test-cycle-session"
 
         # First attempt: command includes a Co-Authored-By footer

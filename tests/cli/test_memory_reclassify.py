@@ -325,6 +325,54 @@ def test_cli_reclassify_enforcement(seeded, monkeypatch, capsys):
     assert _row(seeded, "atom_plain") == ("atom_plain", "log", None)
 
 
+def _seed_user_row(name: str = "user_pref_seed") -> None:
+    from gaia.store.writer import upsert_memory
+    upsert_memory("me", name, type="user", body="user body", description="d")
+
+
+def test_cli_reclassify_user_row_to_log_warns_it_reaches_no_session(seeded, capsys):
+    _seed_user_row()
+    parser, _ = _build_parser()
+    args = parser.parse_args(["memory", "reclassify", "user_pref_seed", "--class=log"])
+    rc = args.func(args)
+    captured = capsys.readouterr()
+    assert rc == 0, f"stderr={captured.err}, stdout={captured.out}"
+    warnings = [l for l in captured.err.splitlines() if l.startswith("warning:")]
+    assert len(warnings) == 1
+    assert "no session" in warnings[0] and "birth" in warnings[0] and "kernel" in warnings[0]
+
+
+def test_cli_reclassify_user_row_to_log_json_carries_the_warning(seeded, capsys):
+    _seed_user_row()
+    parser, _ = _build_parser()
+    args = parser.parse_args(["memory", "reclassify", "user_pref_seed", "--class=log", "--json"])
+    rc = args.func(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert [w["code"] for w in payload["warnings"]] == ["user_log_reaches_no_session"]
+
+
+@pytest.mark.parametrize("name, cls", [
+    ("atom_plain", "anchor"),
+    ("user_pref_seed", "anchor"),
+])
+def test_cli_reclassify_without_a_user_log_row_does_not_warn(seeded, capsys, name, cls):
+    _seed_user_row()
+    parser, _ = _build_parser()
+    args = parser.parse_args(["memory", "reclassify", name, f"--class={cls}", "--workspace=me"])
+    rc = args.func(args)
+    assert rc == 0
+    assert "warning:" not in capsys.readouterr().err
+
+
+def test_cli_reclassify_non_user_row_to_log_does_not_warn(seeded, capsys):
+    parser, _ = _build_parser()
+    args = parser.parse_args(["memory", "reclassify", "atom_anchor_seed", "--class=log", "--workspace=me"])
+    rc = args.func(args)
+    assert rc == 0
+    assert "warning:" not in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # CLI: gaia memory add --class --status
 # ---------------------------------------------------------------------------

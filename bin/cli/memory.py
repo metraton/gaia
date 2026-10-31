@@ -10,7 +10,7 @@ on curated memory rows:
   stats [--json]                         Episode count, index count, conflicts
   show <name> [--json]                  Curated memory row by (project, name)
   episode-show <episode_id> [--json]    Full episode with metadata
-  list [--type=...] [--audience=...] [--workspace=<ws>]
+  list [--type=...] [--kind=...] [--workspace=<ws>]
                                           Enumerate curated memory rows
   get-relevant [--workspace=<ws>]       Compact SessionStart injection block
   conflicts [--threshold F] [--json]    Pairwise contradiction scan (curated)
@@ -29,8 +29,9 @@ this order:
                                           no approval) -- appending only adds.
 
   add --name=<slug> --type=<project|user|feedback|atom|decision|negative>
+      --kind=<fact|preference|decision|lesson|pending|defect|tool>
       --body="..." [--description=...] [--class=...] [--status=...]
-      [--audience=<orchestrator|executor|any>]
+      [--until=...] [--binary=... [--replaces=...]]
       [--workspace=<ws>] [--project=<name> | --project-ref=<identity>]
       [--replace] [--json]
                                           Creates a NEW row (distinct from
@@ -54,11 +55,6 @@ this order:
                                           {"error","code"}) and writes no row.
                                           --workspace only => project_ref NULL,
                                           exit 0 (explicit degraded lane).
-                                          --audience sets memory.audience
-                                          at insertion time; omitted, a new row
-                                          defaults to 'any' and a --replace
-                                          that omits it leaves an existing
-                                          value untouched.
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->
@@ -407,8 +403,6 @@ def _cmd_stats(args) -> int:
     """
     as_json = getattr(args, "json", False)
 
-    detect_conflicts = _import_conflict_detector()
-
     warnings: list[str] = []
 
     # Episode count from DB (primary source -- T6 migration)
@@ -422,18 +416,17 @@ def _cmd_stats(args) -> int:
             "Run: gaia doctor"
         )
 
-    # Candidate contradictions in curated memory, the same set `conflicts` lists.
-    conflicts_count = 0
-    if detect_conflicts is not None:
-        try:
-            conflicts_count = len(detect_conflicts())
-        except Exception as exc:  # noqa: BLE001 -- stats still reports the rest
-            warnings.append(f"conflict candidates not counted: {exc}")
+    memory_counts: dict[str, dict[str, int]] = {}
+    try:
+        from gaia.store.reader import memory_counts_by_type
+        memory_counts = memory_counts_by_type()
+    except Exception as exc:  # noqa: BLE001 -- stats still reports the rest
+        warnings.append(f"curated rows not counted: {exc}")
 
     output = {
         "total_episodes": total_episodes,
         "indexed": indexed,
-        "conflicts": conflicts_count,
+        "memory": memory_counts,
         "warnings": warnings,
     }
 
@@ -444,7 +437,9 @@ def _cmd_stats(args) -> int:
         print(f"\n  Memory Stats")
         print(f"  Total episodes : {total_episodes}")
         print(f"  FTS5 indexed   : {indexed_display}")
-        print(f"  Conflicts      : {conflicts_count}")
+        for type_name, counts in memory_counts.items():
+            print(f"  {type_name:<15}: {counts['live']} live, {counts['superseded']} superseded")
+        print("  Conflicts      : gaia memory conflicts --owner <owner>")
         for w in warnings:
             print(f"  WARN: {w}", file=sys.stderr)
         print()
@@ -540,36 +535,53 @@ def _cmd_episode_show(args) -> int:
 
 
 def _cmd_conflicts(args) -> int:
-    """Handle `gaia memory conflicts [--threshold F]`: candidate pairs, never verdicts."""
+    """Handle `gaia memory conflicts`: candidate pairs, never verdicts; a slug in two workspaces is listed apart as a duplicate.
+    """
     as_json = getattr(args, "json", False)
 
     detect_conflicts = _import_conflict_detector()
     if detect_conflicts is None:
         return _err("conflict_detector module not available", as_json)
 
+    limit = getattr(args, "limit", None)
+    scan = {
+        key: value
+        for key, value in (
+            ("owner", getattr(args, "owner", None)),
+            ("exclude_classes", tuple(getattr(args, "exclude_class", None) or ())),
+            ("threshold", getattr(args, "threshold", None)),
+        )
+        if value not in (None, ())
+    }
     try:
-        threshold = getattr(args, "threshold", None)
-        candidates = (detect_conflicts() if threshold is None
-                      else detect_conflicts(threshold=threshold))
+        pairs = detect_conflicts(**scan)
     except Exception as exc:  # noqa: BLE001
         return _err(f"conflict scan failed: {exc}", as_json)
 
+    duplicates = [p for p in pairs if p["a"]["name"] == p["b"]["name"]]
+    candidates = [p for p in pairs if p["a"]["name"] != p["b"]["name"]]
+    if limit is not None:
+        duplicates, candidates = duplicates[:limit], candidates[:limit]
+
     if as_json:
-        print(json.dumps({"candidates": candidates}, indent=2))
+        print(json.dumps({"candidates": candidates, "duplicates": duplicates}, indent=2))
         return 0
-    if not candidates:
+    if not pairs:
         print("No candidate contradictions.")
         return 0
-    print(
-        f"\n  {len(candidates)} candidate pair(s). Each shares wording; read both "
-        "bodies and decide whether they disagree and which one stands.\n"
-    )
-    for c in candidates:
-        print(f"  [{c['score']:.2f}] {c['owner']}")
-        for row in (c["a"], c["b"]):
-            print(f"    {row['name']} ({row['workspace']}, {row['class']}, "
-                  f"{row['updated_at']}): {row['description'] or ''}")
-        print()
+    for title, section in (
+        ("candidate pair(s). Each shares wording; read both bodies and decide "
+         "whether they disagree and which one stands.", candidates),
+        ("duplicate(s): one slug in two workspaces; keep one and supersede or "
+         "delete the other.", duplicates),
+    ):
+        print(f"\n  {len(section)} {title}\n")
+        for c in section:
+            print(f"  [{c['score']:.2f}] {c['owner']}")
+            for row in (c["a"], c["b"]):
+                print(f"    {row['name']} ({row['workspace']}, {row['class']}, "
+                      f"{row['updated_at']}): {row['description'] or ''}")
+            print()
     return 0
 
 
@@ -665,10 +677,12 @@ _WRITE_POINTER = (
     "another."
 )
 
-_PERFECT_GAIA_QUESTION = (
-    "would this preference make sense if Gaia worked perfectly? If not, it is "
-    "a bug: record it with --type=feedback --initiative=gaia_system, and have "
-    "the preference name the bug it covers so it retires with it."
+_DIFFERENCE_QUESTION = (
+    "is this preference his difference from what Gaia does for anyone? A rule "
+    "any user would want is a missing standard or a defect, not his row: record "
+    "it with --type=feedback --kind=defect --initiative=gaia_system. A bend of a default is "
+    "kept once he has agreed to it; one that would move consent, security or "
+    "the contract is not kept at all."
 )
 
 
@@ -695,21 +709,46 @@ def _stamp_suffix(row: dict) -> str:
     return f"({' '.join(parts)})" if parts else ""
 
 
+def _authored_executables() -> tuple:
+    """The names of the executables the user authored on PATH, as the Environment scan sees them; ``()`` when the scan is unreachable."""
+    hooks_dir = _REPO_ROOT / "hooks"
+    if str(hooks_dir) not in sys.path:
+        sys.path.insert(0, str(hooks_dir))
+    try:
+        from modules.session.session_manifest import _scan_user_executables
+
+        return tuple(_scan_user_executables()[0])
+    except Exception:
+        return ()
+
+
 def _add_warnings(
     *, mem_type: str, description: str | None, body: str, owned: bool,
     previous_body: str | None, measured_at: str | None = None,
-    method: str | None = None,
+    method: str | None = None, kind: str | None = None, authored: tuple = (),
 ) -> list[dict]:
     """What a ``memory add`` call should hear about the row it is writing.
 
     ``owned`` is whether the call named a project or initiative;
-    ``previous_body`` is the body already stored under the same name, or None.
+    ``previous_body`` is the body already stored under the same name, or None;
+    ``authored`` the user's own executables on PATH, which a user row of
+    another kind may be describing without saying so.
     """
-    from gaia.store.memory_claims import (
-        PREFERENCE_KIND, claims_measurement, memory_claim_kind,
-    )
+    from gaia.store.memory_claims import claims_measurement
+
+    import re
 
     warnings = []
+    if mem_type == "user" and kind != "tool" and authored:
+        words = set(re.findall(r"[\w.-]+", description or ""))
+        named = sorted(words.intersection(authored))
+        if named:
+            warnings.append(_warning(
+                "tool_without_kind",
+                f"the title names {', '.join(named)}, an executable the user authored; a program "
+                f"built for him is a tool row: --kind=tool --binary={named[0]} "
+                f"[--replaces=<cli>], rendered in Environment while it is on PATH (gaia map memory).",
+            ))
     if claims_measurement(description) and not (measured_at and method):
         warnings.append(_warning(
             "measurement_unstamped",
@@ -735,10 +774,11 @@ def _add_warnings(
         ))
     if mem_type != "user" and not owned:
         warnings.append(_warning(
-            "no_owner",
-            "--workspace alone names no owner: a container is not an owner. "
-            "Use --project=<name> or --initiative=<key> for a project, or "
-            "--initiative=gaia_system for Gaia.",
+            "workspace_owner",
+            "--workspace alone makes the workspace the owner, and every group and "
+            "project in it receives the row. A row true of one project takes "
+            "--project=<name>, of one group --initiative=<key>, of Gaia itself "
+            "--initiative=gaia_system.",
         ))
     if previous_body is not None and previous_body != body:
         warnings.append(_warning(
@@ -747,8 +787,8 @@ def _add_warnings(
             "`gaia memory link <new> <old> --kind=supersedes`; add over an "
             "existing name is for correcting an error.",
         ))
-    if mem_type == "user" and memory_claim_kind(description) == PREFERENCE_KIND:
-        warnings.append(_warning("preference_or_bug", _PERFECT_GAIA_QUESTION))
+    if mem_type == "user" and kind == "preference":
+        warnings.append(_warning("preference_or_bug", _DIFFERENCE_QUESTION))
     return warnings
 
 
@@ -774,10 +814,30 @@ def _cmd_add(args) -> int:
     status_flag = getattr(args, "status", None)
     project_flag = getattr(args, "project", None)
     project_ref_flag = getattr(args, "project_ref", None)
-    audience_flag = getattr(args, "audience", None)
     measured_at = getattr(args, "measured_at", None)
     method = getattr(args, "method", None)
+    kind_flag = getattr(args, "kind", None)
+    until_flag = getattr(args, "until", None)
+    binary_flag = getattr(args, "binary", None)
+    replaces_flag = getattr(args, "replaces", None)
     workspace = _resolve_workspace(workspace_flag)
+
+    from gaia.store.memory_placement import MEMORY_KINDS, kinds_text
+
+    if kind_flag is None:
+        return _err_structured(
+            "--kind is required: say what the row claims, one of\n" + kinds_text() + "\n"
+            "The owner the scope flags place the row on decides which kinds it may hold; "
+            "`gaia map memory` explains the matrix, the delivery and the supersession.",
+            as_json, code="kind_required",
+        )
+    if kind_flag not in MEMORY_KINDS:
+        return _err_structured(
+            f"--kind {kind_flag!r} is not a kind; the list is closed: {', '.join(MEMORY_KINDS)}. "
+            f"A rule is a preference, a dead end a lesson, work owed a pending, a program built "
+            f"for the user a tool; `gaia map memory` explains each.",
+            as_json, code="kind_unknown",
+        )
 
     if measured_at is not None:
         try:
@@ -851,7 +911,6 @@ def _cmd_add(args) -> int:
             f"invalid type '{mem_type}'; must be one of {list(VALID_MEMORY_TYPES)}",
             as_json,
         )
-
     project_ref = None
     if project_flag is not None:
         try:
@@ -915,7 +974,8 @@ def _cmd_add(args) -> int:
         mem_type=mem_type, description=description, body=body,
         owned=project_ref is not None or initiative is not None,
         previous_body=stored["body"] if stored else None,
-        measured_at=measured_at, method=method,
+        measured_at=measured_at, method=method, kind=kind_flag,
+        authored=_authored_executables(),
     )
 
     _, status_for_writer = _normalize_status_flag(status_flag)
@@ -928,12 +988,15 @@ def _cmd_add(args) -> int:
             description=description,
             project_ref=project_ref,
             initiative=initiative,
-            audience=audience_flag,
             class_=class_flag,
             status=status_for_writer,
             replace=getattr(args, "replace", False),
             measured_at=measured_at,
             method=method,
+            kind=kind_flag,
+            until=until_flag,
+            binary=binary_flag,
+            replaces=replaces_flag,
         )
     except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -962,6 +1025,8 @@ def _cmd_add(args) -> int:
             "action": res.get("action"),
             "name": name,
             "type": mem_type,
+            "kind": res.get("kind"),
+            "owner_level": res.get("owner_level"),
             "description": description,
             "workspace": workspace,
             "body_preview": snippet,
@@ -971,8 +1036,6 @@ def _cmd_add(args) -> int:
             out["project_ref"] = project_ref
         if initiative is not None:
             out["initiative"] = initiative
-        if audience_flag is not None:
-            out["audience"] = audience_flag
         if "class" in res:
             out["class"] = res["class"]
             out["memory_status"] = res["memory_status"]
@@ -992,8 +1055,6 @@ def _cmd_add(args) -> int:
             print(f"  project_ref: {project_ref}")
         if initiative is not None:
             print(f"  initiative: {initiative}")
-        if audience_flag is not None:
-            print(f"  audience: {audience_flag}")
         print(f"  body: {snippet}")
         if host_scoped_notice:
             print(
@@ -1278,7 +1339,7 @@ def _cmd_list(args) -> int:
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     type_filter = getattr(args, "type", None)
-    audience_filter = getattr(args, "audience", None)
+    kind_filter = getattr(args, "kind", None)
     class_filter = getattr(args, "cls", None)
     status_filter = getattr(args, "status", None)
     order_by = getattr(args, "sort", None) or "name"
@@ -1295,9 +1356,10 @@ def _cmd_list(args) -> int:
 
     try:
         rows = list_memory(
-            workspace, type=type_filter, audience=audience_filter,
+            workspace, type=type_filter, kind=kind_filter,
             class_=class_filter, status=status_filter, order_by=order_by,
             direction=direction, with_user_scope=True,
+            include_superseded=getattr(args, "include_superseded", False),
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -1319,10 +1381,14 @@ def _cmd_list(args) -> int:
         print("(no curated memory)")
         _print_memory_pointer(as_json)
         return 0
+    # Only a thread has a lifecycle status; an anchor or log row shows its class there.
+    statuses = [r.get("status") or r.get("class") or "" for r in rows]
+    successors = [r.get("superseded_by") or "" for r in rows]
     name_w = max(4, max(len(r["name"]) for r in rows))
     type_w = max(4, max(len(r["type"] or "") for r in rows))
     class_w = max(5, max(len(r.get("class") or "") for r in rows))
-    status_w = max(6, max(len(r.get("status") or "") for r in rows))
+    status_w = max(6, max(len(s) for s in statuses))
+    successor_w = max(13, max(len(s) for s in successors))
     desc_w = max(
         11,
         max(min(len(r.get("description") or ""), 60) for r in rows),
@@ -1330,19 +1396,19 @@ def _cmd_list(args) -> int:
     header = (
         f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'CLASS':<{class_w}}  "
         f"{'STATUS':<{status_w}}  {'INJ':>3}  {'DELIB':>5}  "
-        f"{'DESCRIPTION':<{desc_w}}"
+        f"{'SUPERSEDED_BY':<{successor_w}}  {'DESCRIPTION':<{desc_w}}"
     )
     print(header)
     print("-" * len(header))
-    for r in rows:
+    for r, status, successor in zip(rows, statuses, successors):
         desc = (r.get("description") or "")[:desc_w]
         print(
             f"{r['name']:<{name_w}}  {(r['type'] or ''):<{type_w}}  "
             f"{(r.get('class') or ''):<{class_w}}  "
-            f"{(r.get('status') or ''):<{status_w}}  "
+            f"{status:<{status_w}}  "
             f"{r.get('injection_count', 0):>3}  "
             f"{r.get('deliberate_count', 0):>5}  "
-            f"{desc:<{desc_w}}"
+            f"{successor:<{successor_w}}  {desc:<{desc_w}}"
         )
     _print_memory_pointer(as_json)
     return 0
@@ -1586,11 +1652,13 @@ def _cmd_get_relevant(args) -> int:
 
     initiative_arg = getattr(args, "initiative", None)
     project_arg = getattr(args, "project", None)
+    group_arg = getattr(args, "group", None)
     sections_arg = getattr(args, "sections", None)
 
-    if initiative_arg or project_arg:
+    if initiative_arg or project_arg or group_arg:
         return _render_project_mode(
             args, workspace, initiative_arg, as_json, project_arg=project_arg,
+            group_arg=group_arg,
         )
     if sections_arg:
         return _render_sections(args, workspace, as_json)
@@ -2202,8 +2270,72 @@ def _project_mode_item(row: dict, label: str, section: str) -> dict:
     }
 
 
+def _group_memory_keys(group: str, workspace: str | None) -> list[str] | dict:
+    """The group's key and each active member's folder and remote keys, or the not-found payload when no member is in scope."""
+    import difflib
+
+    from gaia.store.writer import _connect, initiative_from_project_ref, normalize_initiative
+
+    key = normalize_initiative(group)
+    con = _connect()
+    try:
+        grouped = con.execute(
+            "SELECT workspace, name, project_identity, group_name FROM projects "
+            "WHERE status = 'active' AND group_name IS NOT NULL"
+        ).fetchall()
+        is_initiative = con.execute(
+            "SELECT 1 FROM memory WHERE deleted_at IS NULL AND initiative = ? LIMIT 1", (key,),
+        ).fetchone() is not None
+    finally:
+        con.close()
+    named = [r for r in grouped if r[3].lower() == group.strip().lower()]
+    members = [r for r in named if not workspace or r[0] == workspace]
+    if not members:
+        closest = difflib.get_close_matches(group.strip().lower(), sorted({r[3] for r in grouped}), n=5)
+        miss = {
+            "error": "not_found", "name": group,
+            "candidates": [
+                {"workspace": ws, "name": g}
+                for g in closest for ws in sorted({r[0] for r in grouped if r[3] == g})
+            ],
+        }
+        elsewhere = sorted({r[0] for r in named})
+        if elsewhere:
+            miss["hint"] = f"It exists in workspace {', '.join(elsewhere)}."
+        elif is_initiative:
+            miss["hint"] = (f"{group!r} is a memory initiative no folder group carries: "
+                            f"use --initiative {key}.")
+        return miss
+    workspaces = sorted({r[0] for r in members})
+    if len(workspaces) > 1:
+        print(f"gaia memory get-relevant: group {group!r} exists in workspaces "
+              f"{', '.join(workspaces)}; reading the members of all of them "
+              f"(--workspace narrows the members; the group key is read in every "
+              f"workspace, as with --initiative).",
+              file=sys.stderr)
+    keys = [key]
+    for _, name, identity, _ in members:
+        keys += [normalize_initiative(name), initiative_from_project_ref(identity)]
+    return list(dict.fromkeys(k for k in keys if k))
+
+
+def _print_group_miss(miss: dict, workspace: str | None, as_json: bool) -> None:
+    """Report a --group that names no group in scope: the payload on stdout under --json, prose on stderr otherwise."""
+    if as_json:
+        print(json.dumps(miss, indent=2))
+        return
+    where = f" in workspace {workspace}" if workspace else ""
+    print(f"gaia memory get-relevant: no group named {miss['name']!r}{where}.", file=sys.stderr)
+    if miss["candidates"]:
+        names = dict.fromkeys(c["name"] for c in miss["candidates"])
+        print(f"Closest groups: {', '.join(names)}", file=sys.stderr)
+    if "hint" in miss:
+        print(miss["hint"], file=sys.stderr)
+
+
 def _render_project_mode(args, workspace: str, initiative_arg: str | None,
-                         as_json: bool, *, project_arg: str | None = None) -> int:
+                         as_json: bool, *, project_arg: str | None = None,
+                         group_arg: str | None = None) -> int:
     """Project mode: the WHOLE live-pending corpus of ONE requested project.
 
     ``--initiative=X`` and ``--project=X`` resolve X to the canonical project
@@ -2233,10 +2365,18 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     from gaia.store.reader import anchors_by_project, pending_threads_by_project
     from gaia.store.writer import canonical_project_key
 
-    if initiative_arg:
+    if group_arg:
+        key = canonical_project_key(initiative=group_arg)
+        keys = _group_memory_keys(group_arg, getattr(args, "workspace", None))
+        if isinstance(keys, dict):
+            _print_group_miss(keys, getattr(args, "workspace", None), as_json)
+            return 1
+    elif initiative_arg:
         key = canonical_project_key(initiative=initiative_arg)
+        keys = [key]
     else:
         key = canonical_project_key(project_ref=project_arg)
+        keys = [key]
 
     sections_arg = getattr(args, "sections", None)
     requested = (
@@ -2248,13 +2388,13 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
         if section in requested
     }
 
-    if key == _OTHERS_BUCKET or key is None:
+    if not group_arg and (key == _OTHERS_BUCKET or key is None):
         rows = _fetch_pending_vivo(workspace, "  AND initiative IS NULL ")
         anchors: list[dict] = []
         label = _OTHERS_BUCKET
     else:
-        rows = pending_threads_by_project([key])
-        anchors = anchors_by_project([key]) if "anchor" in requested else []
+        rows = pending_threads_by_project(keys)
+        anchors = anchors_by_project(keys) if "anchor" in requested else []
         label = key
     rows = [r for r in rows if r.get("status") in statuses]
 
@@ -2600,7 +2740,7 @@ def _cmd_curated_show(args) -> int:
     if row.get("description"):
         print(f"# {row['description']}")
     print(f"# class: {row.get('class')}  status: {row.get('status')}")
-    print(f"# audience: {row.get('audience')}")
+    print(f"# kind: {row.get('kind')}  owner: {row.get('owner_level')}")
     print(f"# updated_at: {row.get('updated_at')}")
     if row.get("measured_at") or row.get("method"):
         print(f"# measured_at: {row.get('measured_at') or '(unknown)'}  "
@@ -2867,7 +3007,7 @@ def _cmd_reclassify(args) -> int:
         )
 
     try:
-        from gaia.store.writer import reclassify_memory
+        from gaia.store.writer import get_memory, reclassify_memory
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
@@ -2884,14 +3024,24 @@ def _cmd_reclassify(args) -> int:
         # MemoryWriteForbidden -- T3 enforcement layer.
         return _err(str(exc), as_json)
 
+    warnings = []
+    row = get_memory(workspace, name)
+    if res["class"] == "log" and row and row["type"] == "user":
+        warnings.append(_warning(
+            "user_log_reaches_no_session",
+            "a user row of class log reaches no session: neither the birth "
+            "block nor the kernel carries it.",
+        ))
+
     if as_json:
-        print(json.dumps(res, indent=2, default=str))
+        print(json.dumps({**res, **({"warnings": warnings} if warnings else {})},
+                         indent=2, default=str))
     else:
         print(
             f"Reclassified {name}: class={res['class']}, "
             f"status={res['memory_status']} in workspace {workspace}"
         )
-    _emit_write_warnings([], as_json)
+    _emit_write_warnings(warnings, as_json)
     return 0
 
 
@@ -2918,15 +3068,10 @@ def _cmd_link(args) -> int:
     as_json = getattr(args, "json", False)
     src_name = args.src_name
     workspace = _flag_workspace_holding(args, src_name)
-    dst_name = args.dst_name
-    dst_workspace = _flag_workspace_holding(args, dst_name)
     kind = args.kind
-    do_delete = getattr(args, "delete", False)
 
     try:
-        from gaia.store.writer import (
-            insert_memory_link, delete_memory_link, VALID_MEMORY_LINK_KINDS,
-        )
+        from gaia.store.writer import VALID_MEMORY_LINK_KINDS
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
@@ -2937,20 +3082,46 @@ def _cmd_link(args) -> int:
             as_json,
         )
 
-    try:
-        if do_delete:
-            res = delete_memory_link(workspace, src_name, dst_name, kind)
-            verb = "Deleted" if res["action"] == "deleted" else "Skipped"
-        else:
-            res = insert_memory_link(
-                workspace, src_name, dst_name, kind, dst_workspace=dst_workspace,
-            )
-            verb = "Created" if res["action"] == "inserted" else "Skipped"
-    except ValueError as exc:
-        return _err(str(exc), as_json)
-    except PermissionError as exc:
-        # MemoryWriteForbidden -- structural enforcement layer (T3).
-        return _err(str(exc), as_json)
+    if kind == "supersedes" and not getattr(args, "delete", False):
+        from gaia.store.writer import check_supersedes_link
+        try:
+            for dst_name in args.dst_names:
+                check_supersedes_link(
+                    workspace, src_name, dst_name,
+                    dst_workspace=_flag_workspace_holding(args, dst_name),
+                )
+        except ValueError as exc:
+            return _err(f"{exc} (nothing of this call applied)", as_json)
+
+    results = []
+    for done, dst_name in enumerate(args.dst_names):
+        try:
+            results.append(_link_pair(args, workspace, src_name, dst_name))
+        except (ValueError, PermissionError) as exc:
+            # PermissionError is MemoryWriteForbidden, the structural T3 layer.
+            return _err(f"{exc} ({done} earlier link(s) of this call applied)", as_json)
+    if as_json:
+        print(json.dumps(results[0] if len(results) == 1 else {"links": results},
+                         indent=2, default=str))
+    return 0
+
+
+def _link_pair(args, workspace: str, src_name: str, dst_name: str) -> dict:
+    """Write or delete one ``src -> dst`` edge, print its text line, and return its JSON record."""
+    from gaia.store.writer import insert_memory_link, delete_memory_link
+
+    as_json = getattr(args, "json", False)
+    kind = args.kind
+    do_delete = getattr(args, "delete", False)
+    dst_workspace = _flag_workspace_holding(args, dst_name)
+    if do_delete:
+        res = delete_memory_link(workspace, src_name, dst_name, kind)
+        verb = "Deleted" if res["action"] == "deleted" else "Skipped"
+    else:
+        res = insert_memory_link(
+            workspace, src_name, dst_name, kind, dst_workspace=dst_workspace,
+        )
+        verb = "Created" if res["action"] == "inserted" else "Skipped"
 
     warnings = []
     # ISO-8601 stamps order as strings. A corrected old row can legitimately
@@ -2966,10 +3137,7 @@ def _cmd_link(args) -> int:
             f"`gaia memory link {dst_name} {src_name} --kind=supersedes`.",
         ))
 
-    if as_json:
-        print(json.dumps({**res, **({"warnings": warnings} if warnings else {})},
-                         indent=2, default=str))
-    else:
+    if not as_json:
         # Arrow uses ASCII-friendly form; no unicode dependence.
         action_label = (
             "link" if res["action"] in ("inserted", "deleted") else "link (no-op)"
@@ -2980,7 +3148,7 @@ def _cmd_link(args) -> int:
         if kind == "supersedes" and res["action"] == "inserted":
             print(f"  {src_name} reemplaza a {dst_name}")
         _emit_write_warnings(warnings, as_json)
-    return 0
+    return {**res, **({"warnings": warnings} if warnings else {})}
 
 
 # ---------------------------------------------------------------------------
@@ -3052,6 +3220,9 @@ def _cmd_search_scoped(args) -> int:
 
     curated = search_memory_curated(
         workspace, query, limit=limit, with_user_scope=True,
+        type=getattr(args, "type", None), class_=getattr(args, "cls", None),
+        match_all=getattr(args, "all", False),
+        include_superseded=getattr(args, "include_superseded", False),
     )
 
     if scope == "memory":
@@ -3124,6 +3295,8 @@ def register(subparsers):
     """Register the memory subcommand with nested sub-actions."""
     import argparse as _argparse
 
+    from gaia.store.memory_placement import MEMORY_KINDS
+
     mem_parser = subparsers.add_parser(
         "memory",
         help="Curated memory + episodic log",
@@ -3149,13 +3322,43 @@ def register(subparsers):
     search_p = actions.add_parser(
         "search",
         help="FTS5 search across curated memory and/or episodes",
-        description="Full-text search; returns ranked results.",
+        description=(
+            "Full-text search; returns ranked results. Plain words match a row "
+            "holding ANY of them, rows holding more of them ranked first "
+            "(bm25); --all requires every word. Each word is matched on its "
+            "own (a hyphenated word as a phrase), and common Spanish and "
+            "English stopwords are dropped from a multi-word query; a query "
+            "with FTS5 syntax "
+            "(quotes, parentheses, *, ^, AND, OR, NOT, NEAR) is passed as "
+            "written."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory search 'release' --scope=memory\n"
+               "  gaia memory search 'teams pull-request format' --type=user\n"
+               "  gaia memory search 'teams pull-request format' --all\n"
+               "  gaia memory search 'teams OR slack' --class=anchor\n"
                "  gaia memory search 'tailscale' --limit=5 --json\n",
     )
-    search_p.add_argument("query", help="FTS5 query string.")
+    search_p.add_argument("query", help="Plain words, or an FTS5 expression.")
+    search_p.add_argument(
+        "--type", default=None,
+        choices=("project", "user", "feedback", "atom", "decision", "negative"),
+        help="Curated rows of this type only; episodes are not filtered.",
+    )
+    search_p.add_argument(
+        "--class", dest="cls", default=None,
+        choices=("anchor", "thread", "log"),
+        help="Curated rows of this class only; episodes are not filtered.",
+    )
+    search_p.add_argument(
+        "--all", action="store_true", default=False,
+        help="Curated rows must hold every plain word. bool. Default: any word.",
+    )
+    search_p.add_argument(
+        "--include-superseded", action="store_true", default=False,
+        help="Also search curated rows a newer row supersedes. bool. Default: hidden.",
+    )
     search_p.add_argument(
         "--limit", type=int, default=10, metavar="N",
         help="Max results per scope. int. Default: 10.",
@@ -3179,7 +3382,7 @@ def register(subparsers):
     stats_p = actions.add_parser(
         "stats",
         help="Memory diagnostics",
-        description="Episode count, FTS5 index size, conflict count.",
+        description="Episode count, FTS5 index size, curated rows per type (live and superseded).",
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia memory stats --json\n",
     )
@@ -3249,11 +3452,18 @@ def register(subparsers):
     list_p = actions.add_parser(
         "list",
         help="List curated memory rows",
-        description="Enumerate the curated memory table.",
+        description=(
+            "Enumerate the curated memory rows that stand: a row another one "
+            "supersedes is left out, the same rule get-relevant injects by. "
+            "--include-superseded lists those too, with their successor in "
+            "SUPERSEDED_BY; --format=count counts what would be listed."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia memory list --type=feedback\n"
+            "  gaia memory list --type=user --include-superseded\n"
+            "  gaia memory list --kind=preference\n"
             "  gaia memory list --limit=10\n"
             "  gaia memory list --sort=deliberate   # most deliberately-read first\n"
             "  gaia memory list --sort=deliberate --order=asc --limit=20   # least-read first\n"
@@ -3266,9 +3476,8 @@ def register(subparsers):
         help="Filter by type.",
     )
     list_p.add_argument(
-        "--audience", default=None,
-        choices=("orchestrator", "executor", "any"),
-        help="Filter by memory.audience (which agent role the row is FOR).",
+        "--kind", default=None, choices=MEMORY_KINDS,
+        help="Filter by what the row claims (gaia map memory lists the kinds).",
     )
     list_p.add_argument(
         "--class", dest="cls", default=None,
@@ -3292,6 +3501,10 @@ def register(subparsers):
         help="Sort direction. Defaults to asc for --sort=name and desc for "
              "the counters; --order=asc on a counter answers 'which are "
              "barely used' without reading the tail of an untopped list.",
+    )
+    list_p.add_argument(
+        "--include-superseded", action="store_true", default=False,
+        help="Also list rows another row supersedes. bool.",
     )
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
@@ -3472,8 +3685,9 @@ def register(subparsers):
         help="Source memory slug. Must exist. For supersedes: the NEW row, what holds now.",
     )
     link_p.add_argument(
-        "dst_name",
-        help="Destination memory slug. Must exist. For supersedes: the OLD row it replaces.",
+        "dst_names", nargs="+", metavar="dst_name",
+        help="Destination memory slug(s). Each must exist. For supersedes: the OLD "
+             "row(s) it replaces, each pair direction-checked; an existing edge is a no-op.",
     )
     link_p.add_argument(
         "--kind", required=True,
@@ -3495,7 +3709,25 @@ def register(subparsers):
     link_p.set_defaults(func=_cmd_link)
 
     # -- add ----------------------------------------------------------------
-    from gaia.store.memory_claims import MEMORY_CLAIM_KINDS
+    add_p = _add_parser(actions)
+    add_p.set_defaults(func=_cmd_add)
+    _register_rest(actions)
+
+
+def _add_parser_for_help():
+    """The ``memory add`` parser alone, for the surfaces that render its help without dispatching."""
+    import argparse
+
+    return _add_parser(argparse.ArgumentParser(prog="gaia memory").add_subparsers(dest="action"))
+
+
+def _add_parser(actions):
+    """Register ``memory add``; its description shares the kind list and owner matrix with ``gaia map memory``."""
+    import argparse as _argparse
+
+    from gaia.store.memory_placement import (
+        MEMORY_KINDS, TOOL_TITLE_MAX, kinds_text, owner_matrix_text,
+    )
 
     # No abbreviations: the signature and the orchestrator lane both match the
     # literal --replace, and an abbreviation argparse expanded would bypass both.
@@ -3506,32 +3738,38 @@ def register(subparsers):
         description=(
             "Insert by (workspace, name); an existing name is refused unless "
             "--replace.\n\n"
-            "One thing per row. Every row has one of three owners:\n"
-            "  the user    --type=user (true of him in any project; no scope)\n"
-            "  a project   --project=<name> or --initiative=<key>\n"
-            "  Gaia itself --initiative=gaia_system\n"
-            "--workspace alone is a container, not an owner.\n\n"
-            "The description is one sentence whose first word names the kind "
-            "of claim:\n  "
-            + "  ".join(f"{kind}:" for kind in MEMORY_CLAIM_KINDS)
-            + "\n\n"
-            "A changed fact is a new row plus `gaia memory link <new> <old> "
-            "--kind=supersedes`; --replace rewrites an existing name in place, "
-            "only to correct an error, and needs a signature (T3). The prior "
-            "value stays in memory_history. Only a log or a thread grows by "
-            "append.\n"
-            "The CLI warns on length, a missing owner, an in-place rewrite and "
-            "a user preference; the row is still written."
+            "One thing per row: one rule, one fact, one decision, one tool. Every "
+            "row has one owner, placed by the scope flags, and one kind, named by "
+            "--kind (required; the list is closed):\n"
+            + kinds_text() + "\n\n"
+            + owner_matrix_text() + "\n\n"
+            "The description is the title: for a preference it is the rule "
+            "itself, imperative, '<Where it applies>: <what to do>', readable "
+            f"alone; for a tool it is how to use it, at most {TOOL_TITLE_MAX} "
+            "characters. The title is the only line injected, with "
+            "ref=memory:<owner>/<slug>; the body is the why, origin, date and "
+            "examples, opened on demand.\n\n"
+            "A changed rule is a new row plus `gaia memory link <new> <old> "
+            "--kind=supersedes` (same owner and kind only); --replace rewrites an "
+            "existing name in place, only to correct an error, and needs a "
+            "signature (T3). The prior value stays in memory_history. Only a log "
+            "or a thread grows by append.\n"
+            "The CLI warns on length, an in-place rewrite, a user preference and a "
+            "user row that names an authored executable without --kind=tool; the "
+            "row is still written. `gaia map memory` is the tour of the whole model."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
-               "  gaia memory add --name=user_pref_x --type=user "
-               "--description='Preference: ...' --body='...'\n"
-               "  gaia memory add --name=feedback_x --type=feedback "
+               "  gaia memory add --name=user_pref_x --type=user --kind=preference "
+               "--description='PRs: open them as drafts.' --body='why...'\n"
+               "  gaia memory add --name=user_tool_ghx --type=user --kind=tool "
+               "--binary=ghx --replaces=gh --description='ghx -C <tree> pr create ...' "
+               "--body='pins the account per command'\n"
+               "  gaia memory add --name=feedback_x --type=feedback --kind=defect "
                "--initiative=gaia_system --workspace=me --body='...'\n"
-               "  gaia memory add --name=atom_x --type=atom --project=gaia "
+               "  gaia memory add --name=atom_x --type=atom --kind=fact --project=gaia "
                "--workspace=me --body-file=~/.gaia/scratch/body.md\n"
-               "  cat body.md | gaia memory add --name=atom_x --type=atom "
+               "  cat body.md | gaia memory add --name=atom_x --type=atom --kind=fact "
                "--project=gaia --workspace=me --body-file=-\n\n"
                "Writing memory is judgment as well as form: load "
                "Skill('memory') to decide whether the row deserves to exist, "
@@ -3601,12 +3839,11 @@ def register(subparsers):
     add_p.add_argument(
         "--initiative", default=None, metavar="KEY",
         help=(
-            "Canonical project/initiative grouping key (memory.initiative). "
-            "Use for a LOGICAL initiative that is NOT a git repo (branchkinect, "
-            "buildwiz, axisio, ...) -- normalized to lowercase_snake. When "
-            "--project / --project-ref anchors a git project, initiative is "
-            "auto-derived from the repo basename (gaia, balance); pass this only "
-            "to set a key with no git anchor or to override the derived one."
+            "The memory.initiative key, normalized to lowercase_snake: the "
+            "group key (bildwiz) for a row true of a whole group, or, when "
+            "--project / --project-ref anchors a git project, the project key "
+            "derived from its folder (bildwiz_iac), filled in for you. Pass "
+            "it to write at group level or to override the derived key."
         ),
     )
     add_p.add_argument(
@@ -3626,15 +3863,37 @@ def register(subparsers):
         ),
     )
     add_p.add_argument(
-        "--audience", default=None,
-        choices=("orchestrator", "executor", "any"),
+        "--kind", default=None, metavar="|".join(MEMORY_KINDS),
         help=(
-            "Which agent role this row is FOR -- 'orchestrator' "
-            "(routing/model-choice/report-style instructions), 'executor' "
-            "(preferences for any dispatched specialist), or 'any' (the "
-            "schema default; unclassified/applies regardless). Omitted, a new "
-            "row gets 'any' and --replace keeps the stored value (never "
-            "silently reset)."
+            "Required. What the row claims, one of the closed list above; a "
+            "missing or unknown kind is refused with the list. The owner the "
+            "scope flags place the row on decides which kinds it may hold "
+            "(matrix above); a tool is the user's only."
+        ),
+    )
+    add_p.add_argument(
+        "--binary", default=None, metavar="NAME",
+        help=(
+            "kind=tool only: the executable on PATH the row is about. Verified "
+            "at write; one live tool row per binary. Rendered in Environment as "
+            "tool=<binary> \"<title>\" [replaces=<cli>] ref=memory:user/<slug> "
+            "while it is detected."
+        ),
+    )
+    add_p.add_argument(
+        "--replaces", default=None, metavar="CLI",
+        help=(
+            "kind=tool only: the CLI the hooks judge this binary as (gh, "
+            "kubectl, ...), so it meets every gate that CLI meets; refused for "
+            "a CLI the classifier does not model."
+        ),
+    )
+    add_p.add_argument(
+        "--until", default=None, metavar="DATE|memory:<ws>/<slug>",
+        help=(
+            "A preference's expiry: a date (2026-12-31) after which it stops "
+            "being injected, or a memory coordinate -- it holds while that row "
+            "is live (a defect that forces the rule). Refused on any other kind."
         ),
     )
     add_p.add_argument(
@@ -3653,7 +3912,12 @@ def register(subparsers):
                        help="Workspace identity.")
     add_p.add_argument("--json", action="store_true", default=False,
                        help="Emit JSON. bool.")
-    add_p.set_defaults(func=_cmd_add)
+    return add_p
+
+
+def _register_rest(actions) -> None:
+    """The verbs after ``add``, split out so ``_add_parser`` can be rendered alone."""
+    import argparse as _argparse
 
     # -- checkpoint ---------------------------------------------------------
     checkpoint_p = actions.add_parser(
@@ -3795,6 +4059,19 @@ def register(subparsers):
              "(github.com/owner/repo) resolved to the same canonical key as "
              "--initiative; same output.",
     )
+    rel_project.add_argument(
+        "--group", default=None, metavar="NAME",
+        help="Project mode over a whole group: the group key (bildwiz) plus "
+             "the key of every active project whose group it is "
+             "(bildwiz_iac, ...), read at once and uncapped like --initiative. "
+             "--workspace narrows the members to that workspace; the group "
+             "key itself is read in every workspace, as with --initiative. "
+             "Without --workspace, a group in several workspaces takes the "
+             "members of all of them, said on stderr. A group no project "
+             "carries exits 1 naming the closest groups (an error body under "
+             "--json), or pointing at --initiative when it is a memory "
+             "initiative.",
+    )
     rel_p.add_argument(
         "--json", action="store_true", default=False,
         help="Emit JSON (with items list + block string). bool.",
@@ -3836,6 +4113,19 @@ def register(subparsers):
     conflicts_p.add_argument(
         "--json", action="store_true", default=False,
         help="Emit JSON. bool.",
+    )
+    conflicts_p.add_argument(
+        "--owner", default=None, metavar="OWNER",
+        help="Pair only this owner's rows: user, or a project key (gaia or project:gaia).",
+    )
+    conflicts_p.add_argument(
+        "--exclude-class", action="append", default=None,
+        choices=("anchor", "thread", "log"),
+        help="Leave rows of this class out of the scan. Repeatable.",
+    )
+    conflicts_p.add_argument(
+        "--limit", type=int, default=None, metavar="N",
+        help="Show at most N candidates and N duplicates. Default: all.",
     )
     conflicts_p.set_defaults(func=_cmd_conflicts)
 

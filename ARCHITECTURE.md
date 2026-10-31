@@ -38,7 +38,7 @@ pre_tool_use.py  (PreToolUse hook)
     v
 subagent_start.py  (SubagentStart hook)
     |  Claim the born row and inject the dispatch kernel:
-    |  # Your Contract, # Your CLI, # How the user works
+    |  # Your Contract, # Scope memory, # Project context, # Standing notes, # Environment, # Your CLI
     v
 Agent executes
     |  Pulls project context and memory on demand (gaia context, gaia memory),
@@ -152,16 +152,25 @@ A dispatched subagent starts with a small, data-only kernel, not a preloaded
 project-context snapshot. At PreToolUse the hook births the turn's
 `agent_contract_handoffs` row; at SubagentStart `claim_dispatch_row`
 correlates the starting subagent to that row and
-`hooks/modules/context/kernel_builder.py` renders three blocks from it:
+`hooks/modules/context/kernel_builder.py` renders these blocks from it, in this
+order (the host keeps the head of an over-long hook context, so the CLI index,
+which `gaia --help` can rebuild, comes last):
 
 ```
 # Your Contract       identity, goal, role and surface, the dispatch project and the
                       workflow it declared, can_read / can_write section scope, and the
                       acceptance gates when the turn is bound to a plan task
+# Scope memory       an index of the preferences, facts and lessons the dispatch's
+                      workspace, group and project hold, each line scope= and ref=;
+                      never the user's rows
+# Standing notes      the dispatch project's live anchors, one line each, freshest
+                      first, under PROJECT_NOTES_BUDGET; absent when the project has none
+# Environment         one capped line (ENVIRONMENT_LINE_MAX): OS (WSL named), the gaia
+                      CLI path, and the tools on PATH: the known-tool probe, then the
+                      user's own executables from PATH entries under $HOME that are
+                      not package-manager trees
 # Your CLI            the gaia verbs the turn uses to pull context (gaia context),
                       memory (gaia memory) and its own contract (gaia contract)
-# How the user works  the user's standing rows, bodies inline, minus those whose
-                      audience is the orchestrator alone
 ```
 
 `can_read` is the menu of `project_context_contracts` sections the turn pulls on
@@ -312,7 +321,7 @@ Besides the `hooks` event table, `hooks/hooks.json` carries a top-level `modules
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
 | **File (npm channel)** | `hooks/hooks.json` (symlinked into `.claude/hooks/`) |
 | **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
-| **Compaction delivery** | The session snapshot reaches the model once per compaction, through the SessionStart(compact) refresh alone (`compact_context_builder.build_compact_context`), which the host raises after manual and automatic compactions. The refresh also carries the birth block's `## Environment` section (`session_manifest.build_environment_section`), so the `gaia CLI:` path survives the compaction, and the snapshot carries the stored resume point whole, up to the 2000 characters `write_resume_point` accepts. On OpenCode the summary is a model's text that may drop or paraphrase both, so the compacting hook gives the summarizer only `build_summary_instructions` and the plugin attaches the same refresh, once, to the main session's first user message after the compaction (`chat.message` with `source: compact`). The compaction mod (`hooks/mods/compaction/`) adds Gaia's steering to the summarizer's instructions and registers `mcp__gaia__compact_when_idle`; a call from the main session makes the mod start a compaction (`$.session.compact`) once that turn ends. Only the host's "a turn is running" is retried (growing waits, then the next main turn end, for at most 15 minutes); any other refusal (DISABLE_COMPACT, turnHeld, a vetoing hook) or an expiry is final and is reported as a toast to the user and as context on the orchestrator's next prompt, both naming `/compact`. It appends nothing and starts no process, so the refresh stays the only deliverer. OpenCode's counterpart is the plugin tool `gaia_compact_when_idle`, run on the next `session.idle`. Both replies name the session id the resume point is written under. The tool is registered only in an interactive session (`SessionStartInput.isInteractive`): a headless one -- `-p`, the SDK, and the desktop app, which drives Claude Code through the SDK -- refuses `$.session.compact()` ("not available in a headless (-p / SDK) session yet"). There, and without the mod (mods disabled, Claude Code older than 2.1.287), no tool is listed and the user types `/compact`. |
+| **Compaction delivery** | A compaction is one more birth of the same session: the SessionStart(compact) start, which the host raises after manual and automatic compactions, delivers the same birth block as any start (`session_manifest.build_session_context`, see hooks/README.md "The birth block and the kernel"), held under the host's 10,000-char cap. Its `## Resume point` section carries the session snapshot once, with the stored resume point whole, up to the 2000 characters `write_resume_point` accepts; the block also brings back `## Environment`, so the `gaia CLI:` path survives the compaction, and the user's rows, so the user's standing rules survive it too. On OpenCode the summary is a model's text that may drop or paraphrase both, so the compacting hook gives the summarizer only `build_summary_instructions` and the plugin attaches the same birth block, once, to the main session's first user message after the compaction (`chat.message` with `source: compact`). The compaction mod (`hooks/mods/compaction/`) adds Gaia's steering to the summarizer's instructions and registers `mcp__gaia__compact_when_idle`; a call from the main session makes the mod start a compaction (`$.session.compact`) once that turn ends. Only the host's "a turn is running" is retried (growing waits, then the next main turn end, for at most 15 minutes); any other refusal (DISABLE_COMPACT, turnHeld, a vetoing hook) or an expiry is final and is reported as a toast to the user and as context on the orchestrator's next prompt, both naming `/compact`. It appends nothing and starts no process, so the birth block stays the only deliverer. OpenCode's counterpart is the plugin tool `gaia_compact_when_idle`, run on the next `session.idle`. Both replies name the session id the resume point is written under. The tool is registered only in an interactive session (`SessionStartInput.isInteractive`): a headless one -- `-p`, the SDK, and the desktop app, which drives Claude Code through the SDK -- refuses `$.session.compact()` ("not available in a headless (-p / SDK) session yet"). There, and without the mod (mods disabled, Claude Code older than 2.1.287), no tool is listed and the user types `/compact`. |
 | **Resume point** | The orchestrator's own note of where work stands and what comes next, one per session: `gaia session resume-point set --session-id <id> --text <text>` (at most 2000 characters, replaced on every write) stores it at `<data_dir>/session_resume/<session_id>.txt` through `write_resume_point`; the snapshot reads it with `read_resume_point` and shows its first 600 characters. Points older than 30 days are pruned on the next write. `session-reflection` writes it as the step before a compaction, under the session id the compaction tool's reply names. |
 | **Session snapshot** | `gaia/session_snapshot.py::build_snapshot(session_id)` / `render_snapshot`, the one host-neutral block both hosts deliver: Claude Code through the SessionStart(compact) refresh, OpenCode through `adapt_pre_compact` (`experimental.session.compacting`), both via `start_context("compact", ...)`. Every section always renders (`none` when empty): the active brief/plan/task, the resume point, pending signatures (`approvals` rows `pending` for the session) and open contracts. One session id can span days, so a contract is open only while it is the latest row of a pending task (a verifier binds through its producer's task) or, unbound to a task, while it waits on the orchestrator (NEEDS_INPUT, APPROVAL_REQUEST, BLOCKED: always listed, first) or its last recorded activity (`claimed_at`, else `created_at`) is under 24 hours old; the remaining unbound rows are counted in the block and listed under `older_unbound` by `--json`. The block is capped at 1500 characters, cut on line and word boundaries. `gaia session snapshot --session-id <id> [--json]` prints it. |
 | **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage, AskUserQuestion, and the file and web tools), PostToolUse (Bash, Task, AskUserQuestion), PostToolUseFailure (Bash), SubagentStop, SubagentStart, SessionStart (`startup\|resume\|clear\|compact\|fork`), SessionEnd, PreCompact, PostCompact, Stop, TaskCompleted, UserPromptSubmit (sparse notices) |

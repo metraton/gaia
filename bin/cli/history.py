@@ -78,9 +78,7 @@ def _read_workflow_metrics(
     the fetch, so a naive ``LIMIT`` placed BEFORE those filters would starve a
     query like ``gaia history --agent developer --limit 20`` (it would fetch
     the 20 newest rows of ANY agent, then filter, returning almost nothing).
-    So the filters are pushed into the SQL ``WHERE`` alongside the LIMIT --
-    matching the ORDER-BY-then-LIMIT pattern in
-    hooks/modules/context/compact_context_builder.py. ``cmd_history`` still
+    So the filters are pushed into the SQL ``WHERE`` alongside the LIMIT. ``cmd_history`` still
     re-applies the same predicates in Python; on SQL-filtered rows those are
     idempotent no-ops, preserving byte-for-byte output parity.
 

@@ -2,9 +2,9 @@
  * A main session receives the birth block once, attached to its first real
  * message; a child session never receives it.
  *
- * OpenCode fires chat.message on child sessions, and on messages the host or a
- * plugin injects (no agent, synthetic parts), as well as on the user's own
- * (measured on 1.18.32, evidence 896). The bridge is a stub, so what is
+ * OpenCode fires chat.message on child sessions, on messages the host or a
+ * plugin injects (synthetic parts) and on the user's own, which name no agent
+ * when the client names none (1.19.0, handoff 33636). The bridge is a stub, so what is
  * asserted is which messages the plugin asks Gaia to start a session for and
  * what it attaches to them.
  */
@@ -142,18 +142,62 @@ describe("session birth on OpenCode", () => {
     expect(lookups).toHaveLength(0)
   })
 
-  test("injected messages are passed over and the block waits for the user's own", async () => {
+  test("a main-session message that names no agent gets the block", async () => {
+    const { sent, plugin: pending } = host(DELIVERS, { "ses-resumed": undefined })
+    const plugin = await pending
+    await created(plugin, "ses-main")
+    const fresh = await message(plugin, "ses-main", { agent: null })
+    const resumed = await message(plugin, "ses-resumed", { agent: null })
+
+    for (const first of [fresh, resumed]) {
+      expect(first.parts).toHaveLength(2)
+      expect(first.parts[1]).toMatchObject({ text: BIRTH_BLOCK, synthetic: true })
+    }
+    expect(startsFor(sent, "ses-main")).toHaveLength(1)
+    expect(startsFor(sent, "ses-resumed")).toHaveLength(1)
+  })
+
+  test("a child message that names no agent never asks for the block", async () => {
+    const { sent, plugin: pending } = host(DELIVERS, { "ses-unseen-child": "ses-main" })
+    const plugin = await pending
+    await created(plugin, "ses-main")
+    await created(plugin, "ses-child", "ses-main")
+    const child = await message(plugin, "ses-child", { agent: null })
+    const unseen = await message(plugin, "ses-unseen-child", { agent: null })
+
+    expect(child.parts).toHaveLength(1)
+    expect(unseen.parts).toHaveLength(1)
+    expect(startsFor(sent, "ses-child")).toHaveLength(0)
+    expect(startsFor(sent, "ses-unseen-child")).toHaveLength(0)
+  })
+
+  test("synthetic-only messages are passed over and the block waits for the user's own", async () => {
     const { sent, plugin: pending } = host()
     const plugin = await pending
     await created(plugin, "ses-main")
-    const agentless = await message(plugin, "ses-main", { agent: null })
+    const injected = await message(plugin, "ses-main", { agent: null, synthetic: true })
     const synthetic = await message(plugin, "ses-main", { synthetic: true })
-    const real = await message(plugin, "ses-main")
+    const real = await message(plugin, "ses-main", { agent: null })
 
-    expect(agentless.parts).toHaveLength(1)
+    expect(injected.parts).toHaveLength(1)
     expect(synthetic.parts).toHaveLength(1)
     expect(real.parts).toHaveLength(2)
     expect(startsFor(sent, "ses-main")).toHaveLength(1)
+  })
+
+  test("the first agentless message after a main-session compaction carries the Environment block", async () => {
+    const { sent, plugin: pending } = host(async (event) => ({
+      action: "allow",
+      additional_context: event.source === "compact" ? "## Environment (after compaction)" : BIRTH_BLOCK,
+    }))
+    const plugin = await pending
+    await created(plugin, "ses-main")
+    await message(plugin, "ses-main", { agent: null })
+    await plugin["experimental.session.compacting"]({ sessionID: "ses-main" }, { context: [], prompt: undefined })
+    const resumed = await message(plugin, "ses-main", { agent: null })
+
+    expect(resumed.parts[1]).toMatchObject({ text: "## Environment (after compaction)", synthetic: true })
+    expect(startsFor(sent, "ses-main").map((event) => event.source)).toEqual([undefined, "compact"])
   })
 
   test("the first message after a main-session compaction carries the Environment block once, later ones do not", async () => {
