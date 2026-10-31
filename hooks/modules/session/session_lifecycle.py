@@ -236,10 +236,7 @@ DUE_ITEMIZED_MAX = 3
 
 
 def notifications_counter(workspace: Optional[str]) -> str:
-    """Return what ``## Due`` shows for ``workspace`` and global: up to three items in its line shape, else their count; "" when none.
-
-    ``None`` reads every workspace. Advisory: a failure returns "".
-    """
+    """Return what ``## Due`` shows for ``workspace`` (None: every one): up to three items in its line shape, else their count; "" when none or on failure."""
     try:
         from datetime import datetime, timezone
 

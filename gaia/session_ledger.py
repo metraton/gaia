@@ -84,7 +84,6 @@ def _written(con, session_id: str) -> list[dict[str, Any]]:
 
 
 def _changed(con, session_id: str) -> list[dict[str, Any]]:
-    """What other sessions changed in user and project memory since this session's birth, newest first."""
     from gaia.signals import changed_since_birth
 
     return changed_since_birth(session_id)

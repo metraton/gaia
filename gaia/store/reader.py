@@ -131,11 +131,7 @@ def list_unread_notifications(
 
 
 def due_now(workspace: str | None = None) -> list[dict[str, Any]]:
-    """The one rule for what is due: open notifications due now in ``workspace`` and global, reports excluded.
-
-    ``## Due`` lists exactly these rows, and the per-prompt line lists or counts
-    exactly these rows. ``limit=-1`` is SQLite's no-limit.
-    """
+    """The one rule ``## Due`` and the prompt line share: open notifications due now in ``workspace`` and global, reports excluded."""
     return [row for row in list_unread_notifications(workspace=workspace, limit=-1) if row["kind"] != "report"]
 
 
@@ -169,12 +165,7 @@ def signals_from_others(
     limit: int | None = None,
     db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Return signals in ``(after_id, upto_id]`` not written by ``session_id`` or its children, newest first; [] on error.
-
-    A memory signal carries the changed row's ``kind``, ``description``,
-    ``initiative``, ``project_ref`` and ``owner_level`` as they stand now, None
-    once the row is hard-deleted.
-    """
+    """Return signals in ``(after_id, upto_id]`` not written by ``session_id`` or its children, newest first, with the memory row's current kind and placement; [] on error."""
     where = ["s.id > ?"]
     params: list[Any] = [after_id]
     if upto_id is not None:

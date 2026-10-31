@@ -91,7 +91,7 @@ def _due_rows():
 def test_due_prints_repeats_as_a_short_human_form_and_times_in_the_session_zone(monkeypatch, santiago):
     import gaia.store.reader as reader
 
-    monkeypatch.setattr(reader, "list_unread_notifications", lambda workspace=None: _due_rows())
+    monkeypatch.setattr(reader, "list_unread_notifications", lambda workspace=None, limit=50: _due_rows())
 
     lines = session_manifest.build_due_section("me").splitlines()
 

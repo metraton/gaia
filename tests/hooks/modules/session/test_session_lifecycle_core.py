@@ -151,23 +151,23 @@ def test_a_prompt_beats_the_given_session_then_counts_the_given_workspace(monkey
         lambda sid: made.append(("touch", sid)),
     )
 
-    def count(ws):
+    def due(ws):
         made.append(("count", ws))
-        return 2
-    monkeypatch.setattr("gaia.store.reader.count_unread_notifications", count)
+        return [{"id": i, "kind": "reminder", "headline": f"due-{i}"} for i in range(4)]
+    monkeypatch.setattr("gaia.store.reader.due_now", due)
     monkeypatch.setenv("CLAUDE_SESSION_ID", "from-the-environment")
 
     context = session_lifecycle.prompt_context("explicit-sid", "me")
 
     assert made == [("touch", "explicit-sid"), ("count", "me")]
     assert context == (
-        "\U0001F514 2 notifications due (`gaia notifications list --unread` to see them)"
+        "\U0001F514 4 notifications due (`gaia notifications list --unread` to see them)"
     )
 
 
 def test_a_prompt_with_nothing_due_adds_nothing(monkeypatch):
     monkeypatch.setattr("modules.session.session_registry.touch_session", lambda sid: None)
-    monkeypatch.setattr("gaia.store.reader.count_unread_notifications", lambda ws: 0)
+    monkeypatch.setattr("gaia.store.reader.due_now", lambda ws: [])
 
     assert session_lifecycle.prompt_context("explicit-sid", None) == ""
 

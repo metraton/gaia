@@ -23,10 +23,7 @@ def _cursor_path(session_id: str) -> Path:
 
 
 def read_cursor(session_id: str) -> Optional[dict]:
-    """Return ``{"last_id", "shown_after", "born_after"}`` for the session, or None when it has no cursor.
-
-    A cursor written before ``born_after`` existed reads its ``shown_after`` as the birth.
-    """
+    """Return ``{"last_id", "shown_after", "born_after"}`` for the session (an older cursor is born at ``shown_after``), or None."""
     try:
         data = json.loads(_cursor_path(session_id).read_text(encoding="utf-8"))
         return {"last_id": int(data["last_id"]), "shown_after": int(data["shown_after"]),
@@ -74,7 +71,6 @@ def subject_label(subject: str) -> str:
 
 
 def _place(row: dict[str, Any], projects: list[dict[str, Any]]) -> str:
-    """Where a row lives, in the words ``## Workspaces I manage`` uses: ``ws/project``, ``ws/group`` or ``ws``."""
     from gaia.store.writer import normalize_initiative
 
     def name_of(project: dict[str, Any]) -> str:

@@ -78,7 +78,7 @@ def _seed_dispatched(db):
 def _seed_signal(db):
     from gaia.signals import _write_cursor
 
-    _write_cursor(SESSION, 0, 0)
+    _write_cursor(SESSION, 0, 0, 0)
     _exec(db, "INSERT INTO signals (subject, source, workspace, ref, op, session_id) "
               "VALUES ('user', 'memory', 'me', 'user_x', 'update', 'sess-other')")
 
