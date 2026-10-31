@@ -1,6 +1,6 @@
 ---
 name: reminders
-description: Use when the user wants to be reminded of something at a time, or wants something offered to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning". Also when a due reminder or routine shows at session start or in the prompt counter and has to be acted on. NOT for work to do once now in this session.
+description: Use when the user wants to be reminded of something at a time, or wants something offered to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning" -- or a time or a date is mentioned beside something to do, which the orchestrator answers by offering a reminder in one line and loading this skill on their yes. Also when a due reminder or routine shows at session start or in the prompt counter and has to be acted on. NOT for work to do once now in this session.
 ---
 
 # Reminders

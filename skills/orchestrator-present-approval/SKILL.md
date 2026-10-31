@@ -41,11 +41,27 @@ approval id in its contract. You decide when to ask.
    the question tool the same way. If Gaia refuses a question, run
    `gaia approvals question` again for the ids it names.
 
+The user signs what the command does -- a push, an apply, a delete -- in their
+language, seeing the whole route before the first signature; the tier
+vocabulary never reaches them. Each grant is dispatched while it is still alive.
+
+## What is not a signature
+
+A denial that carries NO `approval_id` is categorical, not a tier decision:
+there is nothing to present and nothing to approve, and calling it T3 invites
+the user to sign a boundary no signature lifts. Name which boundary fired in
+plain terms -- a blocked command, a protected path, a DB-write guard -- and
+reroute the work through the governed surface.
+
 ## After the answer
 
-Read the decision with `gaia approvals show <approval_id>` (its State). Approved:
+Read the decision with `gaia approvals show <approval_id>` (its State); confirm
+it left `pending` before resuming the requester. Approved:
 resume the specialist that requested it -- the same agent, not a new one --
-with `execution`; the signature is bound to that agent and session. Rejected:
+with `execution`; the signature is bound to that agent and session. When a
+grant's TTL is running out mid-verification, re-mint it: verification after
+the mutation is narration, and "execute now, nothing before" costs more than a
+fresh signature. Rejected:
 nothing runs; resume the same requester so it closes its contract and removes
 what it created, instead of dispatching a new one. A typed answer is
 not a decision. You may withdraw a pending approval (`pending-approvals`), but

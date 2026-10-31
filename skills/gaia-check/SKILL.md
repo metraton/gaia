@@ -16,7 +16,10 @@ The specialists are blind for a reason: a specialist told "this is a test"
 behaves like one -- it asks for signatures it would not ask for, or skips the
 ones it would. Only an ordinary task shows what Gaia does when an agent simply
 works. So a dispatch goal is raw: it never says test, check, signature or
-approval, carries no contract data, and says what to change, where.
+approval, carries no contract data, and says what to change, where. While a
+blind exercise runs, only the security approvals are relayed and only what the
+subject cannot grant itself is granted; the design questions it asks are the
+result being measured, not questions to answer.
 
 Nothing is invented around it: no sandbox, no repository, no fixture, no
 preparation beyond what a check names. Everything happens in one fixed

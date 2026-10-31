@@ -11,7 +11,7 @@ Human Register is the register every human-facing output of Gaia is written in, 
 
 Everything a person reads from Gaia reads as if a competent colleague wrote it by hand: natural, direct, in the reader's language and register, with no ceremony, no narration of the writer's own process and no stock phrasing that marks a machine. The conclusion comes first, in common nouns, with the grave thing on top. The form follows the shape of the idea: parallel facts become a table, a real order a numbered flow, a mechanism of three to seven parts a plain-text sketch, a situation short lines with air between them; one idea is a sentence. Detail sits one step away instead of in the message, behind a coordinate the reader can open; where the user reads to decide -- the conversation, a report -- each claim also carries its mark (observed, inferred, judged). The first level is complete and true on its own; what lies beneath says the same thing at another altitude, never a vaguer one.
 
-The paragraph above is restated word for word in the orchestrator's identity, *How I speak to a person*, because the identity is the one surface loaded on every turn and a specialist reaches the register only through this skill; a change to one copy is made to both, and `tests/skills/test_human_register_principle_sync.py` fails while they differ.
+The orchestrator loads this skill before anything a person reads and names it from its identity, *How I speak*; a specialist reaches the register only through this skill. The paragraph above is the one copy of the law.
 
 ## Mental model
 
@@ -59,7 +59,7 @@ The judge reads with this list; each item passes or fails on its own:
 
 | Surface | Who reads | Container | What the user's rows add on top |
 |---|---|---|---|
-| 1. The conversation | the user, now, in the session | the orchestrator's identity, *How I speak to a person*; `technical-explanation` when the answer explains | their language and local time; what they asked to hear first and not to hear |
+| 1. The conversation | the user, now, in the session | the orchestrator's identity, *How I speak*; `technical-explanation` when the answer explains | their language and local time; what they asked to hear first and not to hear |
 | 2. Text sent in the user's name | another person, who never sees Gaia and reads it as the user's own words | `ghostwriting` | the look they give each medium, how they address each recipient, the time standard their teams share |
 | 3. A generated document | whoever opens it later, without the conversation | `technical-writing` (README, runbook, PR body, report, CHANGELOG entry); `ticket-writing`; `blog-writing`; `deck-builder` | the heading set a repository or team expects, the language everything versioned is in, what the document never names |
 

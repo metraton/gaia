@@ -14,10 +14,11 @@ integration puts it on the shared branch. All three consume what this skill
 produces -- a goal, a wave, an integration order -- so a defect here is paid
 downstream, where it is harder to see.
 
-The orchestrator's identity lists what every goal carries at the moment of
-dispatch; this skill holds the reasons behind the writing, parallel and
-integration parts. Commands, sequences and numbers are in `reference.md`; one
-two-writer wave, end to end, is in `examples.md`.
+The orchestrator's identity lists only the tokens a hook reads from a goal
+(`project=`, `ceiling=`, `parent_handoff_id=`, `task_id=`) and the rule that the
+user's preferences travel written in it; this skill holds everything else about
+the writing, parallel and integration parts. Commands, sequences and numbers are
+in `reference.md`; one two-writer wave, end to end, is in `examples.md`.
 
 ## The eight principles
 
@@ -55,7 +56,13 @@ two-writer wave, end to end, is in `examples.md`.
    sibling lands. Cleanup follows the same two moments: integrating a task
    releases its worktree and deletes its branch, and once the PR merges, a
    post-merge pass removes the branches it integrated. Both decide by content,
-   not by hash, since a cherry-pick keeps the change under a new hash.
+   not by hash, since a cherry-pick keeps the change under a new hash. Turns
+   that do share one checkout count `stash`, `checkout`, `reset`, `restore`,
+   `clean` and `add` exactly like `commit`. A working tree showing uncommitted
+   work that is not from this conversation means another session is live in the
+   same repository: the orchestrator's serialization does not reach it, so any
+   git-capable dispatch to that repository carries the risk and the user hears
+   it before the dispatch.
 
 4. **Parallelism is bounded by shared files and integration cost, never by the
    count of tasks.** A wave groups turns whose blast radii do not overlap; two
@@ -82,9 +89,11 @@ two-writer wave, end to end, is in `examples.md`.
 7. **A turn is sized before it starts, and is fresh or resumed by what it must
    know.** A tool-call ceiling fixed in advance, with permission to close
    partially, is what lets a turn report that it ran out; a turn that exhausts
-   its context mid-work cannot. Sizing names the model too: the lightest one
-   the turn's difficulty allows, through the Agent tool's model override, and
-   a resumed turn keeps the model it was born with. When the previous turn was
+   its context mid-work cannot. Sizing names the model too, through the Agent
+   tool's model override, favoring speed and just enough: a light model for
+   read-only checks, polling and verifications, a middle one for routine edits
+   and PR mechanics, the default for design, root cause and anything
+   security-sensitive; a resumed turn keeps the model it was born with. When the previous turn was
    cut near its close, implementing and integrating split into two turns. A
    turn is fresh when it must not know something -- a review, a blind check --
    and resumed when it executes what it already knows, because rebuilding known
@@ -104,9 +113,26 @@ two-writer wave, end to end, is in `examples.md`.
 ## What the goal says, beyond the kernel
 
 The orchestrator's identity lists only the tokens a goal literally carries
-(`project=`, `ceiling=`, `parent_handoff_id`, the raw goal, one integration
-at a time); the craft of the rest is here.
+(`project=`, `ceiling=`, `parent_handoff_id=`, `task_id=`); the craft of the
+rest is here.
 
+- **Raw goal and context, never the kernel's blocks.** The goal never carries
+  `# Your Contract` or contract-closing rules: the dispatch kernel supplies
+  them on fresh and resumed turns, and a plan-bound goal adds only what its
+  gates do not already say.
+- **The writing skill, when the turn produces a document.** A goal whose output
+  a person will read names its container skill -- `technical-writing` by
+  default (README, runbook, PR body, report, CHANGELOG entry), or
+  `ticket-writing`, `blog-writing`, `deck-builder` -- with the user's
+  preferences for that surface written beside it.
+- **The change cycle's shape.** The repository's declared workflow is resolved
+  first (the `workflow` key of its `project_identity` entry; where none is
+  declared, what its own docs and CI say), and the PR-vs-direct default is the
+  backup for a repository that never declared one, never the answer for one
+  that did. The route is shaped so the user reviews and signs as little as the
+  work allows: one pull request per logical block of work -- not per task, not
+  one giant -- a separate one only when a change is urgent, risky or of very
+  different scope, and one signature for everything already known.
 - **Acceptance as a property, not a checklist.** A checklist is satisfied by
   its items; a property makes the specialist find the cases the goal did not
   name, proven by literal output, never by the agent's assertion -- for a

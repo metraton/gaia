@@ -77,7 +77,21 @@ calling a PR green, compare that SHA with the PR head you are about to report. A
 evidence is stale: it describes a commit that is no longer the head. Answer it with a re-dispatch of
 the owning specialist, never with a reading of the forge of your own.
 
-**Phase 4 — handoff.** Pass the COORDINATE, not the narrative.
+**Phase 4 — handoff.** Pass the COORDINATE, not the narrative. Ids that arrive in a return — a
+contract, a handoff, a plan, a slug — are appended to the project's thread row before answering,
+so the coordinates survive the session.
+
+## When the return is not clean
+
+| Situation | Action |
+|---|---|
+| A specialist's command was blocked by a hook | Relay the hook's message verbatim when resuming it — a paraphrase drops the `approval_id` or softens "do NOT retry", and the specialist follows your version instead of the security layer's. A denial with NO `approval_id` is categorical, not a tier decision: `orchestrator-present-approval` says what it is and what it is not |
+| A contract claims verification without evidence | Open the artifact yourself, or re-dispatch narrowly declaring that pasted output is the only evidence that counts |
+| A return arrives truncated, empty, or repeated with no new tool calls | Read the rows — `contract list --cut`, then `contract view --harness-id <agentId>`, which resolves the latest link of a resume chain and lists every link in `links` — and re-dispatch only what the rows are genuinely missing; a stalled turn shows zero delta in tool-call count |
+| A turn in flight is heading the wrong way | Correct it in flight, continue it once it closes, or dispatch fresh — `dispatch` principle 8; the return is not the only moment to act |
+| A verification fails | Its cause decides: `product` sends the fix to the owning surface with the refuting probe's evidence id, and the producer adds that probe to the suite as its red run before changing code, so the finding stays a test; `environment` or `broken_test` makes the check itself the object — a mis-designed gate is not a code defect, and whether it guards something a user or a release would feel decides between mending it and cutting it, before any fix is re-dispatched; `requirement_changed` goes to `gaia-planner`, whose gate wording claims more than its task |
+| A verifier leaves a user-judged gate pending | Ask the user and record the answer with `gaia task gate set-status` and its evidence, as `gaia-planner` step 5 lays out |
+| Several agents are in flight | The consolidated result, said once when all have returned; an interim finding that stands alone may be reported early, a pending result is awaited rather than anticipated |
 
 ## Three traps, all measured today on real rows
 

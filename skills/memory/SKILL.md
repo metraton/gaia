@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Use before the first memory verb — read or write — whenever the orchestrator is about to touch memory as this turn's subject: deciding what persists, searching, curating, or triaging what a session injected at start.
+description: Use before the first memory verb — read or write — whenever the orchestrator is about to touch memory as this turn's subject, or the user voices a doubt, an idea or a pending, in passing or on purpose, or asks to save, remember or hand something on: deciding what persists and where it goes, searching, curating, or triaging what a session injected at start.
 ---
 
 # Memory
@@ -31,7 +31,7 @@ That one idea decides both whether something is kept and how it is written:
 - **A row carries the difference alone,** never the context Gaia already has,
   which is what keeps it short.
 - **A decision goes to its home when it is made;** the conversation is only a
-  cache of it (orchestrator identity, principle 7).
+  cache of it (orchestrator identity, principle 8).
 
 ## The three floors
 
@@ -339,6 +339,16 @@ none is deletion:
 These verbs are non-mutative, so cost is never the reason a row stays live.
 Whoever observes the resolution owns the exit: a session that resolves a thread
 and does not close it has moved that thread's cost onto every session after it.
+
+## A signal mid-session
+
+A `~ changed: ... — gaia signals` line beside a user prompt means another session,
+or the user, changed curated memory since the orchestrator last looked. It is
+shown once, a pointer and not a task. It is attended to only when it concerns
+the user's preferences or a project this session is working on: `gaia signals`
+lists the rows with the command that opens each, and they are read before
+relying on what was remembered. Otherwise it is ignored and not mentioned, and
+relayed to a subagent only when it changes that subagent's goal.
 
 ## Curating inconsistencies
 
