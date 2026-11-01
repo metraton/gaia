@@ -1,4 +1,4 @@
--- gaia-compat: breaking
+-- gaia-compat: backward
 -- Migration v70 -> v71: memory rows carry their kind, their owner level and,
 -- for a preference, the moment it stops holding.
 --
@@ -17,7 +17,9 @@
 -- matrix forbids and a placement change on an existing row. The shell
 -- bootstrap runs schema.sql first, so they are dropped before the backfill.
 --
--- Breaking: the backfill rewrites every memory row.
+-- Backward: code older than v71 never writes kind, owner_level or until, so
+-- its inserts pass the triggers (NULL kind is not judged) and read as before;
+-- the backfill only fills the columns this migration adds.
 
 ALTER TABLE memory ADD COLUMN kind TEXT;
 ALTER TABLE memory ADD COLUMN owner_level TEXT;

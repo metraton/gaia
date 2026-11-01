@@ -73,6 +73,37 @@ def test_a_destructive_file_declared_backward_fails(statement):
     assert header_violations(sql.replace("backward", "breaking")) == []
 
 
+_ADDS_KIND = "-- gaia-compat: backward\nALTER TABLE memory ADD COLUMN kind TEXT;\n"
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE memory SET kind = 'fact' WHERE kind IS NULL;",
+        "UPDATE memory SET kind = CASE WHEN type = 'user' THEN 'fact' ELSE 'pending' END, "
+        "\"KIND\" = kind WHERE EXISTS (SELECT 1 FROM projects p WHERE p.name = memory.initiative);",
+    ],
+    ids=["plain", "case-and-subquery"],
+)
+def test_filling_a_column_the_same_migration_added_is_not_a_rewrite(statement):
+    assert header_violations(f"{_ADDS_KIND}{statement}\n") == []
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE memory SET kind = 'fact', body = '';",
+        "UPDATE memory SET body = kind;",
+        "UPDATE projects SET kind = 'fact';",
+        "UPDATE memory SET (kind, body) = ('fact', '');",
+        "UPDATE memory SET memory.body = '';",
+    ],
+    ids=["one-old-column", "old-column-only", "other-table", "row-value", "qualified"],
+)
+def test_an_update_reaching_a_column_older_code_knows_still_counts(statement):
+    assert header_violations(f"{_ADDS_KIND}{statement}\n")
+
+
 def test_an_unmarked_file_counts_as_breaking():
     assert migration_guard.is_breaking("CREATE TABLE IF NOT EXISTS t (id INTEGER);")
     assert not migration_guard.is_breaking("-- gaia-compat: backward\nCREATE INDEX i ON t(id);")
