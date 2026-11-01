@@ -2,9 +2,9 @@
 
 Memory follows the project it belongs to, not the workspace that wrote it:
 ``get-relevant --initiative`` already lists a project's rows from every
-workspace, so the slug it prints must open from the same vantage. A row with
-no project stays private to its workspace, and a slug held by project rows in
-two other workspaces is refused rather than guessed.
+workspace, so the slug it prints must open from the same vantage. A
+workspace-owned row is reached the same way, and a slug held by rows in two
+other workspaces is refused rather than guessed.
 
 Uses the real writer/CLI path against a temporary GAIA_DATA_DIR.
 """
@@ -86,16 +86,34 @@ def test_show_from_another_workspace_finds_the_projects_row(
     assert out["body"] == "stored under me"
 
 
-def test_show_does_not_reach_a_workspace_only_row_elsewhere(
+def test_show_and_move_reach_a_workspace_owned_row_elsewhere(
     tmp_db, monkeypatch, capsys,
 ):
-    _add(capsys, "me", "project_private_to_me", initiative=None, kind="fact")
+    _add(capsys, "me", "project_owned_by_me", initiative=None, kind="fact")
     monkeypatch.setenv("GAIA_WORKSPACE", "ws")
 
-    rc, out = _show(capsys, "project_private_to_me")
+    rc, out = _show(capsys, "project_owned_by_me")
+    assert rc == 0, out
+    assert out["body"] == "body text"
 
-    assert rc == 1
-    assert "not found in workspace 'ws'" in out["error"]
+    parser = argparse.ArgumentParser()
+    memory_mod.register(parser.add_subparsers(dest="cmd"))
+    args = parser.parse_args(["memory", "move", "project_owned_by_me", "--to",
+                              "group:me/bildwiz", "--json"])
+    assert args.func(args) == 0, capsys.readouterr().out
+    assert _json.loads(capsys.readouterr().out)["from_workspace"] == "me"
+
+
+def test_a_workspace_owned_slug_in_two_other_workspaces_is_refused(
+    tmp_db, monkeypatch, capsys,
+):
+    _add(capsys, "me", "project_owned_twice", initiative=None, kind="fact")
+    _add(capsys, "aaxis", "project_owned_twice", initiative=None, kind="fact")
+    monkeypatch.setenv("GAIA_WORKSPACE", "ws")
+
+    rc, out = _show(capsys, "project_owned_twice")
+
+    assert (rc, out["code"], out["workspaces"]) == (1, "ambiguous_slug", ["aaxis", "me"])
 
 
 def test_callers_own_row_wins_over_another_workspaces_project_row(

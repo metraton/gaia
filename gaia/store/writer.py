@@ -3498,7 +3498,7 @@ def move_memory(
     _assert_dispatch_can_write_memory()
     con = _connect(db_path)
     try:
-        con.execute("BEGIN")
+        con.execute("BEGIN IMMEDIATE")
         try:
             result = _move_memory_on(
                 con, from_workspace, name, to_workspace=to_workspace, mem_type=mem_type,
@@ -3557,6 +3557,9 @@ def _move_memory_on(
     except MemoryHostScopeError as exc:
         raise MemoryMoveError(str(exc), code=exc.code) from None
     owner = derive_owner_level(mem_type, initiative, project_ref, con)
+    if expected_owner == "group" and owner == "project" and not project_ref:
+        # group:<ws>/<key> names the group even when a project shares its key.
+        owner = "group"
     if expected_owner is not None and owner != expected_owner:
         hint = _OWNER_DERIVATION_HINT.get(owner)
         raise MemoryMoveError(

@@ -10,7 +10,6 @@ Provides:
 - shell_unwrapper: Detect and strip wrapper shells for inner command classification
 - flag_classifiers: Flag-dependent classifiers for 15 command families
 - composition_rules: Cross-stage pipe composition rules (exfiltration, RCE, obfuscation)
-- network_hosts: Network host classification for curl/wget/httpie targets
 - fail_open: What a gate that errors mid-decision must still do -- record the
   failure, warn the user, and refuse to downgrade an already-mutating command
 """
@@ -60,7 +59,6 @@ from .composition_rules import (
     CompositionDecision,
     StageType,
 )
-from .network_hosts import classify_host, extract_url_from_tokens, HostClassification
 
 __all__ = [
     # Tiers
@@ -108,8 +106,4 @@ __all__ = [
     "CompositionStage",
     "CompositionDecision",
     "StageType",
-    # Network hosts
-    "classify_host",
-    "extract_url_from_tokens",
-    "HostClassification",
 ]

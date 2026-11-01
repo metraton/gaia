@@ -95,6 +95,7 @@ if str(_REPO_ROOT) not in _sys.path:
 
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -596,11 +597,11 @@ def _resolve_workspace(explicit: str | None) -> str:
 
 
 class AmbiguousSlugError(Exception):
-    """A slug held by project rows in several workspaces other than the caller's."""
+    """A slug held by rows in several workspaces other than the caller's."""
 
     def __init__(self, name: str, workspaces: list[str]):
         super().__init__(
-            f"memory '{name}' is a project row in workspaces "
+            f"memory '{name}' is a row in workspaces "
             f"{', '.join(workspaces)}; name one with --workspace"
         )
         self.workspaces = workspaces
@@ -612,26 +613,25 @@ def _workspace_holding(workspace: str, name: str, *, explicit: bool,
 
     Tried in order: the caller's workspace, the ``_gaia_user`` and
     ``_gaia_host`` sentinels, then -- only when ``explicit`` is False, i.e.
-    the caller gave no --workspace -- any workspace holding ``name`` as a row
-    of a project, since a project's memory follows the project rather than the
-    workspace that wrote it. A workspace the caller named is never swapped for
-    another one. A row with no project is never reached from another
-    workspace. Only live rows count unless ``include_deleted`` (a hard delete
-    reaches a tombstone). Returns ``workspace`` when no row is found (the verb
-    reports its own not-found) or when the store cannot be read.
+    the caller gave no --workspace -- the one other workspace holding
+    ``name``, whether a project, a group or that workspace owns the row. A
+    workspace the caller named is never swapped for another one. Only live
+    rows count unless ``include_deleted`` (a hard delete reaches a tombstone).
+    Returns ``workspace`` when no row is found (the verb reports its own
+    not-found) or when the store cannot be read.
 
-    Raises AmbiguousSlugError when project rows in more than one other
-    workspace share ``name``: picking one would guess which project was meant.
+    Raises AmbiguousSlugError when more than one other workspace holds
+    ``name``: picking one would guess which row was meant.
     """
     try:
-        from gaia.store.reader import project_row_workspaces
+        from gaia.store.reader import memory_row_workspaces
         from gaia.store.writer import get_memory, HOST_WORKSPACE, USER_WORKSPACE
         for candidate in dict.fromkeys((workspace, USER_WORKSPACE, HOST_WORKSPACE)):
             if get_memory(candidate, name, include_deleted=include_deleted) is not None:
                 return candidate
         if explicit:
             return workspace
-        holders = project_row_workspaces(name, include_deleted=include_deleted)
+        holders = memory_row_workspaces(name, include_deleted=include_deleted)
     except Exception:
         return workspace
     if len(holders) > 1:
@@ -3086,7 +3086,7 @@ def _parse_reclassify_spec(spec: str) -> tuple[str | None, str | None]:
 
 def _reclassify_batch(args, lines) -> list[dict]:
     """One result per ``slug<TAB>class=<c>[,status=<s>][<TAB>note]`` line, each in its own transaction."""
-    from gaia.store.writer import reclassify_memory
+    from gaia.store.writer import _retry_on_locked, reclassify_memory
 
     results = []
     for number, fields in _batch_rows(lines):
@@ -3100,11 +3100,14 @@ def _reclassify_batch(args, lines) -> list[dict]:
             results.append(_refused_line(number, name, "bad_spec", str(exc)))
             continue
         try:
-            res = reclassify_memory(
+            res = _retry_on_locked(lambda: reclassify_memory(
                 _flag_workspace_holding(args, name), name, class_=class_,
                 status=_normalize_status_flag(status)[1],
                 note=fields[2].strip() if len(fields) == 3 else None,
-            )
+            ))
+        except sqlite3.Error as exc:
+            results.append(_store_stopped(number, name, exc))
+            break
         except AmbiguousSlugError as exc:
             results.append(_refused_line(number, name, "ambiguous_slug", str(exc)))
         except PermissionError as exc:
@@ -3159,7 +3162,7 @@ def _move_target_from_flags(args) -> dict | None:
 def _move_one(name: str, target: dict, kind: str | None, from_flag: str | None) -> dict:
     """Move one row and return its result record; a refusal is a record with ``code``, never an exception."""
     from gaia.store.writer import (
-        MemoryMoveError, initiative_from_project_ref, move_memory,
+        MemoryMoveError, _retry_on_locked, initiative_from_project_ref, move_memory,
         normalize_initiative, resolve_project_ref,
     )
 
@@ -3173,11 +3176,13 @@ def _move_one(name: str, target: dict, kind: str | None, from_flag: str | None) 
             project_ref = resolve_project_ref(workspace, target["project"])
             initiative = initiative or initiative_from_project_ref(project_ref)
         initiative = normalize_initiative(initiative) if initiative else None
-        res = move_memory(
+        res = _retry_on_locked(lambda: move_memory(
             source, name, to_workspace=workspace, mem_type=target.get("mem_type"),
             initiative=initiative, project_ref=project_ref, kind=kind,
             expected_owner=target.get("expected_owner"),
-        )
+        ))
+    except sqlite3.Error as exc:
+        return {"name": name, "status": "refused", "code": "store_error", "error": str(exc)}
     except AmbiguousSlugError as exc:
         return {"name": name, "status": "refused", "code": "ambiguous_slug", "error": str(exc)}
     except MemoryMoveError as exc:
@@ -3203,6 +3208,12 @@ def _batch_rows(lines):
 
 def _refused_line(number: int, name: str, code: str, error: str) -> dict:
     return {"line": number, "name": name, "status": "refused", "code": code, "error": error}
+
+
+def _store_stopped(number: int, name: str, error: object) -> dict:
+    """The refusal that ends a batch whose store still fails after its lock retries."""
+    return _refused_line(number, name, "store_error",
+                         f"{error}; the batch stopped at this line and later lines were not attempted")
 
 
 def _emit_batch(results: list[dict], as_json: bool, statuses: tuple, line_of) -> int:
@@ -3243,7 +3254,11 @@ def _move_batch(lines, from_flag: str | None) -> list[dict]:
         except ValueError as exc:
             results.append(_refused_line(number, name, "bad_owner_spec", str(exc)))
             continue
-        results.append({"line": number, **_move_one(name, target, kind, from_flag)})
+        result = _move_one(name, target, kind, from_flag)
+        if result.get("code") == "store_error":
+            results.append(_store_stopped(number, name, result["error"]))
+            break
+        results.append({"line": number, **result})
     return results
 
 
@@ -3421,7 +3436,7 @@ def _supersedes_reversed(kind: str, res: dict, src_name: str, dst_name: str) -> 
 
 def _link_batch(args, lines) -> list[dict]:
     """One result per ``from<TAB>to<TAB>kind`` line, each edge written in its own transaction."""
-    from gaia.store.writer import insert_memory_link
+    from gaia.store.writer import _retry_on_locked, insert_memory_link
 
     results = []
     for number, fields in _batch_rows(lines):
@@ -3432,10 +3447,13 @@ def _link_batch(args, lines) -> list[dict]:
             continue
         src_name, dst_name, kind = fields
         try:
-            res = insert_memory_link(
+            res = _retry_on_locked(lambda: insert_memory_link(
                 _flag_workspace_holding(args, src_name), src_name, dst_name, kind,
                 dst_workspace=_flag_workspace_holding(args, dst_name),
-            )
+            ))
+        except sqlite3.Error as exc:
+            results.append(_store_stopped(number, src_name, exc))
+            break
         except AmbiguousSlugError as exc:
             results.append(_refused_line(number, src_name, "ambiguous_slug", str(exc)))
         except PermissionError as exc:

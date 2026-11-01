@@ -158,6 +158,9 @@ def test_merges_that_can_create_commits_ask(base, merge):
     "switch -C feat",
     "switch -f feat",
     "switch --force feat",
+    "switch --discard-changes feat",
+    "switch --disc feat",
+    "checkout --forc feat",
     "rebase origin/main",
     "reset --hard",
     "reset --hard origin/main",
@@ -195,7 +198,6 @@ def test_a_prefix_or_extra_global_option_keeps_the_merge_signed(base, command):
     "checkout -- f.txt",
     "checkout .",
     "restore f.txt",
-    "switch --discard-changes feat",
     "switch nowhere",
 ])
 def test_commands_outside_the_relief_keep_their_verdict(base, command):
@@ -206,3 +208,56 @@ def test_commands_outside_the_relief_keep_their_verdict(base, command):
 def test_a_dirty_tree_switch_keeps_its_verdict(base, verb):
     _dirty(base)
     assert not _asks(f"git -C {base} {verb} feat")
+
+
+def _commit_on_new_branch(repo: Path, branch: str) -> None:
+    _git(repo, "checkout", "-q", "-b", branch, "origin/main")
+    (repo / "g.txt").write_text(branch)
+    _git(repo, "add", "g.txt")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", branch)
+
+
+@pytest.fixture
+def managed(base, tmp_path) -> Path:
+    """A clone inside the managed worktrees root, on the unpushed branch `work`."""
+    from gaia.paths import ensure_layout, worktrees_dir
+
+    ensure_layout()
+    clone = Path(worktrees_dir()).resolve() / "wt-rebase"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(clone)],
+                   check=True, capture_output=True)
+    _commit_on_new_branch(clone, "work")
+    return clone
+
+
+def test_rebase_of_an_unpushed_branch_in_a_managed_worktree_is_free(managed):
+    command = f"git -C {managed} rebase origin/main"
+    assert not _asks(command)
+    assert _boundary_tier(command) == "T0"
+
+
+@pytest.mark.parametrize("refspec", ["work", "work:elsewhere"])
+def test_rebase_asks_once_the_branch_has_been_pushed(managed, refspec):
+    _git(managed, "push", "-q", "origin", refspec)
+    assert _asks(f"git -C {managed} rebase origin/main")
+
+
+def test_rebase_of_an_unpushed_branch_outside_a_managed_worktree_asks(base):
+    _commit_on_new_branch(Path(base), "work")
+    assert _asks(f"git -C {base} rebase origin/main")
+
+
+@pytest.mark.parametrize("command", [
+    "git -C {wt} rebase -i origin/main",
+    "git -C {wt} rebase --onto origin/main main",
+    "git -C {wt} rebase origin/main work",
+    "git -C {wt} -c rebase.updateRefs=true rebase origin/main",
+    "GIT_DIR=/elsewhere git -C {wt} rebase origin/main",
+])
+def test_rebase_outside_the_exact_shape_asks(managed, command):
+    assert _asks(command.format(wt=managed))
+
+
+def test_rebase_that_would_also_move_other_branches_asks(managed):
+    _git(managed, "config", "rebase.updateRefs", "true")
+    assert _asks(f"git -C {managed} rebase origin/main")

@@ -3943,10 +3943,37 @@ def _git_merge_is_own_fast_forward(repo: str, rest: List[str]) -> bool:
     return any(rest[1] == f"{remote}/{current}" for remote in _git_remote_names(repo))
 
 
+def _git_rebase_rewrites_only_unpushed(path: Optional[str], repo: str, rest: List[str]) -> bool:
+    """True for ``-C <managed worktree> rebase <upstream>`` whose rewritten commits no remote ref holds.
+
+    Unpushed is read from the remote-tracking refs as last fetched, never over
+    the network: no remote ref is named after the branch and none reaches a
+    commit of ``<upstream>..HEAD``. ``rebase.updateRefs`` would also move other
+    branches, so any value but false keeps the rebase gated.
+    """
+    if path is None or len(rest) != 1 or not _GIT_SYNC_OPERAND_RE.match(rest[0]):
+        return False
+    top = _git_read(repo, "rev-parse", "--show-toplevel")
+    if not _is_inside_managed_worktrees_root(path) or not top or not _is_inside_managed_worktrees_root(top):
+        return False
+    branch = _git_current_branch(repo)
+    if branch is None:
+        return False
+    named = _git_run(repo, "for-each-ref", "--format=%(refname)", f"refs/remotes/*/{branch}")
+    if named is None or named[0] != 0 or named[1]:
+        return False
+    rewritten = _git_read(repo, "rev-list", "--count", "HEAD", "--not", rest[0])
+    unshared = _git_read(repo, "rev-list", "--count", "HEAD", "--not", rest[0], "--remotes")
+    if rewritten is None or rewritten != unshared:
+        return False
+    state, value = _git_config(repo, "rebase.updateRefs")
+    return state == "unset" or (state == "set" and (value or "").lower() == "false")
+
+
 def _git_local_sync(
     command: str, cwd: Optional[str], in_prefix: bool,
 ) -> Optional["MutativeResult"]:
-    """Free ``git merge --ff-only <remote>/<branch>`` when <branch> is the checked-out one; None otherwise."""
+    """Free an own-ref ``merge --ff-only`` and an unpushed ``rebase`` in a managed worktree; None otherwise."""
     if in_prefix or _GIT_SYNC_SHELL_CHARS_RE.search(command):
         return None
     try:
@@ -3960,7 +3987,13 @@ def _git_local_sync(
         return None
     path, subcommand, rest = split
     repo = _git_repo_dir(path, cwd)
-    if subcommand != "merge" or repo is None or not _git_merge_is_own_fast_forward(repo, rest):
+    if repo is None:
+        return None
+    if subcommand == "merge" and _git_merge_is_own_fast_forward(repo, rest):
+        reason = "'git merge --ff-only' of the current branch to its own remote ref"
+    elif subcommand == "rebase" and _git_rebase_rewrites_only_unpushed(path, repo, rest):
+        reason = "'git rebase' of an unpushed branch inside a Gaia-managed worktree"
+    else:
         return None
     return MutativeResult(
         is_mutative=False,
@@ -3968,7 +4001,7 @@ def _git_local_sync(
         verb=subcommand,
         cli_family="git",
         confidence="high",
-        reason="'git merge --ff-only' of the current branch to its own remote ref",
+        reason=reason,
     )
 
 
@@ -4476,6 +4509,13 @@ HARD_FLAG_IS_DESTRUCTIVE: FrozenSet[str] = frozenset({
     "git",
 })
 
+# Other spellings of git's `-f` discard of uncommitted changes, matched with
+# every abbreviation git's option parser accepts (four characters or more).
+_GIT_DISCARD_CHANGES_SPELLINGS: Tuple[Tuple[str, str], ...] = (
+    ("switch", "--discard-changes"),
+    ("checkout", "--force"),
+)
+
 
 # ============================================================================
 # Lightweight CLI Family Lookup (metadata only, not routing)
@@ -4687,6 +4727,13 @@ def _scan_dangerous_flags(
             elif token == "--hard":
                 if cli in HARD_FLAG_IS_DESTRUCTIVE:
                     found.append(token)
+
+        if cli == "git" and len(token) >= 4 and any(
+            subcommand in tokens[:index] and flag.startswith(token)
+            for subcommand, flag in _GIT_DISCARD_CHANGES_SPELLINGS
+        ):
+            found.append(token)
+            continue
 
         # Check for compound short flags containing dangerous combos
         # e.g., "-rfi" contains both -r and -f.

@@ -113,6 +113,74 @@ def test_batch_reports_each_line_and_partial_failure(corpus, capsys, tmp_path):
         (4, "refused", "bad_owner_spec"), (5, "refused", "target_unresolved")]
 
 
+def test_batch_waits_for_a_write_lock_another_connection_releases(corpus, capsys, tmp_path):
+    import sqlite3
+    import threading
+
+    holder = sqlite3.connect(str(corpus), check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("UPDATE memory SET body = 'held' WHERE workspace = 'ws' AND name = 'decision_beta'")
+    release = threading.Timer(0.5, holder.commit)
+    release.start()
+    batch = tmp_path / "moves.tsv"
+    batch.write_text("decision_alpha\tworkspace:me\n", encoding="utf-8")
+
+    try:
+        rc, out, err = _run(capsys, "move", "--from-file", str(batch), "--from", "ws", "--json")
+    finally:
+        release.join()
+        holder.close()
+
+    assert rc == 0, err
+    assert json.loads(out)["counts"]["moved"] == 1
+
+
+def test_batch_reports_the_lines_done_before_a_store_error_stops_it(corpus, capsys, tmp_path,
+                                                                    monkeypatch):
+    import sqlite3
+
+    import gaia.store.writer as writer
+
+    real_move = writer.move_memory
+
+    def move_or_locked(source, name, **kwargs):
+        if name == "decision_beta":
+            raise sqlite3.OperationalError("database is locked")
+        return real_move(source, name, **kwargs)
+
+    monkeypatch.setattr(writer, "move_memory", move_or_locked)
+    monkeypatch.setattr(writer, "_WRITE_RETRY_BASE_SLEEP", 0)
+    batch = tmp_path / "moves.tsv"
+    batch.write_text("decision_alpha\tworkspace:me\ndecision_beta\tworkspace:me\n"
+                     "negative_gamma\tgroup:me/branchkinect\n", encoding="utf-8")
+
+    rc, out, err = _run(capsys, "move", "--from-file", str(batch), "--from", "ws")
+
+    assert rc == 1
+    assert "moved decision_alpha" in out
+    assert "refused line 2 decision_beta [store_error]" in err
+    assert "negative_gamma" not in out + err
+    assert "1 applied, 1 refused of 2 line(s)" in out
+
+
+def test_group_spec_targets_the_group_when_a_project_shares_its_key(corpus, capsys):
+    from gaia.store.writer import _connect, get_memory
+
+    con = _connect(corpus)
+    con.execute("INSERT INTO workspaces (name, root_path) VALUES ('aaxis', '/nowhere/aaxis')")
+    con.execute("INSERT INTO projects (workspace, name, path, status) "
+                "VALUES ('aaxis', 'aos', '/nowhere/aaxis/aos', 'active')")
+    con.commit()
+    con.close()
+
+    rc, out, err = _run(capsys, "move", "negative_gamma", "--to", "group:aaxis/aos", "--from", "ws",
+                        "--json")
+
+    assert rc == 0, out + err
+    moved = get_memory("aaxis", "negative_gamma")
+    assert (moved["owner_level"], moved["initiative"], moved["project_ref"]) == ("group", "aos", None)
+
+
 def test_orchestrator_lane_admits_move_and_a_specialist_is_refused(monkeypatch):
     from modules.security import gaia_cli_only_guard as guard
     from modules.security.subagent_memory_write_guard import check
