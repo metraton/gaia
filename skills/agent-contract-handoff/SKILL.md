@@ -336,7 +336,7 @@ scratch or from a workspace/client repo path directly.
 `gaia/contract/validator.py` owns form codes: `MISSING_FIELD`, `PLAN_STATUS`,
 `AGENT_ID_FORMAT`, `VERIFICATION_RESULT`, `VERIFICATION_SHAPE`,
 `APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, `FAILURE_REPORT_SHAPE`,
-`MISPLACED_KEY`, `UNKNOWN_FIELD` and `FILE_REFERENCE_SHAPE`
+`MISPLACED_KEY`, `UNKNOWN_FIELD`, `FILE_REFERENCE_SHAPE` and `FIELD_TYPE`
 (`gaia/contract/validator.py::FormErrorCode`). `MISPLACED_KEY` is the one a
 hand-written `set` hits first: a declared field at the wrong level
 (`key_outputs` instead of `evidence_report.key_outputs`) is refused, not moved.

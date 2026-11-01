@@ -98,8 +98,8 @@ def _chain(row: dict[str, Any], by_id: dict[int, dict[str, Any]], con) -> list[d
 def _open_contracts(con, session_id: str) -> list[dict[str, Any]]:
     """This session's open chains, newest first, each its latest link titled by the chain's dispatch description.
 
-    An unbound link stays open only while it runs or waits; an unbound
-    NEEDS_VERIFICATION or a cut turn is closed here and left to ``gaia contract list``.
+    A link stays open only while it runs or waits, a bound one only while its task is pending;
+    an unbound NEEDS_VERIFICATION or a cut or dead turn is closed here and left to ``gaia contract list``.
     """
     from gaia.approvals.reading import pending_ttl
     from gaia.store.writer import STALE_TURN_SECONDS, harness_agents_active_since
@@ -115,13 +115,16 @@ def _open_contracts(con, session_id: str) -> list[dict[str, Any]]:
         if row["id"] in continued or row["agent_state"] == "COMPLETE":
             continue
         chain = _chain(row, by_id, con)
-        if row["plan_task_id"] is not None:
-            listed = row["task_status"] == "pending" and latest_of_task[row["plan_task_id"]] == row["id"]
+        bound = row["plan_task_id"] is not None
+        if bound and not (row["task_status"] == "pending" and latest_of_task[row["plan_task_id"]] == row["id"]):
+            listed = False
         elif row["agent_state"] in _RUNNING_STATES and row["cut_reason"] in (None, _BIRTH_CUT):
             if active is None:
                 active = harness_agents_active_since(con, running_cutoff)
             harness = next((link["harness_agent_id"] for link in chain if link["harness_agent_id"]), None)
             listed = harness in active or (row["last_activity"] or "") >= running_cutoff
+        elif bound:
+            listed = row["cut_reason"] is None
         else:
             listed = (row["agent_state"] in _WAITING_STATES and row["cut_reason"] is None
                       and (row["last_activity"] or "") >= waiting_cutoff)

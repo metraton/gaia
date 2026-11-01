@@ -1,6 +1,6 @@
 ---
 name: reminders
-description: Use when the user wants to be reminded of something at a time, or wants something offered to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning" -- or a time or a date is mentioned beside something to do, which the orchestrator answers with a one-line proposal of a reminder, saved on their yes, loading this skill then. Also when a due reminder or routine shows at session start or in the prompt counter and has to be acted on. NOT for work to do once now in this session.
+description: Use when the user wants to be reminded of something at a time, or wants something brought to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning" -- or a time or a date is mentioned beside something to do, which the orchestrator answers with a one-line proposal of a reminder, saved on their yes, loading this skill then. Also when a due reminder or routine shows at session start or in the prompt counter and has to be acted on. NOT for work to do once now in this session.
 ---
 
 # Reminders
@@ -54,7 +54,7 @@ With no pointer the headline has to carry everything.
 
 ## When something is due
 
-Offer the user three ways out, in their words.
+Give the user three ways out, in their words.
 
 - **Do it now.** Follow the pointer: load the skill, read the memory with `gaia memory show <slug> --workspace <w>`, or bring the project with `gaia context project <name>`. Work in a domain goes to the specialist the procedure names. With the user present, anything that needs approval asks for it.
 - **Later.** `gaia notifications snooze <id> --for 2h`, or `--until <local time>`. It hides until then.
@@ -64,4 +64,4 @@ Offer the user three ways out, in their words.
 
 ## What this gives up
 
-A monitor that acts while the user is away cannot exist, because nothing starts without them. Recurring work is offered when the user returns and done with them. Scheduled tasks that predate this were converted by migration into routines that point at the skill of the same name; if no such skill exists, cancel that routine.
+A monitor that acts while the user is away cannot exist, because nothing starts without them. Recurring work is delivered when the user returns and done with them. Scheduled tasks that predate this were converted by migration into routines that point at the skill of the same name; if no such skill exists, cancel that routine.

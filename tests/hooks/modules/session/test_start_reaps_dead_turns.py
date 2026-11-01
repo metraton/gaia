@@ -39,11 +39,11 @@ def db(tmp_path, monkeypatch):
     return tmp_path / "data" / "gaia.db"
 
 
-def _dispatched(db, agent_hex: str, harness_agent_id: str) -> str:
+def _dispatched(db, agent_hex: str, harness_agent_id: str, session_id: str = "ses-dead") -> str:
     agent_id = valid_agent_id(agent_hex)
     contract_id = f"{agent_id}.{agent_hex[:6]}"
     insert_dispatched_handoff(contract_id=contract_id, agent_id=agent_id, workspace="me",
-                              session_id="ses-dead", db_path=db)
+                              session_id=session_id, db_path=db)
     con = sqlite3.connect(db)
     con.execute("UPDATE agent_contract_handoffs SET created_at = ?, claimed_at = ?, harness_agent_id = ? "
                 "WHERE contract_id = ?", (LONG_AGO, LONG_AGO, harness_agent_id, contract_id))
@@ -68,3 +68,20 @@ def test_session_start_reaps_a_stale_dispatched_turn_and_spares_one_still_callin
     con.close()
     assert agent_contract_handoff_state(dead, db_path=db) == "IN_PROGRESS" and rows[dead] == "reaped"
     assert agent_contract_handoff_state(working, db_path=db) == "DISPATCHED"
+
+
+def test_session_start_spares_quiet_turns_of_the_compacting_session_and_of_a_live_one(db):
+    from modules.session.session_lifecycle import SessionStart, run_start_maintenance
+    from modules.session.session_registry import register_session
+
+    own = _dispatched(db, "a3333own", "harness-own", session_id="ses-current")
+    other = _dispatched(db, "a4444other", "harness-other", session_id="ses-other-window")
+    dead = _dispatched(db, "a5555dead", "harness-gone")
+    register_session(session_id="ses-other-window", is_headless=True, pinned_build=None)
+
+    run_start_maintenance(SessionStart(session_id="ses-current", source="compact", is_headless=False,
+                                       pinned_build=None, workspace_dir=Path.cwd()))
+
+    assert agent_contract_handoff_state(own, db_path=db) == "DISPATCHED"
+    assert agent_contract_handoff_state(other, db_path=db) == "DISPATCHED"
+    assert agent_contract_handoff_state(dead, db_path=db) == "IN_PROGRESS"

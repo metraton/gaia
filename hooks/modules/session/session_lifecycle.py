@@ -64,6 +64,25 @@ def start_session(start: SessionStart) -> StartOutcome:
     )
 
 
+_SAME_HOST_SOURCES = frozenset({"compact", "resume"})
+
+
+def _reap_dead_turns(start: SessionStart) -> None:
+    """Reap dead DISPATCHED rows, sparing every session the registry holds live and, after a compact or resume, the starting one; an unreadable registry reaps nothing."""
+    from gaia.approvals.reading import live_sessions
+    from gaia.store.writer import STALE_TURN_SECONDS
+    from modules.agents.dispatch_lifecycle import reap_stale_turn
+
+    spared = live_sessions()
+    if spared is None:
+        return
+    if start.source in _SAME_HOST_SOURCES and start.session_id:
+        spared.add(start.session_id)
+    reaped = reap_stale_turn(older_than_seconds=STALE_TURN_SECONDS, spare_sessions=frozenset(spared))["reaped"]
+    if reaped:
+        logger.info("dispatch_lifecycle: reaped %d dead dispatched turn(s) at SessionStart", len(reaped))
+
+
 def run_start_maintenance(start: SessionStart) -> None:
     """Registry, approval, dead-turn, backup, draft and worktree upkeep; each step fails alone.
 
@@ -122,11 +141,7 @@ def run_start_maintenance(start: SessionStart) -> None:
         logger.debug("count_stale_db_pendings failed (non-fatal): %s", exc)
 
     try:
-        from gaia.store.writer import STALE_TURN_SECONDS
-        from modules.agents.dispatch_lifecycle import reap_stale_turn
-        reaped = reap_stale_turn(older_than_seconds=STALE_TURN_SECONDS)["reaped"]
-        if reaped:
-            logger.info("dispatch_lifecycle: reaped %d dead dispatched turn(s) at SessionStart", len(reaped))
+        _reap_dead_turns(start)
     except Exception as exc:
         logger.debug("reap_stale_turn failed (non-fatal): %s", exc)
 

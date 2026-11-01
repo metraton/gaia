@@ -408,12 +408,17 @@ host that dies (SIGTERM) fires no stop event, so SessionStart runs the
 host-death reaper (`hooks/modules/agents/dispatch_lifecycle.py::reap_stale_turn`,
 called from `hooks/modules/session/session_lifecycle.py::run_start_maintenance`
 with `gaia.store.writer.STALE_TURN_SECONDS`, two hours): a `DISPATCHED` row whose
-harness agent recorded no tool call in that window and that no live attestation
-ledger vouches for is reaped. `gaia contract reap --older-than-seconds N` runs it
-by hand. Either lane keeps the `agent_state` last mirrored, so a reaped row can
-read `NEEDS_VERIFICATION` or `APPROVAL_REQUEST`: `agent_state` alone never says
-whether the turn is alive, the row's `cut_reason` does. A reaped row never earns
-`COMPLETE`.
+harness agent recorded no tool call in that window, that no live attestation
+ledger vouches for, and whose session the registry does not hold live (nor the
+starting session after a compact or resume) is reaped. `gaia contract reap
+--older-than-seconds N` runs it by hand. The two lanes leave different rows: the
+stop-hook lane keeps the `agent_state` last mirrored, so its reaped row can read
+`NEEDS_VERIFICATION` or `APPROVAL_REQUEST`; the host-death lane
+(`gaia.store.writer.reap_stale_dispatched_handoffs`) writes `IN_PROGRESS` and
+replaces the envelope with `degraded: true`, `reaped: true` and
+`backstop: "dispatch_lifecycle.reap_stale_turn"`.
+`agent_state` alone never says whether the turn is alive, the row's `cut_reason`
+does. A reaped row never earns `COMPLETE`.
 
 **Recovering a cut turn.** The verbs and their addressing modes are in
 `read-map.md`, "The record of past turns"; what matters here is that recovery is

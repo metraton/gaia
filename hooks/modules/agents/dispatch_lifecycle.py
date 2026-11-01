@@ -101,6 +101,7 @@ def reap_stale_turn(
     *,
     older_than_seconds: int,
     db_path=None,
+    spare_sessions=frozenset(),
 ) -> dict:
     """Promote every DISPATCHED row whose host shows no liveness evidence.
 
@@ -116,7 +117,8 @@ def reap_stale_turn(
 
     A row is spared when its harness agent recorded a tool call inside the
     window, or a ledger modified inside it names the row's ``session_id``;
-    neither is read as death, as a SIGTERM'd host leaves no other trace.
+    neither is read as death, as a SIGTERM'd host leaves no other trace. A row
+    of a session in ``spare_sessions`` is never reaped: its host is known alive.
     """
     from gaia.store.writer import (
         _connect,
@@ -133,7 +135,11 @@ def reap_stale_turn(
         con.close()
 
     def _is_alive(row: dict) -> bool:
-        return row.get("harness_agent_id") in active or _session_has_live_attestation(row)
+        return (
+            row.get("session_id") in spare_sessions
+            or row.get("harness_agent_id") in active
+            or _session_has_live_attestation(row)
+        )
 
     def _session_has_live_attestation(row: dict) -> bool:
         session_id = row.get("session_id")

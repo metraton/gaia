@@ -167,6 +167,25 @@ def test_a_long_lived_session_lists_only_its_running_and_waiting_rows_and_nothin
     assert _in_flight(SESSION_A) == ["a0000000000000a02.t", "a0000000000000a01.t", "a0000000000000a04.t"]
 
 
+def test_a_cut_or_dead_turn_of_a_pending_task_leaves_in_flight_while_its_uncut_handoff_stays(
+    tmp_path, monkeypatch, bootstrapped_db_template,
+):
+    path = _isolate(tmp_path, monkeypatch, bootstrapped_db_template)
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO workspaces (name) VALUES ('me')")
+    con.execute("INSERT INTO briefs (workspace, name) VALUES ('me', 'brief-a')")
+    con.execute("INSERT INTO plans (brief_id) VALUES (1)")
+    for order in (1, 2, 3):
+        con.execute("INSERT INTO tasks (plan_id, order_num, goal) VALUES (1, ?, 'live')", (order,))
+    _row(con, "a00000000000000c1.t", SESSION_A, "IN_PROGRESS", plan_task_id=1, cut_reason="reaped")
+    _row(con, "a00000000000000c2.t", SESSION_A, "DISPATCHED", plan_task_id=2, created_at=STALE)
+    _row(con, "a00000000000000c3.t", SESSION_A, "NEEDS_VERIFICATION", plan_task_id=3)
+    con.commit()
+    con.close()
+
+    assert _in_flight(SESSION_A) == ["a00000000000000c3.t"]
+
+
 def test_a_continued_chain_counts_once_and_a_complete_latest_link_closes_it(db):
     con = sqlite3.connect(db)
     first = con.execute("SELECT id FROM agent_contract_handoffs WHERE contract_id = 'bbbbbbbbbbbbbbbbb.tokenb'").fetchone()[0]
