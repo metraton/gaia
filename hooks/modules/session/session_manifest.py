@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import shlex
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -710,6 +711,41 @@ def projects_renderer():
         return lambda max_chars: ""
 
 
+_NPM_PACKAGE_SHAPE = ("node_modules", "@jaguilar87", "gaia")
+
+
+def install_update_command(live: int) -> Optional[str]:
+    """The command that moves the running install to a release at schema ``live`` or
+    newer through its own channel, or None when the channel cannot be told."""
+    plugin = _plugin_root_in_use()
+    if plugin is not None:
+        if _is_marketplace_cache_entry(plugin):
+            return "claude plugin update gaia@gaia-marketplace"
+        return f"gaia dev (from a Gaia checkout at schema v{live} or newer)"
+    own = _own_package_root()
+    if own.parts[-len(_NPM_PACKAGE_SHAPE):] == _NPM_PACKAGE_SHAPE:
+        holder = own.parents[2]
+        if (holder / "package.json").is_file():
+            where = shlex.quote(str(holder))
+            return f"npm install --prefix {where} @jaguilar87/gaia@latest, then gaia update --workspace {where}"
+        return "npm install -g @jaguilar87/gaia@latest"
+    if (own / ".git").exists():
+        return f"gaia dev (from a Gaia checkout at schema v{live} or newer; this install runs {own})"
+    return None
+
+
+def install_behind_line(live: int, expected: int, refused: bool) -> str:
+    """One line for the birth block: this install is behind the database, and the command that catches it up."""
+    state = ("it refuses every write until updated" if refused
+             else "it still writes, until a breaking migration stops it")
+    command = install_update_command(live)
+    fix = (f"Deliver to the user: run `{command}`; it takes effect next session."
+           if command else
+           "Its install channel is unknown: deliver to the user that it needs a Gaia "
+           f"at schema v{live} or newer through the channel that installed it.")
+    return f"This Gaia (schema v{expected}) is behind gaia.db (schema v{live}); {state}. {fix}"
+
+
 def build_schema_direction_block() -> str:
     """Name the fix when the database and this code disagree on schema version.
 
@@ -718,12 +754,7 @@ def build_schema_direction_block() -> str:
     """
     try:
         from gaia.paths import db_path as _db_path
-        from gaia.store.writer import (
-            schema_ahead_message,
-            schema_compatible_notice,
-            schema_versions,
-            writes_refused,
-        )
+        from gaia.store.writer import schema_versions, writes_refused
 
         db_file = _db_path()
         if not db_file.exists():
@@ -738,10 +769,8 @@ def build_schema_direction_block() -> str:
                 f"until it is migrated. Run `gaia migrate plan` to see the chain, "
                 f"then `gaia migrate apply`."
             )
-        elif writes_refused(live, expected, minimum):
-            fix = schema_ahead_message(live, expected, db_file, minimum)
         else:
-            fix = schema_compatible_notice(live, expected, minimum, db_file)
+            fix = install_behind_line(live, expected, writes_refused(live, expected, minimum))
         return "## Database schema\n" + fix
     except Exception as exc:
         logger.debug("build_schema_direction_block failed (non-fatal): %s", exc)
