@@ -715,7 +715,7 @@ def test_adopted_turn_with_no_fence_resolves_via_harness_stamp(db_path):
     _adopt(identity)
     task_info = _task_info(db_path)
     stamp_harness_agent_id(identity["contract_id"], task_info["agent_id"], db_path=db_path)
-    assert _finalize(identity, "sess-no-fence").returncode == 0
+    assert _finalize(identity, "sess-no-fence", state="BLOCKED").returncode == 0
 
     resolved = ClaudeCodeAdapter._resolve_dispatch_row(
         session_id="sess-no-fence",

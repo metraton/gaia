@@ -65,7 +65,7 @@ def test_update_contracts_dispatch_project_lands_in_the_projects_workspace(
     db_path, monkeypatch, session_at_workspace_root,
 ):
     response = _close_turn(
-        db_path, monkeypatch, AGENT, "NEEDS_VERIFICATION",
+        db_path, monkeypatch, AGENT, "COMPLETE",
         prompt=f"project={PROJECT} declare the project's workflow",
     )
 
@@ -98,7 +98,7 @@ def _close_resumed_turn(db_path, monkeypatch, prompt):
             {
                 "agent_status": {
                     "agent_id": identity["agent_id"],
-                    "agent_state": "NEEDS_VERIFICATION",
+                    "agent_state": "COMPLETE",
                     "pending_steps": [],
                     "next_action": "done",
                 },
@@ -136,7 +136,7 @@ def _close_resumed_turn(db_path, monkeypatch, prompt):
         "agent_type": AGENT,
         "agent_id": HARNESS_AGENT_ID,
         "agent_transcript_path": "",
-        "last_assistant_message": f"NEEDS_VERIFICATION\ncontract_id: {link_id}",
+        "last_assistant_message": f"COMPLETE\ncontract_id: {link_id}",
         "stop_reason": "end_turn",
         "cwd": "/tmp",
     }))
@@ -202,7 +202,7 @@ def test_a_project_identity_key_lands_in_the_workspace_owning_that_project(
     db_path, monkeypatch, session_at_workspace_root, prompt,
 ):
     """The 2026-10-09 stray: no dispatch project to follow, so the write took ``ws``."""
-    response = _close_turn(db_path, monkeypatch, AGENT, "NEEDS_VERIFICATION", prompt=prompt)
+    response = _close_turn(db_path, monkeypatch, AGENT, "COMPLETE", prompt=prompt)
 
     assert response.exit_code == 0, response.output
     applied = _apply(_notice_contract_id())

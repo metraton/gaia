@@ -1,4 +1,4 @@
--- gaia-compat: backward
+-- gaia-compat: breaking
 -- Migration v70 -> v71: memory rows carry their kind, their owner level and,
 -- for a preference, the moment it stops holding.
 --
@@ -14,14 +14,17 @@
 -- project anchor, or an initiative that names a registered project. The
 -- triggers are created after the backfill, so rows the matrix forbids stay
 -- readable and are counted for curation; they refuse a new placement the
--- matrix forbids and a placement change on an existing row.
+-- matrix forbids and a placement change on an existing row. The shell
+-- bootstrap runs schema.sql first, so they are dropped before the backfill.
 --
--- Backward: code older than v71 never writes kind, owner_level or until, so
--- its inserts pass the triggers (NULL kind is not judged) and read as before.
+-- Breaking: the backfill rewrites every memory row.
 
 ALTER TABLE memory ADD COLUMN kind TEXT;
 ALTER TABLE memory ADD COLUMN owner_level TEXT;
 ALTER TABLE memory ADD COLUMN until TEXT;
+
+DROP TRIGGER IF EXISTS trg_memory_placement_insert;
+DROP TRIGGER IF EXISTS trg_memory_placement_update;
 
 UPDATE memory SET kind = CASE
     WHEN type = 'project' AND lower(rtrim(substr(description, 1, instr(description || ' ', ' ') - 1), ':'))

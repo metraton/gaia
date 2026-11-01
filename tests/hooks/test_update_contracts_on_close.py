@@ -181,7 +181,7 @@ def _apply(contract_id: str, *extra: str):
     return _cli([str(_REPO_ROOT / "bin" / "gaia"), "context", "accept", contract_id, *extra])
 
 
-@pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
+@pytest.mark.parametrize("state", ["BLOCKED", "COMPLETE"])
 def test_a_specialist_close_writes_nothing_and_the_dispatch_result_announces_the_proposal(
     db_path, monkeypatch, state,
 ):
@@ -205,7 +205,7 @@ def test_a_specialist_close_writes_nothing_and_the_dispatch_result_announces_the
     )
 
 
-@pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
+@pytest.mark.parametrize("state", ["BLOCKED", "COMPLETE"])
 def test_applying_the_announced_proposal_lands_it_in_the_dispatch_workspace(
     db_path, monkeypatch, state,
 ):
@@ -223,7 +223,7 @@ def test_applying_the_announced_proposal_lands_it_in_the_dispatch_workspace(
     )
 
 
-@pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
+@pytest.mark.parametrize("state", ["BLOCKED", "COMPLETE"])
 def test_any_specialist_may_propose_a_section_without_write_permission(db_path, monkeypatch, state):
     ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
     _seed_project(db_path, "gaia-operator")
@@ -238,7 +238,7 @@ def test_any_specialist_may_propose_a_section_without_write_permission(db_path, 
     assert WORKFLOW in json.dumps(_project_view(db_path))
 
 
-@pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
+@pytest.mark.parametrize("state", ["BLOCKED", "COMPLETE"])
 def test_a_refused_update_contracts_is_named_on_the_close(db_path, monkeypatch, state):
     ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
     _seed_project(db_path, "gaia-operator")
@@ -262,7 +262,7 @@ def test_a_refused_update_contracts_is_recorded_on_the_contract_row(db_path, mon
     _seed_project(db_path, "gaia-operator")
 
     _close_turn(
-        db_path, monkeypatch, "gaia-operator", "NEEDS_VERIFICATION",
+        db_path, monkeypatch, "gaia-operator", "COMPLETE",
         payload={"no_such_project": {"name": "x"}},
     )
 
@@ -283,7 +283,7 @@ def test_a_section_whose_project_is_unresolved_stays_on_the_row_as_refused(db_pa
     _seed_project(db_path, "gaia-operator")
 
     _close_turn(
-        db_path, monkeypatch, "gaia-operator", "NEEDS_VERIFICATION", prompt=prompt,
+        db_path, monkeypatch, "gaia-operator", "COMPLETE", prompt=prompt,
         entries=[{"contract": "cluster_details", "payload": {"gke": {"version": "1.30"}}}],
     )
 

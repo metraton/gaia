@@ -44,7 +44,7 @@ def db(tmp_path, monkeypatch) -> Path:
 
 
 def _create(slug: str) -> dict:
-    return {"slug": slug, "type": "atom", "description": f"Fact: {slug}.", "body": "body"}
+    return {"slug": slug, "type": "atom", "kind": "fact", "description": f"Fact: {slug}.", "body": "body"}
 
 
 def _close(contract_id: str, envelope: dict) -> int:
@@ -146,7 +146,8 @@ def test_contract_unread_fields_dropped_a_free_shape_delta_name_claims_its_row(d
         "agent_status": {"agent_state": "COMPLETE", "agent_id": AGENT,
                          "pending_steps": [], "next_action": "done"},
         "memory_delta": {"proposals": [
-            {"name": "atom_free", "type": "atom", "description": "Fact: free.", "body": "body"}]},
+            {"name": "atom_free", "type": "atom", "kind": "fact", "description": "Fact: free.",
+             "body": "body"}]},
         "memorialize_suggestions": [_create("atom_free"), _create("atom_other")],
     })
 

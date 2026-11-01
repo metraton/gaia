@@ -353,7 +353,7 @@ def _extract_memorialize_suggestions(contract: dict) -> MemorializeSuggestionsBl
             "body": str(entry["body"]),
         }
         # Optional fields -- copied through when present and well-typed.
-        for key in ("slug", "type", "class", "rationale"):
+        for key in ("slug", "type", "kind", "class", "rationale"):
             if key in entry and entry[key] is not None:
                 suggestion[key] = str(entry[key])
 
@@ -381,7 +381,7 @@ def _extract_memorialize_suggestions(contract: dict) -> MemorializeSuggestionsBl
 
 
 def _free_shape_create(entry: dict) -> Optional[Dict[str, Any]]:
-    """A ``create`` proposal from a version-less entry ``{type, name, description, body}``, or None.
+    """A ``create`` proposal from a version-less entry ``{type, kind, name, description, body}``, or None.
 
     Specialists in the field write ``{"proposals": [...]}`` without ``version``
     or ``operation``, naming the row ``name``; the contract accepts it, so the
@@ -395,8 +395,9 @@ def _free_shape_create(entry: dict) -> Optional[Dict[str, Any]]:
     slug = entry.get("slug") or entry.get("name")
     if slug:
         create["slug"] = str(slug)
-    if entry.get("type"):
-        create["type"] = str(entry["type"])
+    for key in ("type", "kind"):
+        if entry.get(key):
+            create[key] = str(entry[key])
     return {"operation": "create", "create": create}
 
 

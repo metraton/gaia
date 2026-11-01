@@ -687,27 +687,13 @@ class TestScenario1HappyPath:
         # exactly the property this migration exists to enforce). This is
         # what a genuine agent does under `agent-protocol`: fill, then
         # `gaia contract finalize`.
-        cloud_agent_id = _close_dispatched_row(
-            sim, "cloud-troubleshooter", "NEEDS_VERIFICATION",
-            next_action="awaiting verification",
-        )
+        cloud_agent_id = _close_dispatched_row(sim, "cloud-troubleshooter", "COMPLETE")
 
-        # 6. Agent responds -- proposes NEEDS_VERIFICATION, not COMPLETE.
-        # Updated for plan 34 (finalize gate keyed on plan_task_id, not role):
-        # a plan-task-bound producer turn may not self-COMPLETE -- the gate
-        # (hooks/adapters/claude_code.py::_blind_verification_required) forces
-        # it to NEEDS_VERIFICATION so an independent (blind) verifier confirms
-        # the increment. cloud-troubleshooter is a producer here, so it proposes
-        # NEEDS_VERIFICATION with a proposed verification.result -- the gate
-        # never rejects that (it only gates COMPLETE) -- and step 6b below
-        # dispatches gaia-verifier to independently confirm and promote to
-        # COMPLETE. The decision is a pure function of the dispatch binding's
-        # plan_task_id, NOT of the emitting agent's role: a turn with no
-        # plan_task_id may self-COMPLETE. This is the live, real-hook-subprocess
-        # proof of the "no single-agent-task freeze" property: the task still
-        # reaches done, through the verifier-gated route.
+        # 6. Agent responds COMPLETE. The simulator binds no plan_task_id and
+        # no parent_handoff_id, so this turn is unbound: it may self-COMPLETE,
+        # and finalize refuses NEEDS_VERIFICATION on it (NEEDS_VERIFICATION_UNBOUND).
         agent_output = _build_valid_agent_output(
-            agent_state="NEEDS_VERIFICATION",
+            agent_state="COMPLETE",
             summary="El pod crashea por OOMKilled.",
             agent_id=cloud_agent_id,
         )
@@ -721,49 +707,6 @@ class TestScenario1HappyPath:
         )
         assert stop_data.get("contract_validated") is True, (
             f"Contract not validated: {stop_data}"
-        )
-
-        # 6b. gaia-verifier is dispatched to confirm and promote to COMPLETE.
-        # This is the guaranteed verifier dispatch NEEDS_VERIFICATION names
-        # (agent-response skill) -- proven here end-to-end through the real
-        # hook subprocess pipeline, not a unit-level stand-in.
-        result = sim.invoke_agent(
-            "gaia-verifier", "confirma la verificacion del diagnostico"
-        )
-        assert result["exit_code"] == 0, (
-            f"gaia-verifier invoke failed: exit={result['exit_code']}, "
-            f"stderr={result['stderr']}"
-        )
-
-        # NOTE: unlike cloud-troubleshooter's turn, no row is born here at all
-        # -- extract_dispatch_binding requires a resolvable parent_handoff_id
-        # for a verifier dispatch, and this prompt names none, so
-        # _maybe_birth_dispatched_row's own binding validation refuses the
-        # birth (best-effort, non-blocking; see modules.agents.dispatch_
-        # binding). Once the fence was retired as an input to the close, that
-        # leaves this turn with nothing to close, so it opens its own contract
-        # with `gaia contract init` -- the route the row-missing rejection
-        # message names, exercised here end to end rather than asserted.
-        _open_and_close_own_contract(sim, "a9f9f90f1e2d3c4b5", "COMPLETE")
-
-        verifier_output = _build_valid_agent_output(
-            agent_state="COMPLETE",
-            summary="Verificado: el pod crashea por OOMKilled.",
-            agent_id="a9f9f90f1e2d3c4b5",
-        )
-        result = sim.agent_responds("gaia-verifier", "a9f9f90f1e2d3c4b5", verifier_output)
-        assert result["exit_code"] == 0, (
-            f"gaia-verifier SubagentStop failed: exit={result['exit_code']}, "
-            f"stderr={result['stderr']}"
-        )
-        verifier_stop_data = result["stdout_json"]
-        assert verifier_stop_data is not None, (
-            f"SubagentStop returned no JSON for gaia-verifier. "
-            f"stdout: {result['stdout_raw']}"
-        )
-        assert verifier_stop_data.get("contract_validated") is True, (
-            f"gaia-verifier's COMPLETE must be accepted (armed verifier role): "
-            f"{verifier_stop_data}"
         )
 
         # 7. End session
@@ -977,7 +920,7 @@ class TestScenario6EmptyEvidenceAdvisory:
         # scenario's property now has to hold: an evidence_report whose lists
         # are all empty must still finalize and still pass the close.
         # `init` rather than the born row, because a verifier dispatch naming
-        # no parent_handoff_id births none (see scenario 1).
+        # no parent_handoff_id births none (see _open_and_close_own_contract).
         verifier_agent_id = "ab12cd0f1e2d3c4b5"
         _open_and_close_own_contract(sim, verifier_agent_id, "COMPLETE")
 

@@ -37,6 +37,7 @@ PROPOSAL = {
     "create": {
         "slug": "atom_alpha_admin_url",
         "type": "atom",
+        "kind": "fact",
         "description": "Fact: alpha admin lives at https://admin.alpha.test.",
         "body": "Measured 2026-10-20 from the ingress manifest.",
     },
@@ -63,7 +64,7 @@ def _close_turn(db_path: Path, memory_delta):
     stamp_harness_agent_id(identity["contract_id"], HARNESS_AGENT_ID, db_path=db_path)
     envelope = {
         "agent_status": {
-            "agent_id": identity["agent_id"], "agent_state": "NEEDS_VERIFICATION",
+            "agent_id": identity["agent_id"], "agent_state": "COMPLETE",
             "pending_steps": [], "next_action": "done",
         },
         "user_facing_summary": "Work recorded for the test.",
