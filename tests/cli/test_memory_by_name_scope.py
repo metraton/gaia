@@ -50,7 +50,7 @@ def _add(capsys, name, workspace="me"):
         capsys, memory_mod._cmd_add, name=name, type="project", body="stored under me",
         body_file=None, description="desc", workspace=workspace, class_="thread",
         status="carry_forward", project=None, project_ref=None, audience=None,
-        initiative="bildwiz",
+        initiative="bildwiz", kind="pending",
     )
     assert rc == 0, out
 

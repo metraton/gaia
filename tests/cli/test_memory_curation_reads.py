@@ -47,7 +47,7 @@ def _json(capsys, *argv: str):
 
 
 def _add_user(name: str, cls: str, body: str) -> None:
-    assert _run("add", "--type=user", f"--name={name}", f"--class={cls}",
+    assert _run("add", "--type=user", "--kind=fact", f"--name={name}", f"--class={cls}",
                 f"--description=row {name}", f"--body={body}") == 0
 
 
@@ -77,7 +77,7 @@ def test_list_count_follows_the_live_rows(lineage, capsys):
 
 
 def test_include_superseded_names_the_successor(lineage, capsys):
-    rows = {r["name"]: r for r in _json(capsys, "list", "--include-superseded")}
+    rows = {r["name"]: r for r in _json(capsys, "list", "--include-superseded", "--include-user")}
 
     assert rows[OLD]["superseded_by"] == NEW
     assert rows[NEW]["superseded_by"] is None
@@ -150,10 +150,10 @@ def test_link_supersedes_several_old_rows_at_once(capsys):
         assert _run("link", "user_fact_team_v3", "user_fact_team_v1",
                     "user_fact_team_v2", "--kind=supersedes") == 0
 
-    rows = {r["name"]: r for r in _json(capsys, "list", "--include-superseded")}
+    rows = {r["name"]: r for r in _json(capsys, "list", "--include-superseded", "--include-user")}
     assert rows["user_fact_team_v1"]["superseded_by"] == "user_fact_team_v3"
     assert rows["user_fact_team_v2"]["superseded_by"] == "user_fact_team_v3"
-    assert _names(_json(capsys, "list")) == ["user_fact_team_v3"]
+    assert _names(_json(capsys, "list", "--include-user")) == ["user_fact_team_v3"]
 
 
 def _copy_row_to_workspace(name: str, workspace: str) -> None:

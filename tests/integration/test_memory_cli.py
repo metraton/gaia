@@ -93,7 +93,7 @@ def test_add_inserts_row_in_db(tmp_db, tmp_path, monkeypatch, capsys):
 
     monkeypatch.chdir(tmp_path)
     args = argparse.Namespace(
-        name="test-mem",
+        name="test-mem", kind="fact",
         type="project",
         body="This is the body of a test memory entry.",
         description="One-line description",
@@ -117,7 +117,7 @@ def test_add_zero_filesystem_side_effects(tmp_db, tmp_path, monkeypatch, capsys)
 
     monkeypatch.chdir(tmp_path)
     args = argparse.Namespace(
-        name="no-fs-touch",
+        name="no-fs-touch", kind="fact",
         type="project",
         body="body",
         description=None,
@@ -145,7 +145,7 @@ def test_add_duplicate_name_with_replace_upserts(tmp_db, tmp_path, monkeypatch, 
     from cli.memory import _cmd_add
 
     monkeypatch.chdir(tmp_path)
-    base = dict(name="dup-mem", type="project", workspace="me",
+    base = dict(name="dup-mem", type="project", kind="fact", workspace="me",
                 description=None, json=False)
 
     rc1 = _cmd_add(argparse.Namespace(body="initial body", **base))
@@ -177,7 +177,7 @@ def test_add_json_action_is_inserted_then_updated(tmp_db, tmp_path,
     from cli.memory import _cmd_add
 
     monkeypatch.chdir(tmp_path)
-    base = dict(name="atom_action_mem", type="atom", workspace="me",
+    base = dict(name="atom_action_mem", type="atom", kind="fact", workspace="me",
                 description=None, json=True)
 
     rc1 = _cmd_add(argparse.Namespace(body="b1", **base))
@@ -203,7 +203,7 @@ def test_add_invalid_type_returns_error(tmp_db, tmp_path, monkeypatch, capsys):
 
     monkeypatch.chdir(tmp_path)
     args = argparse.Namespace(
-        name="bad-type",
+        name="bad-type", kind="fact",
         type="bogus",
         body="b",
         description=None,
@@ -228,7 +228,7 @@ def test_add_missing_required_flags(tmp_db, tmp_path, monkeypatch, capsys):
 
     monkeypatch.chdir(tmp_path)
     args = argparse.Namespace(
-        name="missing-body",
+        name="missing-body", kind="fact",
         type="project",
         body=None,
         description=None,
@@ -248,7 +248,7 @@ def test_add_missing_required_flags(tmp_db, tmp_path, monkeypatch, capsys):
 def _add_args(**overrides) -> argparse.Namespace:
     """Base Namespace for `_cmd_add`, with N3 project fields defaulted."""
     base = dict(
-        name="proj-mem", type="project", body="body text",
+        name="proj-mem", type="project", kind="fact", body="body text",
         description=None, workspace="me", json=False,
         project=None, project_ref=None, initiative=None,
     )
@@ -539,10 +539,10 @@ def test_add_initiative_emitted_in_json(tmp_db, tmp_path, monkeypatch, capsys):
 # list / show (curated) / delete / edit
 # ---------------------------------------------------------------------------
 
-def _seed_curated(tmp_db, name, type_, body, description=None):
+def _seed_curated(tmp_db, name, type_, body, description=None, kind=None):
     from gaia.store.writer import upsert_memory
     upsert_memory("me", name, type=type_, body=body,
-                  description=description, db_path=tmp_db)
+                  description=description, db_path=tmp_db, kind=kind)
 
 
 def test_list_returns_rows(tmp_db, tmp_path, monkeypatch, capsys):
@@ -553,7 +553,7 @@ def test_list_returns_rows(tmp_db, tmp_path, monkeypatch, capsys):
     _seed_curated(tmp_db, "u1", "user", "body2", description="D2")
 
     args = argparse.Namespace(
-        type=None, workspace="me", format="json", json=False,
+        type=None, workspace="me", format="json", json=False, include_user=True,
     )
     rc = _cmd_list(args)
     assert rc == 0
@@ -567,7 +567,7 @@ def test_list_filters_by_type(tmp_db, tmp_path, monkeypatch, capsys):
 
     monkeypatch.chdir(tmp_path)
     _seed_curated(tmp_db, "p1", "project", "b")
-    _seed_curated(tmp_db, "f1", "feedback", "b")
+    _seed_curated(tmp_db, "f1", "feedback", "b", kind="fact")
 
     args = argparse.Namespace(
         type="project", workspace="me", format="count", json=False,

@@ -42,12 +42,12 @@ def tmp_db(tmp_path, monkeypatch):
     return db_path()
 
 
-def _add(capsys, workspace, name, *, initiative="bildwiz", body="body text"):
+def _add(capsys, workspace, name, *, initiative="bildwiz", body="body text", kind="pending"):
     rc = memory_mod._cmd_add(argparse.Namespace(
         name=name, type="project", body=body, body_file=None,
         description="desc", workspace=workspace, class_="thread",
         status="carry_forward", project=None, project_ref=None,
-        audience=None, initiative=initiative, json=True,
+        audience=None, initiative=initiative, kind=kind, json=True,
     ))
     assert rc == 0, capsys.readouterr().out
     capsys.readouterr()
@@ -89,7 +89,7 @@ def test_show_from_another_workspace_finds_the_projects_row(
 def test_show_does_not_reach_a_workspace_only_row_elsewhere(
     tmp_db, monkeypatch, capsys,
 ):
-    _add(capsys, "me", "project_private_to_me", initiative=None)
+    _add(capsys, "me", "project_private_to_me", initiative=None, kind="fact")
     monkeypatch.setenv("GAIA_WORKSPACE", "ws")
 
     rc, out = _show(capsys, "project_private_to_me")

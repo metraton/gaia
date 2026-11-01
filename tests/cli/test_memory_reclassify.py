@@ -382,7 +382,7 @@ def test_cli_add_with_class_and_status(tmp_db, capsys):
     args = parser.parse_args([
         "memory", "add",
         "--name=atom_thread_new",
-        "--type=atom",
+        "--type=atom", "--kind=fact",
         "--body=new thread body",
         "--class=thread",
         "--status=open",
@@ -402,7 +402,7 @@ def test_cli_add_with_class_only(tmp_db, capsys):
     args = parser.parse_args([
         "memory", "add",
         "--name=atom_anchor_new",
-        "--type=atom",
+        "--type=atom", "--kind=fact",
         "--body=fresh anchor",
         "--class=anchor",
         "--workspace=me",
@@ -420,7 +420,7 @@ def test_cli_add_status_on_anchor_class_errors(tmp_db, capsys):
     args = parser.parse_args([
         "memory", "add",
         "--name=atom_bad_status",
-        "--type=atom",
+        "--type=atom", "--kind=fact",
         "--body=should fail reclassify",
         "--class=anchor",
         "--status=open",

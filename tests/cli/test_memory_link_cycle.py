@@ -40,7 +40,7 @@ def _rows(gaia, *names: str) -> None:
     for name in names:
         result = gaia(
             "memory", "add", "--name", name, "--type", "decision", "--initiative", "demo",
-            "--workspace", "demo", "--class", "thread", "--status", "open",
+            "--kind", "decision", "--workspace", "demo", "--class", "thread", "--status", "open",
             "--description", f"Decision: {name}.", "--body", f"body of {name}",
         )
         assert result.returncode == 0, result.stderr

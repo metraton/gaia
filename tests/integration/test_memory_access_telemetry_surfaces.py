@@ -112,6 +112,7 @@ SEEDS: tuple[Seed, ...] = (
     Seed("w_link_src", "project"),
     Seed("w_link_dst", "project"),
     Seed("w_delete", "project"),
+    Seed("w_move", "project"),
 )
 
 EPISODE_ID = "ep_seeded_for_surface_census"
@@ -165,6 +166,8 @@ SURFACES: tuple[Surface, ...] = (
            "--include-superseded"],
           None, action="search", contains=("t_alpha",)),
     _read("list-table", ["memory", "list", "--workspace", WORKSPACE],
+          None, action="list", contains=("t_alpha",)),
+    _read("list-include-user", ["memory", "list", "--workspace", WORKSPACE, "--include-user"],
           None, action="list", contains=("t_alpha", "u_exec")),
     _read("list-json",
           ["memory", "list", "--workspace", WORKSPACE, "--json"],
@@ -201,6 +204,9 @@ SURFACES: tuple[Surface, ...] = (
     _read("show-history-text",
           ["memory", "show", "t_alpha", "--workspace", WORKSPACE, "--history"],
           DELIBERATE, ["t_alpha"], action="show", contains=("History",)),
+    _read("show-no-count",
+          ["memory", "show", "t_alpha", "--workspace", WORKSPACE, "--no-count"],
+          None, action="show", contains=("t_alpha",)),
     _read("show-missing-slug",
           ["memory", "show", "no_such_slug", "--workspace", WORKSPACE, "--json"],
           None, action="show", rc=1, contains=("not found",)),
@@ -324,6 +330,10 @@ SURFACES: tuple[Surface, ...] = (
           ["memory", "delete", "w_delete", "--yes", "--workspace", WORKSPACE,
            "--json"],
           None, action="delete", contains=("w_delete",)),
+    _read("move",
+          ["memory", "move", "w_move", "--from", WORKSPACE, "--workspace", WORKSPACE,
+           "--initiative", GROUP, "--json"],
+          None, action="move", contains=("w_move",)),
     _read("checkpoint",
           ["memory", "checkpoint", "--file", "__CHECKPOINT_PAYLOAD__",
            "--workspace", WORKSPACE, "--json"],
@@ -348,6 +358,8 @@ NON_CLASSIFYING_FLAGS: dict[str, frozenset[str]] = {
     "checkpoint": frozenset({"--workspace", "--project", "--project-ref",
                              "--initiative"}),
     "get-relevant": frozenset({"--workspace"}),
+    "move": frozenset({"--workspace", "--to", "--type", "--project", "--project-ref",
+                       "--kind", "--from-file"}),
     "conflicts": frozenset(),
     "story": frozenset({"--workspace"}),
 }

@@ -37,7 +37,7 @@ def search(tmp_path):
 
     added = run(
         "memory", "add", "--name", "decision_teams_format", "--type", "decision",
-        "--initiative", "demo", "--workspace", "demo", "--class", "thread",
+        "--kind", "decision", "--initiative", "demo", "--workspace", "demo", "--class", "thread",
         "--status", "open", "--description", "Decision: teams format.",
         "--body", "teams formato PR",
     )

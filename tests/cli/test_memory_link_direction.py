@@ -50,7 +50,7 @@ def _thread(gaia, name: str, *, born: str) -> None:
     """Write a live decision thread of project demo and date its birth."""
     result = gaia(
         "memory", "add", "--name", name, "--type", "decision", "--initiative", "demo",
-        "--workspace", "demo", "--class", "thread", "--status", "open",
+        "--kind", "decision", "--workspace", "demo", "--class", "thread", "--status", "open",
         "--description", f"Decisión: {name}.", "--body", f"body of {name}",
     )
     assert result.returncode == 0, result.stderr

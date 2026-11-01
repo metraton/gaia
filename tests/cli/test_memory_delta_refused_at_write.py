@@ -85,9 +85,8 @@ def test_memory_delta_refused_at_write_by_fill(gaia, bad):
     (_proposal("atom_no_kind", "atom", kind=None), "kind"),
     (_proposal("atom_odd_kind", "atom", kind="opinion"), "kind"),
     (_proposal("user_decided", "user", kind="decision"), "user owns"),
-    (_proposal("atom_called_lesson", "atom", kind="lesson"), "atom"),
 ])
-def test_a_memory_proposal_names_a_kind_its_owner_and_type_hold(gaia, bad, reason):
+def test_a_memory_proposal_names_a_kind_its_owner_holds(gaia, bad, reason):
     refused = gaia("fill", "--json", json.dumps({"memory_delta": _delta(bad)}))
 
     assert refused.returncode != 0, refused.stdout

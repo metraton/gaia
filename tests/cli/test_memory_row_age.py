@@ -117,7 +117,7 @@ class TestRowAgeForwardOnly:
         before_null = _null_created_at_count(seeded)
 
         rc = _run(parser, [
-            "add", "--name=atom_newborn_row", "--type=atom",
+            "add", "--name=atom_newborn_row", "--type=atom", "--kind=fact",
             "--body=born after v50, must carry a real timestamp",
             f"--workspace={_WORKSPACE}",
         ])
@@ -140,7 +140,7 @@ class TestRowAgeForwardOnly:
         before_null = _null_created_at_count(seeded)
 
         rc = _run(parser, [
-            "add", "--name=atom_preexisting_one", "--type=atom",
+            "add", "--name=atom_preexisting_one", "--type=atom", "--kind=fact",
             "--body=edited body, this is a correction not a birth",
             f"--workspace={_WORKSPACE}", "--replace",
         ])
@@ -169,7 +169,7 @@ class TestRowAgeForwardOnly:
         that already has a real created_at must not re-stamp it either."""
         parser = _build_parser()
         _run(parser, [
-            "add", "--name=atom_immutable_birth", "--type=atom",
+            "add", "--name=atom_immutable_birth", "--type=atom", "--kind=fact",
             "--body=first write",
             f"--workspace={_WORKSPACE}",
         ])
@@ -177,7 +177,7 @@ class TestRowAgeForwardOnly:
         assert first_created is not None
 
         _run(parser, [
-            "add", "--name=atom_immutable_birth", "--type=atom",
+            "add", "--name=atom_immutable_birth", "--type=atom", "--kind=fact",
             "--body=second write, same slug",
             f"--workspace={_WORKSPACE}",
         ])
@@ -194,21 +194,21 @@ class TestRowAgeForwardOnly:
         assert baseline == 2
 
         _run(parser, [
-            "add", "--name=atom_activity_one", "--type=atom",
+            "add", "--name=atom_activity_one", "--type=atom", "--kind=fact",
             "--body=new row during activity",
             f"--workspace={_WORKSPACE}",
         ])
         assert _null_created_at_count(seeded) == baseline
 
         _run(parser, [
-            "add", "--name=atom_preexisting_two", "--type=atom",
+            "add", "--name=atom_preexisting_two", "--type=atom", "--kind=fact",
             "--body=old row edited during activity",
             f"--workspace={_WORKSPACE}",
         ])
         assert _null_created_at_count(seeded) == baseline
 
         _run(parser, [
-            "add", "--name=atom_activity_two", "--type=atom",
+            "add", "--name=atom_activity_two", "--type=atom", "--kind=fact",
             "--body=second new row during activity",
             f"--workspace={_WORKSPACE}",
         ])
