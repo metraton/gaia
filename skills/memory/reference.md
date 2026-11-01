@@ -186,6 +186,24 @@ user's. Refusal codes, one per row in a batch: `not_found`, `kind_refused`,
 history; the old owner is. `move` sits on the orchestrator's lane beside
 `reclassify`, is refused to every specialist but `gaia-operator`, and is T0.
 
+## Batch reclassify and link
+
+`reclassify --from-file` (`bin/cli/memory.py::_reclassify_batch`) and
+`link --from-file` (`_link_batch`) share move's batch reader and report
+(`_read_batch`, `_batch_rows`, `_emit_batch`): blank and `#` lines skipped,
+`-` reads stdin, JSON `{status: applied|partial|failed, counts, results}` with
+the line number on each result. A reclassify line is
+`slug<TAB>class=<c>[,status=<s>][<TAB>note]`; `status=null` clears, and
+`writer.py::reclassify_memory(note=...)` appends the note to the body before
+the commit that sets class and status, so both land or neither does.
+`--from` is an alias of reclassify's `--workspace`. A link line is
+`from<TAB>to<TAB>kind`, each end found as the single form finds it, written by
+`insert_memory_link`, which applies `_supersedes_refusal` (owner and kind, no
+self-link, no loop). Refusal codes: `bad_line`, `bad_spec`, `invalid` (the
+writer's message), `ambiguous_slug`, `write_forbidden`. `--from-file` refuses a
+positional slug, `--class`/`--status`, `--kind` and `--delete` beside it. Both
+verbs keep their single form's lane, memory-skill guard and specialist refusal.
+
 Anchoring is **forward-only, by design**. Rows written before this
 mechanism existed stay `project_ref IS NULL` -- the memory-row-to-project
 mapping is genuinely ambiguous whenever a workspace hosts more than one

@@ -3006,9 +3006,23 @@ def _cmd_reclassify(args) -> int:
     """
     as_json = getattr(args, "json", False)
     name = args.name
-    workspace = _flag_workspace_holding(args, name)
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
+    from_file = getattr(args, "from_file", None)
+
+    if from_file is not None:
+        if name or class_flag or status_flag:
+            return _err("--from-file takes no slug, --class or --status: each line carries "
+                        "slug<TAB>class=<c>[,status=<s>][<TAB>note]", as_json)
+        try:
+            lines = _read_batch(from_file)
+        except OSError as exc:
+            return _err(f"--from-file: cannot read '{from_file}': {exc}", as_json)
+        return _emit_batch(_reclassify_batch(args, lines), as_json, ("reclassified",),
+                           _reclassify_line)
+    if not name:
+        return _err("a slug is required, or --from-file", as_json)
+    workspace = _flag_workspace_holding(args, name)
 
     status_touches, status_for_writer = _normalize_status_flag(status_flag)
 
@@ -3057,7 +3071,58 @@ def _cmd_reclassify(args) -> int:
     return 0
 
 
-_OWNER_SPEC_FORMS = "user | gaia | workspace:<ws> | group:<ws>/<key> | project:<ws>/<name>"
+_RECLASSIFY_LINE_FORM = "slug<TAB>class=<c>[,status=<s>][<TAB>note]"
+
+
+def _parse_reclassify_spec(spec: str) -> tuple[str | None, str | None]:
+    values: dict[str, str] = {}
+    for part in spec.split(","):
+        key, sep, value = (piece.strip() for piece in part.partition("="))
+        if not sep or key not in ("class", "status") or key in values or not value:
+            raise ValueError(f"{part.strip()!r} is not class=<c> or status=<s>")
+        values[key] = value
+    return values.get("class"), values.get("status")
+
+
+def _reclassify_batch(args, lines) -> list[dict]:
+    """One result per ``slug<TAB>class=<c>[,status=<s>][<TAB>note]`` line, each in its own transaction."""
+    from gaia.store.writer import reclassify_memory
+
+    results = []
+    for number, fields in _batch_rows(lines):
+        name = fields[0].strip()
+        if len(fields) not in (2, 3) or not name:
+            results.append(_refused_line(number, name, "bad_line", f"expected {_RECLASSIFY_LINE_FORM}"))
+            continue
+        try:
+            class_, status = _parse_reclassify_spec(fields[1])
+        except ValueError as exc:
+            results.append(_refused_line(number, name, "bad_spec", str(exc)))
+            continue
+        try:
+            res = reclassify_memory(
+                _flag_workspace_holding(args, name), name, class_=class_,
+                status=_normalize_status_flag(status)[1],
+                note=fields[2].strip() if len(fields) == 3 else None,
+            )
+        except AmbiguousSlugError as exc:
+            results.append(_refused_line(number, name, "ambiguous_slug", str(exc)))
+        except PermissionError as exc:
+            results.append(_refused_line(number, name, "write_forbidden", str(exc)))
+        except ValueError as exc:
+            results.append(_refused_line(number, name, "invalid", str(exc)))
+        else:
+            results.append({"line": number, **res, "status": "reclassified"})
+    return results
+
+
+def _reclassify_line(r: dict) -> str:
+    note = ", note appended" if r["note_appended"] else ""
+    return (f"reclassified {r['name']}: class={r['class']}, status={r['memory_status']} "
+            f"in workspace {r['workspace']}{note}")
+
+
+_OWNER_SPEC_FORMS ="user | gaia | workspace:<ws> | group:<ws>/<key> | project:<ws>/<name>"
 
 
 def _parse_owner_spec(spec: str) -> dict:
@@ -3124,25 +3189,59 @@ def _move_one(name: str, target: dict, kind: str | None, from_flag: str | None) 
     return {**res, "status": res["action"]}
 
 
-def _move_batch(lines, from_flag: str | None) -> list[dict]:
-    """One result per ``slug<TAB>owner-spec[<TAB>kind]`` line; blank and ``#`` lines are skipped."""
-    results = []
+def _read_batch(from_file: str) -> list[str]:
+    text = (sys.stdin.read() if from_file == "-"
+            else Path(from_file).expanduser().read_text(encoding="utf-8"))
+    return text.splitlines()
+
+
+def _batch_rows(lines):
     for number, line in enumerate(lines, start=1):
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        fields = line.rstrip("\n").split("\t")
+        if line.strip() and not line.lstrip().startswith("#"):
+            yield number, line.rstrip("\n").split("\t")
+
+
+def _refused_line(number: int, name: str, code: str, error: str) -> dict:
+    return {"line": number, "name": name, "status": "refused", "code": code, "error": error}
+
+
+def _emit_batch(results: list[dict], as_json: bool, statuses: tuple, line_of) -> int:
+    """Report every batch line -- JSON, or one line each plus a tally -- and return 1 when any was refused."""
+    refused = [r for r in results if r["status"] == "refused"]
+    if as_json:
+        counts = {s: sum(r["status"] == s for r in results) for s in (*statuses, "refused")}
+        print(json.dumps({
+            "status": "partial" if refused and len(refused) < len(results)
+            else "failed" if refused else "applied",
+            "counts": counts, "results": results}, indent=2, default=str))
+        return 1 if refused else 0
+    for r in results:
+        if r["status"] == "refused":
+            print(f"refused line {r['line']} {r.get('name') or '?'} [{r['code']}]: {r['error']}",
+                  file=sys.stderr)
+        else:
+            print(line_of(r))
+            for w in r.get("warnings", ()):
+                print(f"warning: {w['message']}", file=sys.stderr)
+    print(f"{len(results) - len(refused)} applied, {len(refused)} refused "
+          f"of {len(results)} line(s)")
+    return 1 if refused else 0
+
+
+def _move_batch(lines, from_flag: str | None) -> list[dict]:
+    """One result per ``slug<TAB>owner-spec[<TAB>kind]`` line."""
+    results = []
+    for number, fields in _batch_rows(lines):
         if len(fields) not in (2, 3) or not fields[0].strip():
-            results.append({"line": number, "name": fields[0].strip(), "status": "refused",
-                            "code": "bad_line",
-                            "error": "expected slug<TAB>owner-spec[<TAB>kind]"})
+            results.append(_refused_line(number, fields[0].strip(), "bad_line",
+                                         "expected slug<TAB>owner-spec[<TAB>kind]"))
             continue
         name, spec = fields[0].strip(), fields[1]
         kind = fields[2].strip() if len(fields) == 3 and fields[2].strip() else None
         try:
             target = _parse_owner_spec(spec)
         except ValueError as exc:
-            results.append({"line": number, "name": name, "status": "refused",
-                            "code": "bad_owner_spec", "error": str(exc)})
+            results.append(_refused_line(number, name, "bad_owner_spec", str(exc)))
             continue
         results.append({"line": number, **_move_one(name, target, kind, from_flag)})
     return results
@@ -3171,41 +3270,28 @@ def _cmd_move(args) -> int:
             return _err("--from-file takes no slug, --to, --kind or scope flag: each "
                         "line carries slug<TAB>owner-spec[<TAB>kind]", as_json)
         try:
-            lines = (sys.stdin.read() if from_file == "-"
-                     else Path(from_file).expanduser().read_text(encoding="utf-8")).splitlines()
+            lines = _read_batch(from_file)
         except OSError as exc:
             return _err(f"--from-file: cannot read '{from_file}': {exc}", as_json)
-        results = _move_batch(lines, from_flag)
-    else:
-        if not args.name:
-            return _err("a slug is required, or --from-file", as_json)
-        if bool(spec) == bool(flag_target):
-            return _err_structured(
-                f"name the target once: --to <{_OWNER_SPEC_FORMS}>, or the scope flags "
-                f"add takes (--type=user | --workspace [--initiative|--project])",
-                as_json, code="missing_target")
-        try:
-            target = _parse_owner_spec(spec) if spec else flag_target
-        except ValueError as exc:
-            return _err_structured(str(exc), as_json, code="bad_owner_spec")
-        results = [_move_one(args.name, target, args.kind, from_flag)]
+        return _emit_batch(_move_batch(lines, from_flag), as_json, ("moved", "noop"), _move_line)
 
-    refused = [r for r in results if r["status"] == "refused"]
+    if not args.name:
+        return _err("a slug is required, or --from-file", as_json)
+    if bool(spec) == bool(flag_target):
+        return _err_structured(
+            f"name the target once: --to <{_OWNER_SPEC_FORMS}>, or the scope flags "
+            f"add takes (--type=user | --workspace [--initiative|--project])",
+            as_json, code="missing_target")
+    try:
+        target = _parse_owner_spec(spec) if spec else flag_target
+    except ValueError as exc:
+        return _err_structured(str(exc), as_json, code="bad_owner_spec")
+    result = _move_one(args.name, target, args.kind, from_flag)
     if as_json:
-        counts = {s: sum(r["status"] == s for r in results) for s in ("moved", "noop", "refused")}
-        print(json.dumps(
-            results[0] if from_file is None else {
-                "status": "partial" if refused and len(refused) < len(results)
-                else "failed" if refused else "applied",
-                "counts": counts, "results": results},
-            indent=2, default=str))
+        print(json.dumps(result, indent=2, default=str))
     else:
-        for r in results:
-            print(_move_line(r), file=sys.stderr if r["status"] == "refused" else sys.stdout)
-        if from_file is not None:
-            print(f"{len(results) - len(refused)} applied, {len(refused)} refused "
-                  f"of {len(results)} line(s)")
-    return 1 if refused else 0
+        print(_move_line(result), file=sys.stderr if result["status"] == "refused" else sys.stdout)
+    return 1 if result["status"] == "refused" else 0
 
 
 # ---------------------------------------------------------------------------
@@ -3230,8 +3316,23 @@ def _cmd_link(args) -> int:
     """
     as_json = getattr(args, "json", False)
     src_name = args.src_name
-    workspace = _flag_workspace_holding(args, src_name)
     kind = args.kind
+    from_file = getattr(args, "from_file", None)
+
+    if from_file is not None:
+        if src_name or args.dst_names or kind or getattr(args, "delete", False):
+            return _err("--from-file takes no slug, --kind or --delete: each line carries "
+                        "from<TAB>to<TAB>kind, and a link is deleted one signed call at a time",
+                        as_json)
+        try:
+            lines = _read_batch(from_file)
+        except OSError as exc:
+            return _err(f"--from-file: cannot read '{from_file}': {exc}", as_json)
+        return _emit_batch(_link_batch(args, lines), as_json, ("inserted", "noop"), _link_line)
+    if not src_name or not args.dst_names or not kind:
+        return _err("a source slug, one or more destination slugs and --kind are required, "
+                    "or --from-file", as_json)
+    workspace = _flag_workspace_holding(args, src_name)
 
     try:
         from gaia.store.writer import VALID_MEMORY_LINK_KINDS
@@ -3286,20 +3387,7 @@ def _link_pair(args, workspace: str, src_name: str, dst_name: str) -> dict:
         )
         verb = "Created" if res["action"] == "inserted" else "Skipped"
 
-    warnings = []
-    # ISO-8601 stamps order as strings. A corrected old row can legitimately
-    # be the newer one, which is why this warns instead of refusing.
-    if (kind == "supersedes" and not do_delete and res["src_born"] and res["dst_born"]
-            and res["dst_born"] > res["src_born"]):
-        warnings.append(_warning(
-            "supersedes_reversed",
-            f"{dst_name} is newer than {src_name}: supersedes points from the "
-            f"new row to the old one, and {dst_name} has just left every "
-            f"injection. If the arrow is reversed: `gaia memory link {src_name} "
-            f"{dst_name} --kind=supersedes --delete` and "
-            f"`gaia memory link {dst_name} {src_name} --kind=supersedes`.",
-        ))
-
+    warnings = [] if do_delete else _supersedes_reversed(kind, res, src_name, dst_name)
     if not as_json:
         # Arrow uses ASCII-friendly form; no unicode dependence.
         action_label = (
@@ -3312,6 +3400,60 @@ def _link_pair(args, workspace: str, src_name: str, dst_name: str) -> dict:
             print(f"  {src_name} reemplaza a {dst_name}")
         _emit_write_warnings(warnings, as_json)
     return {**res, **({"warnings": warnings} if warnings else {})}
+
+
+def _supersedes_reversed(kind: str, res: dict, src_name: str, dst_name: str) -> list[dict]:
+    """The warning for a supersedes edge whose old end was born after its new end, else none."""
+    # ISO-8601 stamps order as strings. A corrected old row can legitimately
+    # be the newer one, which is why this warns instead of refusing.
+    if not (kind == "supersedes" and res["src_born"] and res["dst_born"]
+            and res["dst_born"] > res["src_born"]):
+        return []
+    return [_warning(
+        "supersedes_reversed",
+        f"{dst_name} is newer than {src_name}: supersedes points from the "
+        f"new row to the old one, and {dst_name} has just left every "
+        f"injection. If the arrow is reversed: `gaia memory link {src_name} "
+        f"{dst_name} --kind=supersedes --delete` and "
+        f"`gaia memory link {dst_name} {src_name} --kind=supersedes`.",
+    )]
+
+
+def _link_batch(args, lines) -> list[dict]:
+    """One result per ``from<TAB>to<TAB>kind`` line, each edge written in its own transaction."""
+    from gaia.store.writer import insert_memory_link
+
+    results = []
+    for number, fields in _batch_rows(lines):
+        fields = [f.strip() for f in fields]
+        if len(fields) != 3 or not all(fields):
+            results.append(_refused_line(number, fields[0], "bad_line",
+                                         "expected from<TAB>to<TAB>kind"))
+            continue
+        src_name, dst_name, kind = fields
+        try:
+            res = insert_memory_link(
+                _flag_workspace_holding(args, src_name), src_name, dst_name, kind,
+                dst_workspace=_flag_workspace_holding(args, dst_name),
+            )
+        except AmbiguousSlugError as exc:
+            results.append(_refused_line(number, src_name, "ambiguous_slug", str(exc)))
+        except PermissionError as exc:
+            results.append(_refused_line(number, src_name, "write_forbidden", str(exc)))
+        except ValueError as exc:
+            results.append(_refused_line(number, src_name, "invalid", str(exc)))
+        else:
+            warnings = _supersedes_reversed(kind, res, src_name, dst_name)
+            results.append({"line": number, "name": src_name, **res, "status": res["action"],
+                            **({"warnings": warnings} if warnings else {})})
+    return results
+
+
+def _link_line(r: dict) -> str:
+    verb = "linked" if r["status"] == "inserted" else "unchanged"
+    ends = (f"in workspace {r['workspace']}" if r["dst_workspace"] == r["workspace"]
+            else f"from workspace {r['workspace']} to {r['dst_workspace']}")
+    return f"{verb} {r['src_name']} -[{r['kind']}]-> {r['dst_name']} {ends}"
 
 
 # ---------------------------------------------------------------------------
@@ -3797,7 +3939,12 @@ def register(subparsers):
             "curated memory row. At least one of --class / --status must be "
             "supplied. status is only valid for class=thread; the writer "
             "auto-clears status when class moves away from thread without "
-            "an explicit status flag. Use --status=null to clear explicitly."
+            "an explicit status flag. Use --status=null to clear explicitly.\n\n"
+            f"--from-file reads one {_RECLASSIFY_LINE_FORM} per line (blank and # "
+            "lines skipped), with the single form's rules. The optional note is "
+            "appended to the body in the row's own transaction: why it closed, the "
+            "commit or the row that replaced it. Each line is reported and exit is 1 "
+            "when any was refused."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -3808,9 +3955,12 @@ def register(subparsers):
             "  gaia memory reclassify thread_old --status=graduated\n"
             "  gaia memory reclassify thread_promoted --class=anchor "
             "--status=null   # explicit clear\n"
+            "  gaia memory reclassify --from-file ~/.gaia/scratch/closes.tsv --from ws "
+            "--json\n"
         ),
     )
-    reclass_p.add_argument("name", help="Curated memory slug.")
+    reclass_p.add_argument("name", nargs="?", default=None,
+                           help="Curated memory slug; omitted with --from-file.")
     reclass_p.add_argument(
         "--class", dest="class_", default=None,
         choices=("anchor", "thread", "log"),
@@ -3824,8 +3974,12 @@ def register(subparsers):
         ),
     )
     reclass_p.add_argument(
-        "--workspace", default=None, metavar="W",
-        help="Workspace identity. Defaults to cwd-inferred.",
+        "--workspace", "--from", dest="workspace", default=None, metavar="W",
+        help="Workspace the row is stored under. Defaults to cwd-inferred.",
+    )
+    reclass_p.add_argument(
+        "--from-file", dest="from_file", default=None, metavar="PATH",
+        help=f"Batch: {_RECLASSIFY_LINE_FORM} per line; '-' reads stdin.",
     )
     reclass_p.add_argument(
         "--json", action="store_true", default=False,
@@ -3902,30 +4056,40 @@ def register(subparsers):
             "Idempotent: re-running the same link is a no-op.\n\n"
             "supersedes has one direction: src is the NEW row, dst the OLD one "
             "it replaces, which then leaves every injection. A changed fact is "
-            "a new row plus this link, not a rewrite of the old row."
+            "a new row plus this link, not a rewrite of the old row.\n\n"
+            "--from-file reads one from<TAB>to<TAB>kind per line (blank and # lines "
+            "skipped) and writes each edge in its own transaction under the same "
+            "rules, reporting every line; exit is 1 when any was refused. --delete "
+            "stays one signed call per edge."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia memory link atom_node_20 anchor_routing --kind=relates_to\n"
             "  gaia memory link decision_new decision_old --kind=supersedes\n"
-            "  gaia memory link a b --kind=relates_to --delete\n\n"
+            "  gaia memory link a b --kind=relates_to --delete\n"
+            "  gaia memory link --from-file ~/.gaia/scratch/links.tsv --json\n\n"
             "Writing memory is judgment as well as form: load Skill('memory').\n"
         ),
     )
     link_p.add_argument(
-        "src_name",
-        help="Source memory slug. Must exist. For supersedes: the NEW row, what holds now.",
+        "src_name", nargs="?", default=None,
+        help="Source memory slug. Must exist. For supersedes: the NEW row, what holds now. "
+             "Omitted with --from-file.",
     )
     link_p.add_argument(
-        "dst_names", nargs="+", metavar="dst_name",
+        "dst_names", nargs="*", metavar="dst_name",
         help="Destination memory slug(s). Each must exist. For supersedes: the OLD "
              "row(s) it replaces, each pair direction-checked; an existing edge is a no-op.",
     )
     link_p.add_argument(
-        "--kind", required=True,
+        "--kind", default=None,
         choices=("relates_to", "supersedes", "derived_from", "graduated_to"),
-        help="Edge kind (CHECK-enforced in schema).",
+        help="Edge kind (CHECK-enforced in schema). Required unless --from-file.",
+    )
+    link_p.add_argument(
+        "--from-file", dest="from_file", default=None, metavar="PATH",
+        help="Batch: from<TAB>to<TAB>kind per line; '-' reads stdin.",
     )
     link_p.add_argument(
         "--workspace", default=None, metavar="W",

@@ -1259,13 +1259,14 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("memory", "get-relevant"): _flags(
         "--workspace --limit --max-chars --types --sections --initiative --project --group",
         "--json --no-pointer"),
-    ("memory", "link"): _flags("--kind --workspace", "--json"),
+    ("memory", "link"): _flags("--kind --workspace --from-file", "--json"),
     ("memory", "list"): _flags(
         "--type --kind --class --status --sort --order --workspace --limit --format",
         "--include-superseded --include-user --json"),
     ("memory", "move"): _flags(
         "--to --type --workspace --initiative --project --kind --from --from-file", "--json"),
-    ("memory", "reclassify"): _flags("--class --status --workspace", "--json"),
+    ("memory", "reclassify"): _flags(
+        "--class --status --workspace --from --from-file", "--json"),
     ("memory", "search"): _flags(
         "--limit --scope --type --class --workspace", "--all --include-superseded --json"),
     ("memory", "show"): _flags("--workspace", "--links --history --no-count --json"),
@@ -1347,7 +1348,7 @@ _FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
         ("brief", "verify"), ("context", "accept"), ("context", "project"),
         ("contract", "proposals", "accept"), ("contract", "proposals", "dismiss"),
         ("evidence", "show"), ("memory", "append"), ("memory", "episode-show"),
-        ("memory", "reclassify"), ("memory", "search"), ("memory", "show"),
+        ("memory", "search"), ("memory", "show"),
         ("memory", "story"), ("notifications", "cancel"), ("notifications", "show"),
         ("notifications", "snooze"), ("open",), ("plan", "change", "list"),
         ("plan", "change", "request"), ("plan", "history"), ("plan", "pause"),

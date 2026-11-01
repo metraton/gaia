@@ -340,6 +340,20 @@ These verbs are non-mutative, so cost is never the reason a row stays live.
 Whoever observes the resolution owns the exit: a session that resolves a thread
 and does not close it has moved that thread's cost onto every session after it.
 
+## Curating in bulk
+
+Closing, graduating and linking many rows is one call per verb, not one per
+row. `gaia memory reclassify --from-file PATH` takes one
+`slug<TAB>class=<c>[,status=<s>][<TAB>note]` per line; the note is appended to
+the row's body in the same transaction, so a closed row says why it closed --
+the commit, or the row that replaced it -- instead of being deleted.
+`gaia memory link --from-file PATH` takes one `from<TAB>to<TAB>kind` per line,
+under the single form's rules: `supersedes` only within one owner and kind,
+cross-workspace edges as usual. Both read `-` as stdin, apply each line in its
+own transaction, report every line, and exit 1 when any line was refused; a
+refused line never stops the rest. Removing an edge stays one signed
+`link --delete` at a time.
+
 ## A row under the wrong owner
 
 A row whose claim is right but whose owner is wrong -- stored under a container

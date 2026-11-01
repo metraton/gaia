@@ -210,7 +210,7 @@ OPTIONS = {
         '--group --help --initiative --json --limit --max-chars --no-pointer --project '
         '--sections --types --workspace -h'
     ),
-    'memory link': '--delete --help --json --kind --workspace -h',
+    'memory link': '--delete --from-file --help --json --kind --workspace -h',
     'memory list': (
         '--class --format --help --include-superseded --include-user --json --kind --limit '
         '--order --sort --status --type --workspace -h'
@@ -219,7 +219,7 @@ OPTIONS = {
         '--from --from-file --help --initiative --json --kind --project --to --type '
         '--workspace -h'
     ),
-    'memory reclassify': '--class --help --json --status --workspace -h',
+    'memory reclassify': '--class --from --from-file --help --json --status --workspace -h',
     'memory search': (
         '--all --class --help --include-superseded --json --limit --scope --type --workspace '
         '-h'

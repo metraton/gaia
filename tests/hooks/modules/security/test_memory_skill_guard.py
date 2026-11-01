@@ -179,6 +179,22 @@ def test_subagents_keep_the_subagent_guard():
     assert "MEMORY_SKILL_REQUIRED" not in developer.reason
 
 
+@pytest.mark.parametrize("command", (
+    "gaia memory reclassify --from-file /tmp/closes.tsv --from me",
+    "gaia memory link --from-file - --workspace me",
+))
+def test_a_batch_write_waits_for_the_skill_and_stays_refused_to_a_specialist(command):
+    assert _refused(_orchestrator_bash(command))
+
+    _claude_skill("gaia:memory")
+
+    assert _orchestrator_bash(command)["decision"] != "deny"
+    developer = BashValidator().validate(
+        command, is_subagent=True, session_id=SESSION, agent_type="developer")
+    assert not developer.allowed
+    assert "subagent dispatch context" in developer.reason
+
+
 def test_a_subagent_loading_the_skill_does_not_unlock_the_orchestrator():
     _claude_skill("gaia:memory", agent_id=SUBAGENT_ID)
 

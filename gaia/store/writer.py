@@ -3340,6 +3340,7 @@ def reclassify_memory(
     *,
     class_: str | None = None,
     status: str | None = None,
+    note: str | None = None,
     db_path: Path | None = None,
 ) -> dict:
     """Update the ``class`` and/or ``status`` columns on a curated memory row.
@@ -3355,6 +3356,7 @@ def reclassify_memory(
                    "do not touch". Empty string ``""`` is the explicit-
                    clear sentinel: it nulls the column. Otherwise must be
                    one of VALID_MEMORY_STATUSES.
+        note:      Text appended to the body in the same transaction.
         db_path:   Optional explicit DB path (used by tests).
 
     Behaviour:
@@ -3389,6 +3391,13 @@ def reclassify_memory(
         new_class, new_status = _apply_class_status(
             con, workspace, name, class_=class_, status=status, now=now,
         )
+        if note and note.strip():
+            con.execute(
+                "UPDATE memory SET body = CASE WHEN body IS NULL OR body = '' THEN ? "
+                "ELSE body || char(10) || char(10) || ? END "
+                "WHERE workspace = ? AND name = ?",
+                (note, note, workspace, name),
+            )
         con.commit()
         return {
             "status": "applied",
@@ -3397,6 +3406,7 @@ def reclassify_memory(
             "name": name,
             "class": new_class,
             "memory_status": new_status,  # avoid colliding with envelope 'status'
+            "note_appended": bool(note and note.strip()),
             "updated_at": now,
         }
     finally:

@@ -91,6 +91,8 @@ USED_TODAY = [
     "memory get-relevant --initiative i --sections anchor --json",
     "memory link a b --kind supersedes",
     "memory reclassify x --class thread --status closed",
+    "memory reclassify --from-file f --from me --json",
+    "memory link --from-file - --workspace me",
     "memory search q --scope curated",
     "memory show x --links --workspace me --json",
     "memory add --name x --body '- a bullet that starts with a dash'",
