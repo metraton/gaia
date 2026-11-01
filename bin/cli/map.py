@@ -26,7 +26,7 @@ HABITS = (
     ("the user voices a doubt, an idea or a pending",
      "Skill memory before the first verb; its Where it goes router picks the home; say where in one line"),
     ("a time or a date is mentioned beside something to do",
-     "offer a reminder in one line; on their yes, Skill reminders"),
+     "a one-line proposal of a reminder, saved on their yes, outside the one-offer cap; Skill reminders"),
     ("ids arrive in a return (contract, handoff, plan, slug)",
      "append them to the project's thread row before answering"),
     ("the user names a thing (workspace, group, project, app, cluster, environment), or a (N) count sits by a name",

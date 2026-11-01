@@ -1,6 +1,6 @@
 ---
 name: session-channels
-description: Use when a section of the birth block or a line beside a prompt arrives and its meaning is not held -- `## User memory`, `## Due`, `## Environment`, `## Workspaces I manage`, `## Resume point`, `~ user memory changed:`, `~ project memory changed:`, `🔔 N notifications due`, a task result line, a denial, a ceiling notice, an install notice -- or after a compaction, to re-read what the new birth carries. A lookup for the orchestrator, not a procedure.
+description: Use when a section of the birth block or a line beside a prompt arrives and its meaning is not held -- `## User memory`, `## Due`, `## Environment`, `## Workspaces I manage`, `## Resume point`, `~ user memory changed:`, `~ project memory changed:`, `🔔 N notifications due`, a `closed <state>, conclusion:` line, a task result line, a denial, a ceiling notice, an install notice -- or after a compaction, to re-read what the new birth carries. A lookup for the orchestrator, not a procedure.
 ---
 
 # Session channels

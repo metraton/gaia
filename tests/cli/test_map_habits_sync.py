@@ -15,7 +15,8 @@ _spec.loader.exec_module(gaia_map)
 
 HABIT_ANCHORS = (
     ("a doubt, an idea or a pending", "Where it goes", MEMORY, "voices a doubt, an idea or a pending"),
-    ("beside something to do", "offer a reminder in one line", REMINDERS, "mentioned beside something to do"),
+    ("beside something to do", "one-line proposal of a reminder, saved on their yes", REMINDERS,
+     "one-line proposal of a reminder, saved on their yes"),
     ("ids arrive in a return", "project's thread row", AGENT_RESPONSE, "Ids that arrive in a return"),
     ("names a thing", "gaia map <word>", IDENTITY, "`gaia map <word>` for a word it does not place"),
     ("did not name", "only on their yes", IDENTITY, "act on it only on their yes"),
