@@ -41,7 +41,14 @@ The specialist runs both verbs itself, inside its turn.
   remote's default branch, fetched first; for work that accumulates on a
   feature branch, fetch that branch and pass `--base origin/<branch>`.
 - Location: `<workspace>/.project-worktrees/<project>/<id>`, the workspace
-  being the declared workspace that holds the project.
+  being the declared workspace (`gaia workspace declare <name> <path>`) that
+  holds the project. A repository inside no declared workspace, or not yet
+  indexed by `gaia scan --workspace <name>`, is refused, never guessed.
+- Who: only a turn that writes. A turn that only reads stays on the live tree,
+  since a worktree checks out one branch and cannot see work still uncommitted
+  in the main tree. Two writers sharing one tree share one index: a mid-turn
+  checkout once landed one session's commit on the other's branch, and a
+  `git stash push` ran in a tree several agents shared.
 - Release: `gaia worktree release <path> [--keep-branch <accumulating>]`. A
   tree with nothing only it holds is unlocked and removed, and its branch is
   deleted when every commit on it is reachable from another ref or has an

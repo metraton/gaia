@@ -94,7 +94,7 @@ def _correction(payload, command: str = READ, contract: str = "application_servi
 
 
 def _finalize(cli, capsys, contract_id: str, *, update=None, extra=None, commands=None, prose: str = "",
-              gaps=None, state: str = "NEEDS_VERIFICATION", as_json: bool = True):
+              gaps=None, state: str = "BLOCKED", as_json: bool = True):
     from gaia.contract.drafts import save_draft
 
     draft = {

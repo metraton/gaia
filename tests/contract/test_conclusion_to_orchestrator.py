@@ -199,7 +199,7 @@ def _draft(envelope: dict) -> str:
     {}, {"conclusion": ""}, {"conclusion": "   "}, {"user_facing_summary": "  "},
 ])
 def test_finalize_refuses_a_clean_close_without_conclusion_and_names_it(text_fields):
-    draft_id = _draft(_envelope("NEEDS_VERIFICATION", **text_fields))
+    draft_id = _draft(_envelope("BLOCKED", **text_fields))
 
     fin = _cli(["finalize", "--draft-id", draft_id, "--json"])
 
@@ -210,7 +210,7 @@ def test_finalize_refuses_a_clean_close_without_conclusion_and_names_it(text_fie
 
 
 def test_finalize_accepts_the_close_once_the_conclusion_is_set():
-    draft_id = _draft(_envelope("NEEDS_VERIFICATION"))
+    draft_id = _draft(_envelope("BLOCKED"))
 
     assert _cli(["set", "--draft-id", draft_id, "conclusion", CONCLUSION]).returncode == 0
     fin = _cli(["finalize", "--draft-id", draft_id, "--json"])
@@ -220,7 +220,7 @@ def test_finalize_accepts_the_close_once_the_conclusion_is_set():
 
 
 def test_finalize_stores_the_old_name_as_conclusion_and_records_the_alias(db):
-    draft_id = _draft(_envelope("NEEDS_VERIFICATION", user_facing_summary=CONCLUSION))
+    draft_id = _draft(_envelope("BLOCKED", user_facing_summary=CONCLUSION))
 
     fin = _cli(["finalize", "--draft-id", draft_id, "--json"])
 
@@ -237,8 +237,8 @@ def test_finalize_stores_the_old_name_as_conclusion_and_records_the_alias(db):
 
 def test_a_row_with_only_user_facing_summary_reads_as_its_conclusion(db):
     contract_id = f"{AGENT_ID}.legacy"
-    _finalize(db, contract_id, _envelope("NEEDS_VERIFICATION", user_facing_summary=CONCLUSION))
-    _finalize(db, f"{AGENT_ID}.blank", _envelope("NEEDS_VERIFICATION"))
+    _finalize(db, contract_id, _envelope("BLOCKED", user_facing_summary=CONCLUSION))
+    _finalize(db, f"{AGENT_ID}.blank", _envelope("BLOCKED"))
 
     view = _cli(["view", "--draft-id", contract_id, "--field", "conclusion"])
     rate = _cli(["fill-rate", "--since", "7d", "--json"])

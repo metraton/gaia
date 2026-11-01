@@ -114,15 +114,26 @@ def reap_stale_turn(
     was added: a row cannot name its own host_run, so the check widens to
     "does ANY ledger still vouch for this session" instead).
 
-    A row is spared only when some ledger file both (a) contains a record
-    naming this row's ``session_id`` and (b) was itself modified inside the
-    same ``older_than_seconds`` window used to call the row stale -- i.e. the
-    attestation is ausente (no record at all) or vencida (the ledger has not
-    moved since before the row went stale). Absence of any match is read as
-    death, exactly as a SIGTERM'd host leaves no other trace.
+    A row is spared when its harness agent recorded a tool call inside the
+    window, or a ledger modified inside it names the row's ``session_id``;
+    neither is read as death, as a SIGTERM'd host leaves no other trace.
     """
-    from gaia.store.writer import reap_stale_dispatched_handoffs
+    from gaia.store.writer import (
+        _connect,
+        _stale_cutoff_iso,
+        harness_agents_active_since,
+        reap_stale_dispatched_handoffs,
+    )
     from ..security.host_attestation import ledger_dir, ATTESTATION_SCHEME
+
+    con = _connect(db_path)
+    try:
+        active = harness_agents_active_since(con, _stale_cutoff_iso(older_than_seconds, None))
+    finally:
+        con.close()
+
+    def _is_alive(row: dict) -> bool:
+        return row.get("harness_agent_id") in active or _session_has_live_attestation(row)
 
     def _session_has_live_attestation(row: dict) -> bool:
         session_id = row.get("session_id")
@@ -158,7 +169,7 @@ def reap_stale_turn(
 
     return reap_stale_dispatched_handoffs(
         older_than_seconds=older_than_seconds,
-        liveness_check=_session_has_live_attestation,
+        liveness_check=_is_alive,
         db_path=db_path,
     )
 

@@ -123,7 +123,7 @@ def test_resumed_turn_on_a_finalized_contract_can_still_close(env):
     assert guard.check(f"gaia contract add --draft-id {link_id}", HARNESS_ID) == (True, None)
 
     status = {
-        "agent_state": "NEEDS_VERIFICATION", "agent_id": AGENT_ID,
+        "agent_state": "BLOCKED", "agent_id": AGENT_ID,
         "pending_steps": [], "next_action": "verify",
     }
     done = _cli(env, "set", "agent_status", json.dumps(status), "--draft-id", link_id)
@@ -132,4 +132,4 @@ def test_resumed_turn_on_a_finalized_contract_can_still_close(env):
     assert summary.returncode == 0, summary.stderr
     closed = _cli(env, "finalize", "--draft-id", link_id)
     assert closed.returncode == 0, closed.stderr
-    assert _link_of(db)["agent_state"] == "NEEDS_VERIFICATION"
+    assert _link_of(db)["agent_state"] == "BLOCKED"

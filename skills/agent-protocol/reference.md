@@ -245,11 +245,17 @@ currently reports back. It feeds routing and the finalize gate.
 | `BLOCKED` | An external obstacle prevents progress. |
 | `NEEDS_INPUT` | A material choice only the user can make. |
 | `APPROVAL_REQUEST` | Exact T3 consent is handed off. Requires a non-empty `approval_request.exact_content`. |
-| `NEEDS_VERIFICATION` | A producer result handed to an independent verifier. |
+| `NEEDS_VERIFICATION` | A plan-task-bound producer's result handed to an independent verifier; finalize refuses it on an unbound turn. |
 | `COMPLETE` | Terminal, and the only terminal one. |
 
 Canonical list: `VALID_PLAN_STATUSES` in `gaia/state/__init__.py`, re-exported
 by `hooks/modules/agents/response_contract.py`.
+
+The row column has one more value no agent writes: `DISPATCHED`, the birth
+value of `agent_contract_handoffs.agent_state` (`gaia/store/schema.sql`).
+Mirrored `set`/`add`/`fill` writes do not move it, so a row reads `DISPATCHED`
+until `finalize`, the SubagentStop persister or the host-death reaper closes it;
+`gaia contract list --state DISPATCHED` lists those rows.
 
 A turn sits at `agent_state=IN_PROGRESS` through all of its work; where it
 stands inside that work is read from the record (principle 6), not from a field.
@@ -394,10 +400,20 @@ about WHICH row is this turn's own, which can never make an unclosed row read
 as closed.
 
 **The reaper is not a second way to close.** A turn that stops after its last
-`fill` leaves the row where the draft left it: open. The SubagentStop persister
-(`hooks/modules/agents/handoff_persister.py`) eventually converges it with
-`degraded` + `reaped` -- forensic cleanup that records that `finalize` was
-never called. It never earns `COMPLETE`.
+`fill` leaves the row where the draft left it: open. Two lanes stamp
+`degraded` + `reaped`, forensic cleanup that records that `finalize` was never
+called. The SubagentStop persister (`hooks/modules/agents/handoff_persister.py`)
+does it when the stop event fires and the turn never recorded its own close. A
+host that dies (SIGTERM) fires no stop event, so SessionStart runs the
+host-death reaper (`hooks/modules/agents/dispatch_lifecycle.py::reap_stale_turn`,
+called from `hooks/modules/session/session_lifecycle.py::run_start_maintenance`
+with `gaia.store.writer.STALE_TURN_SECONDS`, two hours): a `DISPATCHED` row whose
+harness agent recorded no tool call in that window and that no live attestation
+ledger vouches for is reaped. `gaia contract reap --older-than-seconds N` runs it
+by hand. Either lane keeps the `agent_state` last mirrored, so a reaped row can
+read `NEEDS_VERIFICATION` or `APPROVAL_REQUEST`: `agent_state` alone never says
+whether the turn is alive, the row's `cut_reason` does. A reaped row never earns
+`COMPLETE`.
 
 **Recovering a cut turn.** The verbs and their addressing modes are in
 `read-map.md`, "The record of past turns"; what matters here is that recovery is
@@ -470,6 +486,10 @@ kind. A turn with no `plan_task_id` (investigation, memory, a free-standing
 verifier turn) is unbound and may self-`COMPLETE`.
 
 **A verifier turn binds differently.** It carries `parent_handoff_id` and no
-`plan_task_id` of its own, which is what lets it promote the producer's
-`NEEDS_VERIFICATION` to `COMPLETE`. Rejecting instead sends the increment back
-to `IN_PROGRESS`.
+`plan_task_id` of its own; the binding reaches the task through its producer.
+What a pass promotes is the task's gate (`gaia task gate set-status`), never the
+producer's row, which stays as it closed; the Resume point settles a bound row
+by the task's status (`gaia/session_snapshot.py::_open_contracts`). A fail
+returns the task to the producer with evidence. An unbound turn has no task to
+promote, which is why finalize refuses its `NEEDS_VERIFICATION`
+(`gaia/contract/crosscheck.py::validate_verification_binding`).

@@ -81,7 +81,7 @@ def _spool_lines(key: str) -> list:
 
 def _envelope(agent_id: str, commands=(), files=(), **extra) -> dict:
     return {
-        "agent_status": {"agent_state": "NEEDS_VERIFICATION", "agent_id": agent_id},
+        "agent_status": {"agent_state": "BLOCKED", "agent_id": agent_id},
         "evidence_report": {"commands_run": list(commands), "files_checked": list(files)},
         **extra,
     }

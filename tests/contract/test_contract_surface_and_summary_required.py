@@ -41,7 +41,7 @@ def cli_env(tmp_path, monkeypatch):
     return dict(os.environ)
 
 
-def _envelope(state: str = "NEEDS_VERIFICATION", summary=None) -> dict:
+def _envelope(state: str = "BLOCKED", summary=None) -> dict:
     envelope = {
         "agent_status": {
             "agent_state": state,

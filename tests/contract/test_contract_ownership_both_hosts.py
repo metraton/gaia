@@ -169,7 +169,7 @@ def test_resumed_turn_on_a_finalized_contract_can_still_close(host):
 
     assert _check(host["me"], f"gaia contract add --draft-id {link_id}") == (True, None)
     status = {
-        "agent_state": "NEEDS_VERIFICATION", "agent_id": closed.split(".")[0],
+        "agent_state": "BLOCKED", "agent_id": closed.split(".")[0],
         "pending_steps": [], "next_action": "verify",
     }
     for args in (

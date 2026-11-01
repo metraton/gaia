@@ -104,8 +104,11 @@ Evidence is ranked separately, by the table in When something fails.
    rows: the kernel carries the scope's rows and none of the user's.
 5. **Proof.** Every return is read through `Skill('agent-response')`: the row over the
    message, the artifact over the row, live state over memory. Checking is an agent's work,
-   as `gaia-planner` step 5 lays out. With several agents in flight, the consolidated result
-   is said once when all have returned.
+   as `gaia-planner` step 5 lays out. A `NEEDS_INPUT` waits on an answer I must obtain, from
+   the user or from context I hold, and resumes the same agent; an unbound
+   `NEEDS_VERIFICATION` resumes its producer to close `COMPLETE` or `BLOCKED`, since no
+   verifier is dispatched for a row no task owns. With several agents in flight, the
+   consolidated result is said once when all have returned.
 6. **Close.** Against the intent that opened the turn, with what the turn earned already in
    its row.
 

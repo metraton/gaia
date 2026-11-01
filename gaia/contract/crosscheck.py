@@ -80,6 +80,7 @@ class CrossCheckErrorCode(str, Enum):
     """
 
     APPROVAL_ID_NOT_PENDING = "APPROVAL_ID_NOT_PENDING"
+    NEEDS_VERIFICATION_UNBOUND = "NEEDS_VERIFICATION_UNBOUND"
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,17 @@ CROSSCHECK_REPAIR_MESSAGE = (
     "content-derived COMMAND_SET form) for a grant that is STILL PENDING in "
     "gaia.db. Do not invent an id, reuse one already approved/rejected/"
     "revoked/expired, or relay a stale id from a different turn."
+)
+
+
+UNBOUND_VERIFICATION_REPAIR_MESSAGE = (
+    "Repair: NEEDS_VERIFICATION belongs to a plan-task-bound turn, whose task "
+    "gate an independent verifier settles. This turn carries no plan_task_id "
+    "and no parent_handoff_id, so nothing would ever verify or settle it. "
+    "Close COMPLETE with a verification you can stand behind (type none when "
+    "no oracle was required, self_review with reviewed, or a command this turn "
+    "ran), or BLOCKED / NEEDS_INPUT naming why not. Executing a plan task? "
+    "Finalize with --plan-task-id <id>."
 )
 
 
@@ -278,8 +290,80 @@ def validate_crosscheck(
     )
 
 
+def _chain_binding(db_path: Path, contract_id: str) -> Tuple[bool, bool]:
+    """Whether *contract_id*'s row or any link it continues carries a plan_task_id, and a parent_handoff_id."""
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return False, False
+    try:
+        row = con.execute(
+            "SELECT plan_task_id, parent_handoff_id, continues_handoff_id "
+            "FROM agent_contract_handoffs WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchone()
+        has_task = has_parent = False
+        seen = set()
+        while row is not None:
+            has_task = has_task or row[0] is not None
+            has_parent = has_parent or row[1] is not None
+            if row[2] is None or row[2] in seen:
+                break
+            seen.add(row[2])
+            row = con.execute(
+                "SELECT plan_task_id, parent_handoff_id, continues_handoff_id "
+                "FROM agent_contract_handoffs WHERE id = ?",
+                (row[2],),
+            ).fetchone()
+        return has_task, has_parent
+    except sqlite3.OperationalError:
+        return False, False
+    finally:
+        con.close()
+
+
+def validate_verification_binding(
+    envelope: Any,
+    *,
+    contract_id: str,
+    plan_task_id: Optional[int] = None,
+    db_path: Optional[Path] = None,
+) -> CrossCheckResult:
+    """Refuse a NEEDS_VERIFICATION close with no plan_task_id and no parent_handoff_id; skipped without gaia.db."""
+    status = envelope.get("agent_status") if isinstance(envelope, dict) else None
+    if not isinstance(status, dict) or status.get("agent_state") != "NEEDS_VERIFICATION":
+        return CrossCheckResult(ok=True, checked=False)
+    if plan_task_id is not None:
+        return CrossCheckResult(ok=True, checked=True)
+    resolved = Path(db_path) if db_path is not None else _default_db_path()
+    if not resolved.exists():
+        return CrossCheckResult(ok=True, checked=False, skipped=True)
+    has_task, has_parent = _chain_binding(resolved, contract_id)
+    if has_task or has_parent:
+        return CrossCheckResult(ok=True, checked=True)
+    error = CrossCheckError(
+        code=CrossCheckErrorCode.NEEDS_VERIFICATION_UNBOUND,
+        field="agent_status.agent_state",
+        detail=(
+            f"contract {contract_id!r} closes NEEDS_VERIFICATION with no "
+            "plan_task_id and no parent_handoff_id"
+        ),
+    )
+    return CrossCheckResult(
+        ok=False,
+        errors=(error,),
+        checked=True,
+        repair_message=UNBOUND_VERIFICATION_REPAIR_MESSAGE,
+    )
+
+
 def validate(
-    envelope: Any, *, db_path: Optional[Path] = None, source: str = "declaration"
+    envelope: Any,
+    *,
+    db_path: Optional[Path] = None,
+    source: str = "declaration",
+    contract_id: Optional[str] = None,
+    plan_task_id: Optional[int] = None,
 ) -> EnvelopeValidationResult:
     """Full-verdict validation: layer 1 (form) gates layer 2 (cross-check).
 
@@ -294,6 +378,7 @@ def validate(
             (default) or ``"row"``. Purely a wording choice for layer 1's
             MISSING_FIELD detail and repair message; never a validation input,
             and irrelevant to layer 2, which does not read it.
+        contract_id, plan_task_id: passed by finalize only, to add ``validate_verification_binding``.
 
     Returns:
         EnvelopeValidationResult. ``ok`` is True only when BOTH layers pass.
@@ -310,6 +395,10 @@ def validate(
         )
 
     crosscheck_result = validate_crosscheck(envelope, db_path=db_path)
+    if crosscheck_result.ok and contract_id:
+        crosscheck_result = validate_verification_binding(
+            envelope, contract_id=contract_id, plan_task_id=plan_task_id, db_path=db_path,
+        )
     return EnvelopeValidationResult(
         ok=crosscheck_result.ok,
         form=form_result,
@@ -323,6 +412,8 @@ __all__ = [
     "CrossCheckResult",
     "EnvelopeValidationResult",
     "CROSSCHECK_REPAIR_MESSAGE",
+    "UNBOUND_VERIFICATION_REPAIR_MESSAGE",
     "validate_crosscheck",
+    "validate_verification_binding",
     "validate",
 ]

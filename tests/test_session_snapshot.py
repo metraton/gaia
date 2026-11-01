@@ -62,11 +62,13 @@ def _row(con, contract_id, session_id, state, created_at=None, **columns):
     cur = con.execute(
         "INSERT INTO agent_contract_handoffs "
         "(contract_id, agent_id, session_id, workspace, agent_state, raw_handoff_json, kind, "
-        "plan_task_id, parent_handoff_id, continues_handoff_id, dispatch_description, created_at, claimed_at) "
-        "VALUES (?, ?, ?, 'me', ?, '{}', ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')), ?)",
-        (contract_id, contract_id.split(".")[0], session_id, state, columns.get("kind"),
-         columns.get("plan_task_id"), columns.get("parent_handoff_id"), columns.get("continues_handoff_id"),
-         columns.get("description"), created_at, columns.get("claimed_at")),
+        "plan_task_id, parent_handoff_id, continues_handoff_id, dispatch_description, created_at, claimed_at, "
+        "cut_reason) "
+        "VALUES (?, ?, ?, 'me', ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')), ?, ?)",
+        (contract_id, contract_id.split(".")[0], session_id, state, json.dumps(columns.get("envelope", {})),
+         columns.get("kind"), columns.get("plan_task_id"), columns.get("parent_handoff_id"),
+         columns.get("continues_handoff_id"), columns.get("description"), created_at, columns.get("claimed_at"),
+         columns.get("cut_reason")),
     )
     return cur.lastrowid
 
@@ -139,7 +141,7 @@ def test_a_pending_signature_past_its_ttl_is_not_in_the_ledger(db):
     assert [a["id"] for a in build_ledger(SESSION_A)["pending"]] == ["P-a"]
 
 
-def test_a_long_lived_session_carries_its_open_rows_then_its_quiet_ones_and_nothing_settled(
+def test_a_long_lived_session_lists_only_its_running_and_waiting_rows_and_nothing_settled(
     tmp_path, monkeypatch, bootstrapped_db_template,
 ):
     path = _isolate(tmp_path, monkeypatch, bootstrapped_db_template)
@@ -162,10 +164,7 @@ def test_a_long_lived_session_carries_its_open_rows_then_its_quiet_ones_and_noth
     con.commit()
     con.close()
 
-    assert _in_flight(SESSION_A) == [
-        "a0000000000000a02.t", "a0000000000000a01.t", "a0000000000000a04.t", "a0000000000000a03.t",
-        "a00000000000000d5.t",
-    ]
+    assert _in_flight(SESSION_A) == ["a0000000000000a02.t", "a0000000000000a01.t", "a0000000000000a04.t"]
 
 
 def test_a_continued_chain_counts_once_and_a_complete_latest_link_closes_it(db):
@@ -185,15 +184,57 @@ def test_a_later_verifier_pass_on_the_same_task_supersedes_the_producer_rows(db)
     assert _in_flight("ses-v") == ["ses-v-BLOCKED-0"]
 
 
+def test_a_chain_is_listed_once_by_its_latest_link_under_its_dispatch_title_never_its_kind(db):
+    from gaia.session_ledger import build_ledger, render_resume_point
+
+    con = sqlite3.connect(db)
+    root = _row(con, "a00000000000000c1.t", "ses-chain", "NEEDS_INPUT", kind="investigation",
+                description="Fix the resume point")
+    middle = _row(con, "a00000000000000c2.t", "ses-chain", "NEEDS_INPUT", kind="investigation",
+                  continues_handoff_id=root)
+    _row(con, "a00000000000000c3.t", "ses-chain", "NEEDS_INPUT", kind="investigation", continues_handoff_id=middle)
+    _row(con, "a00000000000000n1.t", "ses-chain", "NEEDS_VERIFICATION", kind="investigation")
+    _row(con, "a00000000000000r1.t", "ses-chain", "APPROVAL_REQUEST", kind="investigation", cut_reason="reaped",
+         description="Reaped while asking")
+    con.commit()
+    con.close()
+
+    listed = [line for line in render_resume_point(build_ledger("ses-chain")).splitlines()
+              if line.startswith("in_flight: ")]
+
+    assert listed == ['in_flight: "Fix the resume point" state=NEEDS_INPUT ref=contract:a00000000000000c3.t']
+
+
+def test_pending_keeps_a_presented_or_awaited_request_and_drops_a_stale_one_nobody_presented(db, monkeypatch):
+    from gaia.store.writer import _connect
+    from gaia.session_ledger import build_ledger
+
+    monkeypatch.setattr("gaia.approvals.reading.live_sessions", lambda: {SESSION_A})
+    two_hours_ago = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7200))
+    con = _connect(db)
+    for approval in ("P-shown", "P-awaited", "P-orphan"):
+        con.execute("INSERT INTO approvals (id, agent_id, session_id, status, created_at) "
+                    "VALUES (?, 'a1', ?, 'pending', ?)", (approval, SESSION_A, two_hours_ago))
+    con.execute("INSERT INTO approval_events (approval_id, event_type, session_id, created_at) "
+                "VALUES ('P-shown', 'SHOWN', ?, ?)", (SESSION_A, two_hours_ago))
+    _row(con, "a00000000000000w1.t", SESSION_A, "APPROVAL_REQUEST",
+         envelope={"approval_request": {"approval_id": "P-awaited"}})
+    con.commit()
+    con.close()
+
+    assert [a["id"] for a in build_ledger(SESSION_A)["pending"]] == ["P-a", "P-awaited", "P-shown"]
+
+
 def test_a_long_session_lists_the_eight_newest_contracts_clipped_with_the_remainder(db):
     from gaia.session_ledger import build_ledger, render_resume_point
 
-    _add_contracts(db, 40, "ses-long", description="Carry the ledger through every compaction " * 5)
+    _add_contracts(db, 40, "ses-long", state="NEEDS_INPUT",
+                   description="Carry the ledger through every compaction " * 5)
     lines = render_resume_point(build_ledger("ses-long")).splitlines()
     listed = [line for line in lines if line.startswith("in_flight: ")]
 
     assert len(listed) == 8 and listed[-1].endswith("(+32)")
-    assert "ref=contract:ses-long-NEEDS_VERIFICATION-39" in listed[0]
+    assert "ref=contract:ses-long-NEEDS_INPUT-39" in listed[0]
     assert all(len(line.split('"')[1]) <= 80 for line in listed)
 
 
@@ -206,7 +247,7 @@ def test_an_empty_session_renders_only_its_session_line(db):
 def test_a_failed_source_is_named_unavailable_not_rendered_empty(db, monkeypatch):
     import gaia.session_ledger as ledger_module
 
-    def broken(con, session_id):
+    def broken(con, session_id, since):
         raise sqlite3.DatabaseError("database disk image is malformed")
 
     monkeypatch.setattr(ledger_module, "_SOURCES", (("in_flight", broken), *ledger_module._SOURCES[1:]))
@@ -300,7 +341,7 @@ def test_a_full_ledger_from_real_rows_and_a_whole_note_fit_the_birth_budget(db):
     from gaia.session_snapshot import write_resume_point
     from modules.session import session_manifest
 
-    _add_contracts(db, 40, "ses-press")
+    _add_contracts(db, 40, "ses-press", state="BLOCKED")
     _memory(db, "ses-press", [f"atom_touched_under_pressure_{n:02d}" for n in range(30)])
     write_resume_point("ses-press", "n" * 2000)
     write_ledger("ses-press")

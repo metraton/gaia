@@ -452,7 +452,7 @@ def _list_overwrite_message(overwrites: list) -> str:
 # Validation + output helpers
 # ---------------------------------------------------------------------------
 
-def _validate_envelope(envelope: Any):
+def _validate_envelope(envelope: Any, **closing):
     """Single full-verdict entry point (layer 1 form + layer 2 cross-check).
 
     Per the T3 carry-forward: this CLI never re-implements shape checks or
@@ -460,7 +460,7 @@ def _validate_envelope(envelope: Any):
     """
     from gaia.contract.crosscheck import validate as _crosscheck_validate
 
-    return _crosscheck_validate(envelope)
+    return _crosscheck_validate(envelope, **closing)
 
 
 def _print_error(msg: str, as_json: bool = False) -> None:
@@ -2061,7 +2061,9 @@ def cmd_finalize(args) -> int:
     )
     if envelope is None:
         return 1
-    result = _validate_envelope(envelope)
+    result = _validate_envelope(
+        envelope, contract_id=draft_id, plan_task_id=getattr(args, "plan_task_id", None),
+    )
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
@@ -2114,7 +2116,7 @@ def cmd_finalize(args) -> int:
 
     # Blind-verification anti-leak at the CLI seam (plan 34 task 8). The
     # SubagentStop gate already refuses a plan-task-bound self-COMPLETE
-    # (hooks/adapters/claude_code.py::_blind_verification_required), but that gate
+    # (hooks/adapters/subagent_stop_core.py::_blind_verification_required), but that gate
     # is a SEPARATE persistence path -- `gaia contract finalize` was role-blind
     # AND binding-blind, so a producer could bypass the gate by finalizing a bound
     # COMPLETE straight through the CLI (the hole that leaked the 31 COMPLETEs).

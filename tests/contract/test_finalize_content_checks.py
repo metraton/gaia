@@ -65,7 +65,7 @@ def _bash(agent: str, command: str, stdout: str = "ok", exit_code: int = 0) -> N
 
 def _draft(agent: str, verification: dict | None = None, verbatim: list | None = None) -> dict:
     return {
-        "agent_status": {"agent_state": "NEEDS_VERIFICATION", "agent_id": agent, "pending_steps": [], "next_action": "verify"},
+        "agent_status": {"agent_state": "BLOCKED", "agent_id": agent, "pending_steps": [], "next_action": "verify"},
         "evidence_report": {
             "patterns_checked": [], "files_checked": [], "commands_run": [], "key_outputs": [],
             "verbatim_outputs": verbatim or [], "cross_layer_impacts": [], "open_gaps": [],
@@ -535,13 +535,13 @@ def test_a_row_finalized_before_the_check_is_not_revalidated(cli, capsys):
     agent, contract_id = _turn()
     earlier = _draft(agent, _command_check("pass"))
     finalize_agent_contract_handoff(
-        contract_id=contract_id, agent_id=agent, workspace="me", agent_state="NEEDS_VERIFICATION",
+        contract_id=contract_id, agent_id=agent, workspace="me", agent_state="BLOCKED",
         raw_handoff_json=json.dumps(earlier),
     )
 
     code, _ = _finalize(cli, contract_id, earlier, capsys)
 
     state, stored = _row(contract_id)
-    assert code == 0 and state == "NEEDS_VERIFICATION"
+    assert code == 0 and state == "BLOCKED"
     assert stored["evidence_report"]["verification"]["command"] == "pass"
     assert "content_checks" not in stored

@@ -86,7 +86,7 @@ def _finalize(cli, capsys, agent: str, contract_id: str, *, prose: str = "", upd
     from gaia.contract.drafts import save_draft
 
     draft = {
-        "agent_status": {"agent_state": "NEEDS_VERIFICATION", "agent_id": agent, "pending_steps": [],
+        "agent_status": {"agent_state": "BLOCKED", "agent_id": agent, "pending_steps": [],
                          "next_action": "verify"},
         "evidence_report": {"patterns_checked": [], "files_checked": [], "commands_run": [], "key_outputs": [],
                             "verbatim_outputs": [], "cross_layer_impacts": [], "open_gaps": [],

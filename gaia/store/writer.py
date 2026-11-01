@@ -12214,6 +12214,21 @@ def is_harness_session_bound(
 # session, the design ``dispatch_lifecycle.reap_stale_turn`` seals). If a
 # future liveness source genuinely cannot be reconstructed from an existing
 # column, that is the trigger for the migration this comment defers.
+STALE_TURN_SECONDS = 2 * 3600
+
+
+def harness_agents_active_since(con: sqlite3.Connection, since_iso: str) -> set:
+    """The harness agent ids with a recorded tool call at or after *since_iso*: a turn's own sign of life."""
+    from gaia.contract.tool_record import TOOL_CALLED
+
+    rows = con.execute(
+        "SELECT DISTINCT json_extract(payload, '$.harness_agent_id') FROM harness_events "
+        "WHERE type = ? AND ts >= ?",
+        (TOOL_CALLED, since_iso),
+    ).fetchall()
+    return {row[0] for row in rows if row[0]}
+
+
 def find_stale_dispatched_handoffs(
     *,
     older_than_seconds: int,

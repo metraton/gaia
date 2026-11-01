@@ -70,10 +70,14 @@ Every draft, including a mid-turn checkpoint, contains:
   non-empty `next_action`;
 - `evidence_report` with all seven keys: `patterns_checked`, `files_checked`,
   `commands_run`, `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, and
-  `open_gaps` (empty lists are valid, though on Claude Code a finalized row
-  whose `commands_run` or `files_checked` is empty gets the turn's Bash
-  commands and Read paths written in at the close, each prefixed
-  `[recovered from transcript] `: the bare call, never what it showed);
+  `open_gaps` (empty lists are valid). Two lanes rebuild `commands_run` and
+  `files_checked`: every finalize rewrites them from the harness tool record,
+  keeping the agent's own extra entries marked `[agent annotation] `
+  (`gaia/contract/tool_record.py::stamp_harness_fields`); and on Claude Code
+  SubagentStop fills a list still empty with the turn's Bash commands and Read
+  paths, each prefixed `[recovered from transcript] `
+  (`hooks/modules/agents/evidence_recovery.py::RECOVERED_MARK`): the bare call,
+  never what it showed;
 - `consolidation_report` and `approval_request`, normally `null`.
 
 `agent_id` matches `^a[0-9a-f]{16,}$`. The canonical states are
@@ -123,7 +127,14 @@ already wrote.
 - `COMPLETE`: `pending_steps` is `[]`, `next_action` is exactly `done`, and
   `evidence_report.verification.result` is `pass`.
 - plan-task-bound producers do not self-complete. They close their increment as
-  `NEEDS_VERIFICATION`; the verifier is bound through `parent_handoff_id`.
+  `NEEDS_VERIFICATION`; the verifier is bound through `parent_handoff_id` and
+  settles the task's gate, never the row. `NEEDS_VERIFICATION` requires a
+  binding: finalize refuses it, with `NEEDS_VERIFICATION_UNBOUND`, when neither
+  `--plan-task-id` nor the row chain carries a `plan_task_id` or a
+  `parent_handoff_id` (`gaia/contract/crosscheck.py::validate_verification_binding`,
+  the DB-aware layer, so the form core stays binding-blind). An unbound turn
+  closes `COMPLETE` with a verification it can stand behind, or `BLOCKED` /
+  `NEEDS_INPUT`.
 - `consolidation_report` is required when input marks consolidation,
   cross-check, or multi-surface work.
 - Every clean close, in any closing state: `conclusion` is a non-blank
@@ -252,9 +263,10 @@ minted, `approval_id`, copied verbatim from the request's output.
   the dispatch result names them to the orchestrator beside the proposal
   notice (`hooks/modules/agents/proposal_notices.py::proposal_notice`).
   A drift correction (`agent-protocol` principle 3) adds `drift: {key_path,
-  old, new, command, observed_at}` to the entry. At the close it is applied
-  without the orchestrator only when every guard holds
-  (`gaia/context_drift.py::auto_apply_refusals`). Its project is the
+  old, new, command, observed_at}` to the entry. It is applied at `finalize`,
+  through `gaia/store/proposals.py`, without the orchestrator only when every
+  guard holds (`gaia/context_drift.py::auto_apply_refusals`); SubagentStop never
+  writes it. Its project is the
   dispatch's resolved project. It touches HOW keys only: a section or key
   that is not ASCII after NFKC, or whose name, split at case, hyphen and
   underscore changes, names an environment, cluster, context, project or
@@ -323,7 +335,13 @@ scratch or from a workspace/client repo path directly.
 
 `gaia/contract/validator.py` owns form codes: `MISSING_FIELD`, `PLAN_STATUS`,
 `AGENT_ID_FORMAT`, `VERIFICATION_RESULT`, `VERIFICATION_SHAPE`,
-`APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, and `FAILURE_REPORT_SHAPE`.
+`APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, `FAILURE_REPORT_SHAPE`,
+`MISPLACED_KEY`, `UNKNOWN_FIELD` and `FILE_REFERENCE_SHAPE`
+(`gaia/contract/validator.py::FormErrorCode`). `MISPLACED_KEY` is the one a
+hand-written `set` hits first: a declared field at the wrong level
+(`key_outputs` instead of `evidence_report.key_outputs`) is refused, not moved.
+`gaia/contract/crosscheck.py::CrossCheckErrorCode` owns the DB-aware codes:
+`APPROVAL_ID_NOT_PENDING` and `NEEDS_VERIFICATION_UNBOUND`.
 `gaia.contract.crosscheck.validate` adds DB cross-checks.
 Do not reproduce those rules elsewhere.
 

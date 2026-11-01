@@ -65,7 +65,7 @@ def start_session(start: SessionStart) -> StartOutcome:
 
 
 def run_start_maintenance(start: SessionStart) -> None:
-    """Registry, approval, backup, draft and worktree upkeep; each step fails alone.
+    """Registry, approval, dead-turn, backup, draft and worktree upkeep; each step fails alone.
 
     Safe to repeat for the same session: registration replaces its entry and
     every other step acts only on what is stale. The worktree sweep runs after
@@ -120,6 +120,15 @@ def run_start_maintenance(start: SessionStart) -> None:
             )
     except Exception as exc:
         logger.debug("count_stale_db_pendings failed (non-fatal): %s", exc)
+
+    try:
+        from gaia.store.writer import STALE_TURN_SECONDS
+        from modules.agents.dispatch_lifecycle import reap_stale_turn
+        reaped = reap_stale_turn(older_than_seconds=STALE_TURN_SECONDS)["reaped"]
+        if reaped:
+            logger.info("dispatch_lifecycle: reaped %d dead dispatched turn(s) at SessionStart", len(reaped))
+    except Exception as exc:
+        logger.debug("reap_stale_turn failed (non-fatal): %s", exc)
 
     try:
         from modules.session.db_backup import maybe_backup_db
