@@ -151,7 +151,9 @@ def test_a_how_correction_read_by_a_t0_command_on_the_named_target_is_applied_an
     assert READ in item["decision_note"]
     assert _stored_section() == {"web": {"image_tag": "0.0.255"}}
     rows = recent("another-session", since=0)
-    assert render_line(rows) == f"~ changed: project context {IDENTITY} ×1 — gaia signals"
+    assert render_line(rows) == ("~ project memory changed:\n"
+                                 f"  me/{IDENTITY}  updated \"section application_services\"  "
+                                 "ref=context:me/application_services — gaia signals")
     assert rows[0]["open"].endswith(f"--project {IDENTITY} --section application_services")
 
 

@@ -315,9 +315,9 @@ def test_folding_b_into_a_is_previewed_applied_and_undone(one_home):
     assert changed <= set(_PROVENANCE_TABLES), changed
 
 
-# The SQL triggers append a before/after line to these logs on every re-key, so
-# an apply followed by an undo leaves lines the undo is right not to erase.
-_PROVENANCE_TABLES = ("memory_history", "project_history", "project_context_contracts_history")
+# The SQL triggers append a line to these logs on every re-key, so an apply
+# followed by an undo leaves lines the undo is right not to erase.
+_PROVENANCE_TABLES = ("memory_history", "project_history", "project_context_contracts_history", "signals")
 _HISTORY_TABLES = ("episodes", "episode_anomalies", "harness_events", "agent_contract_handoffs")
 _OWNED = ("projects", "apps", "project_facets", "briefs", "project_context_contracts", "integrations")
 

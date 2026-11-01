@@ -37,12 +37,12 @@ def _seed(db: Path, workspace_root: Path, project: Path) -> None:
             "VALUES ('me', 'project_identity', ?)",
             (json.dumps({"gaia": {"name": "gaia", "local_path": str(project)}}),),
         )
-        for name, description in (("user_jorge", "Hecho: Jorge runs DevOps."),
-                                  ("user_pref_ghx", "Preferencia: GitHub through ghx.")):
+        for name, kind, description in (("user_jorge", "fact", "Hecho: Jorge runs DevOps."),
+                                        ("user_pref_ghx", "preference", "Preferencia: GitHub through ghx.")):
             con.execute(
-                "INSERT INTO memory (workspace, name, type, description, body, class) "
-                "VALUES (?, ?, 'user', ?, ?, 'anchor')",
-                (USER_SCOPE, name, description, description),
+                "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level) "
+                "VALUES (?, ?, 'user', ?, ?, 'anchor', ?, 'user')",
+                (USER_SCOPE, name, description, description, kind),
             )
         con.execute(
             "INSERT INTO memory (workspace, name, type, description, body, class, status, initiative) "

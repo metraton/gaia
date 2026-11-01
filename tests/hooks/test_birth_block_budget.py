@@ -87,11 +87,11 @@ def corpus(tmp_path, monkeypatch, bootstrapped_db_template):
 
     session_snapshot.write_resume_point(SESSION, RESUME)
     monkeypatch.setattr(session_ledger, "_SOURCES", (
-        ("in_flight", lambda con, sid: [
+        ("in_flight", lambda con, sid, since: [
             {"title": f"open contract {n} " * 8, "state": "NEEDS_INPUT", "contract_id": f"a{n:016x}.{n:012x}"}
             for n in range(12)
         ]),
-        ("pending", lambda con, sid: [
+        ("pending", lambda con, sid, since: [
             {"id": f"P-{n:032x}", "what": f"push branch {n} " * 8, "state": "pending"} for n in range(12)
         ]),
     ))

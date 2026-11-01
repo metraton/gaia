@@ -118,7 +118,7 @@ class TestSessionStartManifest:
             "The Environment section is the minimum guaranteed content of "
             "the manifest."
         )
-        assert f"- Folder: {cwd}" in ctx
+        assert f"cwd=~/{cwd.name}" in ctx.splitlines()
 
     def test_session_registers_using_stdin_session_id_without_env(
         self, isolated_workspace, monkeypatch

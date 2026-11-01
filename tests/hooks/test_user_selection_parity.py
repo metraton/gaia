@@ -1,4 +1,4 @@
-"""A subagent gets only live executor rows; superseded or log rows reach neither it nor the session."""
+"""The session birth indexes only the user's live rows, and a subagent kernel carries none of them."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ from modules.session import session_manifest  # noqa: E402
 USER_SCOPE = "_gaia_user"
 
 ROWS = {
-    "user_jorge": ("anchor", "any", "Hecho: Jorge runs DevOps for a consultancy."),
-    "user_pref_english": ("anchor", "orchestrator", "Preferencia: versioned text is in English."),
-    "user_pref_ghx": ("anchor", "executor", "Preferencia: GitHub goes through ghx per command."),
-    "user_pref_old": ("anchor", "executor", "Preferencia: an older rule, since replaced."),
-    "user_retired": ("log", "executor", "Preferencia: a retired note kept as history."),
+    "user_jorge": ("anchor", "fact", "Jorge runs DevOps for a consultancy."),
+    "user_pref_english": ("anchor", "preference", "Versioned text is in English."),
+    "user_pref_ghx": ("anchor", "preference", "GitHub goes through ghx per command."),
+    "user_pref_old": ("anchor", "preference", "An older rule, since replaced."),
+    "user_retired": ("log", "preference", "A retired note kept as history."),
 }
 LIVE = {"user_jorge", "user_pref_english", "user_pref_ghx"}
 
@@ -33,11 +33,11 @@ def _seed(db: Path) -> None:
     try:
         con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
                     (USER_SCOPE, USER_SCOPE))
-        for name, (class_, audience, body) in ROWS.items():
+        for name, (class_, kind, title) in ROWS.items():
             con.execute(
-                "INSERT INTO memory (workspace, name, type, description, body, class, "
-                "audience, updated_at) VALUES (?, ?, 'user', ?, ?, ?, ?, '2026-09-01T00:00:00Z')",
-                (USER_SCOPE, name, body, body, class_, audience),
+                "INSERT INTO memory (workspace, name, type, description, body, class, kind, "
+                "owner_level, updated_at) VALUES (?, ?, 'user', ?, ?, ?, ?, 'user', '2026-09-01T00:00:00Z')",
+                (USER_SCOPE, name, title, title, class_, kind),
             )
         con.execute(
             "INSERT INTO memory_links (workspace, src_name, dst_name, kind) "
@@ -50,11 +50,11 @@ def _seed(db: Path) -> None:
 
 
 def _present(text: str) -> set:
-    return {name for name, (_, _, body) in ROWS.items() if body in text}
+    return {name for name, (_, _, title) in ROWS.items() if title in text}
 
 
-def test_the_kernel_carries_exactly_the_birth_blocks_user_rows(tmp_path, monkeypatch,
-                                                               bootstrapped_db_template):
+def test_the_birth_indexes_the_live_user_rows_and_the_kernel_none(tmp_path, monkeypatch,
+                                                                  bootstrapped_db_template):
     data = tmp_path / "data"
     db = copy_bootstrapped_db(bootstrapped_db_template, data / "gaia.db")
     (tmp_path / "home").mkdir()
@@ -77,4 +77,4 @@ def test_the_kernel_carries_exactly_the_birth_blocks_user_rows(tmp_path, monkeyp
     )
 
     assert _present(birth) == LIVE
-    assert _present(kernel) == {name for name in LIVE if ROWS[name][1] == "executor"}
+    assert _present(kernel) == set()

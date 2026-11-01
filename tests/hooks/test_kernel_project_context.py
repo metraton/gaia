@@ -31,7 +31,7 @@ HEADING = "# Project context"
 PROJECT = "alpha"
 IDENTITY = "github.com/me/alpha"
 DISPLAY = "alpha (/work/alpha)"
-USER_ROWS = 7
+SCOPE_ROWS = 7
 POINTER_SCOPE = f"--workspace me --project {IDENTITY}"
 
 
@@ -77,14 +77,13 @@ def _section(db: Path, name: str, payload) -> None:
     )
 
 
-def _user_rows(db: Path, count: int, size: int) -> None:
-    _execute(db, "INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('_gaia_user', '_gaia_user')")
+def _scope_rows(db: Path, count: int, size: int) -> None:
     for i in range(count):
-        body = f"Preference {i}: " + "x" * size
+        title = f"Rule {i}: " + "x" * size
         _execute(
-            db, "INSERT INTO memory (workspace, name, type, description, body, class, audience, updated_at) "
-            "VALUES ('_gaia_user', ?, 'user', ?, ?, 'anchor', 'executor', ?)",
-            f"user_pref_{i}", body[:80], body, f"2026-09-{i + 1:02d}T00:00:00Z",
+            db, "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
+            "updated_at) VALUES ('me', ?, 'decision', ?, 'why', 'anchor', 'preference', 'workspace', ?)",
+            f"decision_me_rule_{i}", title, f"2026-09-{i + 1:02d}T00:00:00Z",
         )
 
 
@@ -192,37 +191,38 @@ def test_kernel_project_context_absent_without_a_dispatch_project(db):
     assert HEADING not in kernel
 
 
-def _user_rows_leaving_room(db: Path, row: dict, room: int) -> None:
-    """Executor rows sized so the kernel without project context leaves exactly ``room`` chars under the budget."""
-    _user_rows(db, USER_ROWS, 600)
+def _scope_rows_leaving_room(db: Path, row: dict, room: int) -> None:
+    """Scope memory rows sized so the kernel without project context leaves exactly ``room`` chars under the budget."""
+    _scope_rows(db, SCOPE_ROWS, 600)
     base = len(_kernel(db, row))
     delta = KERNEL_BUDGET - room - base
     assert delta > 0, "the rows must leave more than the requested room"
-    _execute(db, "UPDATE memory SET body = body || ? WHERE name = ?", "y" * delta, f"user_pref_{USER_ROWS - 1}")
+    _execute(db, "UPDATE memory SET description = description || ? WHERE name = ?",
+             "y" * delta, f"decision_me_rule_{SCOPE_ROWS - 1}")
 
 
-def _assert_all_user_rows(kernel: str) -> None:
-    for i in range(USER_ROWS):
-        assert f"Preference {i}: " in kernel
+def _assert_all_scope_rows(kernel: str) -> None:
+    for i in range(SCOPE_ROWS):
+        assert f"Rule {i}: " in kernel
 
 
-def test_kernel_project_context_points_while_every_user_row_stays(db):
+def test_kernel_project_context_points_while_every_scope_row_stays(db):
     row = _row(DISPLAY, ["stack"])
-    _user_rows_leaving_room(db, row, 400)
+    _scope_rows_leaving_room(db, row, 400)
     _section(db, "stack", {"language": "go", "notes": "s" * 1500})
 
     kernel = _kernel(db, row)
 
     assert _pointer("stack") in kernel
     assert "s" * 1500 not in kernel
-    _assert_all_user_rows(kernel)
+    _assert_all_scope_rows(kernel)
     assert kernel.startswith(build_dispatch_kernel(row, db_path=db))
     assert len(kernel) <= KERNEL_BUDGET
 
 
-def test_kernel_project_context_near_the_cap_is_one_line_and_no_user_row_leaves(db):
+def test_kernel_project_context_near_the_cap_is_one_line_and_no_scope_row_leaves(db):
     row = _row(DISPLAY, ["stack", "environment", "cluster"])
-    _user_rows_leaving_room(db, row, 60)
+    _scope_rows_leaving_room(db, row, 60)
     for name in ("stack", "environment", "cluster"):
         _section(db, name, {"value": name * 40})
 
@@ -230,13 +230,13 @@ def test_kernel_project_context_near_the_cap_is_one_line_and_no_user_row_leaves(
 
     assert f"3 sections — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
     assert "- stack," not in kernel
-    _assert_all_user_rows(kernel)
+    _assert_all_scope_rows(kernel)
     assert len(kernel) <= KERNEL_BUDGET
 
 
 def test_kernel_project_context_pointers_without_bodies_when_only_they_fit(db):
     row = _row(DISPLAY, ["stack", "environment"])
-    _user_rows_leaving_room(db, row, 420)
+    _scope_rows_leaving_room(db, row, 420)
     _section(db, "stack", {"value": "a" * 400})
     _section(db, "environment", {"value": "b" * 400})
 
@@ -244,7 +244,7 @@ def test_kernel_project_context_pointers_without_bodies_when_only_they_fit(db):
 
     assert _pointer("stack") in kernel and _pointer("environment") in kernel
     assert "a" * 400 not in kernel and "b" * 400 not in kernel
-    _assert_all_user_rows(kernel)
+    _assert_all_scope_rows(kernel)
     assert len(kernel) <= KERNEL_BUDGET
 
 

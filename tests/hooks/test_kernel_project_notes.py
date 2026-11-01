@@ -3,7 +3,7 @@
 What the user feels: the facts the orchestrator curated about a project (a tool
 URL, a login method) reach every specialist dispatched there as an index it can
 open on demand; a project with no notes adds nothing to the dispatch, and the
-index never costs the user's own rows their place. Runs against a temporary
+index never costs the scope memory its place. Runs against a temporary
 HOME, GAIA_DATA_DIR and GAIA_DB.
 """
 
@@ -29,7 +29,7 @@ from modules.context.kernel_builder import (  # noqa: E402
     build_kernel_context,
 )
 
-USER_BODY = "Preference: versioned text is written in English."
+SCOPE_TITLE = "Versioned text is written in English."
 
 
 @pytest.fixture()
@@ -63,18 +63,15 @@ def _note(db: Path, name: str, description: str, *, initiative="alpha", cls="anc
         con.close()
 
 
-def _user_row(db: Path) -> None:
+def _scope_row(db: Path) -> None:
     con = sqlite3.connect(db)
     try:
+        con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('me', 'me')")
         con.execute(
-            "INSERT OR IGNORE INTO workspaces (name, identity) "
-            "VALUES ('_gaia_user', '_gaia_user')"
-        )
-        con.execute(
-            "INSERT INTO memory (workspace, name, type, description, body, class, "
-            "audience, updated_at) VALUES ('_gaia_user', 'user_pref', 'user', ?, ?, "
-            "'anchor', 'executor', '2026-09-01T00:00:00Z')",
-            (USER_BODY, USER_BODY),
+            "INSERT INTO memory (workspace, name, type, description, body, class, kind, "
+            "owner_level, updated_at) VALUES ('me', 'decision_me_english', 'decision', ?, ?, "
+            "'anchor', 'preference', 'workspace', '2026-09-01T00:00:00Z')",
+            (SCOPE_TITLE, SCOPE_TITLE),
         )
         con.commit()
     finally:
@@ -94,7 +91,6 @@ def _kernel(db: Path, project: str | None) -> str:
 
 
 def test_project_with_notes_carries_an_index_without_bodies(db):
-    _user_row(db)
     _note(db, "atom_alpha_login_sso", "Fact: alpha signs in through the corporate SSO.")
     _note(db, "atom_alpha_admin_url", "Fact: alpha admin lives at https://admin.alpha.test.",
           updated_at="2026-10-05T00:00:00Z")
@@ -109,15 +105,15 @@ def test_project_with_notes_carries_an_index_without_bodies(db):
     assert "more —" not in kernel
 
 
-def test_a_long_kernel_loses_the_cli_index_before_the_notes_and_the_notes_before_the_user_rows(db):
-    _user_row(db)
+def test_a_long_kernel_loses_the_cli_index_before_the_notes_and_the_notes_before_the_scope_memory(db):
+    _scope_row(db)
     _note(db, "atom_alpha_login_sso", "Fact: alpha signs in through the corporate SSO.")
 
     kernel = _kernel(db, "alpha")
 
     order = [
         kernel.index(kernel_builder.KERNEL_HEADING),
-        kernel.index(USER_BODY),
+        kernel.index(SCOPE_TITLE),
         kernel.index(PROJECT_NOTES_HEADING),
         kernel.index(kernel_builder.CLI_HEADING),
     ]
@@ -142,7 +138,6 @@ def test_index_is_capped_and_names_the_rest(db):
 
 
 def test_project_without_anchors_adds_nothing(db):
-    _user_row(db)
     _note(db, "thread_alpha_pending", "Pending: something", cls="thread")
     _note(db, "atom_alpha_gone", "Fact: retired.", deleted=True)
     _note(db, "atom_beta_other", "Fact: belongs to beta.", initiative="beta")
