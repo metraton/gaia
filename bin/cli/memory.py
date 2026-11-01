@@ -1354,11 +1354,12 @@ def _cmd_list(args) -> int:
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
+    with_user = getattr(args, "include_user", False) or type_filter == "user"
     try:
         rows = list_memory(
             workspace, type=type_filter, kind=kind_filter,
             class_=class_filter, status=status_filter, order_by=order_by,
-            direction=direction, with_user_scope=True,
+            direction=direction, with_user_scope=with_user,
             include_superseded=getattr(args, "include_superseded", False),
         )
     except ValueError as exc:
@@ -2612,13 +2613,18 @@ def _history_view(h: dict) -> dict:
     if (h.get("before_deleted_at") or None) != (h.get("after_deleted_at") or None):
         fields.append("deleted_at")
     body_delta = len(h.get("after_body") or "") - len(h.get("before_body") or "")
-    return {
+    view = {
         "changed_at": h.get("changed_at"),
         "fields_changed": fields,
         "body_delta": body_delta,
         "status_from": h.get("before_status"),
         "status_to": h.get("after_status"),
     }
+    for field in ("workspace", "type", "initiative", "project_ref"):
+        if field in fields:
+            view[f"{field}_from"] = h.get(f"before_{field}")
+            view[f"{field}_to"] = h.get(f"after_{field}")
+    return view
 
 
 # P2 show-verb pointer (decision_gaia_el_cli_ensena_en_el_instante_del_verbo):
@@ -2701,10 +2707,12 @@ def _cmd_curated_show(args) -> int:
             f"memory '{name}' not found in workspace '{workspace}'",
             as_json,
         )
-    record_memory_access(workspace, name, "deliberate")
-    # This call is itself one of the reads it is about to report, so the
-    # counters are re-read rather than the held row's incremented by hand.
-    row = get_memory(workspace, name) or row
+    counted = not getattr(args, "no_count", False)
+    if counted:
+        record_memory_access(workspace, name, "deliberate")
+        # This call is itself one of the reads it is about to report, so the
+        # counters are re-read rather than the held row's incremented by hand.
+        row = get_memory(workspace, name) or row
 
     # Fill the class/status gap: get_memory projects neither column.
     cs = get_memory_class_status(workspace, name)
@@ -2773,14 +2781,18 @@ def _cmd_curated_show(args) -> int:
             fields = ", ".join(hv["fields_changed"]) or "(no tracked field)"
             delta = hv["body_delta"]
             sign = "+" if delta >= 0 else ""
-            print(f"  {hv['changed_at']}  [{fields}]  body {sign}{delta} chars")
+            moved = "".join(
+                f"  {f} {hv[f + '_from']} -> {hv[f + '_to']}"
+                for f in ("workspace", "type", "initiative", "project_ref") if f + "_from" in hv)
+            print(f"  {hv['changed_at']}  [{fields}]  body {sign}{delta} chars{moved}")
 
     if links_payload is None and history_payload is None:
         print()
         print(row["body"])
 
     print()
-    print(_SHOW_POINTER_LINE1)
+    print(_SHOW_POINTER_LINE1 if counted else _SHOW_POINTER_LINE1.replace(
+        "this read counted toward", "--no-count left untouched"))
     line2 = _show_pointer_line2(row)
     if line2:
         print(line2)
@@ -3043,6 +3055,157 @@ def _cmd_reclassify(args) -> int:
         )
     _emit_write_warnings(warnings, as_json)
     return 0
+
+
+_OWNER_SPEC_FORMS = "user | gaia | workspace:<ws> | group:<ws>/<key> | project:<ws>/<name>"
+
+
+def _parse_owner_spec(spec: str) -> dict:
+    """The move target an owner spec names; ValueError with the accepted forms otherwise."""
+    owner, _, rest = spec.strip().partition(":")
+    if owner == "user" and not rest:
+        return {"mem_type": "user", "expected_owner": "user"}
+    if owner == "gaia" and not rest:
+        return {"initiative": "gaia_system", "expected_owner": "gaia"}
+    workspace, _, key = rest.partition("/")
+    if owner == "workspace" and workspace and not key:
+        return {"workspace": workspace, "expected_owner": "workspace"}
+    if owner == "group" and workspace and key:
+        return {"workspace": workspace, "initiative": key, "expected_owner": "group"}
+    if owner == "project" and workspace and key:
+        return {"workspace": workspace, "project": key, "expected_owner": "project"}
+    raise ValueError(f"owner spec {spec!r} is not one of: {_OWNER_SPEC_FORMS}")
+
+
+def _move_target_from_flags(args) -> dict | None:
+    """The move target the add-style scope flags name, or None when none is given."""
+    target = {
+        "mem_type": getattr(args, "type", None),
+        "workspace": getattr(args, "workspace", None),
+        "initiative": getattr(args, "initiative", None),
+        "project": getattr(args, "project", None),
+    }
+    if target["mem_type"] != "user" and not any(
+            target[k] for k in ("workspace", "initiative", "project")):
+        return None
+    return target
+
+
+def _move_one(name: str, target: dict, kind: str | None, from_flag: str | None) -> dict:
+    """Move one row and return its result record; a refusal is a record with ``code``, never an exception."""
+    from gaia.store.writer import (
+        MemoryMoveError, initiative_from_project_ref, move_memory,
+        normalize_initiative, resolve_project_ref,
+    )
+
+    try:
+        source = _workspace_holding(
+            _resolve_workspace(from_flag), name, explicit=bool(from_flag))
+        workspace = _resolve_workspace(target.get("workspace"))
+        initiative = target.get("initiative")
+        project_ref = None
+        if target.get("project"):
+            project_ref = resolve_project_ref(workspace, target["project"])
+            initiative = initiative or initiative_from_project_ref(project_ref)
+        initiative = normalize_initiative(initiative) if initiative else None
+        res = move_memory(
+            source, name, to_workspace=workspace, mem_type=target.get("mem_type"),
+            initiative=initiative, project_ref=project_ref, kind=kind,
+            expected_owner=target.get("expected_owner"),
+        )
+    except AmbiguousSlugError as exc:
+        return {"name": name, "status": "refused", "code": "ambiguous_slug", "error": str(exc)}
+    except MemoryMoveError as exc:
+        return {"name": name, "status": "refused", "code": exc.code, "error": str(exc)}
+    except PermissionError as exc:
+        return {"name": name, "status": "refused", "code": "write_forbidden", "error": str(exc)}
+    except ValueError as exc:
+        return {"name": name, "status": "refused", "code": "target_unresolved", "error": str(exc)}
+    return {**res, "status": res["action"]}
+
+
+def _move_batch(lines, from_flag: str | None) -> list[dict]:
+    """One result per ``slug<TAB>owner-spec[<TAB>kind]`` line; blank and ``#`` lines are skipped."""
+    results = []
+    for number, line in enumerate(lines, start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) not in (2, 3) or not fields[0].strip():
+            results.append({"line": number, "name": fields[0].strip(), "status": "refused",
+                            "code": "bad_line",
+                            "error": "expected slug<TAB>owner-spec[<TAB>kind]"})
+            continue
+        name, spec = fields[0].strip(), fields[1]
+        kind = fields[2].strip() if len(fields) == 3 and fields[2].strip() else None
+        try:
+            target = _parse_owner_spec(spec)
+        except ValueError as exc:
+            results.append({"line": number, "name": name, "status": "refused",
+                            "code": "bad_owner_spec", "error": str(exc)})
+            continue
+        results.append({"line": number, **_move_one(name, target, kind, from_flag)})
+    return results
+
+
+def _move_line(r: dict) -> str:
+    if r["status"] == "refused":
+        return f"refused {r.get('name') or '?'} [{r['code']}]: {r['error']}"
+    kind = (f", kind {r['kind_from']} -> {r['kind_to']}"
+            if r["kind_from"] != r["kind_to"] else "")
+    verb = "moved" if r["status"] == "moved" else "unchanged"
+    return (f"{verb} {r['name']}: {r['owner_from']} ({r['from_workspace']}) -> "
+            f"{r['owner_to']} ({r['to_workspace']}){kind}")
+
+
+def _cmd_move(args) -> int:
+    """Handle ``gaia memory move <slug> --to <spec>|<scope flags>`` and ``--from-file``; exit 1 when any row is refused."""
+    as_json = getattr(args, "json", False)
+    from_flag = getattr(args, "from_workspace", None)
+    from_file = getattr(args, "from_file", None)
+    spec = getattr(args, "to", None)
+    flag_target = _move_target_from_flags(args)
+
+    if from_file is not None:
+        if args.name or spec or flag_target or args.kind:
+            return _err("--from-file takes no slug, --to, --kind or scope flag: each "
+                        "line carries slug<TAB>owner-spec[<TAB>kind]", as_json)
+        try:
+            lines = (sys.stdin.read() if from_file == "-"
+                     else Path(from_file).expanduser().read_text(encoding="utf-8")).splitlines()
+        except OSError as exc:
+            return _err(f"--from-file: cannot read '{from_file}': {exc}", as_json)
+        results = _move_batch(lines, from_flag)
+    else:
+        if not args.name:
+            return _err("a slug is required, or --from-file", as_json)
+        if bool(spec) == bool(flag_target):
+            return _err_structured(
+                f"name the target once: --to <{_OWNER_SPEC_FORMS}>, or the scope flags "
+                f"add takes (--type=user | --workspace [--initiative|--project])",
+                as_json, code="missing_target")
+        try:
+            target = _parse_owner_spec(spec) if spec else flag_target
+        except ValueError as exc:
+            return _err_structured(str(exc), as_json, code="bad_owner_spec")
+        results = [_move_one(args.name, target, args.kind, from_flag)]
+
+    refused = [r for r in results if r["status"] == "refused"]
+    if as_json:
+        counts = {s: sum(r["status"] == s for r in results) for s in ("moved", "noop", "refused")}
+        print(json.dumps(
+            results[0] if from_file is None else {
+                "status": "partial" if refused and len(refused) < len(results)
+                else "failed" if refused else "applied",
+                "counts": counts, "results": results},
+            indent=2, default=str))
+    else:
+        for r in results:
+            print(_move_line(r), file=sys.stderr if r["status"] == "refused" else sys.stdout)
+        if from_file is not None:
+            print(f"{len(results) - len(refused)} applied, {len(refused)} refused "
+                  f"of {len(results)} line(s)")
+    return 1 if refused else 0
 
 
 # ---------------------------------------------------------------------------
@@ -3402,7 +3565,8 @@ def register(subparsers):
             "every mode (bare, --links, --history, any combination, text or "
             "--json) bumps the row's deliberate_count by one: naming the "
             "slug is itself counted as a deliberate read, independent of "
-            "which projection comes back. A row not found exits 1 with a "
+            "which projection comes back; --no-count reads without counting, "
+            "for curation. A row not found exits 1 with a "
             "stderr message; a row found but with no --links edges or no "
             "--history versions exits 0 and prints '(no links)' / '(no "
             "recorded history)' -- not-found and found-but-empty are never "
@@ -3426,6 +3590,11 @@ def register(subparsers):
         "--history", action="store_true", default=False,
         help="List memory_history versions (changed_at, fields changed, "
              "body size delta -- not full bodies). bool.",
+    )
+    show_p.add_argument(
+        "--no-count", dest="no_count", action="store_true", default=False,
+        help="Read without bumping deliberate_count: for curation, which reads rows "
+             "to place them, not to use them. bool.",
     )
     show_p.add_argument(
         "--json", action="store_true", default=False,
@@ -3456,7 +3625,10 @@ def register(subparsers):
             "Enumerate the curated memory rows that stand: a row another one "
             "supersedes is left out, the same rule get-relevant injects by. "
             "--include-superseded lists those too, with their successor in "
-            "SUPERSEDED_BY; --format=count counts what would be listed."
+            "SUPERSEDED_BY; --format=count counts what would be listed. Each "
+            "JSON row carries its placement: workspace, initiative, project_ref "
+            "and owner. Lists one workspace; --include-user adds the user's rows. "
+            "Counts nothing: a listing identifies no row."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -3505,6 +3677,11 @@ def register(subparsers):
     list_p.add_argument(
         "--include-superseded", action="store_true", default=False,
         help="Also list rows another row supersedes. bool.",
+    )
+    list_p.add_argument(
+        "--include-user", action="store_true", default=False,
+        help="Also list the user's rows (_gaia_user); --type=user lists them anyway. "
+             "bool. Default: the workspace's rows only.",
     )
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
@@ -3655,6 +3832,62 @@ def register(subparsers):
         help="Emit JSON. bool.",
     )
     reclass_p.set_defaults(func=_cmd_reclassify)
+
+    move_p = actions.add_parser(
+        "move",
+        allow_abbrev=False,
+        help="Re-home a curated row onto another owner in place (T0)",
+        description=(
+            "Change a row's owner without copying it: the slug, body, links and "
+            "history stay one row, and memory_history records the workspace, type, "
+            "initiative and project the row came from. The target is placed as "
+            "`gaia memory add` places a write -- by --to <owner spec> or by add's "
+            "scope flags -- and --kind changes the kind when the target owner "
+            "cannot hold the current one. Refused, naming the reason: a kind the "
+            "target owner cannot hold (with its right home), a slug the target "
+            "workspace already holds, a slug prefix the new type rejects, a kind "
+            "change with no owner change (that is a new row linked graduated_to or "
+            "derived_from). Non-mutative: nothing is lost, so no signature.\n\n"
+            f"Owner spec: {_OWNER_SPEC_FORMS}\n\n"
+            "--from-file reads one slug<TAB>owner-spec[<TAB>kind] per line (blank "
+            "and # lines skipped), moves each in its own transaction, reports every "
+            "line, and exits 1 when any line was refused."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory move decision_x --to workspace:me --from ws\n"
+            "  gaia memory move negative_y --to project:me/gaia --kind lesson\n"
+            "  gaia memory move feedback_z --initiative gaia_system --workspace me\n"
+            "  gaia memory move --from-file ~/.gaia/scratch/moves.tsv --from ws --json\n"
+        ),
+    )
+    move_p.add_argument("name", nargs="?", default=None,
+                        help="Curated memory slug; omitted with --from-file.")
+    move_p.add_argument("--to", default=None, metavar="SPEC",
+                        help=f"Target owner: {_OWNER_SPEC_FORMS}.")
+    move_p.add_argument(
+        "--type", default=None,
+        choices=("project", "user", "feedback", "atom", "decision", "negative"),
+        help="--type=user targets the user; another value is the new type, required "
+             "when a user row leaves the user.",
+    )
+    move_p.add_argument("--workspace", default=None, metavar="W",
+                        help="Target workspace (as add's --workspace).")
+    move_p.add_argument("--initiative", default=None, metavar="KEY",
+                        help="Target group key, or gaia_system for gaia.")
+    move_p.add_argument("--project", default=None, metavar="NAME",
+                        help="Target project within the target workspace.")
+    move_p.add_argument("--kind", default=None, choices=MEMORY_KINDS,
+                        help="New kind, one the target owner holds.")
+    move_p.add_argument("--from", dest="from_workspace", default=None, metavar="W",
+                        help="Workspace the row is stored under now. Default: found as "
+                             "show finds it.")
+    move_p.add_argument("--from-file", dest="from_file", default=None, metavar="PATH",
+                        help="Batch: slug<TAB>owner-spec[<TAB>kind] per line; '-' reads stdin.")
+    move_p.add_argument("--json", action="store_true", default=False,
+                        help="Emit JSON. bool.")
+    move_p.set_defaults(func=_cmd_move)
 
     # -- link ---------------------------------------------------------------
     # No abbreviations: the signature matches the literal --delete.

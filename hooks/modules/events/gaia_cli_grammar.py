@@ -32,7 +32,7 @@ SUBCOMMANDS = {
     'lint': 'comments',
     'login': 'start status',
     'memory': (
-        'add append checkpoint conflicts delete edit episode-show get-relevant link list '
+        'add append checkpoint conflicts delete edit episode-show get-relevant link list move '
         'reclassify search show stats story'
     ),
     'migrate': 'apply plan',
@@ -212,15 +212,19 @@ OPTIONS = {
     ),
     'memory link': '--delete --help --json --kind --workspace -h',
     'memory list': (
-        '--class --format --help --include-superseded --json --kind --limit --order --sort '
-        '--status --type --workspace -h'
+        '--class --format --help --include-superseded --include-user --json --kind --limit '
+        '--order --sort --status --type --workspace -h'
+    ),
+    'memory move': (
+        '--from --from-file --help --initiative --json --kind --project --to --type '
+        '--workspace -h'
     ),
     'memory reclassify': '--class --help --json --status --workspace -h',
     'memory search': (
         '--all --class --help --include-superseded --json --limit --scope --type --workspace '
         '-h'
     ),
-    'memory show': '--help --history --json --links --workspace -h',
+    'memory show': '--help --history --json --links --no-count --workspace -h',
     'memory stats': '--help --json -h',
     'memory story': '--help --json --max-depth --workspace -h',
     'metrics': '--agent --help --json --range --since --until --workspace -h',

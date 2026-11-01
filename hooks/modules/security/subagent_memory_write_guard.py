@@ -2,7 +2,7 @@
 subagent_memory_write_guard.py -- subagent memory-write enforcement.
 
 PreToolUse Bash guard that rejects direct curated-memory MUTATIONS
-(`gaia memory add|append|reclassify|delete|link|checkpoint`) attempted from a
+(`gaia memory add|append|reclassify|move|delete|link|checkpoint`) attempted from a
 SUBAGENT dispatch context, EXCEPT for the sanctioned writer agents.
 
 Why this exists
@@ -63,7 +63,7 @@ from .gaia_cli_invocation import (
 # (search/show/list/stats/get-relevant/conflicts/episode-show) are absent by
 # design -- subagents read memory freely.
 MEMORY_WRITE_VERBS = frozenset(
-    {"add", "append", "reclassify", "delete", "link", "checkpoint"}
+    {"add", "append", "reclassify", "move", "delete", "link", "checkpoint"}
 )
 
 # Subagents that ARE sanctioned to mutate memory directly. The orchestrator is

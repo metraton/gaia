@@ -630,6 +630,7 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("memory", "add"),
     ("memory", "append"),
     ("memory", "reclassify"),
+    ("memory", "move"),
     ("memory", "link"),
     ("memory", "checkpoint"),
     # Withdrawal (D5 of brief aprobaciones-agnosticas-al-host): the coordinator
@@ -1261,11 +1262,13 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("memory", "link"): _flags("--kind --workspace", "--json"),
     ("memory", "list"): _flags(
         "--type --kind --class --status --sort --order --workspace --limit --format",
-        "--include-superseded --json"),
+        "--include-superseded --include-user --json"),
+    ("memory", "move"): _flags(
+        "--to --type --workspace --initiative --project --kind --from --from-file", "--json"),
     ("memory", "reclassify"): _flags("--class --status --workspace", "--json"),
     ("memory", "search"): _flags(
         "--limit --scope --type --class --workspace", "--all --include-superseded --json"),
-    ("memory", "show"): _flags("--workspace", "--links --history --json"),
+    ("memory", "show"): _flags("--workspace", "--links --history --no-count --json"),
     ("memory", "stats"): _flags("", "--json"),
     ("memory", "story"): _flags("--max-depth --workspace", "--json"),
     ("metrics",): _flags("--agent --workspace --range --since --until", "--json"),

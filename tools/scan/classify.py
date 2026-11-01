@@ -436,6 +436,21 @@ def _compute_vanished(
     ]
 
 
+def _missing_count(workspace: str, db_path: Path | None) -> int:
+    """How many project rows of ``workspace`` are ``status='missing'``; 0 when the DB does not exist."""
+    if not _db_file_exists(db_path):
+        return 0
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        return con.execute(
+            "SELECT COUNT(*) FROM projects WHERE workspace = ? AND status = 'missing'",
+            (workspace,),
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
 def _memory_and_brief_counts(workspace: str, db_path: Path | None) -> tuple[int, int]:
     """Return ``(memory_count, open_brief_count)`` for ``workspace``.
 
@@ -713,7 +728,8 @@ def scan(
         roots = {**roots, workspace_root: W}
 
     repos = _list_repos(root)
-    if not repos:
+    covers_workspace = Path(root).resolve() == Path(workspace_root).resolve()
+    if not repos and not covers_workspace:
         return error_report(f"no git repos under root: {root}")
 
     report = ScanReport(mode="apply" if apply else "dry-run")
@@ -958,6 +974,10 @@ def scan(
             _record_copy(target, copy, agent=agent, db_path=db_path)
         report.warnings.append(_copy_warning(copy, target))
 
+    # Only a whole-workspace scan can tell a gone repo from one outside root.
+    if covers_workspace:
+        surviving_by_ws.setdefault(W, [])
+
     # SV2: vanished / move_candidates (direction: vanished here -> active
     # elsewhere) / orphaned_autored. Computed for every workspace this scan
     # touched (dry-run AND apply), BEFORE _reconcile actually writes anything,
@@ -1069,5 +1089,10 @@ def scan(
             "would_move": len(report.move_candidates),
             "would_mark_missing": len(report.vanished),
         }
+    # *_mark_missing counts this run's transitions; earlier ones show here.
+    report.diff["already_missing"] = (
+        sum(_missing_count(ws, db_path) for ws in surviving_by_ws)
+        - (report.marked_missing if apply else 0)
+    )
 
     return report

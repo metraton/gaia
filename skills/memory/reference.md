@@ -163,6 +163,29 @@ with `bin/cli/memory.py::_WRITE_POINTER`, the write-side twin of the read
 pointer. Whether a preference is really a harness rule is left to the
 writer's judgment: no check reads the body for it.
 
+## Moving a row to its owner
+
+`gaia memory move` (`bin/cli/memory.py::_cmd_move`, writer
+`gaia/store/writer.py::move_memory`) re-homes a live row in one transaction.
+The target is an owner spec -- `user`, `gaia`, `workspace:<ws>`,
+`group:<ws>/<key>`, `project:<ws>/<name>` -- or `add`'s scope flags; `--from`
+names the workspace the row sits in now (default: found as `show` finds it).
+The writer derives the owner with `memory_placement.py::derive_owner_level`, so
+a spec that names `group` for a registered project is refused as
+`owner_mismatch`. One UPDATE re-keys `workspace`, `type`, `initiative`,
+`project_ref`, `owner_level` and `kind`; `trg_memory_history` records the old
+coordinates, and `_rekey_memory_neighbours` points the row's earlier history
+rows and both ends of its links at the new workspace first. A type=user row
+leaving the user names its new `--type`; a curated slug prefix (`atom_`,
+`decision_`, `negative_`) binds its type, so such a row never becomes the
+user's. Refusal codes, one per row in a batch: `not_found`, `kind_refused`,
+`name_collision`, `slug_type_mismatch`, `type_required`, `owner_mismatch`,
+`kind_change_alone`, `bad_owner_spec`, `bad_line`, `target_unresolved`,
+`ambiguous_slug`, `write_forbidden`. A batch exits 1 when any line was refused.
+`memory_history` has no kind column, so a kind changed by a move is not in the
+history; the old owner is. `move` sits on the orchestrator's lane beside
+`reclassify`, is refused to every specialist but `gaia-operator`, and is T0.
+
 Anchoring is **forward-only, by design**. Rows written before this
 mechanism existed stay `project_ref IS NULL` -- the memory-row-to-project
 mapping is genuinely ambiguous whenever a workspace hosts more than one

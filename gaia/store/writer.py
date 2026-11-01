@@ -3464,6 +3464,172 @@ def _apply_class_status(
     return new_class, new_status
 
 
+class MemoryMoveError(ValueError):
+    """A ``move_memory`` refusal; ``code`` is the stable key the CLI reports per row."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def move_memory(
+    from_workspace: str,
+    name: str,
+    *,
+    to_workspace: str,
+    mem_type: str | None = None,
+    initiative: str | None = None,
+    project_ref: str | None = None,
+    kind: str | None = None,
+    expected_owner: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Re-home the live row onto the owner its target derives to, keeping slug, body, links and history; MemoryMoveError(code) on refusal (skills/memory/reference.md)."""
+    _assert_dispatch_can_write_memory()
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            result = _move_memory_on(
+                con, from_workspace, name, to_workspace=to_workspace, mem_type=mem_type,
+                initiative=initiative, project_ref=project_ref, kind=kind,
+                expected_owner=expected_owner,
+            )
+        except Exception:
+            con.rollback()
+            raise
+        con.commit()
+        return result
+    finally:
+        con.close()
+
+
+def _move_memory_on(
+    con, from_workspace: str, name: str, *, to_workspace: str, mem_type, initiative,
+    project_ref, kind, expected_owner,
+) -> dict:
+    from gaia.store.memory_placement import derive_owner_level, placement_refusal, tool_refusal
+
+    row = con.execute(
+        "SELECT type, kind, owner_level, initiative, project_ref, until, binary, replaces, "
+        "description, deleted_at FROM memory WHERE workspace = ? AND name = ?",
+        (from_workspace, name),
+    ).fetchone()
+    if row is None or row["deleted_at"] is not None:
+        raise MemoryMoveError(
+            f"memory '{name}' is not a live row of workspace '{from_workspace}'",
+            code="not_found",
+        )
+    if mem_type is None:
+        if row["type"] == "user":
+            raise MemoryMoveError(
+                f"'{name}' is a type=user row: leaving the user it needs a new --type "
+                f"(project, feedback, atom, decision or negative) its slug agrees with",
+                code="type_required",
+            )
+        mem_type = row["type"]
+    if mem_type not in VALID_MEMORY_TYPES:
+        raise MemoryMoveError(
+            f"invalid type {mem_type!r}; must be one of {list(VALID_MEMORY_TYPES)}",
+            code="type_invalid",
+        )
+    try:
+        _validate_curated_slug(name, mem_type)
+    except ValueError as exc:
+        raise MemoryMoveError(
+            f"{exc} A slug never changes on a move: write a new row and supersede this one.",
+            code="slug_type_mismatch",
+        ) from None
+    if mem_type == "user":
+        initiative, project_ref = None, None
+    try:
+        target_workspace = resolve_memory_workspace(to_workspace, mem_type, initiative, project_ref)
+    except MemoryHostScopeError as exc:
+        raise MemoryMoveError(str(exc), code=exc.code) from None
+    owner = derive_owner_level(mem_type, initiative, project_ref, con)
+    if expected_owner is not None and owner != expected_owner:
+        hint = _OWNER_DERIVATION_HINT.get(owner)
+        raise MemoryMoveError(
+            f"the target derives to owner {owner!r}, not {expected_owner!r}"
+            + (f": {hint}" if hint else ""),
+            code="owner_mismatch",
+        )
+    new_kind = kind or row["kind"]
+    refusal = placement_refusal(owner, new_kind, row["until"])
+    if refusal is None and new_kind != row["kind"]:
+        refusal = tool_refusal(new_kind, row["description"], row["binary"], row["replaces"])
+    if refusal:
+        raise MemoryMoveError(
+            f"'{name}' cannot be held as {new_kind!r} by owner {owner!r}: {refusal}",
+            code="kind_refused",
+        )
+
+    before = (from_workspace, row["type"], row["initiative"], row["project_ref"], row["owner_level"])
+    after = (target_workspace, mem_type, initiative, project_ref, owner)
+    summary = {
+        "name": name, "from_workspace": from_workspace, "to_workspace": target_workspace,
+        "owner_from": row["owner_level"], "owner_to": owner,
+        "kind_from": row["kind"], "kind_to": new_kind,
+    }
+    if before == after:
+        if new_kind != row["kind"]:
+            raise MemoryMoveError(
+                f"'{name}' already sits on owner {owner!r}; a kind change alone is a new row "
+                f"linked graduated_to or derived_from, not a move",
+                code="kind_change_alone",
+            )
+        return {"status": "applied", "action": "noop", **summary}
+    if target_workspace != from_workspace and con.execute(
+        "SELECT 1 FROM memory WHERE workspace = ? AND name = ?", (target_workspace, name),
+    ).fetchone():
+        raise MemoryMoveError(
+            f"workspace '{target_workspace}' already holds a row named '{name}' (live or "
+            f"deleted); a move never merges two rows. Supersede one of them first.",
+            code="name_collision",
+        )
+
+    if target_workspace != from_workspace:
+        _ensure_workspace_row(con, target_workspace)
+        _rekey_memory_neighbours(con, from_workspace, target_workspace, name)
+    con.execute(
+        "UPDATE memory SET workspace = ?, type = ?, initiative = ?, project_ref = ?, "
+        "owner_level = ?, kind = ? WHERE workspace = ? AND name = ?",
+        (target_workspace, mem_type, initiative, project_ref, owner, new_kind,
+         from_workspace, name),
+    )
+    return {"status": "applied", "action": "moved", **summary}
+
+
+_OWNER_DERIVATION_HINT = {
+    "project": "the initiative names a registered project, so the row belongs to it "
+               "(project:<ws>/<name>)",
+    "group": "the initiative names no registered project (group:<ws>/<key>)",
+}
+
+
+def _rekey_memory_neighbours(con, from_workspace: str, to_workspace: str, name: str) -> None:
+    """Point ``name``'s history rows and both link ends at ``to_workspace``; a NULL ``dst_workspace`` keeps meaning "the src's"."""
+    con.execute(
+        "UPDATE memory_history SET workspace = ? WHERE workspace = ? AND name = ?",
+        (to_workspace, from_workspace, name),
+    )
+    con.execute(
+        "UPDATE memory_links SET workspace = ?, dst_workspace = COALESCE(dst_workspace, ?) "
+        "WHERE workspace = ? AND src_name = ?",
+        (to_workspace, from_workspace, from_workspace, name),
+    )
+    con.execute(
+        "UPDATE memory_links SET dst_workspace = ? WHERE dst_name = ? "
+        "AND COALESCE(dst_workspace, workspace) = ?",
+        (to_workspace, name, from_workspace),
+    )
+    con.execute(
+        "UPDATE memory_links SET dst_workspace = NULL "
+        "WHERE dst_workspace = workspace AND (src_name = ? OR dst_name = ?)",
+        (name, name),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API: close_session_memory (transactional session-close checkpoint)
 # ---------------------------------------------------------------------------
@@ -4030,6 +4196,8 @@ def list_memory(
     trailing-underscore convention as ``reclassify_memory``) filter the same
     way when set; ``None`` applies no filter on either.
 
+    Each row carries its placement and ``owner``, derived when ``owner_level`` is NULL.
+
     Projects ``class``, ``status`` and the v48 telemetry pair
     (``injection_count``/``last_injected_at``, ``deliberate_count``/
     ``last_deliberate_at``) alongside the content columns.
@@ -4092,12 +4260,19 @@ def list_memory(
             "SELECT name, type, kind, description, updated_at, audience, class, "
             "       status, injection_count, deliberate_count, "
             "       last_injected_at, last_deliberate_at, "
+            "       workspace, initiative, project_ref, owner_level, "
             f"      {superseded_by()} AS superseded_by "
             "FROM memory WHERE " + " AND ".join(where) +
             " ORDER BY " + order_clause
         )
-        rows = con.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        from gaia.store.memory_placement import derive_owner_level
+        listed = []
+        for r in con.execute(sql, params).fetchall():
+            row = dict(r)
+            row["owner"] = row["owner_level"] or derive_owner_level(
+                row["type"], row["initiative"], row["project_ref"], con)
+            listed.append(row)
+        return listed
     finally:
         con.close()
 

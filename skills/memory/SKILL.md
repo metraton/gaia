@@ -306,13 +306,13 @@ then are the parts lost. These earn a curated row:
 
    | Operation | Handling |
    |---|---|
-   | `add`/`append`/`reclassify`/`link` (creating an edge) on rows not owned by the user and not a user decision | autonomous, brief report |
+   | `add`/`append`/`reclassify`/`move`/`link` (creating an edge) on rows not owned by the user and not a user decision | autonomous, brief report |
    | a user preference that bends a harness default | ask first: the bend is his to agree to |
    | other user rows (facts, preferences, tools) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the user, and a name already there is reported, never overwritten — a changed preference is a new row that supersedes it, which a link reaches from any workspace |
    | contradicting or superseding a user `decision_*` row | ask first |
    | `add --replace`/`delete`/`link --delete` | T3 approval flow; delegate to a specialist and never autoexecute. `memory_links` keeps no history, so removing an edge is as unrecoverable as a delete |
    | `checkpoint` | autonomous after the milestone test; it is one atomic operation and remains all-or-nothing |
-   | closing an objectively verifiable brief/plan | autonomous, report; run `gaia brief verify` by hand before `set-status` — `close` (which runs verification for free, `bin/cli/brief.py::_cmd_close`) is not on the orchestrator's `gaia` CLI lane, only `set-status` is |
+   | closing an objectively verifiable brief/plan | autonomous, report; prefer `gaia brief close`, which verifies before closing and syncs the stored AC status (`bin/cli/brief.py::_cmd_close`); both `close` and `set-status` are on the orchestrator's `gaia` CLI lane (`hooks/modules/security/gaia_cli_only_guard.py::ALLOWED_WRITE_PHRASES`) |
    | promoting a TASK | never direct — dispatch `gaia-verifier` |
    | approvals | read/report only |
 
@@ -340,10 +340,28 @@ These verbs are non-mutative, so cost is never the reason a row stays live.
 Whoever observes the resolution owns the exit: a session that resolves a thread
 and does not close it has moved that thread's cost onto every session after it.
 
+## A row under the wrong owner
+
+A row whose claim is right but whose owner is wrong -- stored under a container
+workspace, a group that should be a project, a workspace that should be gaia --
+is moved, never copied: `gaia memory move <slug> --to <owner spec>` keeps one
+row, its slug, body, links and history, and `memory_history` records where it
+came from (`show --history` prints it). The target is placed exactly as `add`
+places a write, and the move refuses what `add` would: a kind the target owner
+cannot hold (naming its home; `--kind` changes it when the claim fits another
+kind there), a slug the target already holds, and a kind change with no owner
+change, which stays a new row linked `graduated_to` or `derived_from`. A batch
+is `--from-file` with one `slug<TAB>owner-spec[<TAB>kind]` per line; every line
+is reported and a refused one does not stop the rest. Curation reads rows to
+place them, not to use them: `gaia memory list --json` carries each row's
+workspace, initiative, project and owner, and `gaia memory show --no-count`
+opens a body without counting the read.
+
 ## A signal mid-session
 
-A `~ changed: ... — gaia signals` line beside a user prompt means another session,
-or the user, changed curated memory since the orchestrator last looked. It is
+A `~ user memory changed:` or `~ project memory changed:` block beside a user
+prompt (`gaia/signals.py::render_line`) means another session, or the user,
+changed curated memory since the orchestrator last looked. It is
 shown once, a pointer and not a task. It is attended to only when it concerns
 the user's preferences or a project this session is working on: `gaia signals`
 lists the rows with the command that opens each, and they are read before
