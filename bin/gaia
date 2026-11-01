@@ -339,7 +339,7 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
   approvals      reject | revoke
                  withdraw ONE approval by id -- both only take back consent
                  Gaia issued. Granting and sweeping stay outside this lane.
-  memory         add | append | reclassify | link | checkpoint
+  memory         add | append | reclassify | move | link | checkpoint
   scan
                  re-index this workspace's repos into (workspace, project)
                  rows -- how the coordinator keeps its own context current.

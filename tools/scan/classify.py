@@ -158,7 +158,9 @@ class ScanReport:
             ``did_mark_missing``. ``*_move`` counts detected move_candidates
             (SV2 only ever detects/reports a move -- adjudication and the
             actual ``superseded_by`` write happen in SV4).
-        mode: ``"dry-run"`` or ``"apply"`` -- mirrors the ``apply`` flag this
+        already_missing: Rows of the scanned workspaces an earlier scan marked
+            missing; ``*_mark_missing`` counts only this run's transitions.
+        mode:``"dry-run"`` or ``"apply"`` -- mirrors the ``apply`` flag this
             report was produced with.
         error: A top-level error string when the scan could not run at all
             (e.g. no git repos under root). None on a normal run.
@@ -177,6 +179,7 @@ class ScanReport:
     rename_candidates: list[dict] = field(default_factory=list)
     orphaned_autored: list[dict] = field(default_factory=list)
     diff: dict = field(default_factory=dict)
+    already_missing: int = 0
     mode: str = "dry-run"
     error: Optional[str] = None
     # Carrier for stage 3 (contract promotion). classify.scan() NEVER writes
@@ -199,6 +202,7 @@ class ScanReport:
             "rename_candidates": self.rename_candidates,
             "orphaned_autored": self.orphaned_autored,
             "diff": self.diff,
+            "already_missing": self.already_missing,
             "mode": self.mode,
             "error": self.error,
             "promotion": self.promotion,
@@ -729,7 +733,7 @@ def scan(
 
     repos = _list_repos(root)
     covers_workspace = Path(root).resolve() == Path(workspace_root).resolve()
-    if not repos and not covers_workspace:
+    if not repos and not (covers_workspace and _compute_vanished(W, [], db_path=db_path)):
         return error_report(f"no git repos under root: {root}")
 
     report = ScanReport(mode="apply" if apply else "dry-run")
@@ -1089,8 +1093,7 @@ def scan(
             "would_move": len(report.move_candidates),
             "would_mark_missing": len(report.vanished),
         }
-    # *_mark_missing counts this run's transitions; earlier ones show here.
-    report.diff["already_missing"] = (
+    report.already_missing = (
         sum(_missing_count(ws, db_path) for ws in surviving_by_ws)
         - (report.marked_missing if apply else 0)
     )

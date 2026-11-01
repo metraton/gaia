@@ -37,19 +37,25 @@ def _status(db: Path, workspace: str) -> dict:
 def test_scan_marks_the_workspaces_last_vanished_repo_missing(tmp_db, tmp_path):
     from gaia.store.writer import declare_workspace
     root = tmp_path / "century"
-    (root / "kinetlab01-iac" / ".git").mkdir(parents=True)
+    for repo in ("kinetlab01-iac", "branchkinect-iac"):
+        (root / repo / ".git").mkdir(parents=True)
     declare_workspace("century", root, db_path=tmp_db)
     assert classify_mod.scan(root, "century", db_path=tmp_db, apply=True).error is None
-    assert _status(tmp_db, "century") == {"kinetlab01-iac": "active"}
 
     shutil.rmtree(root / "kinetlab01-iac")
+    assert classify_mod.scan(root, "century", db_path=tmp_db, apply=True).marked_missing == 1
+    again = classify_mod.scan(root, "century", db_path=tmp_db, apply=False)
+    assert (again.diff["would_mark_missing"], again.already_missing) == (0, 1)
+
+    shutil.rmtree(root / "branchkinect-iac")
     preview = classify_mod.scan(root, "century", db_path=tmp_db, apply=False)
     assert preview.error is None
     assert preview.diff["would_mark_missing"] == 1
-
     applied = classify_mod.scan(root, "century", db_path=tmp_db, apply=True)
     assert applied.marked_missing == 1
-    assert _status(tmp_db, "century") == {"kinetlab01-iac": "missing"}
+    assert _status(tmp_db, "century") == {"kinetlab01-iac": "missing",
+                                          "branchkinect-iac": "missing"}
 
-    again = classify_mod.scan(root, "century", db_path=tmp_db, apply=False)
-    assert (again.diff["would_mark_missing"], again.diff["already_missing"]) == (0, 1)
+    shutil.rmtree(root)
+    root.mkdir()
+    assert "no git repos" in classify_mod.scan(root, "century", db_path=tmp_db, apply=False).error
