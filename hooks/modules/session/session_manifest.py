@@ -715,8 +715,7 @@ _NPM_PACKAGE_SHAPE = ("node_modules", "@jaguilar87", "gaia")
 
 
 def install_update_command(live: int) -> Optional[str]:
-    """The command that moves the running install to a release at schema ``live`` or
-    newer through its own channel, or None when the channel cannot be told."""
+    """This install's own-channel update command to schema ``live`` or newer; None for an unknown channel."""
     plugin = _plugin_root_in_use()
     if plugin is not None:
         if _is_marketplace_cache_entry(plugin):

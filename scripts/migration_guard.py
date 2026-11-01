@@ -287,12 +287,6 @@ def _set_targets(fragment: str) -> tuple[str, list[str]] | None:
 
 
 def _fills_added_columns(fragment: str, added: dict[str, set[str]]) -> bool:
-    """Whether an UPDATE writes only columns this same migration added.
-
-    Such a column held NULL in every row until this migration, and code older
-    than it neither reads nor writes it, so filling it rewrites nothing that
-    code depends on.
-    """
     read = _set_targets(fragment)
     if read is None:
         return False
@@ -301,8 +295,7 @@ def _fills_added_columns(fragment: str, added: dict[str, set[str]]) -> bool:
 
 
 def destructive_statements(sql: str) -> list[str]:
-    """Statements that rewrite, remove or rename rows, whatever the table holds;
-    an UPDATE that only fills columns the same script added is not one."""
+    """Statements that rewrite rows; an UPDATE filling only columns the same script adds is not one."""
     added = added_columns(sql)
     found = []
     for statement in split_statements(sql):
