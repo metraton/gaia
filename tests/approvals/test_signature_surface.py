@@ -200,13 +200,13 @@ def test_signature_surface_lifts_a_shared_git_folder_and_the_lines_rebuild_each_
 
     assert question["header"] == "Signature 1/2"
     assert question["question"] == (
-        "gaia-system requests 2 commands in ~/.gaia/scratch/t3-demo:\n\n"
+        "Signature 1/2: gaia-system requests 2 commands in ~/.gaia/scratch/t3-demo\n\n"
         "1. git tag demo-tag\n"
         "2. git branch -f demo-branch\n\n"
         "What they do: Etiqueta y mueve la rama."
     )
     opening, _, *steps, _, _ = question["question"].split("\n")
-    shown = opening.removeprefix("gaia-system requests 2 commands in ").removesuffix(":")
+    shown = opening.removeprefix("Signature 1/2: gaia-system requests 2 commands in ")
     rebuilt_folder = str(Path.home()) + shown[1:] if shown.startswith("~/") else shown
     rebuilt = [
         "git -C " + rebuilt_folder + " " + step.split(". ", 1)[1].removeprefix("git ")
@@ -229,7 +229,7 @@ def test_signature_surface_any_other_block_shows_every_command_verbatim(commands
     question = _signature_text([{"command": command} for command in commands], "Publica.")
 
     assert question["question"] == (
-        f"gaia-system requests 2 commands:\n\n1. {commands[0]}\n2. {commands[1]}\n\nWhat they do: Publica."
+        f"Signature 1/2: gaia-system requests 2 commands\n\n1. {commands[0]}\n2. {commands[1]}\n\nWhat they do: Publica."
     )
 
 
@@ -242,7 +242,9 @@ def test_signature_surface_details_names_each_full_command_even_when_the_questio
     details = surface.render_signature(payload, APPROVAL_ID, 1, 1).details_questions[0]
 
     assert details["header"] == "Details 1/1"
-    assert details["question"].startswith("gaia-system requests 2 commands:\n\n1. git -C /srv/a tag demo-tag\n")
+    assert details["question"].startswith(
+        "Details 1/1: gaia-system requests 2 commands\n\n1. git -C /srv/a tag demo-tag\n"
+    )
     assert "\n2. git -C /srv/a push origin demo-tag\n" in details["question"]
 
 
@@ -255,6 +257,7 @@ def test_signature_surface_flags_the_earlier_spanish_signature_as_a_lookalike():
     assert surface.reads_as_request(old)
     assert surface.reads_as_request({**old, "header": "Pregunta"})
     assert surface.reads_as_request({"header": "Pregunta", "question": "x requests 2 commands:", "options": []})
+    assert surface.reads_as_request({"header": "Pregunta", "question": "Signature 1/2: x wants git push", "options": []})
     assert not surface.reads_as_request({"header": "Pregunta", "question": "¿Sigo con el plan?", "options": []})
 
 

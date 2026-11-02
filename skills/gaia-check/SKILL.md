@@ -129,7 +129,8 @@ the same result, still undecided. Both hosts heartbeat their main sessions
 **Check 9 -- How it looks.** File `<p>nota-9.txt`. Task: rename it to
 `<p>nota-9-ok.txt`. User: confirms the question, headed `Signature 1/1` on
 Claude Code and `Firma 1/1` on OpenCode, reads on Claude Code
-`<agent> requests 1 command:`, then `1. <exact command>`, then
+`Signature 1/1: <agent> requests 1 command` as its first line (the desktop
+app hides the header), then `1. <exact command>`, then
 `What it does: <title>`, each on its own line with a blank line before and after
 the numbered commands, and on OpenCode one line
 `[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact command> ]`,

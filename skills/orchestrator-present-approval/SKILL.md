@@ -6,7 +6,8 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 # Present Approval — Orchestrator Branch
 
 Gaia builds every signature. In Claude Code a signature is one English
-question, headed `Signature N/M`: who asks and how many commands (and the
+question whose first line is its title, `Signature N/M:` (the desktop app does
+not show the header), then who asks and how many commands (and the
 folder, when every command is `git -C` of the same one), each command
 numbered on its own line, and a closing `What it does:` / `What they do:` line
 with what the set does. In OpenCode each command is its own one-line question, marked
@@ -25,7 +26,7 @@ most 4 commands either way, enforced when it is requested.
 
 In Claude Code, any question you type that reads as a signature -- a
 `Signature N/M`, `Firma N/M` or `Aprobación` header, Approve / Reject / Details
-options, a `[ GAIA-SECURITY ]` opening or a `<agent> requests <k> commands`
+options, a `[ GAIA-SECURITY ]` or `Signature N/M:` opening, a `<agent> requests <k> commands`
 opening (or the earlier `<agent> pide <k> comandos`) -- is refused unless it
 is exactly what `gaia approvals question` printed.
 

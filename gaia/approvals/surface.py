@@ -373,12 +373,12 @@ def _signed_noun(items: Sequence[Mapping[str, Any]]) -> tuple[int, str]:
 
 
 def _request_opening(
-    payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], folder: Optional[str] = None,
+    title: str, payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], folder: Optional[str] = None,
 ) -> str:
-    """``<agent> requests <k> command(s)[ in <folder>]:``, counting only the signed items."""
+    """``<title>: <agent> requests <k> command(s)[ in <folder>]``, the title being the header the desktop app does not show."""
     count, noun = _signed_noun(items)
     where = f" in {_home_relative(folder)}" if folder else ""
-    return f"{_agent(payload, _ABSENT['agent'])} requests {count} {noun}{where}:"
+    return f"{title}: {_agent(payload, _ABSENT['agent'])} requests {count} {noun}{where}"
 
 
 def _approve_description(items: Sequence[Mapping[str, Any]]) -> str:
@@ -404,16 +404,16 @@ def _what_line(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -
     return f"{lead}: {_one_line(payload.get('what') or _ABSENT['does'])}"
 
 
-def _request_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
-    """Claude Code's question: who asks, every step numbered on its own line, and what the set does."""
+def _request_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], title: str) -> str:
+    """Claude Code's question: its title and who asks, every step numbered on its own line, and what the set does."""
     folder = _lifted_folder(items)
     steps = [_numbered_step(position, item, folder) for position, item in enumerate(items, start=1)]
-    return "\n".join([_request_opening(payload, items, folder), "", *steps, "", _what_line(payload, items)])
+    return "\n".join([_request_opening(title, payload, items, folder), "", *steps, "", _what_line(payload, items)])
 
 
-def _request_details_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+def _request_details_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], title: str) -> str:
     """Claude Code's Details re-ask: each full command with what it does and its impact, then the set's verification, shared state and rollback."""
-    lines = [_request_opening(payload, items), ""]
+    lines = [_request_opening(title, payload, items), ""]
     for position, item in enumerate(items, start=1):
         lines.append(_numbered_step(position, item))
         lines.append(f"   Does: {_one_line(item.get('does') or _ABSENT['does'])}")
@@ -539,18 +539,18 @@ def render_signature(
             f"approval {approval_id} seals {len(asked)} commands; a signature is "
             f"asked with at most {BATCH_MAX}"
         )
-    text = _request_text(payload, items)
-    details = _request_details_text(payload, items)
+    header = signature_header(position, total)
+    details_header = signature_header(position, total, details=True)
+    text = _request_text(payload, items, header)
+    details = _request_details_text(payload, items, details_header)
     approve = _approve_description(items)
     english = {"options": SIGNATURE_OPTIONS, "header_max": SIGNATURE_HEADER_MAX}
     return Surface(
         approval_id=approval_id,
         text=text,
         details=details,
-        questions=(_question(text, signature_header(position, total), approve, **english),),
-        details_questions=(
-            _question(details, signature_header(position, total, details=True), approve, **english),
-        ),
+        questions=(_question(text, header, approve, **english),),
+        details_questions=(_question(details, details_header, approve, **english),),
     )
 
 
@@ -611,9 +611,12 @@ def looks_like_signature(question: Mapping[str, Any]) -> bool:
 
 
 def reads_as_request(question: Mapping[str, Any]) -> bool:
-    """Whether a Claude Code question reads as a signature: :func:`looks_like_signature` or a ``requests … command`` opening."""
-    return looks_like_signature(question) or (
-        _TYPED_REQUEST.search(str(question.get("question") or "")) is not None
+    """Whether a Claude Code question reads as a signature: :func:`looks_like_signature`, a ``Signature N/M:`` title or a ``requests … command`` opening."""
+    text = str(question.get("question") or "")
+    return (
+        looks_like_signature(question)
+        or _SIGNATURE_HEADER.match(text.lstrip()) is not None
+        or _TYPED_REQUEST.search(text) is not None
     )
 
 

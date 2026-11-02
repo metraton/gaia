@@ -176,7 +176,7 @@ def test_pre_one_signature_asks_the_short_question_shows_its_block_and_records_s
     first = _request(1)
     _, asked = _question_cli(first)
     assert asked["questions"][0]["question"] == (
-        f"{REQUESTER} requests 1 command:\n\n1. git push origin feat/binding-1\n\n"
+        f"Signature 1/1: {REQUESTER} requests 1 command\n\n1. git push origin feat/binding-1\n\n"
         "What it does: Publicar la rama 1 en el remoto."
     )
 
@@ -216,7 +216,7 @@ def test_two_command_signature_is_one_numbered_question_bound_byte_for_byte(db):
     [exact] = asked["questions"]
     assert exact == {
         "question": (
-            f"{REQUESTER} requests 2 commands:\n\n"
+            f"Signature 1/1: {REQUESTER} requests 2 commands\n\n"
             "1. git push origin feat/layout\n"
             "2. git push origin v9.9.9\n\n"
             "What they do: Publicar la rama y su etiqueta."
@@ -241,7 +241,13 @@ def test_two_command_signature_is_one_numbered_question_bound_byte_for_byte(db):
         "options": [{"label": "Sí", "description": "Sigue"}, {"label": "No", "description": "Para"}],
     }
 
-    for impostor in (one_byte_off, lookalike, earlier_spanish):
+    typed_title = {
+        "question": "Signature 1/1: developer\n\n1. rm -rf build",
+        "header": "Confirm",
+        "options": [{"label": "Yes", "description": "Go on"}, {"label": "No", "description": "Stop"}],
+    }
+
+    for impostor in (one_byte_off, lookalike, earlier_spanish, typed_title):
         assert "question 1" in _deny_reason(_pre([impostor], "toolu_impostor"))
     assert _shown(db, approval_id) == []
     assert _opens_unchanged(_pre([exact], "toolu_exact"))
@@ -381,7 +387,7 @@ def test_post_details_asks_that_signature_again_and_pre_shows_its_details_block(
     rendered = _surfaces(second)[0]
     assert again == rendered.details_questions[0]
     assert again["question"].startswith(
-        f"{REQUESTER} requests 1 command:\n\n1. git push origin feat/binding-2\n   Does: "
+        f"Details 1/1: {REQUESTER} requests 1 command\n\n1. git push origin feat/binding-2\n   Does: "
     )
     assert _opens_unchanged(_pre([again], "toolu_details_again"))
     assert _shown(db, second)[-1] == {"native_ref": "toolu_details_again", "position": 0}

@@ -71,7 +71,7 @@ than where you asked from, or when the command uses relative paths.
 
 When every command of a request is `git -C <same absolute folder> ...`,
 Claude Code's question names that folder once in its first line
-(`gaia-system requests 2 commands in ~/repo:`, `~` only for an exact home
+(`Signature 1/1: gaia-system requests 2 commands in ~/repo`, `~` only for an exact home
 prefix) and numbers each command without its `-C <folder>`; Details still
 shows every full command. Any other block is shown verbatim. Only the display
 changes: the signature binds each full command and its sealed folder.
@@ -108,10 +108,12 @@ gaia approvals request-set \
   --rollback 'Reinstall the previous version; the database stays upgraded.'
 ```
 
--- and what the user then sees in Claude Code, built by Gaia, headed `Signature 1/1`:
+-- and what the user then sees in Claude Code, built by Gaia. The question's
+first line carries its title, because the desktop app does not show the
+question's header:
 
 ```
-gaia-system requests 1 command:
+Signature 1/1: gaia-system requests 1 command
 
 1. python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm
 
@@ -119,10 +121,10 @@ What it does: Reinstall Gaia in your workspace and upgrade its database.
 ```
 
 with Approve ("Authorizes exactly this command") / Reject / Details. Details
-asks again, headed `Details 1/1`:
+asks again:
 
 ```
-gaia-system requests 1 command:
+Details 1/1: gaia-system requests 1 command
 
 1. python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm
    Does: gaia dev: installs the new version of main in your workspace.
@@ -203,7 +205,7 @@ gaia approvals request-set \
 ```
 
 Both commands name `/repo` with `-C`, so Claude Code asks
-`gaia-system requests 2 commands in /repo:` followed by `1. git push origin main`
+`Signature 1/1: gaia-system requests 2 commands in /repo` followed by `1. git push origin main`
 and `2. git push origin v1.4.0`.
 
 ### Batches in sequence
