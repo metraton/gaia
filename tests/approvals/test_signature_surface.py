@@ -162,6 +162,23 @@ def test_signature_surface_same_template_for_n_commands():
     assert rendered.text.splitlines() == [q["question"] for q in rendered.questions]
 
 
+def test_signature_surface_approve_option_agrees_with_what_one_question_authorizes():
+    """A Claude Code question signs the whole set, an OpenCode question one command; each Approve says so."""
+    from gaia.approvals import surface
+
+    two = _seal(
+        [{"command": "git push origin feat/x"}, {"command": "gh pr merge 7 --squash"}],
+        what="Publicar y fusionar.", question="¿Publico y fusiono?", rollback=None,
+    )
+
+    claude = surface.render_signature(two, APPROVAL_ID, 1, 1)
+    assert claude.details_questions[0]["options"][0]["description"] == (
+        "Autoriza exactamente estos 2 comandos"
+    )
+    assert [q["options"] for q in surface.render(two, APPROVAL_ID).questions] == [OPTIONS] * 2
+    assert surface.render_signature(_d12_payload(), APPROVAL_ID, 1, 1).questions[0]["options"] == OPTIONS
+
+
 def test_signature_surface_shows_the_exits_a_command_may_end_with_only_when_declared():
     from gaia.approvals import surface
 

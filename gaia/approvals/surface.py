@@ -323,11 +323,23 @@ def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
     return " ".join([_PREFIX, *fields])
 
 
-def _request_opening(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
-    """``<agent> pide <k> comando(s):``, counting only the signed items."""
+def _signed_noun(items: Sequence[Mapping[str, Any]]) -> tuple[int, str]:
+    """How many items a request signs and their noun, ``comando(s)`` or ``archivo(s)``, agreeing with that count."""
     signed = [item for item in items if is_signed(item)]
     noun = "comando" if any("command" in item for item in signed) else "archivo"
-    return f"{_agent(payload)} pide {len(signed)} {noun}{'' if len(signed) == 1 else 's'}:"
+    return len(signed), f"{noun}{'' if len(signed) == 1 else 's'}"
+
+
+def _request_opening(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+    """``<agent> pide <k> comando(s):``, counting only the signed items."""
+    count, noun = _signed_noun(items)
+    return f"{_agent(payload)} pide {count} {noun}:"
+
+
+def _approve_description(items: Sequence[Mapping[str, Any]]) -> str:
+    """The Approve option of Claude Code's question, naming what one signature authorizes."""
+    count, noun = _signed_noun(items)
+    return f"Autoriza exactamente {'este' if count == 1 else f'estos {count}'} {noun}"
 
 
 def _numbered_step(position: int, item: Mapping[str, Any]) -> str:
@@ -371,11 +383,14 @@ def _request_details_text(payload: Mapping[str, Any], items: Sequence[Mapping[st
     return "\n".join(lines)
 
 
-def _question(text: str, header: str) -> dict:
+def _question(text: str, header: str, approve: str = OPTIONS[0][1]) -> dict:
     question = {
         "question": text,
         "header": header,
-        "options": [{"label": label, "description": description} for label, description in OPTIONS],
+        "options": [
+            {"label": label, "description": approve if label == "Approve" else description}
+            for label, description in OPTIONS
+        ],
         "multiSelect": False,
     }
     check_question(question)
@@ -462,12 +477,13 @@ def render_signature(
         )
     text = _request_text(payload, items)
     details = _request_details_text(payload, items)
+    approve = _approve_description(items)
     return Surface(
         approval_id=approval_id,
         text=text,
         details=details,
-        questions=(_question(text, batch_header(position, total)),),
-        details_questions=(_question(details, batch_header(position, total, details=True)),),
+        questions=(_question(text, batch_header(position, total), approve),),
+        details_questions=(_question(details, batch_header(position, total, details=True), approve),),
     )
 
 

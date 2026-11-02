@@ -223,7 +223,7 @@ def test_two_command_signature_is_one_numbered_question_bound_byte_for_byte(db):
         ),
         "header": "Firma 1/1",
         "options": [
-            {"label": "Approve", "description": "Autoriza exactamente este comando"},
+            {"label": "Approve", "description": "Autoriza exactamente estos 2 comandos"},
             {"label": "Reject", "description": "Rechaza la firma; no se ejecuta nada"},
             {"label": "Details", "description": "Qué hace, impacto, verificación y cómo deshacerlo"},
         ],
