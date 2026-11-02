@@ -240,7 +240,6 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("dev",),
             ("context", "prune-workspaces"),
             ("context", "relocate"),
-            ("scan",),
             ("release", "check"),
             ("workspace", "retire"),
             ("workspace", "curate"),
