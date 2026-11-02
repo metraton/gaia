@@ -38,7 +38,7 @@ The gate is **conditional on the type from Step 1**, not universal:
 
 When position is load-bearing **and** the flow is not determinable from the context you were given, ask the user where the skill sits before writing -- do not guess; when the context fixes it or the type makes it irrelevant, do not ask.
 
-This is *frame before action* applied to the skill you are placing: a unit of work has a past that set it up and a future that consumes it. See `agent-protocol` ("Frame before action") for that principle at the agent-turn level.
+A unit of work has a past that set it up and a future that consumes it. At the agent-turn level that is `agent-protocol` principle 3, "Ground yourself before acting": what a turn receives is a claim to check, and a procedure it hands on for an object it does not own is an impact, not a step.
 
 ## Step 2: Apply the type structure
 

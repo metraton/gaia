@@ -68,7 +68,11 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 
 Once the cause and desired outcome are known, enumerate the exact mutations the
 accepted plan predictably requires. Classify every command through
-`security-tiers` before execution.
+`security-tiers` before execution. A command you hand the user to run is a
+mutation you authored and owes the same forecast -- whose object it acts on,
+what it does, its impact, how it is undone and checked; left unforecast, the
+user becomes an execution lane no gate reaches, and the irreversibility the
+forecast would have named reaches them unannounced.
 
 Request every predictable T3 command before attempting it, the instant it is
 known, rather than waiting for the policy gate to block it. Only a command
