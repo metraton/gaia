@@ -1,197 +1,66 @@
 # gaia (Python package)
 
-Canonical storage substrate for Gaia state — paths, workspace identity, and
-directory layout — provided as a reusable Python library and CLI.
+The library behind the `gaia` CLI and the hooks: Gaia's database, its approvals, agent contracts, workspaces and the paths of everything it keeps outside a repository.
 
-This package is the foundation of **Gaia substrate v6** (brief B0). All other
-storage components (B1 SQLite schema, B9 MCP exporters, future briefs) build
-on top of `gaia.paths` and `gaia.project`.
+This folder holds the logic that both entry layers share. A hook entry point and a CLI command are thin: they parse their input and call into here, so a rule such as "what an approval authorizes" or "which contract a turn owns" is decided once and reads the same from a Claude Code hook, an OpenCode plugin call and a terminal. Nothing in it writes into the user's repositories; its state lives in `~/.gaia` (see [`paths/`](paths/README.md)).
 
-## Why
+Think of it as the system's model layer: the CLI and the hooks are two views over it. Developers change it; the hooks and `bin/gaia` run it on every tool call and command; tests import it directly. It depends on the Python standard library only.
 
-Before B0, every piece of mutable Gaia state lived inside the user's repo
-under `.claude/`. That mixed package code with project state and made
-"installing Gaia" leave traces in every repo it touched. B0 establishes
-a single canonical location — `~/.gaia/` (overridable with `GAIA_DATA_DIR`)
-— and a deterministic workspace-identity model so that no Gaia state is
-written into the user's repository.
+## How it is wired in
 
-## Public API
+Consumed. `bin/gaia` and `bin/cli/*.py` import it after putting the repository root on `sys.path`; the hooks do the same from `hooks/`. The database schema is `store/schema.sql`, applied by `scripts/bootstrap_database.py`, and every later change to it is a migration under `scripts/migrations/` paired with `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py`.
 
-### Paths
+What breaks if you get it wrong here: a module that imports from `hooks/` or a third-party package breaks every CLI command that loads it outside the hook process; a column added to `schema.sql` without its migration leaves every existing database behind the code that reads it.
 
-```python
-from gaia.paths import (
-    data_dir,         # ~/.gaia (or $GAIA_DATA_DIR)
-    db_path,          # data_dir() / "gaia.db"
-    snapshot_dir,     # data_dir() / "snapshot"
-    state_dir,        # data_dir() / "state"
-    workspaces_dir,   # data_dir() / "workspaces"
-    logs_dir,         # data_dir() / "logs"
-    events_dir,       # data_dir() / "events"
-    cache_dir,        # data_dir() / "cache"
-    ensure_layout,    # mkdir -p with mode 0700, idempotent
-    workspace_id,     # alias for gaia.project.current()
-)
+## What's here
 
-# Resolve paths (no I/O)
-print(db_path())                # PosixPath('/home/user/.gaia/gaia.db')
-
-# Materialize the layout on first use (mode 0700)
-ensure_layout()
+```
+paths/                 data-root paths, directory layout and database backups
+store/                 the SQLite store: schema.sql, reader and writer, memory placement, project context, workspace retire and curation
+approvals/             signature requests, grants and their rendering for each host (surface.py)
+contract/              agent contract drafts, validation, cross-checks and the harness record
+state/                 the state machines for tasks, gates and permissions
+briefs/                brief and plan storage
+evidence/              evidence files deposited by a contract
+retention/             reclaiming scratch, worktrees, branches and workspace leftovers
+project.py             which declared workspace a folder belongs to; merge of ~/.gaia/workspaces files
+worktree.py            creation, identity and managed roots of agent worktrees
+refs.py                KIND:SCOPE/ID#FIELD references used by gaia open
+signals.py             what other sessions changed in curated memory, read once per session
+session_ledger.py      the ledger PreCompact writes and SessionStart renders as the resume point
+session_snapshot.py    the orchestrator's hand note and the session's open contracts
+conclusions.py         each closed specialist's conclusion delivered to its session once
+context_drift.py       guarded auto-apply of project-context corrections a turn proposes
+context_keys.py        per context section, the keys that name what a request is about
+dispatch.py            host-independent execution of writing dispatches
+secret_reads.py        reads whose output can carry secrets, run with that output redacted
+redaction.py           redaction of secret-bearing values
+comment_lint.py        the comment budget a push is measured against (gaia lint comments)
+usage.py               token usage ingested from transcripts and reported per plan or session
+install_root.py        the folder Gaia was installed in and the declared roots above it
+install_provenance.py  local dev-install observations and drift diagnosis
+source_parity.py       whether the installed package still matches the source tree
+hooks_build.py         content identity of a wired or running hooks tree
+dev_builds.py          per-machine count of local dev builds over a base version
+hook_shell.py          whether the host can run the PreToolUse gate so a failure blocks
+agent_identity.py      the one normalization of an agent name from outside Gaia
+identity_shape.py      classifier for a project_identity payload
+notifications_time.py  when a reminder or routine is due, in local wall-clock time
+cli_parsing.py         argument-parsing policy shared by the CLI entry points
+atomic_replace.py      os.replace that survives a transient hold on the target
+subprocess_text.py     text subprocess runs whose codec does not depend on the locale
+text_digest.py         content digest independent of line endings
 ```
 
-The resolver functions read `GAIA_DATA_DIR` from the environment on every
-call (no caching) so that tests using `monkeypatch.setenv` work as expected.
+## Conventions
 
-### Workspace identity
+A workspace exists only when declared (`gaia workspace declare NAME PATH`). `project.py::current` returns the declared workspace whose root is nearest above a folder, or `global` outside every declared root; it never derives a name from a git remote or a folder name. `project.py::resolve_workspace` is what a writer attributes a row to: `GAIA_DISPATCH_WORKSPACE`, then `GAIA_WORKSPACE`, then `current`, then `global`.
 
-```python
-from gaia.project import current, merge, list_known, MergeResult
+A path under the data root, the database file included, comes from `gaia.paths`, so `GAIA_DATA_DIR` and `GAIA_DB` relocate it. A change that adds a module here adds its line to the tree above.
 
-# Resolve workspace identity from the current directory.
-# Three-level fallback:
-#   1. Git remote URL normalized to canonical form host/owner/repo
-#   2. Directory basename in lowercase
-#   3. Literal "global" (no git, no identifiable directory)
-print(current())                # 'github.com/metraton/gaia'
+## See also
 
-# Preview a workspace merge (no files moved)
-result = merge("github.com/owner/old-repo", "github.com/owner/new-repo")
-for rel, size in result.preview:
-    print(f"would move {rel} ({size} bytes)")
-for rel in result.conflicts:
-    print(f"conflict on {rel}")
-
-# Execute the merge (non-conflicting files are moved; conflicts left in place)
-merge("github.com/owner/old-repo", "github.com/owner/new-repo", confirm=True)
-```
-
-### Identity normalization rules
-
-The canonical form is `host/owner/repo`:
-- All lowercase
-- No protocol prefix (`https://`, `git@`, etc.)
-- No `.git` suffix
-- SSH separator `:` between host and path is normalized to `/`
-
-| Input                                                  | Canonical form                            |
-|--------------------------------------------------------|--------------------------------------------|
-| `git@github.com:Metraton/Gaia.git`                     | `github.com/metraton/gaia`                 |
-| `https://github.com/Metraton/Gaia.git`                 | `github.com/metraton/gaia`                 |
-| `https://bitbucket.org/aaxisdigital/bildwiz.git`       | `bitbucket.org/aaxisdigital/bildwiz`       |
-
-When no git remote is configured, the lowercase directory basename is used.
-When neither git remote nor identifiable directory is available (e.g. a
-global install where `cwd` is `/`), the literal string `"global"` is returned.
-
-## CLI
-
-The package exposes two subcommands of the existing `gaia` CLI:
-
-```sh
-gaia paths                      # Print all resolved paths (key=value)
-gaia paths data                 # Print only data_dir()
-gaia paths db                   # Print only db_path()
-
-gaia workspace current          # Print resolved workspace identity
-gaia workspace info             # Structured info: identity, cwd, paths
-gaia workspace merge FROM TO    # Preview a merge of workspace files
-gaia workspace merge FROM TO --confirm  # Execute the merge
-gaia workspace retire SRC --into DST --dry-run  # Report what folding SRC's gaia.db rows into DST moves
-gaia workspace retire SRC --into DST --yes      # Fold them (backup + undo ledger; T3)
-gaia workspace retire --undo LEDGER --yes       # Put back what that retire changed
-```
-
-`workspace retire` re-keys what SRC owns (projects, briefs, contracts,
-integrations, schedules, memory) and leaves its history rows keyed to SRC,
-recording the alias `SRC -> DST` that readers of DST follow
-(`gaia/store/workspace_retire.py`).
-
-`gaia paths` always invokes `ensure_layout()` before printing so that the
-directory tree under `~/.gaia/` (or `$GAIA_DATA_DIR`) is materialized on
-first use with mode 0700.
-
-## Environment variables
-
-| Variable        | Default        | Purpose                                |
-|-----------------|----------------|----------------------------------------|
-| `GAIA_DATA_DIR` | `~/.gaia`      | Override the root data directory (ROOT-scoped: moves the database and every sibling directory) |
-| `GAIA_DB`       | `<root>/gaia.db` | Override the database file alone (FILE-scoped: leaves scratch, evidence and logs under the root) |
-
-Precedence for the database file, highest first: **`GAIA_DB`**, then
-**`GAIA_DATA_DIR`**, then `~/.gaia/gaia.db`. `GAIA_DB` outranks `GAIA_DATA_DIR`
-because it is the more specific of the two, and because every other
-database-path resolver in the tree already ranks it that way
-(`scripts/bootstrap_database.py`, where the variable originated;
-`bin/cli/doctor.py`; `bin/cli/_converge.py`; `bin/gaia`;
-`bin/validate-sandbox.sh`; and the CI workflow, which sets `GAIA_DB` alone).
-Setting both at *different* places prints a warning to stderr naming which one
-won; setting both at the same file is the established isolation idiom and stays
-silent. The ladder is pinned by `tests/paths/test_db_path_precedence.py`.
-
-### Declaring a wrapper as another CLI (a tool row)
-
-The security hooks judge a command by what it does and where it lands, not by
-the binary that runs it.
-
-Opening or editing your own pull request runs free for any forge CLI. Commenting,
-approving, closing, merging or retargeting asks for your signature. So does
-anything that changes production or a protected branch. A force push asks too;
-it is never refused outright.
-
-Some gates are still tied to one CLI's name: the permanent blocks
-(`gh repo delete`) and a few consent anchors, such as `gh workflow run`. A
-wrapper you installed around a CLI (a launcher that pins an account, for
-example) runs the same subcommands under another name, so those gates do not
-recognize it on their own.
-
-A user tool row in memory points them at the wrapper. Gaia ships no wrapper
-names; declare yours once, with the wrapper on PATH:
-
-```bash
-gaia memory add --name=user_tool_mywrapper --type=user --kind=tool \
-  --binary=mywrapper --replaces=gh \
-  --description='mywrapper pr create ...' --body='what it is and why'
-```
-
-The hooks read every live tool row's binary and `replaces` once per process,
-matched against the command's base name. With no tool row there is no alias.
-
-A declared wrapper is also read as the CLI it wraps, and the stricter verdict
-stands. It is blocked wherever that CLI is blocked and asks wherever that CLI
-asks. A declared name the classifier already models, such as `kubectl=gh`,
-`ssh=gh` or `shred=gh`, keeps its own gates as well. Only a wrapper name the
-classifier knows nothing about also takes the wrapped CLI's free verdicts.
-The declaration belongs to you: Gaia's installer does not write it, so set it
-in your shell profile or in the `env` block of the host settings you own (for
-Claude Code, `~/.claude/settings.json`). A leading `-C <dir>` on a declared `gh` wrapper is skipped
-before the publish guard reads the subcommand. Malformed pairs are ignored. The
-hooks read the variable at start-up, so restart the host after changing it.
-Implemented in `hooks/modules/security/cli_aliases.py`; pinned by
-`tests/hooks/modules/security/test_cli_alias_from_config.py`.
-
-## Standalone use
-
-`gaia.paths` is designed to be importable by external consumers without
-pulling in any Claude-Code hook runtime. The package depends only on the
-Python standard library (`os`, `pathlib`, `subprocess`, `shutil`, `dataclasses`).
-
-```python
-# In a downstream project:
-from gaia.paths import db_path
-import sqlite3
-
-conn = sqlite3.connect(db_path())
-```
-
-## Attribution
-
-`gaia.paths` is inspired by patterns from
-[engram](https://github.com/koaning/engram) (MIT License). No engram code
-is imported or executed at runtime; the patterns (path resolver with env
-override, on-first-use directory creation) were lifted with attribution.
-
-## License
-
-MIT. See repository root `LICENSE`.
+- [`paths/README.md`](paths/README.md) -- the data root, `GAIA_DATA_DIR` and `GAIA_DB` precedence, and backup retention.
+- [`../bin/README.md`](../bin/README.md) -- the CLI commands that call this package.
+- [`../hooks/README.md`](../hooks/README.md) -- the hook layer that calls it on every tool use.
+- [`../scripts/migrations/README.md`](../scripts/migrations/README.md) -- how the schema in `store/schema.sql` changes.
