@@ -83,7 +83,7 @@ def test_d27_host_parity_block_bytes_match(approval_id):
     assert _same_but_text(claude_code, opencode)
     assert opencode[0]["question"] == f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PUSH} ]"
     assert claude_code[0]["question"] == (
-        f"developer pide 1 comando:\n1. {PUSH}\nQué hace: Publicar la rama de prueba."
+        f"developer pide 1 comando:\n\n1. {PUSH}\n\nQué hace: Publicar la rama de prueba."
     )
 
 

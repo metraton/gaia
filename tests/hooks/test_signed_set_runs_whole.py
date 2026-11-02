@@ -134,7 +134,8 @@ def test_the_questions_the_user_answers_show_every_unsigned_step_in_order(host):
     [claude_code] = json.loads(asked.stdout)["questions"]
     lines = claude_code["question"].splitlines()
     assert lines[0].endswith(" pide 2 comandos:"), "only the signed steps are counted"
-    assert lines[1:6] == [
+    assert lines[1] == "" and lines[7] == ""
+    assert lines[2:7] == [
         f"{position}. {command}" + (" (paso sin firma)" if command in (COMMIT, log, status) else "")
         for position, command in enumerate(steps, start=1)
     ]
@@ -159,7 +160,7 @@ def test_signed_set_request_shows_unsigned_steps_in_position_without_reserving_t
     [shown] = core.question_batch([approval_id])
     lines = shown.text.splitlines()
     assert lines[0].endswith(" pide 2 comandos:"), "only the signed steps are counted"
-    assert lines[1:4] == [f"1. {PUSH}", f"2. {COMMIT} (paso sin firma)", f"3. {MERGE_ONE}"]
+    assert lines[2:5] == [f"1. {PUSH}", f"2. {COMMIT} (paso sin firma)", f"3. {MERGE_ONE}"]
 
     _approve(approval_id)
     adapter = _adapter()

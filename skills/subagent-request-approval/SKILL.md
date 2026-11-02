@@ -104,7 +104,9 @@ gaia approvals request-set \
 
 ```
 gaia-system pide 1 comando:
+
 1. python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm
+
 Qué hace: Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
 ```
 
@@ -112,9 +114,11 @@ with Approve / Reject / Details. Details asks again, headed `Detalle 1/1`:
 
 ```
 gaia-system pide 1 comando:
+
 1. python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm
    Hace: gaia dev: instala en tu espacio de trabajo la versión nueva de main.
    Impacto: actualiza tu base de datos; ese cambio no se deshace.
+
 Qué hace: Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
 Verificación: gaia doctor muestra la versión nueva.
 Estado compartido: No: solo tu espacio de trabajo local.

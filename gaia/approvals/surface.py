@@ -358,12 +358,12 @@ def _what_line(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -
 def _request_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
     """Claude Code's question: who asks, every step numbered on its own line, and what the set does."""
     steps = [_numbered_step(position, item) for position, item in enumerate(items, start=1)]
-    return "\n".join([_request_opening(payload, items), *steps, _what_line(payload, items)])
+    return "\n".join([_request_opening(payload, items), "", *steps, "", _what_line(payload, items)])
 
 
 def _request_details_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
     """Claude Code's Details re-ask: each step with what it does and its impact, then the set's verification, shared state and rollback."""
-    lines = [_request_opening(payload, items)]
+    lines = [_request_opening(payload, items), ""]
     for position, item in enumerate(items, start=1):
         lines.append(_numbered_step(position, item))
         lines.append(f"   Hace: {_one_line(item.get('does') or _NO_DOES)}")
@@ -375,6 +375,7 @@ def _request_details_text(payload: Mapping[str, Any], items: Sequence[Mapping[st
         if captured:
             lines.append(f"   Capturado: {_one_line(captured)}")
     lines += [
+        "",
         _what_line(payload, items),
         f"Verificación: {_one_line(payload.get('verification') or _NO_VERIFICATION)}",
         f"Estado compartido: {_one_line(payload.get('shared_state') or _NO_SHARED_STATE)}",

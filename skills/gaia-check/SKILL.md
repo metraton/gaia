@@ -129,7 +129,8 @@ the same result, still undecided. Both hosts heartbeat their main sessions
 **Check 9 -- How it looks.** File `<p>nota-9.txt`. Task: rename it to
 `<p>nota-9-ok.txt`. User: confirms the question, headed `Firma 1/1`, reads
 on Claude Code `<agent> pide 1 comando:`, then `1. <exact command>`, then
-`Qué hace: <title>`, each on its own line, and on OpenCode one line
+`Qué hace: <title>`, each on its own line with a blank line before and after
+the numbered commands, and on OpenCode one line
 `[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact command> ]`,
 with Approve / Reject / Details; then Details, headed `Detalle 1/1`, adds
 what the command does, its impact, verification, shared state and rollback
