@@ -20,15 +20,15 @@ import pytest
 from tests.hooks.adapters.test_opencode_attestation_provenance import bare_gaia_on_path
 from tests.integration import test_opencode_consent_retry_e2e as e2e
 
-T3 = "gaia scan"
+T3 = "gaia brief set-project demo --force"
 PHRASES = {
-    "--what": "Rescan the workspace",
-    "--question": "Rescan it now?",
-    "--does": "Rescans the workspace projects.",
-    "--impact": "Rewrites the project context rows.",
-    "--rollback": "Run the scan again after fixing the source.",
-    "--verification": "gaia context show",
-    "--shared-state": "Yes: the project context rows.",
+    "--what": "Rebind the demo brief",
+    "--question": "Rebind it now?",
+    "--does": "Moves the demo brief to the current project.",
+    "--impact": "Changes which project owns the brief.",
+    "--rollback": "Run set-project again with the old project.",
+    "--verification": "gaia brief show demo",
+    "--shared-state": "Yes: the brief row.",
 }
 
 

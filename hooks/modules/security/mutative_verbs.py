@@ -1222,15 +1222,6 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # other `gaia context` read/inspect subcommands stay READ_ONLY.
         MutativeAnchor(path=("context", "prune-workspaces")),
         MutativeAnchor(path=("context", "relocate")),
-        # `gaia scan --workspace <name>` (write mode) UPSERTs (workspace,
-        # project) rows into gaia.db and promotes the resolved workspace -- a
-        # persistent DB mutation. Like `context`, `scan` carries no verb in
-        # MUTATIVE_VERBS, so it would classify READ_ONLY by elimination. `scan`
-        # is a flat command with no read-only subcommands (only flags:
-        # --workspace, --dry-run, positional root), so the WHOLE group is
-        # anchored. The `--dry-run` classify-only mode is NOT re-implemented
-        # here: it is a SIMULATION_FLAG resolved by Step 3 above this check.
-        MutativeAnchor(path=("scan",)),
         # `gaia release check` runs npm's prepack lifecycle twice over -- via
         # pack_tarball's `npm pack` and via bin/validate-sandbox.sh's `npm
         # install` -- and prepack executes scripts/build-plugin.py, which

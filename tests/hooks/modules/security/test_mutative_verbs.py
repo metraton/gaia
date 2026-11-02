@@ -4445,60 +4445,30 @@ class TestGaiaContextPruneWorkspacesIsMutative:
         assert "anchored MUTATIVE (T3) by config" not in result.reason
 
 
-class TestGaiaScanWriteModeIsMutative:
-    """`gaia scan --workspace <name>` (write mode) UPSERTs (workspace, project)
-    rows into gaia.db and promotes the resolved workspace -- a persistent DB
-    mutation. `scan` carries no verb in MUTATIVE_VERBS, so the flat command
-    would classify READ_ONLY "by elimination" -- the T3-gating gap this suite
-    pins closed via the ('gaia','scan') anchor (whole group, None).
+class TestGaiaScanIsFree:
+    """`gaia scan` refreshes Gaia's own workspace and project rows, which a
+    rescan restores, and touches no repository; both spellings run free."""
 
-    The `--dry-run` classify-only mode stays READ_ONLY because --dry-run is a
-    SIMULATION_FLAG handled by Step 3, which returns non-mutative BEFORE the
-    Step 3d.5 upgrade runs -- the exemption is inherited, not re-implemented.
-    """
+    @pytest.mark.parametrize("command", [
+        "gaia scan",
+        "gaia scan --workspace me",
+        "gaia scan --workspace me /home/user/ws",
+        "gaia scan --workspace me --dry-run",
+        "gaia scan --help",
+        "gaia context scan",
+    ])
+    def test_gaia_scan_is_not_mutative(self, command):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is False, f"{result.category}: {result.reason}"
 
-    def test_gaia_scan_write_mode_is_mutative(self):
-        result = detect_mutative_command("gaia scan --workspace me")
-        assert result.is_mutative is True, (
-            f"gaia scan --workspace writes (workspace, project) rows and "
-            f"promotes the workspace -- it must be T3. "
-            f"Got {result.category}: {result.reason}"
-        )
-        assert result.category == "MUTATIVE"
-
-    def test_gaia_scan_write_mode_with_root_is_mutative(self):
-        result = detect_mutative_command("gaia scan --workspace me /home/user/ws")
-        assert result.is_mutative is True
-        assert result.category == "MUTATIVE"
-
-    def test_gaia_scan_dry_run_stays_read_only(self):
-        # --dry-run is a SIMULATION_FLAG resolved by Step 3, above the upgrade;
-        # the classify-only exemption is inherited, not duplicated.
-        result = detect_mutative_command("gaia scan --workspace me --dry-run")
-        assert result.is_mutative is False, (
-            f"gaia scan --dry-run only classifies (no DB write) and must stay "
-            f"READ_ONLY via the SIMULATION_FLAG override. "
-            f"Got {result.category}: {result.reason}"
-        )
-
-    def test_gaia_scan_anchor_is_whole_group(self):
+    def test_no_anchor_names_scan(self):
         from modules.security.mutative_verbs import (
             COMMAND_PATH_MUTATIVE_UPGRADES,
         )
-        scan_paths = {
-            anchor.path
+        assert not any(
+            anchor.path[0] == "scan"
             for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
-            if anchor.path[0] == "scan"
-        }
-        assert scan_paths == {("scan",)}, (
-            "the `gaia scan` upgrade must cover the whole group (a one-token "
-            "path): scan is a flat command with no read-only subcommands"
         )
-
-    def test_gaia_scan_help_stays_read_only(self):
-        # The --help exemption (Step 3.5) runs before the upgrade.
-        result = detect_mutative_command("gaia scan --help")
-        assert result.is_mutative is False
 
 
 class TestReadOnlyVerbEscalatedByAlwaysFlag:
