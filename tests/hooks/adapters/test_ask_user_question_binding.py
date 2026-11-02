@@ -176,7 +176,8 @@ def test_pre_one_signature_asks_the_short_question_shows_its_block_and_records_s
     first = _request(1)
     _, asked = _question_cli(first)
     assert asked["questions"][0]["question"] == (
-        f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ {REQUESTER} ] [ COMMAND ] [ git push origin feat/binding-1 ]"
+        f"{REQUESTER} pide 1 comando:\n1. git push origin feat/binding-1\n"
+        "Qué hace: Publicar la rama 1 en el remoto."
     )
 
     output = _pre(asked["questions"], "toolu_one")
@@ -193,10 +194,66 @@ def test_pre_accepts_only_the_printed_object_byte_for_byte(db):
     exact = asked["questions"][0]
     text_inside = _surfaces(first)[0].text + "\n\n" + exact["question"]
 
-    for text in (text_inside, exact["question"] + " ", exact["question"].replace("[ GAIA-SECURITY ] ", "")):
+    for text in (text_inside, exact["question"] + " ", exact["question"].replace("\n", " ", 1)):
         reason = _deny_reason(_pre([{**exact, "question": text}], "toolu_off_by_bytes"))
         assert "question 1" in reason
     assert _shown(db, first) == []
+
+
+def test_two_command_signature_is_one_numbered_question_bound_byte_for_byte(db):
+    from gaia.approvals import core
+
+    approval_id = core.request_command_set(
+        [{"command": "git push origin feat/layout", "cwd": REPO,
+          "does": "Sube la rama.", "impact": "La rama queda visible."},
+         {"command": "git push origin v9.9.9", "cwd": REPO,
+          "does": "Publica la etiqueta.", "impact": "Dispara la publicación."}],
+        what="Publicar la rama y su etiqueta.", question="¿Publico?",
+        session_id=REQUESTER_SESSION, agent_id=REQUESTER, rollback="Borrar la rama remota.",
+        verification="git ls-remote", shared_state="Sí: el remoto.",
+    )
+    _, asked = _question_cli(approval_id)
+    [exact] = asked["questions"]
+    assert exact == {
+        "question": (
+            f"{REQUESTER} pide 2 comandos:\n"
+            "1. git push origin feat/layout\n"
+            "2. git push origin v9.9.9\n"
+            "Qué hacen: Publicar la rama y su etiqueta."
+        ),
+        "header": "Firma 1/1",
+        "options": [
+            {"label": "Approve", "description": "Autoriza exactamente este comando"},
+            {"label": "Reject", "description": "Rechaza la firma; no se ejecuta nada"},
+            {"label": "Details", "description": "Qué hace, impacto, verificación y cómo deshacerlo"},
+        ],
+        "multiSelect": False,
+    }
+    one_byte_off = {**exact, "question": exact["question"][:-1] + "!"}
+    lookalike = {
+        "question": "developer pide 2 comandos:\n1. rm -rf build\nQué hacen: Limpia.",
+        "header": "Confirmar",
+        "options": [{"label": "Sí", "description": "Sigue"}, {"label": "No", "description": "Para"}],
+    }
+
+    for impostor in (one_byte_off, lookalike):
+        assert "question 1" in _deny_reason(_pre([impostor], "toolu_impostor"))
+    assert _shown(db, approval_id) == []
+    assert _opens_unchanged(_pre([exact], "toolu_exact"))
+    assert _shown(db, approval_id) == [{"native_ref": "toolu_exact", "position": 0}]
+
+
+def test_two_unrelated_signatures_are_two_questions_each_decided_alone(db):
+    first, second = _request(1), _request(2)
+    _, asked = _question_cli(first, second)
+    questions = asked["questions"]
+    assert [q["header"] for q in questions] == ["Firma 1/2", "Firma 2/2"]
+    _pre(questions, "toolu_unrelated")
+
+    _post(questions, {questions[0]["question"]: "Approve",
+                      questions[1]["question"]: "Reject"}, "toolu_unrelated")
+
+    assert [_status(first), _status(second)] == ["approved", "rejected"]
 
 
 def test_pre_four_signatures_are_recorded_in_order_without_system_message(db):
@@ -231,7 +288,8 @@ def test_pre_signature_without_phrases_is_not_shown_and_is_denied(db):
     bare = _phraseless()
     code, refused = _question_cli(bare)
     assert code == 1 and "--question" in refused["error"]
-    forged = surface.render(json.loads(get_by_id(bare)["payload_json"]), bare).questions[0]
+    forged = surface.render_signature(
+        json.loads(get_by_id(bare)["payload_json"]), bare, 1, 1).questions[0]
 
     reason = _deny_reason(_pre([forged], "toolu_bare"))
 
@@ -317,7 +375,9 @@ def test_post_details_asks_that_signature_again_and_pre_shows_its_details_block(
     [again] = json.loads(out.getvalue())["questions"]
     rendered = _surfaces(second)[0]
     assert again == rendered.details_questions[0]
-    assert again["question"].startswith(f"[ GAIA-SECURITY ] [ DETAILS ] [ {REQUESTER} ]")
+    assert again["question"].startswith(
+        f"{REQUESTER} pide 1 comando:\n1. git push origin feat/binding-2\n   Hace: "
+    )
     assert _opens_unchanged(_pre([again], "toolu_details_again"))
     assert _shown(db, second)[-1] == {"native_ref": "toolu_details_again", "position": 0}
 

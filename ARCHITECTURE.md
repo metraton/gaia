@@ -191,13 +191,15 @@ T3 approval lifecycle, the same on Claude Code and OpenCode:
    the user nothing.
 3. The orchestrator runs `gaia approvals question <approval_id> ...` and opens
    its output unchanged: AskUserQuestion on Claude Code, `question` on
-   OpenCode. Each command is one one-line question, at most four per
-   signature (gaia/approvals/surface.py);
-   `--details` re-asks with what it does, impact, verification and rollback.
+   OpenCode. On Claude Code each signature is one question listing its
+   commands one per line and what the set does; on OpenCode each command is
+   one one-line question opened by [ GAIA-SECURITY ]. A signature holds at
+   most four commands (gaia/approvals/surface.py); `--details` re-asks with
+   what each does, impact, verification and rollback.
 4. Gaia checks the call before it opens -- the PreToolUse hook on Claude Code,
    the plugin on OpenCode, where only the orchestrator may open it -- and ties
-   each answer to its signature. Approve on every question approves; Reject on
-   any one rejects the whole signature.
+   each answer to its signature. Approve on every question of a signature
+   approves it; Reject on any one rejects the whole signature.
 5. The orchestrator resumes the same specialist, which retries the
    byte-identical command; the grant is single-use and consumed at match, and
    a sealed file that changed asks for a new signature.

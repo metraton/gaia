@@ -673,11 +673,15 @@ def _row_payload(row: Mapping[str, Any]) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def question_batch(approval_ids: list[str], *, one_per_session: bool = False) -> list:
+def question_batch(
+    approval_ids: list[str], *, one_per_session: bool = False, per_command: bool = False,
+) -> list:
     """Render the pending requests one host question call asks, in order: at most 4 questions in all.
 
-    Each must be pending and presentable (:func:`check_presentable`); the
-    renderer rejects a batch whose question texts repeat. ``one_per_session``
+    Claude Code's layout asks one question per signature; ``per_command`` asks
+    OpenCode's, one per command. Each must be pending and presentable
+    (:func:`check_presentable`); the renderer rejects a batch whose question
+    texts repeat. ``one_per_session``
     refuses two signatures requested by the same session, the refusal the
     OpenCode plugin applies in ``presentForOrchestrator``: there a session
     holds one bound retry at a time, so the second approval would not activate.
@@ -704,7 +708,7 @@ def question_batch(approval_ids: list[str], *, one_per_session: bool = False) ->
         payload = _row_payload(row)
         check_presentable(payload)
         requests.append((payload, approval_id))
-    return surface.render_batch(requests)
+    return surface.render_batch(requests) if per_command else surface.render_signatures(requests)
 
 
 #: ``metadata_json.kind`` of the NOOP event recording that ``gaia approvals
@@ -769,16 +773,14 @@ def _asks(pairs: list[tuple[dict, dict]], asked: list[dict]) -> bool:
 
 
 def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
-    """Return the signatures whose questions are exactly ``questions``, in order.
+    """Return the signatures whose Claude Code questions are exactly ``questions``, in order.
 
-    Every command of a signature is one question (D33), so a signature spans
-    consecutive slots. The newest hand-out of ``gaia approvals question``
-    (:func:`hand_out_question`) whose signatures render exactly these objects,
-    as questions or as Details re-asks, decides which signature each slot asks
-    (D31). Without such a hand-out the slots are walked in order, matching at
-    each one the pending request whose questions render there; a question no
-    pending request renders, or one two render alike, raises
-    :class:`SealError` naming the position.
+    Each signature is one question. The newest hand-out of ``gaia approvals
+    question`` (:func:`hand_out_question`) whose signatures render exactly
+    these objects, as questions or as Details re-asks, decides which signature
+    each slot asks (D31). Without such a hand-out each slot is matched to the
+    pending request that renders there; a question no pending request renders,
+    or one two render alike, raises :class:`SealError` naming the position.
     """
     from gaia.approvals import store, surface
 
@@ -798,39 +800,25 @@ def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
             return surfaces
     pending = [(row["id"], _row_payload(row)) for row in store.list_pending(all_sessions=True)]
     approval_ids: list[str] = []
-    position = 0
-    while position < total:
+    for position, asked in enumerate(asked_all):
         matches = []
         for approval_id, payload in pending:
             if approval_id in approval_ids:
                 continue
-            # The call may ask this signature alone (positions count the call)
-            # or mixed with others (positions count the signature, D38).
             try:
-                renderings = [
-                    surface.render_at(payload, approval_id, position + 1, total),
-                    surface.render_at(
-                        payload, approval_id, 1, surface.question_count(payload),
-                        signature=surface.signature_letter(len(approval_ids)),
-                    ),
-                ]
+                rendered = surface.render_signature(payload, approval_id, position + 1, total)
             except (SealError, TypeError, ValueError, AttributeError):
                 continue
-            for rendered in renderings:
-                pairs = list(zip(rendered.questions, rendered.details_questions))
-                if _asks(pairs, asked_all[position:position + len(pairs)]):
-                    matches.append((approval_id, len(pairs)))
-                    break
+            if _asks([(rendered.questions[0], rendered.details_questions[0])], [asked]):
+                matches.append(approval_id)
         if not matches:
             raise SealError(f"question {position + 1} is not the one Gaia rendered for a pending approval")
         if len(matches) > 1:
             raise SealError(
-                f"question {position + 1} is rendered alike by "
-                f"{', '.join(approval_id for approval_id, _ in matches)}; "
+                f"question {position + 1} is rendered alike by {', '.join(matches)}; "
                 "withdraw the stale one before asking"
             )
-        approval_ids.append(matches[0][0])
-        position += matches[0][1]
+        approval_ids.append(matches[0])
     return question_batch(approval_ids)
 
 

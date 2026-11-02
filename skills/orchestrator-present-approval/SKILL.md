@@ -5,18 +5,27 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 
 # Present Approval — Orchestrator Branch
 
-Gaia builds every signature, and each of its commands is one question on one
-line, marked `[ GAIA-SECURITY ]` so the user reads it as Gaia's check and not as
-your question: who asks and the exact command; Details adds what it does, its
-impact and the rollback. No model writes any of it.
+Gaia builds every signature. In Claude Code a signature is one question,
+headed `Firma N/M`: who asks and how many commands, each exact command
+numbered on its own line, and a closing `Qué hace(n):` line with what the set
+does. In OpenCode each command is its own one-line question, marked
+`[ GAIA-SECURITY ]`. Details adds what each command does, its impact, the
+verification and the rollback. No model writes any of it.
 You never print, copy, summarise or translate any part of it; you
 only run `gaia approvals question` and open what it gives you, unchanged. You
 can run it again at any time for the approvals still pending -- for example
 when several specialists return signatures.
 
-A signature is approved only when every one of its questions gets Approve; a
-Reject on any of them rejects the whole signature. One call asks at most 4
-questions, so a signature carries at most 4 commands.
+A signature is approved only when its question gets Approve (in OpenCode,
+every one of its questions); a Reject rejects the whole signature. Every
+signature in a call is decided on its own. One call asks at most 4 questions:
+4 signatures in Claude Code, 4 commands in OpenCode. A signature carries at
+most 4 commands either way, enforced when it is requested.
+
+In Claude Code, any question you type that reads as a signature -- a
+`Firma N/M` or `Aprobación` header, Approve / Reject / Details options, a
+`[ GAIA-SECURITY ]` opening or a `<agent> pide <k> comandos` opening -- is
+refused unless it is exactly what `gaia approvals question` printed.
 
 ## Presenting
 
@@ -32,7 +41,8 @@ carries `--agent-id` so the request is yours, then present the
 refused outright: dispatch a specialist for it.
 
 1. Run `gaia approvals question <approval_id> [<approval_id> ...]` with the
-   pending ids -- up to 4 questions in all, one per command.
+   pending ids -- up to 4 questions in all: one per signature in Claude Code,
+   one per command in OpenCode.
 2. Call your question tool (AskUserQuestion in Claude Code, question in
    OpenCode) with that output unchanged, and print nothing about the
    signature. Gaia checks the call before the questions open -- the hook in

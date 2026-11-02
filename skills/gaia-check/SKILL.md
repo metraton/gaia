@@ -127,11 +127,15 @@ the same result, still undecided. Both hosts heartbeat their main sessions
 (`_is_orphaned` in `gaia/approvals/reading.py`).
 
 **Check 9 -- How it looks.** File `<p>nota-9.txt`. Task: rename it to
-`<p>nota-9-ok.txt`. User: confirms the question, headed `Firma 1/1`, is one
-line `[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact command> ]`
-with Approve / Reject / Details; then Details, headed `Detalle 1/1`, one line
-`[ GAIA-SECURITY ] [ DETAILS ] [ <agent> ] [ COMMAND: ... ] [ DOES: ... ] [ IMPACT: ... ] [ ROLLBACK: ... ]`,
-labels in English, phrases in the user's language, no validity or ID; then
+`<p>nota-9-ok.txt`. User: confirms the question, headed `Firma 1/1`, reads
+on Claude Code `<agent> pide 1 comando:`, then `1. <exact command>`, then
+`Qué hace: <title>`, each on its own line, and on OpenCode one line
+`[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact command> ]`,
+with Approve / Reject / Details; then Details, headed `Detalle 1/1`, adds
+what the command does, its impact, verification, shared state and rollback
+(`Hace:`/`Impacto:`/.../`Deshacer:` lines on Claude Code, one
+`[ GAIA-SECURITY ] [ DETAILS ] ...` line with English labels on OpenCode),
+phrases in the user's language, no validity or ID; then
 Reject. Expected: the user, who asked for this live check, judges that both
 look right; State `rejected`, no Outcome line.
 
