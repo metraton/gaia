@@ -89,8 +89,8 @@ def test_d29_hook_reason_block_one_signature_allows_with_its_block(db):
     output = _pre(questions, "toolu_d29_one")
 
     assert questions[0]["question"] == (
-        "developer pide 1 comando:\n\n1. git push origin feat/d29-1\n\n"
-        "Qué hace: Publicar la rama 1 en el remoto."
+        "developer requests 1 command:\n\n1. git push origin feat/d29-1\n\n"
+        "What it does: Publicar la rama 1 en el remoto."
     )
     assert output == {}
     assert _presented("toolu_d29_one") == [(0, approval_id)]
@@ -112,7 +112,7 @@ def test_d29_hook_reason_block_details_re_ask_brings_the_details_block(db):
     output = _pre(questions, "toolu_d29_det")
 
     assert questions[0]["question"].startswith(
-        "developer pide 1 comando:\n\n1. git push origin feat/d29-1\n   Hace: "
+        "developer requests 1 command:\n\n1. git push origin feat/d29-1\n   Does: "
     )
     assert output == {}
     assert _presented("toolu_d29_det") == [(0, approval_id)]

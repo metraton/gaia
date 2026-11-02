@@ -176,8 +176,8 @@ def test_pre_one_signature_asks_the_short_question_shows_its_block_and_records_s
     first = _request(1)
     _, asked = _question_cli(first)
     assert asked["questions"][0]["question"] == (
-        f"{REQUESTER} pide 1 comando:\n\n1. git push origin feat/binding-1\n\n"
-        "Qué hace: Publicar la rama 1 en el remoto."
+        f"{REQUESTER} requests 1 command:\n\n1. git push origin feat/binding-1\n\n"
+        "What it does: Publicar la rama 1 en el remoto."
     )
 
     output = _pre(asked["questions"], "toolu_one")
@@ -216,27 +216,32 @@ def test_two_command_signature_is_one_numbered_question_bound_byte_for_byte(db):
     [exact] = asked["questions"]
     assert exact == {
         "question": (
-            f"{REQUESTER} pide 2 comandos:\n\n"
+            f"{REQUESTER} requests 2 commands:\n\n"
             "1. git push origin feat/layout\n"
             "2. git push origin v9.9.9\n\n"
-            "Qué hacen: Publicar la rama y su etiqueta."
+            "What they do: Publicar la rama y su etiqueta."
         ),
-        "header": "Firma 1/1",
+        "header": "Signature 1/1",
         "options": [
-            {"label": "Approve", "description": "Autoriza exactamente estos 2 comandos"},
-            {"label": "Reject", "description": "Rechaza la firma; no se ejecuta nada"},
-            {"label": "Details", "description": "Qué hace, impacto, verificación y cómo deshacerlo"},
+            {"label": "Approve", "description": "Authorizes exactly these 2 commands"},
+            {"label": "Reject", "description": "Rejects the signature; nothing runs"},
+            {"label": "Details", "description": "What it does, impact, verification and how to undo it"},
         ],
         "multiSelect": False,
     }
     one_byte_off = {**exact, "question": exact["question"][:-1] + "!"}
     lookalike = {
+        "question": "developer requests 2 commands:\n1. rm -rf build\nWhat they do: Clean.",
+        "header": "Confirm",
+        "options": [{"label": "Yes", "description": "Go on"}, {"label": "No", "description": "Stop"}],
+    }
+    earlier_spanish = {
         "question": "developer pide 2 comandos:\n1. rm -rf build\nQué hacen: Limpia.",
-        "header": "Confirmar",
+        "header": "Firma 1/1",
         "options": [{"label": "Sí", "description": "Sigue"}, {"label": "No", "description": "Para"}],
     }
 
-    for impostor in (one_byte_off, lookalike):
+    for impostor in (one_byte_off, lookalike, earlier_spanish):
         assert "question 1" in _deny_reason(_pre([impostor], "toolu_impostor"))
     assert _shown(db, approval_id) == []
     assert _opens_unchanged(_pre([exact], "toolu_exact"))
@@ -247,7 +252,7 @@ def test_two_unrelated_signatures_are_two_questions_each_decided_alone(db):
     first, second = _request(1), _request(2)
     _, asked = _question_cli(first, second)
     questions = asked["questions"]
-    assert [q["header"] for q in questions] == ["Firma 1/2", "Firma 2/2"]
+    assert [q["header"] for q in questions] == ["Signature 1/2", "Signature 2/2"]
     _pre(questions, "toolu_unrelated")
 
     _post(questions, {questions[0]["question"]: "Approve",
@@ -376,7 +381,7 @@ def test_post_details_asks_that_signature_again_and_pre_shows_its_details_block(
     rendered = _surfaces(second)[0]
     assert again == rendered.details_questions[0]
     assert again["question"].startswith(
-        f"{REQUESTER} pide 1 comando:\n\n1. git push origin feat/binding-2\n   Hace: "
+        f"{REQUESTER} requests 1 command:\n\n1. git push origin feat/binding-2\n   Does: "
     )
     assert _opens_unchanged(_pre([again], "toolu_details_again"))
     assert _shown(db, second)[-1] == {"native_ref": "toolu_details_again", "position": 0}

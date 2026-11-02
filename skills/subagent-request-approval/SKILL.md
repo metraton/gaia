@@ -14,8 +14,9 @@ writes or copies any of it.
 ## What you write
 
 Every phrase is required: Gaia refuses a request that lacks one, or has one
-over its limit, and names the flag. Write them in the user's language, with
-full spelling (accents included), for someone who does not read commands.
+over its limit, and names the flag. Write them in English, in full sentences,
+for someone who does not read commands: Gaia shows each phrase verbatim inside
+its own English frame.
 
 | Flag | What it says | Limit |
 |------|--------------|-------|
@@ -34,8 +35,8 @@ describe the whole set; in OpenCode it shows only you and the command.
 `--question` stays with the signature for whoever reviews it later.
 
 The rollback is never optional. If the change can be undone, say how
-("Borrar la rama del remoto."). If it cannot, write that it cannot and why
-("No se puede deshacer: la versión publicada queda publicada."). A request
+("Delete the branch from the remote."). If it cannot, write that it cannot and why
+("Cannot be undone: the published version stays published."). A request
 without `--rollback` is refused, and the refusal says what to write. A
 `request-set` without `--verification` or `--shared-state` is refused the same
 way.
@@ -63,10 +64,17 @@ Declare it for every command whose non-zero exit is part of its normal contract
 -- a `git rebase` that stops on a conflict you will resolve, a `git cherry-pick`
 likewise -- because only a declaration made here lets the set go on; an
 undeclared non-zero exit freezes it and the rest needs a new request. The user
-sees each declared exit beside that command, as `(salida permitida: 1)` in
+sees each declared exit beside that command, as `(allowed exit: 1)` in
 Claude Code and `ALLOWED EXIT` in OpenCode. Details
 names a command's folder when it runs somewhere other
 than where you asked from, or when the command uses relative paths.
+
+When every command of a request is `git -C <same absolute folder> ...`,
+Claude Code's question names that folder once in its first line
+(`gaia-system requests 2 commands in ~/repo:`, `~` only for an exact home
+prefix) and numbers each command without its `-C <folder>`; Details still
+shows every full command. Any other block is shown verbatim. Only the display
+changes: the signature binds each full command and its sealed folder.
 
 One request holds at most 4 signed commands (`surface.check_phrases` refuses
 more when you request), because OpenCode asks each signed command as its own
@@ -76,7 +84,7 @@ request.
 A step of the same plan that is not T3 -- a local `git commit` between two
 pushes, a test run -- goes in the request in its position, with its own
 `--does` and `--impact`. Gaia seals it unsigned: the user sees it in order,
-marked `(paso sin firma)` in Claude Code and `UNSIGNED STEP` in OpenCode, but
+marked `(unsigned step)` in Claude Code and `UNSIGNED STEP` in OpenCode, but
 it asks nothing of its own and holds no place in the
 signature, so you run it like any other command of yours. A request with no
 T3 step at all is refused.
@@ -91,45 +99,47 @@ Example -- the request:
 ```
 gaia approvals request-set \
   --command 'python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm' \
-  --what 'Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.' \
-  --question '¿Reinstalo Gaia?' \
-  --does 'gaia dev: instala en tu espacio de trabajo la versión nueva de main.' \
-  --impact 'actualiza tu base de datos; ese cambio no se deshace.' \
-  --verification 'gaia doctor muestra la versión nueva.' \
-  --shared-state 'No: solo tu espacio de trabajo local.' \
-  --rollback 'Reinstalar la versión anterior; la base de datos queda actualizada.'
+  --what 'Reinstall Gaia in your workspace and upgrade its database.' \
+  --question 'Reinstall Gaia?' \
+  --does 'gaia dev: installs the new version of main in your workspace.' \
+  --impact 'Upgrades your database; that change is not undone.' \
+  --verification 'gaia doctor shows the new version.' \
+  --shared-state 'No: only your local workspace.' \
+  --rollback 'Reinstall the previous version; the database stays upgraded.'
 ```
 
--- and what the user then sees in Claude Code, built by Gaia, headed `Firma 1/1`:
+-- and what the user then sees in Claude Code, built by Gaia, headed `Signature 1/1`:
 
 ```
-gaia-system pide 1 comando:
+gaia-system requests 1 command:
 
 1. python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm
 
-Qué hace: Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
+What it does: Reinstall Gaia in your workspace and upgrade its database.
 ```
 
-with Approve / Reject / Details. Details asks again, headed `Detalle 1/1`:
+with Approve ("Authorizes exactly this command") / Reject / Details. Details
+asks again, headed `Details 1/1`:
 
 ```
-gaia-system pide 1 comando:
+gaia-system requests 1 command:
 
 1. python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm
-   Hace: gaia dev: instala en tu espacio de trabajo la versión nueva de main.
-   Impacto: actualiza tu base de datos; ese cambio no se deshace.
+   Does: gaia dev: installs the new version of main in your workspace.
+   Impact: Upgrades your database; that change is not undone.
 
-Qué hace: Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
-Verificación: gaia doctor muestra la versión nueva.
-Estado compartido: No: solo tu espacio de trabajo local.
-Deshacer: Reinstalar la versión anterior; la base de datos queda actualizada.
+What it does: Reinstall Gaia in your workspace and upgrade its database.
+Verification: gaia doctor shows the new version.
+Shared state: No: only your local workspace.
+Undo: Reinstall the previous version; the database stays upgraded.
 ```
 
 OpenCode shows the same signature as one line per command, in the bracketed
 format `[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ gaia-system ] [ COMMAND ] [ ... ]`,
-and its Details under fixed English labels (`[ DOES: ... ] [ IMPACT: ... ]`).
+and its Details under fixed English labels (`[ DOES: ... ] [ IMPACT: ... ]`);
+its headers (`Firma 1/1`, `Detalle 1/1`) and option descriptions are still Spanish.
 
-For a `git worktree remove --force`, Details adds a `Capturado:` line
+For a `git worktree remove --force`, Details adds a `Captured:` line
 (`[ CAPTURED: ... ]` in OpenCode) naming the diff `gaia worktree release`
 already deposited, its size and a files/lines summary, or stating that no
 capture is recorded.
@@ -181,16 +191,20 @@ order, with one `--does` and one `--impact` each:
 gaia approvals request-set \
   --command 'git -C /repo push origin main' \
   --command 'git -C /repo push origin v1.4.0' \
-  --what 'Publicar la rama principal y la versión 1.4.0.' \
-  --question '¿Publico la versión 1.4.0?' \
-  --does 'Sube la rama principal al repositorio remoto.' \
-  --impact 'Los demás ven los cambios; se revierte con otro commit.' \
-  --does 'Publica la etiqueta v1.4.0.' \
-  --impact 'Dispara la publicación del paquete; no se deshace.' \
-  --verification 'git ls-remote muestra main y v1.4.0 en el remoto.' \
-  --shared-state 'Sí: la rama principal y las etiquetas del remoto.' \
-  --rollback 'La rama se revierte con otro commit; la versión publicada no se puede deshacer.'
+  --what 'Publish the main branch and version 1.4.0.' \
+  --question 'Publish version 1.4.0?' \
+  --does 'Pushes the main branch to the remote repository.' \
+  --impact 'Others see the changes; reverted with another commit.' \
+  --does 'Publishes the v1.4.0 tag.' \
+  --impact 'Triggers the package release; cannot be undone.' \
+  --verification 'git ls-remote shows main and v1.4.0 on the remote.' \
+  --shared-state 'Yes: the main branch and the tags of the remote.' \
+  --rollback 'The branch is reverted with another commit; the published version cannot be undone.'
 ```
+
+Both commands name `/repo` with `-C`, so Claude Code asks
+`gaia-system requests 2 commands in /repo:` followed by `1. git push origin main`
+and `2. git push origin v1.4.0`.
 
 ### Batches in sequence
 
@@ -208,24 +222,25 @@ gaia approvals request-set \
   --cwd <workspace> \
   --command 'git push origin --delete feature/demo-login' \
   --cwd <workspace>/demo-repo \
-  --what 'Fusionar el PR de la rama de prueba y borrar la rama.' \
-  --question '¿Fusiono el PR y borro la rama?' \
-  --does 'Fusiona el pull request 42 en main.' \
-  --impact 'main recibe los cambios; se revierte con otro commit.' \
-  --does 'Borra la rama feature/demo-login del remoto.' \
-  --impact 'La rama deja de existir en GitHub; se vuelve a subir desde el clon local.' \
-  --verification 'gh pr view 42 muestra el PR fusionado; git ls-remote ya no lista la rama.' \
-  --shared-state 'Sí: la rama principal y las ramas del remoto.' \
-  --rollback 'Revertir el commit de fusión en main y volver a subir la rama.'
+  --what 'Merge the demo branch PR and delete the branch.' \
+  --question 'Merge the PR and delete the branch?' \
+  --does 'Merges pull request 42 into main.' \
+  --impact 'main receives the changes; reverted with another commit.' \
+  --does 'Deletes the feature/demo-login branch from the remote.' \
+  --impact 'The branch no longer exists on GitHub; it can be pushed again from the local clone.' \
+  --verification 'gh pr view 42 shows the PR merged; git ls-remote no longer lists the branch.' \
+  --shared-state 'Yes: the main branch and the branches of the remote.' \
+  --rollback 'Revert the merge commit on main and push the branch again.'
 ```
 
-In Claude Code the user gets one question, `Firma 1/1`, listing both commands;
-in OpenCode two, `Firma 1/2` and `Firma 2/2`, one per command. Only the
-deletion's Details names its folder (`Carpeta: <workspace>/demo-repo`, `[ CWD:
-... ]` in OpenCode), because only the deletion runs elsewhere.
+In Claude Code the user gets one question, `Signature 1/1`, listing both
+commands verbatim; in OpenCode two, `Firma 1/2` and `Firma 2/2`, one per
+command. Only the deletion's Details names its folder (`Folder:
+<workspace>/demo-repo`, `[ CWD: ... ]` in OpenCode), because only the deletion
+runs elsewhere.
 
 When one Claude Code question call asks several signatures, each is its own
-question, `Firma 1/2` and `Firma 2/2`, approved or rejected on its own. In
+question, `Signature 1/2` and `Signature 2/2`, approved or rejected on its own. In
 OpenCode each header names its signature by a letter and counts inside it:
 `Firma A 1/2`, `Firma A 2/2`, `Firma B 1/1`, and behind Details `Detalle A1/2`...
 

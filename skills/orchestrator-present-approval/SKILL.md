@@ -5,10 +5,11 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 
 # Present Approval — Orchestrator Branch
 
-Gaia builds every signature. In Claude Code a signature is one question,
-headed `Firma N/M`: who asks and how many commands, each exact command
-numbered on its own line, and a closing `Qué hace(n):` line with what the set
-does. In OpenCode each command is its own one-line question, marked
+Gaia builds every signature. In Claude Code a signature is one English
+question, headed `Signature N/M`: who asks and how many commands (and the
+folder, when every command is `git -C` of the same one), each command
+numbered on its own line, and a closing `What it does:` / `What they do:` line
+with what the set does. In OpenCode each command is its own one-line question, marked
 `[ GAIA-SECURITY ]`. Details adds what each command does, its impact, the
 verification and the rollback. No model writes any of it.
 You never print, copy, summarise or translate any part of it; you
@@ -23,9 +24,10 @@ signature in a call is decided on its own. One call asks at most 4 questions:
 most 4 commands either way, enforced when it is requested.
 
 In Claude Code, any question you type that reads as a signature -- a
-`Firma N/M` or `Aprobación` header, Approve / Reject / Details options, a
-`[ GAIA-SECURITY ]` opening or a `<agent> pide <k> comandos` opening -- is
-refused unless it is exactly what `gaia approvals question` printed.
+`Signature N/M`, `Firma N/M` or `Aprobación` header, Approve / Reject / Details
+options, a `[ GAIA-SECURITY ]` opening or a `<agent> requests <k> commands`
+opening (or the earlier `<agent> pide <k> comandos`) -- is refused unless it
+is exactly what `gaia approvals question` printed.
 
 ## Presenting
 

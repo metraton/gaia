@@ -143,8 +143,10 @@ rest is here.
   anything ruled out arrives with the route to the same result.
 - **The premise as a claim.** The goal carries its premise as something the
   specialist may refute, with the refutation owed back as a deliverable: a
-  competent agent executes a false premise flawlessly, and the goal is the only
-  place it can be caught.
+  competent agent executes a false premise flawlessly. The reader already owes
+  that refutation (`agent-protocol` principle 3); writing the premise as a
+  claim is the writer's half, which keeps it from reaching the specialist as
+  an instruction.
 - **A destination for every class of rationale.** Turn reasoning to the
   contract, change explanation to the PR body, cross-unit facts to docs, and
   only the why the code cannot say to code, beside the declaration whose change

@@ -238,6 +238,31 @@ def test_show_names_what_a_new_request_sealed_and_an_old_one_did_not(rows_db):
     assert "Requester   : not sealed" in text
 
 
+def test_show_names_a_folder_only_where_the_signature_dialog_does_and_once(rows_db):
+    """No Directory for commands that name their own paths; each folder that matters, once."""
+    from bin.cli.approvals import cmd_show_v2
+
+    def payload(*commands):
+        sealed = _new_payload(commands[0], LIVE_SESSION)
+        sealed["requested_from"] = CWD
+        sealed["items"] = [{**sealed["items"][0], "command": c, "position": n} for n, c in enumerate(commands)]
+        return sealed
+
+    absolute = payload("git -C /srv/repo push origin feat/a", "git -C /srv/repo push origin v1")
+    relative = payload("mv nota.txt otra.txt", "mv otra.txt final.txt", "git -C /srv/repo push origin feat/a")
+    con = sqlite3.connect(rows_db)
+    for approval_id, sealed in ((_pid(90), absolute), (_pid(91), relative)):
+        _row(con, approval_id, status="pending", session=LIVE_SESSION, agent=AGENT, payload=sealed,
+             created=_iso(timedelta(minutes=1)))
+    con.commit()
+    con.close()
+
+    shown = [_run(cmd_show_v2, approval_id=_pid(n), json=False, consent_surface=False) for n in (90, 91)]
+
+    assert "Directory" not in shown[0]
+    assert [line.strip() for line in shown[1].splitlines() if "Directory" in line] == [f"Directory   : {CWD}"]
+
+
 def test_list_and_pending_name_orphaned_and_expired_requests(rows_db):
     from bin.cli.approvals import cmd_list, cmd_pending
 

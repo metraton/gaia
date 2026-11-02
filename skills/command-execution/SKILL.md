@@ -11,7 +11,12 @@ One command, one result, one exit code. This skill owns invocation discipline;
 ## Before the call
 
 1. Prefer a native CLI flag to a pipe and a file tool to shell file I/O.
-2. Use an absolute path or the CLI's native working-directory flag. Never
+2. Use an absolute path or the CLI's native working-directory flag
+   (`git -C /repo`, `terraform -chdir=/dir`). A subagent's Bash folder resets
+   between calls and a `cd X && ...` chain is refused, so only a command that
+   names its own folder runs where it means to. A signature binds the
+   command's exact bytes and the folder sealed with it, so the bytes the user
+   read already say where the command acts, whatever folder was sealed. Never
    search from the home directory (`~`) or from `/`: locate a binary or package
    with `gaia paths`, `which`, or its known path, and root a `find`, `grep` or
    glob at the smallest directory that can hold the answer.

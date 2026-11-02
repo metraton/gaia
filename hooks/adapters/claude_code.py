@@ -242,7 +242,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         - agent_id: str         (PreToolUse for subagent dispatches; also SubagentStop)
         - agent_transcript_path: str  (SubagentStop only)
         - last_assistant_message: str (SubagentStop only)
-        - cwd: str              (SubagentStop only)
+        - cwd: str              (every event; PreToolUse resolves paths and sealed folders against it)
 
     Responses use hookSpecificOutput with permissionDecision for PreToolUse.
 

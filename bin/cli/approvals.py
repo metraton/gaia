@@ -2590,7 +2590,8 @@ def register(subparsers) -> None:
         "request-set",
         help=(
             "Create a governed plan-first COMMAND_SET request: the commands of one "
-            "purpose; unrelated commands go in separate requests"
+            "purpose; unrelated commands go in separate requests. Every phrase is "
+            "written in English and shown to the user verbatim"
         ),
     )
     p_request_set.add_argument(
@@ -2630,7 +2631,9 @@ def register(subparsers) -> None:
         "--expect-exit", action="append", dest="expect_exit", metavar="POSITION=CODES",
         help="Non-zero exits a command may end with and still advance the set, e.g. 2=1",
     )
-    p_request_set.add_argument("--rationale")
+    p_request_set.add_argument(
+        "--rationale", help="Why the set is needed, in English; kept with the signature for review",
+    )
     p_request_set.add_argument(
         "--verification",
         help="Required: how the resulting state will be confirmed; sealed and shown in Details",
@@ -2646,7 +2649,7 @@ def register(subparsers) -> None:
         "--rollback",
         help=(
             "Required: how the set is undone, or that it cannot be undone, as a human "
-            "sentence in the user's language, not a command; shown under ROLLBACK in Details"
+            "sentence in English, not a command; shown verbatim in Details"
         ),
     )
     p_request_set.add_argument("--agent-id")
@@ -2672,7 +2675,9 @@ def register(subparsers) -> None:
     p_request_file_write.add_argument(
         "--does", help="Required: what the edit does to the file (100 characters at most)"
     )
-    p_request_file_write.add_argument("--rationale")
+    p_request_file_write.add_argument(
+        "--rationale", help="Why the edit is needed, in English; kept with the signature for review",
+    )
     p_request_file_write.add_argument(
         "--verification",
         help="How the resulting state will be confirmed; sealed and shown verbatim",
@@ -2681,7 +2686,7 @@ def register(subparsers) -> None:
         "--rollback",
         help=(
             "Required: how the edit is undone, or that it cannot be undone, as a human "
-            "sentence in the user's language, not a command; shown under ROLLBACK in Details"
+            "sentence in English, not a command; shown verbatim in Details"
         ),
     )
     p_request_file_write.add_argument(

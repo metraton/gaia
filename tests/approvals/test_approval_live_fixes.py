@@ -191,7 +191,7 @@ def test_approval_live_fixes_details_comes_back_as_the_reasked_question(host):
     assert f"gaia approvals question --details {approval_id}" in context
     [again] = _question_cli(approval_id, details=True)
     assert again == rendered.details_questions[0]
-    assert again["header"] == "Detalle 1/1"
+    assert again["header"] == "Details 1/1"
     assert _ask_pre([again], "toolu_details") == {}
     _ask_post([again], {again["question"]: "Approve"}, "toolu_details")
     assert [event["event_type"] for event in _events(approval_id)].count("APPROVED") == 1

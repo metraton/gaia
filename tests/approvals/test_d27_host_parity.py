@@ -2,8 +2,8 @@
 
 Claude Code's orchestrator asks what ``gaia approvals question`` prints;
 OpenCode's plugin writes into the orchestrator's question call the questions of
-``gaia approvals opencode-present`` (D39). Header and options are identical;
-Claude Code's text lists the commands on their own lines, OpenCode's keeps D37's.
+``gaia approvals opencode-present`` (D39). Positions and option labels match;
+Claude Code's English text lists the commands on their own lines, OpenCode's keeps D37's.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _shown(questions):
 
 
 def _frame(questions):
-    return [{key: q[key] for key in ("header", "options")} for q in questions]
+    return [(q["header"].split()[-1], [option["label"] for option in q["options"]]) for q in questions]
 
 
 def _same_but_text(claude_code, opencode):
@@ -76,14 +76,14 @@ def _same_but_text(claude_code, opencode):
 
 
 def test_d27_host_parity_block_bytes_match(approval_id):
-    """Header and options match across hosts; each host lays the text out its own way."""
+    """Position and option labels match across hosts; each host words and lays out the text its own way."""
     opencode = _opencode_signature(approval_id)["questions"]
     claude_code = _claude_code_questions(approval_id, details=False)
 
     assert _same_but_text(claude_code, opencode)
     assert opencode[0]["question"] == f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PUSH} ]"
     assert claude_code[0]["question"] == (
-        f"developer pide 1 comando:\n\n1. {PUSH}\n\nQué hace: Publicar la rama de prueba."
+        f"developer requests 1 command:\n\n1. {PUSH}\n\nWhat it does: Publicar la rama de prueba."
     )
 
 
@@ -93,7 +93,7 @@ def test_d27_host_parity_details_bytes_match(approval_id):
 
     assert _same_but_text(claude_code, opencode)
     assert opencode[0]["question"].startswith("[ GAIA-SECURITY ] [ DETAILS ] [ developer ]")
-    assert "\nDeshacer: Borrar la rama remota." in claude_code[0]["question"]
+    assert "\nUndo: Borrar la rama remota." in claude_code[0]["question"]
 
 
 def test_d27_host_parity_opencode_question_carries_only_the_short_question(approval_id):

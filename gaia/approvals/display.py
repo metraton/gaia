@@ -18,6 +18,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from gaia.approvals.surface import shown_folders
 from gaia.redaction import mask_clear_secrets
 
 
@@ -178,7 +179,9 @@ def print_approval_detail(
         )
         window = reading.get("window_minutes")
         lines.append(f"  Window      : {f'{window} min from the decision' if window else 'not sealed'}")
-        lines.append(f"  Directory   : {', '.join(reading.get('cwd') or []) or 'not sealed'}")
+        folders = shown_folders(payload) if payload.get("items") else []
+        if folders:
+            lines.append(f"  Directory   : {', '.join(folders)}")
     lines += [
         f"  Age         : {age_str}",
         f"  Created     : {created_at}",
