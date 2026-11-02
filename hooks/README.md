@@ -4,7 +4,7 @@ Hooks are the event-driven spine of Gaia. Every significant moment in a Claude C
 
 Each hook is a Python script that reads a JSON event from stdin, processes it, and writes a JSON response to stdout. Claude Code calls these scripts synchronously before or after each tool execution, which means the hook can allow, modify, or block the operation. The hook cannot do complex async work — it runs inline, in the critical path, so every module it calls must complete quickly.
 
-The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` birth block for the orchestrator, the same one for every source, compaction included (see "The birth block and the kernel" below). Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`. The question itself is Gaia's: the orchestrator opens exactly what `gaia approvals question <approval_id>` printed -- one one-line question per command, opened by `[ GAIA-SECURITY ]`, at most four per signature (`gaia/approvals/surface.py`) -- and the PreToolUse `AskUserQuestion` matcher refuses any other shape.
+The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` birth block for the orchestrator, the same one for every source, compaction included (see "The birth block and the kernel" below). Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`. The question itself is Gaia's: the orchestrator opens exactly what `gaia approvals question <approval_id>` printed -- one one-line question per command, at most four per signature (`gaia/approvals/surface.py`) -- and the PreToolUse `AskUserQuestion` matcher refuses any other shape. No T3 falls to the host's own permission prompt, for a subagent or for the main session (`modules/tools/bash_validator.py::decide_t3_outcome`): the command is denied with an `approval_id`, the denial carries the `gaia approvals request-set` line that phrases the request (with `--agent-id` for the main session, whose shell has no dispatch identity), and the orchestrator opens the result with `gaia approvals question`. A host event that names no requester is denied with no `approval_id` (`floor.no-requester`).
 
 Every registered command runs through `hooks/launch.sh`, which picks the first of `python3`, `python` or `py -3` that is Python 3. OpenCode loads none of these entry points: `opencode/plugin.ts` forwards the host's events to `opencode/bridge.py`, and `adapters/opencode.py` maps them onto the same host-neutral cores (session lifecycle, tool policy, the SubagentStop close). There the plugin, not a hook, checks the `question` call, and only the orchestrator may open a signature question.
 
@@ -19,39 +19,45 @@ Session opens
         |  Sweeps stale registry entries, marks expired approval grant rows
         |  EXPIRED in gaia.db (no grant files exist on disk), snapshots
         |  gaia.db at most once per 24 h, sweeps idle worktrees;
+        |  reaps dead DISPATCHED turns of sessions the registry no longer
+        |  holds live (session_lifecycle._reap_dead_turns);
         |  on the plugin channel, migrates a database that is behind
         |  Emits one-shot hookSpecificOutput.additionalContext birth block
-        |  (## The user + ## User preferences + ## Due + ## Environment + ## Workspaces I manage,
+        |  (## User memory + ## Due + ## Resume point + ## Environment + ## Workspaces I manage,
         |   and ## Database schema when the database and the code disagree)
         v
 User sends prompt
         |
 [user_prompt_submit.py] <- fires on UserPromptSubmit event
         |  Refreshes the session heartbeat (throttled, non-fatal)
-        |  Emits the unread-notification counter, and nothing when there are none
-        |  Skills loaded on-demand: agent-response
+        |  Emits the unread-notification counter and, when another session
+        |  changed curated memory, the "~ user/project memory changed:" lines;
+        |  nothing when there is neither
         v
 Orchestrator dispatches agent (Task/Agent tool call)
         |
-[pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage, AskUserQuestion,
-        |                 and Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit
+[pre_tool_use.py] <- fires on PreToolUse for: Task, Agent, SendMessage, AskUserQuestion,
+        |                 Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit, and a
+        |                 catch-all for every other tool (Bash, PowerShell, Monitor, MCP tools)
+        |                 except a named list of command-free built-ins
         |  AskUserQuestion calls: an approval question must be the exact object
         |        `gaia approvals question` printed; the hook shows each signature's text
         |  Bash calls: security gate (gaia_cli_only_guard for the orchestrator's Gaia coordination console, blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard)
-        |  Task/Agent calls: context injection via DB-backed contracts (project_context_contracts)
-        |  Write/Edit calls: protected path validation (_is_protected())
-        |  NOTE: .claude/ tree is protected on BOTH surfaces -- _is_protected() for Write/Edit
+        |  Task/Agent calls: validates the dispatch and births its contract row; the context
+        |        kernel is injected later, at SubagentStart
+        |  Write/Edit calls: protected path validation (protected_paths.is_protected_hook_path)
+        |  NOTE: .claude/ tree is protected on BOTH surfaces -- is_protected_hook_path for Write/Edit
         |        file_path, protected_path_guard.py for Bash command strings (categorical deny)
         |  Write/Edit calls, subagent-only, non-protected path: advisory
         |        artifact-skill reminder (artifact_skill_map + artifact_skill_reminder) --
         |        always "allow", never blocks
         v
-    ALLOWED / BLOCKED / ask dialog (T3)
+    ALLOWED / BLOCKED / DENIED with an approval_id (T3)
         |
 Tool executes
         |
-[post_tool_use.py] <- fires on PostToolUse for: Bash, Task, AskUserQuestion, Skill,
-        |                 and on PostToolUseFailure for: Bash
+[post_tool_use.py] <- fires on PostToolUse for: Bash|PowerShell|Monitor, Task, AskUserQuestion, Skill,
+        |                 and on PostToolUseFailure for: Bash|PowerShell|Monitor
         |  Audits result, logs to the data home's logs/ (~/.gaia/logs, or GAIA_DATA_DIR); a signed call closes on its own
         |        terminal event (success or failure), matched by tool_use_id
         |  Every gaia CLI call appends a `cli.invoked` harness event (verb, flag names, agent, role, session,
@@ -75,10 +81,10 @@ Claude Code replaces a hook's `additionalContext` over 10,000 chars with a 2,000
 **The birth block** (`modules/session/session_manifest.py::build_session_context`) is one assembler for every start source. A compaction is one more birth of the same session, not a special refresh: `session_lifecycle.start_context` calls the same function for `startup`, `resume`, `clear`, `fork` and `compact`, and OpenCode's `adapt_session_start` calls it for its first message and for the first message after a compaction. `modules/context/compact_context_builder.py` keeps only the instructions for the summarizer, which end the summary with the same `gaia map` pointer. The block reads, in order:
 
 1. a heading naming the source (`# Gaia session context (source: compact)`), which is the orchestrator's cue that the context was compacted;
-2. the alarms that condition every write (database upgrade, data home, workspace, schema mismatch);
-3. `## The user` and `## User preferences`, each row whole (`user_sections`, shared with the kernel);
+2. the alarms that condition every write (database upgrade, data home, workspace, schema mismatch). A database at a newer schema than this install gets `## Database schema` with one line (`session_manifest.py::install_behind_line`): this Gaia is behind gaia.db, whether it still writes or refuses every write, and the update command for its channel;
+3. `## User memory`, the user's live facts and preferences, each a title and its `ref=` (`user_sections.USER_HEADER`);
 4. `## Due`: the reminders and routines due now (`build_due_section`), absent when none is;
-5. `## Resume point`, only for `compact`, `resume` and `fork` (`build_resume_section`): this session's ledger (`gaia/session_ledger.py::render_resume_point`). After a compaction it is the ledger `pre_compact.py` stored at `<data_dir>/session_ledger/<session_id>.json`; on resume or fork it is rebuilt from the database with the stored compaction count. Lines are `session=` and `compactions=`, then `in_flight:` contracts not COMPLETE, `pending:` approvals pending or approved and unused, `written:` memory rows (`origin_session_id`, or a signal this session wrote), `branches:` worktrees whose sidecar names one of its contracts, each list capped with `(+N)`, then `note:`, the hand note, only when this session wrote it. Startup and clear carry no resume section and no global count of plans, proposals or signatures;
+5. `## Resume point`, only for `compact`, `resume` and `fork` (`build_resume_section`): this session's ledger (`gaia/session_ledger.py::render_resume_point`). After a compaction it is the ledger `pre_compact.py` stored at `<data_dir>/session_ledger/<session_id>.json`; on resume or fork it is rebuilt from the database with the stored compaction count. Lines are `session=` and `compactions=`, then `in_flight:` this session's open contract chains (a turn still running or waiting, or a task-bound one whose task is pending; an unbound NEEDS_VERIFICATION and a cut or dead turn are left to `gaia contract list`, `gaia/session_snapshot.py::_open_contracts`), `pending:` approvals pending or approved and unused, `written:` memory rows (`origin_session_id`, or a signal this session wrote), `changed:` memory rows other sessions changed since this one was born, `branches:` worktrees whose sidecar names one of its contracts, each list capped by `gaia/session_ledger.py::LIST_CAPS` with `(+N)`, then `note:`, the hand note, only when this session wrote it. Startup and clear carry no resume section and no global count of plans, proposals or signatures;
 6. `## Environment` (`build_environment_section`): values only. `machine=`, `os=`, `arch=`, `wsl=` and `host=`; `gaia=` and `channel=`; `cli=`; `cwd=` relative to the home as `~/…`; `session=`; `zone=`; `data=` and `db=`; `tools=`, which is Gaia's detected catalog plus the binaries of the detected user `kind=tool` rows; then one `tool=<binary> "<title>" [replaces=<cli>] ref=memory:user/<slug>` line per such row;
 7. `## Workspaces I manage`.
 
@@ -124,7 +130,7 @@ hooks/
 ├── session_end_hook.py    # Unregister session from heartbeat registry (SessionEnd)
 ├── stop_hook.py           # Stop event handler
 ├── task_completed.py      # Task completed event handler
-├── pre_compact.py         # Pre-compaction event handler
+├── pre_compact.py         # Writes the session ledger the post-compaction birth renders as ## Resume point
 ├── post_compact.py        # Post-compaction event handler
 ├── hooks.json             # Plugin-channel hook configuration — GENERATED, never hand-edited
 ├── adapters/              # Adapter layer — event parsing and module dispatch
@@ -135,7 +141,7 @@ hooks/
 
 **`modules/events/gaia_cli_grammar.py` is generated too.** It holds the `gaia` CLI's subcommand tree and declared options, which the `cli.invoked` recorder uses to name a call without storing argument values. Its source of truth is `bin/gaia`'s argparse parser; after adding or renaming a subcommand or an option, regenerate it with `python3 scripts/generate_gaia_cli_grammar.py` (`--check` reports drift without writing). `test_the_grammar_is_the_cli_parser_tree_and_its_declared_options` in `tests/hooks/modules/events/test_capability_usage.py` fails on any drift and names that command.
 
-Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additionalContext`: Claude Code's hook-output validator has no `PreCompact`/`PostCompact` case in its discriminated union, and its response-consumption switch never applies their output even when the JSON is otherwise well-formed — so both now emit a schema-valid empty `{}` no-op. The real post-compaction context delivery happens via `session_start.py` when SessionStart fires with `source == "compact"` (see above). The pre-compaction window — injecting anything in the narrow moment *before* compaction erases context — remains a genuine platform limitation: no hook shape can inject there, which is why `pre_compact.py` is a registered no-op rather than a carrier.
+Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additionalContext`: Claude Code's hook-output validator has no `PreCompact`/`PostCompact` case in its discriminated union, and its response-consumption switch never applies their output even when the JSON is otherwise well-formed — so both emit a schema-valid empty `{}`. The post-compaction context is delivered by `session_start.py` when SessionStart fires with `source == "compact"` (see above). No hook shape can inject in the moment *before* compaction erases context, so `pre_compact.py` stores instead of speaking: it writes the session ledger (`gaia.session_ledger.write_ledger`) that the compact birth renders.
 
 ## Conventions
 
@@ -146,7 +152,7 @@ Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additio
 | T0 | Read-only (get, list) | No | Allow immediately |
 | T1 | Local validation (validate, lint) | No | Allow immediately |
 | T2 | Simulation (plan, diff) | No | Allow immediately |
-| T3 | Execution (apply, delete) | Yes — native `ask` dialog | Pause, request approval |
+| T3 | Execution (apply, delete) | Yes — Gaia's own signature | Deny with an `approval_id`; the request goes through `gaia approvals request-set` |
 | T3-blocked | Irreversible (delete-vpc, drop db) | Permanently blocked | Exit 2 (hard block) |
 
 **Protected paths** (blocked regardless of permissionMode):
@@ -155,7 +161,7 @@ Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additio
 
 **Artifact-skill reminder (advisory, never blocking):** on a subagent's Write/Edit to a non-protected path, `pre_tool_use.py` resolves the file's extension to a governing skill via `modules/agents/artifact_skill_map.py` (`expected_skill_for_path`), and — if that skill has not already been reminded this turn — returns `permissionDecision: "allow"` with the reminder text in `hookSpecificOutput.additionalContext`. It is restricted to subagents (`is_subagent=True` with a non-empty `agent_id`); the orchestrator's own foreground writes never trigger it. The reminder always travels in `additionalContext`, never in `permissionDecisionReason`: with `permissionDecision: "allow"`, Claude Code's own hook contract surfaces `permissionDecisionReason` only in logs and the debug transcript, not to the model, so a reminder placed there would never reach the agent it is meant for (see `code.claude.com/docs/en/hooks.md`, "PreToolUse decision control"). Noise is bounded by `modules/agents/artifact_skill_reminder.py` (`should_remind`, `cleanup_stale_markers`): it fires at most once per (session, agent, skill) — once per turn, per artifact class, never per file — via a marker file under `gaia-artifact-skill-reminders/` in Gaia's tmp dir (`gaia.paths.tmp_dir()`). This per-turn dedup is not something Claude Code's hooks provide natively; Gaia implements it itself. The reminder cannot verify whether the agent actually loaded the skill: a subagent's Write/Edit payload carries no `transcript_path` (only `SubagentStop` gets `agent_transcript_path`), and the `Skill` tool is not wired into any `PreToolUse` matcher in `hooks.json`, so a `Skill(...)` call never reaches this hook. That real gap-detection — did the transcript actually show the skill's fingerprint — still lives at `SubagentStop`, in `modules/agents/skill_injection_verifier.py`; this PreToolUse reminder only reminds, it never accuses.
 
-**Tool-call ceiling notice (advisory, never blocking):** a dispatch prompt may carry `ceiling=<N>` beside `project=` and `task_id=` (`modules/agents/dispatch_binding.py::extract_dispatch_binding`); the kernel renders it as `ceiling:` in `# Your Contract`. Each host passes a subagent's call that is allowed to run, with its harness id -- Claude Code at PreToolUse with the payload `agent_id` (`adapters/claude_code.py::_with_ceiling_notice`), OpenCode at `tool.execute.after` with the child session id -- to `modules/agents/call_ceiling.py::record_call`, which reads the ceiling from the turn's row, counts the call in `<data_dir>/state/call_ceiling/<harness id>.json`, and on the call that reaches 80% of `N` returns, once, a notice to write the evidence lists and close. On Claude Code it travels in PreToolUse `additionalContext`, which the host adds to the model's context with the tool result; on OpenCode in `additional_context`, appended to the tool output. PreToolUse is the counting point because its matchers reach Read, Edit, Write, Glob and Grep, which PostToolUse's (Bash, Task, AskUserQuestion) do not. The orchestrator carries no harness id and is never counted, and SubagentStop deletes the count once it accepts the close. Limits: Claude Code tools no PreToolUse matcher names (Skill, TodoWrite, MCP tools) and AskUserQuestion are not counted, while OpenCode counts every tool that ran; and a dispatch without the token gets no notice, because neither host gives a hook the turn's context use.
+**Tool-call ceiling notice (advisory, never blocking):** a dispatch prompt may carry `ceiling=<N>` beside `project=` and `task_id=` (`modules/agents/dispatch_binding.py::extract_dispatch_binding`); the kernel renders it as `ceiling:` in `# Your Contract`. Each host passes a subagent's call that is allowed to run, with its harness id -- Claude Code at PreToolUse with the payload `agent_id` (`adapters/claude_code.py::_with_ceiling_notice`), OpenCode at `tool.execute.after` with the child session id -- to `modules/agents/call_ceiling.py::record_call`, which reads the ceiling from the turn's row, counts the call in `<data_dir>/state/call_ceiling/<harness id>.json`, and on the call that reaches 80% of `N` returns, once, a notice to write the evidence lists and close. On Claude Code it travels in PreToolUse `additionalContext`, which the host adds to the model's context with the tool result; on OpenCode in `additional_context`, appended to the tool output. PreToolUse is the counting point because its matchers reach Read, Edit, Write, Glob and Grep, which PostToolUse's (Bash|PowerShell|Monitor, Task, AskUserQuestion, Skill) do not. The orchestrator carries no harness id and is never counted, and SubagentStop deletes the count once it accepts the close. Limits: on Claude Code the built-ins the catch-all matcher excludes (Skill, TodoWrite, ...), tools outside the adapter's `_POLICY_TOOLS` such as MCP tools, and AskUserQuestion are not counted, while OpenCode counts every tool that ran; and a dispatch without the token gets no notice, because neither host gives a hook the turn's context use.
 
 **Two identifier spaces at SubagentStop — and why draft rescues used to miss.** The harness stamps `hook_data['agent_id']` (e.g. `aac5be534edc91e44`), while `gaia contract init` mints its OWN agent id and keys the on-disk draft by `{minted-agent-id}.{token}`. Both match `^a[0-9a-f]{16,}$`, so confusing them fails SILENTLY: `resolve_draft_id` globs `{harness-id}.*`, matches no file, and returns `None`. That single silent miss disabled BOTH draft rescues at once — the M4 missing-fence reconstruction (`adapters/subagent_stop_core.py::reconstruct_contract_from_finalized_draft`) and step 1a of the T9 backstop (`modules/agents/handoff_persister.py::persist_handoff`), the two paths designed for exactly the lost-fence case. The turn's transcript is one place the spaces meet: `modules/agents/transcript_reader.py::extract_minted_agent_id_from_transcript` recovers the minted id from it, `task_info_builder` precomputes it once per turn as `task_info['minted_agent_id']`, and `handoff_persister.resolve_minted_agent_id` prefers it. **The ROW is the other, and it is the one the current dispatch shape needs.** A turn born with its draft already open never runs `gaia contract init`, so there is no mint report in its transcript to scan; what it does have is a row carrying BOTH identities — `agent_id` (minted, stamped at birth) and `harness_agent_id` (stamped at the SubagentStart claim by `gaia.store.writer.stamp_harness_agent_id`). `handoff_persister.dispatch_row_by_harness_id` is that bridge, shared by the minted-id resolver and by `subagent_stop_core.resolve_dispatch_row`'s first lane, so the gate and the rescues can never disagree about which row is this turn's. It joins on `harness_agent_id` alone — the harness mints that id per dispatch run, so it already names one turn — and treats `session_id` as an after-the-fact consistency check rather than a SQL filter, which cannot make the match more exact but can lose a correct row. Ambiguity (2+ rows under one harness id) is DECLINED with a warning, never resolved by recency. **The harness id is never a fallback identity.** `resolve_minted_agent_id` returns `None` — and logs why — when nothing minted is recoverable; it used to return the harness id as a "last-resort label", and because that value is non-empty it satisfied every `if not minted_agent_id` guard downstream, silently carrying a value that can never key a draft (measured: handoff row 11304 lost a complete `update_contracts` proposal with no log line at all). A caller that genuinely needs a non-empty label for a degraded row supplies its own fallback (the agent NAME). **Mentioning a draft id is not owning it.** The recovery scans ONLY for the `gaia contract init` mint report (its text and `--json` forms), never for the bare dotted draft-id shape: a turn routinely names another agent's draft — an operator asked to recover a peer's contract runs `gaia contract view --draft-id <peer>` after its own `init` — and taking the last match would hand the reconstruction a peer's finalized envelope to seal as this turn's outcome, since `reconstruct_contract_from_finalized_draft` checks only that a terminal row exists, never who owns it. That would trade a silent miss for a silent misattribution, which is worse: a lost contract is noticed, an adopted one is not. Ambiguity therefore fails CLOSED — zero mint reports, or two naming different ids, both yield `None`, which is the pre-existing "no draft found" path.
 
@@ -188,7 +194,7 @@ session opened in another workspace landed where no reader of the project looked
   on every write, the first insert included, naming the agent and the
   proposing contract id (`gaia context accept` passes both).
 - **Fallback per section, not per project**: until the old rows are moved
-  (plan 94, task 2) and the old table is retired, a project reads its own row
+  and the old table is retired, a project reads its own row
   for a section and otherwise the old row of its workspace. A per-project
   fallback would hide every unmoved section of a project as soon as one
   section was written. For the same reason a first write merges into the
@@ -213,5 +219,5 @@ session opened in another workspace landed where no reader of the project looked
 
 - [`build/gaia.manifest.json`](../build/gaia.manifest.json) — hook registration and matchers
 - `surface_routing` table (`~/.gaia/gaia.db`) — DB-backed routing read by `tools/context/surface_router.py`; seeded from agent `routing:` frontmatter by `tools/scan/seed_surface_routing.py` (replaced `config/surface-routing.json`)
-- [`config/context-contracts.json`](../config/context-contracts.json) — seeding source for context contracts; runtime SSOT is `~/.gaia/gaia.db` (`project_context_contracts` table)
+- [`hooks/modules/README.md`](modules/README.md) — the module layer: validation order, guards and what each package holds
 - [`skills/security-tiers/SKILL.md`](../skills/security-tiers/SKILL.md) — tier classification that agents use; hook enforces the same tiers

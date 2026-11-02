@@ -65,7 +65,7 @@ brief = build_investigation_brief("Review hook/skill drift", "gaia-system", cont
 
 ## Agent Contracts
 
-Agent contracts live in `~/.gaia/gaia.db` (`project_context_contracts` + `agent_contract_permissions` tables). `config/context-contracts.json` is the seeding source applied by `gaia install`; the DB is the runtime SSOT. Each agent receives specific sections:
+Agent contracts live in `~/.gaia/gaia.db` (`project_context_contracts` + `agent_contract_permissions` tables). `tools/scan/seed_contract_permissions.py` seeds `agent_contract_permissions` from each agent's `project_context_contracts` frontmatter at install; the DB is the runtime SSOT. Each agent receives specific sections:
 
 **platform-architect:**
 - project_identity, stack, git, environment, infrastructure, orchestration
@@ -116,7 +116,7 @@ context/
 ## See Also
 
 - `~/.gaia/gaia.db` — `project_context_contracts` + `agent_contract_permissions` tables (runtime SSOT)
-- `config/context-contracts.json` — seeding source for agent contracts; applied on install
+- `tools/scan/seed_contract_permissions.py` — seeds agent contract permissions from agent frontmatter; applied on install
 - `config/cloud/gcp.json` — GCP-specific contract extensions
 - `config/cloud/aws.json` — AWS-specific contract extensions
 - `hooks/modules/context/context_writer.py` — Context write operations

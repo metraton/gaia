@@ -78,7 +78,10 @@ One turn, from your prompt to the answer:
    on OpenCode, opencode/bridge.py prepends the same kernel to the Task
    prompt, with the specialist's skills listed by name.
 4. The specialist works. Every command passes the tier classifier:
-   T0-T2 run; T3 stops with an approval_id you answer in the host's dialog;
+   T0-T2 run; T3 is denied with an approval_id, the request is phrased with
+   gaia approvals request-set, and the orchestrator asks you with the
+   question gaia approvals question prints -- the host's own permission
+   prompt is never the route, the orchestrator's own commands included;
    a blocked command is refused with nothing to approve.
 5. The specialist fills its row as it goes (gaia contract set/add/fill) and
    closes it (gaia contract finalize); the SubagentStop gate validates the
@@ -197,6 +200,8 @@ chain reaches rows that exist   -> stops, and the message (or the plugin's
      gaia migrate apply --consent-chain vA..vB  # consent once, for that chain
 ```
 
+The other direction happens when two installs share one database: the newer one migrates it, and the older one is now behind. Each of the older install's sessions opens with a `## Database schema` line saying so, whether it still writes or already refuses every write, and the update command for its channel.
+
 **Uninstall.** Each channel takes back only what it wrote. `~/.gaia/gaia.db` is never touched: delete `~/.gaia/` yourself if you want the memory gone too.
 
 ```
@@ -226,11 +231,11 @@ The orchestrator answers with the picture above and the table of what it can off
 ```
 gaia/
 ├── agents/          # orchestrator + eight specialists; routing: seeds the table
-├── skills/          # 40 techniques loaded by description match
+├── skills/          # 43 techniques loaded by description match
 ├── hooks/           # host lifecycle entry points + security/context modules
 ├── gaia/            # host-neutral core: approvals, SQLite store, worktrees
 ├── opencode/        # the OpenCode plugin; registered by --channel opencode
-├── config/          # context contracts, git standards and rules the hooks read
+├── config/          # reserved for data files; holds only its README today
 ├── build/           # gaia.manifest.json -> plugin.json + hooks.json at pack
 ├── bin/             # the gaia CLI and its subcommands (bin/cli/)
 ├── tools/           # scanners, context providers and validators for CLI/hooks

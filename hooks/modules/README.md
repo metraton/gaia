@@ -32,71 +32,78 @@ Claude Code invokes hook
 modules/
 ├── __init__.py           # Package marker
 ├── core/                 # Shared utilities
-│   ├── __init__.py
 │   ├── paths.py          # find_claude_dir() - single source of truth
+│   ├── plugin_setup.py   # Plugin channel's first-session settings merge (allow list, empty ask list, no deny rule)
 │   └── state.py          # Pre/post hook state sharing
 │
-├── security/             # Security classification & approval
-│   ├── __init__.py
+├── security/             # Classification, guards and approval
 │   ├── tiers.py          # SecurityTier enum (T0-T3)
-│   ├── blocked_commands.py # Blocked patterns by category
-│   ├── mutative_verbs.py   # CLI-agnostic verb detector, approval_id-gated deny
-│   ├── subagent_memory_write_guard.py # Blocks `gaia memory` writes from subagents (non-operator)
-│   ├── gaia_db_write_guard.py # Blocks direct sqlite3 writes to gaia.db (categorical)
-│   ├── protected_path_guard.py # Blocks Bash writes into the .claude/ tree (hooks/settings) and anywhere in an installed Gaia root (categorical)
+│   ├── verdict.py        # FREE / SIGNED / BLOCKED / UNKNOWN and the rule ids with their remediation
+│   ├── blocked_commands.py # Permanently blocked patterns by category
+│   ├── mutative_verbs.py   # CLI-agnostic verb detector; a T3 is denied with an approval_id
+│   ├── nested_executors.py # kubectl/docker exec, op run, ... take the verdict of the command they run
+│   ├── targets.py        # Where a command lands: context, project, account, branch; production detection
+│   ├── canonical_path.py # One canonical form of a path for every path guard (Windows spellings included)
+│   ├── gaia_cli_only_guard.py # The orchestrator's Bash lane: the trusted gaia binary and an allowlist of verbs
+│   ├── gaia_db_write_guard.py # Refuses shell writes to gaia.db (categorical)
+│   ├── subagent_memory_write_guard.py # Refuses `gaia memory` writes from subagents
+│   ├── memory_skill_guard.py # Refuses the main session's memory writes until Skill('memory') is loaded
+│   ├── subagent_resume_point_guard.py # Classifies `gaia session` per verb; refuses a subagent's session writes
+│   ├── verifier_scratch_guard.py # Confines the verifier's Write to its own scratch entry
+│   ├── protected_path_guard.py # Refuses Bash writes into the .claude/ tree and anywhere in an installed Gaia root (categorical)
+│   ├── shell_write_guard.py # Refuses a shell-authored file write into a git working tree (categorical)
+│   ├── sensitive_read_guard.py # Refuses reading or listing a path where secrets live (categorical)
 │   ├── comment_push_gate.py # Refuses a `git push` of a branch over the comment limit (categorical, fails open with a warning)
-│   ├── source_lexer.py     # Per-language comment/string lexer for the JS script lane
-│   ├── approval_grants.py  # Nonce-based approval grant management
-│   ├── approval_constants.py # Approval system constants
-│   ├── approval_messages.py  # Approval denial message formatting
-│   ├── approval_scopes.py   # Approval scope definitions
+│   ├── source_lexer.py     # Per-language comment/string lexer for the script lanes
+│   ├── approval_grants.py  # Approval grant management
+│   ├── approval_scopes.py  # Approval scope matching
 │   └── command_semantics.py  # Command semantic analysis
 │
 ├── tools/                # Tool-specific validators
-│   ├── __init__.py
-│   ├── shell_parser.py   # Parse compound commands
-│   ├── bash_validator.py # Bash command validation (orchestrates pipeline)
-│   ├── task_validator.py # Task tool validation with context enforcement
+│   ├── shell_parser.py   # Quote-aware split of compound commands and shell words
+│   ├── bash_validator.py # Bash command validation (orchestrates the pipeline below); decide_t3_outcome
+│   ├── task_validator.py # Task/Agent dispatch validation
 │   ├── cloud_pipe_validator.py # Cloud pipe/redirect/chain check
 │   └── hook_response.py  # Standardized hook response formatting
 │
 ├── context/              # Context management
-│   ├── __init__.py
-│   ├── context_writer.py # Write context updates
-│   └── context_freshness.py     # Check staleness for SessionStart
+│   ├── kernel_builder.py # The subagent kernel, # Project context block included
+│   ├── user_sections.py  # ## User memory for the birth block, and the shared context budget
+│   ├── compact_context_builder.py # Instructions for the compaction summarizer
+│   ├── context_writer.py # Writes project-context updates under the project each one names
+│   └── context_freshness.py # Staleness check for SessionStart
 │
-├── scanning/             # Scan triggering
-│   ├── __init__.py
-│   └── scan_trigger.py   # Lightweight scan invocation for SessionStart
+├── session/              # Session lifecycle
+│   ├── session_lifecycle.py # Host-neutral SessionStart core: registry, sweeps, the dead-turn reaper, the birth block
+│   ├── session_manifest.py  # Assembles the birth block, the behind-gaia.db line included
+│   └── session_registry.py  # Heartbeat-based registry of live sessions
 │
-├── session/              # Session context management
-│   ├── __init__.py
-│   └── session_context_writer.py # Write critical events to session context
+├── events/
+│   └── capability_usage.py # Records cli.invoked and skill.loaded harness events
 │
 ├── validation/           # Commit validation
-│   ├── __init__.py
 │   └── commit_validator.py # Conventional Commits enforcement
 │
 ├── audit/                # Logging and metrics
-│   ├── __init__.py
 │   ├── logger.py         # AuditLogger
-│   ├── metrics.py        # MetricsCollector + FUNCTIONAL generate_summary
+│   ├── metrics.py        # MetricsCollector + generate_summary
 │   └── event_detector.py # CriticalEventDetector
 │
 └── agents/               # Subagent support
-    ├── __init__.py
-    ├── response_contract.py # Agent response contract validation
-    ├── contract_validator.py # Legacy fence parser (no closing role) + envelope field resolvers
-    ├── dispatch_binding.py   # Born-at-dispatch row: extract + validate + birth the nascent handoff row from dispatch metadata
+    ├── dispatch_binding.py   # Born-at-dispatch row: extract + validate + birth the handoff row from dispatch metadata
+    ├── dispatch_lifecycle.py # Dispatch row lifecycle, including reap_stale_turn
     ├── handoff_persister.py  # Persist/finalize the terminal agent_contract_handoffs row
-    ├── skill_injection_verifier.py # Verify required skills were injected
+    ├── contract_validator.py # Legacy fence parser (no closing role) + envelope field resolvers
+    ├── skill_injection_verifier.py # Verify declared and inferred skills were loaded
+    ├── call_ceiling.py       # Tool-call ceiling notice
     ├── state_tracker.py      # Legal agent_state transitions (_LEGAL_TRANSITIONS)
     ├── task_info_builder.py  # Build task_info from SubagentStop hook data
-    ├── transcript_analyzer.py # Analyze subagent transcript on stop
     └── transcript_reader.py  # Read the subagent transcript file
 ```
 
-### `dispatch_binding.py` (born-at-dispatch, plan 34)
+The tree names the modules a change most often touches; `git ls-files hooks/modules` lists all of them. Beside `modules/`, `hooks/mods/` holds the Claude Code mods the host loads in-process (`mods/compaction/register.ts`, named under `host_mods` in `build/gaia.manifest.json`).
+
+### `dispatch_binding.py` (born-at-dispatch)
 
 At dispatch time (PreToolUse:Agent / SubagentStart), the hook BIRTHS the
 nascent `agent_contract_handoffs` row from the dispatch metadata, stamping the
@@ -136,13 +143,7 @@ emitting agent's role.
 ## Key Features
 
 ### Orchestrator Gate
-The orchestrator is restricted to four tools:
-- `Agent` -- dispatch work to specialist agents
-- `SendMessage` -- resume a previously spawned agent
-- `AskUserQuestion` -- get clarification or approval from the user
-- `Skill` -- load on-demand procedures
-
-This enforces the principle: "Orchestrator delegates, agents execute."
+The orchestrator's tools are the `tools:` list of `agents/gaia-orchestrator.md`: `Read`, `Bash`, `Agent`, `SendMessage`, `AskUserQuestion`, `Skill`, the `Task*` and `Cron*` tools, `WebSearch`, `WebFetch`, `ToolSearch` and `mcp__gaia__compact_when_idle`; `disallowedTools` removes `Glob`, `Grep`, `Edit`, `Write`, `NotebookEdit` and the plan and worktree modes. Its `Bash` is a lane, not a shell: `security/gaia_cli_only_guard.py` admits only the trusted `gaia` binary and an allowlist of verbs (`ALLOWED_READ_PHRASES`, `ALLOWED_WRITE_PHRASES`), and refuses everything else categorically. Domain work still goes to a specialist.
 
 ### SendMessage Validation (PreToolUse matcher)
 SendMessage is validated as a PreToolUse event (not a separate hook event):
@@ -151,7 +152,7 @@ SendMessage is validated as a PreToolUse event (not a separate hook event):
 - Grant activation is not part of this validation. It happens on PostToolUse, when the `AskUserQuestion` matcher reaches `adapters/claude_code.py::_handle_ask_user_question_result` and every answered label carrying a `[P-<nonce>]` tag activates its own grant
 
 ### Context Enforcement
-Task invocations for project agents inject project-context via `context_provider.py`.
+A dispatched subagent receives its project context at SubagentStart, as the `# Project context` block of the kernel `context/kernel_builder.py` renders: the dispatch project's `can_read` sections, whole when they fit, else one `gaia context get-contract` pointer per section, else a count line.
 
 ### State Sharing
 Pre-hook saves state to `.claude/.hooks_state.json`, which post-hook reads to get:
@@ -215,14 +216,15 @@ The modular architecture maintains full backward compatibility with Claude Code'
 All security rules (blocked patterns, mutative verbs, tiers) are hardcoded in the Python modules for performance and simplicity - no external JSON config files needed.
 
 ### Validation Order (Defense-in-Depth)
-bash_validator checks commands in this order (short-circuit on first match):
-0. **Indirect execution detection** — `bash -c`, `eval`, `python -c` etc. → ask (orchestrator), deny with the correct form (subagent), or block
-0b. **Categorical write guards** — gaia_db_write_guard.py (direct sqlite3 writes to gaia.db), subagent_memory_write_guard.py (`gaia memory` writes from non-operator subagents), protected_path_guard.py (Bash writes into the `.claude/` hooks/settings tree or an installed Gaia root: npm package store, dev-plugin cache; any line naming or running inside an install root must be all known readers, judged after substituting line assignments and well-known environment variables and expanding brace and glob words) → exit 2, not approvable. A write target starting with a variable nothing resolves is T3 instead (`unprovable_write_target`)
-1. **Blocked commands** (blocked_commands.py) — permanently denied patterns, exit 2
-2. **Claude footer stripping** — transparent via updatedInput
+`BashValidator.validate` checks commands in this order (short-circuit on first match):
+0. **Orchestrator lane** (gaia_cli_only_guard.py) — for the orchestrator role only, ahead of everything else: the trusted `gaia` binary and its allowlisted verbs, or a categorical deny
+0a. **Host consent verbs** (host_consent_verb_guard.py) — the OpenCode plugin's own consent verbs are refused from any shell; then a sealed retry of an approved command is recognized, and Claude footers are stripped
+0b. **Categorical guards**, in this order — publish attribution, comment_push_gate.py, gaia_db_write_guard.py (shell writes to gaia.db), subagent_memory_write_guard.py (`gaia memory` writes from subagents), memory_skill_guard.py (main-session memory writes before `Skill('memory')`), subagent_resume_point_guard.py (a subagent's `gaia session` writes), contract ownership, protected_path_guard.py (Bash writes into the `.claude/` hooks/settings tree or an installed Gaia root; any line naming or running inside an install root must be all known readers, judged after substituting line assignments and well-known environment variables and expanding brace and glob words), shell_write_guard.py (shell-authored writes into a git working tree), sensitive_read_guard.py (secret reads) → exit 2, not approvable. A write target starting with a variable nothing resolves is T3 instead (`unprovable_write_target`). These guards split the line with the quote-aware `tools/shell_parser.py`, so an operator or a path inside quotes is text: a quoted CLI argument is data, not a command
+1. **Indirect execution detection** — `bash -c`, `eval` and the other wrappers: a subagent is refused with the correct form; for the main session a wrapper whose inner command mutates goes on to the T3 gate, and one that does not asks the host
+2. **Blocked commands** (blocked_commands.py) — permanently denied patterns, exit 2
 3. **Commit message validation** — conventional commits enforcement
-4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny
-5. **Mutative verbs** (mutative_verbs.py) — CLI-agnostic verb detector, native `ask` dialog
+4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny, then pipe composition (composition_rules.py)
+5. **Mutative verbs** (mutative_verbs.py) — every T3 converges on `bash_validator.py::decide_t3_outcome`: a deny carrying an `approval_id` and the `gaia approvals request-set` line, for a subagent and for the main session alike, never the host's permission prompt; a chain of several T3 commands is denied whole and asks for a plan-first request-set
 6. **Everything else** — SAFE by elimination (auto-approved)
 
 ### Heredoc readers
