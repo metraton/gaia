@@ -11,14 +11,14 @@ User runs: gaia <subcommand> [args]
         |
 bin/gaia (Python entry point) loads the dispatcher
         |
-bin/cli/__init__.py imports every module in bin/cli/ that defines register()
+bin/gaia imports every module in bin/cli/ and keeps those that define register()
         |
 Each module's register(subparsers) attaches its argparse + cmd_<name>() handler
         |
 Dispatcher routes to the matched handler, which exits with a status code
 ```
 
-There is **no npm `postinstall` hook** — install is non-invasive and bootstrap is lazy. The DB is created on the first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped for `install`, `uninstall`, `migrate` and `now`, `_LAZY_BOOTSTRAP_SKIP`), and the install folder's `.claude/` config is written by `gaia install`. Every SessionStart also writes there (`run_first_time_setup` in `hooks/modules/core/plugin_setup.py`): it creates `plugin-registry.json` if missing (plugin data dir, else `.claude/`), merges Gaia's permissions and attribution into `.claude/settings.local.json`, and syncs the npm channel's hook entries into it; `.claude/hooks` is the only link it creates or repairs:
+There is **no npm `postinstall` hook** — install is non-invasive and bootstrap is lazy. The DB is created on the first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped for `install`, `uninstall`, `migrate`, `now` and `lint`, `_LAZY_BOOTSTRAP_SKIP`), and the install folder's `.claude/` config is written by `gaia install`. Every SessionStart also writes there (`run_first_time_setup` in `hooks/modules/core/plugin_setup.py`): it creates `plugin-registry.json` if missing (plugin data dir, else `.claude/`), merges Gaia's permissions and attribution into `.claude/settings.local.json`, and syncs the npm channel's hook entries into it; `.claude/hooks` is the only link it creates or repairs:
 
 ```
 npm|pnpm install @jaguilar87/gaia
@@ -57,8 +57,9 @@ bin/
 ├── validate-sandbox.sh        # End-to-end consumer-install verification harness
 ├── README.md
 └── cli/                       # Subcommand modules (one file per subcommand)
-    ├── __init__.py            # Discovery: imports every sibling that defines register()
+    ├── __init__.py            # Package marker; discovery lives in bin/gaia
     ├── _install_helpers.py    # Shared helpers for install/update (private, leading _)
+    ├── _legacy_cleanup.py     # What install removes of a 5.3 or 5.4 workspace: .claude runtime data, approval grant files, old launchers (private)
     ├── _manifest.py           # The install manifest (.claude/gaia-manifest.json): record on install, revert on uninstall, per-channel ownership (private)
     ├── _leftovers.py          # What uninstall removes or lists as left beyond the manifest: package lines, gaia dev caches (private)
     ├── _dev_plugin.py         # gaia dev --channel plugin: the local gaia-dev marketplace and its undo (private)
@@ -71,6 +72,7 @@ bin/
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
     ├── context.py             # gaia context    — show / scan / get / query / wipe / prune-workspaces project context from gaia.db
     ├── contract.py            # gaia contract   — build/validate an agent_contract_handoff draft by-value: init/set/add/view (--field for one subtree)/validate/finalize + fill --json, plus reconcile for hook-written residue rows
+    ├── contract_proposals.py  # gaia contract proposals — list/accept/dismiss/backfill what turns proposed (update_contracts, memory_delta); attached to contract.py's parser
     ├── defects.py             # gaia defects    — row-level triage of subagent anomalies and graded hook-log failures
     ├── dev.py                 # gaia dev        — fast local dev loop: pack/link + install + wire, one command, per --channel
     ├── doctor.py              # gaia doctor     — system health check (the model to learn)
@@ -78,21 +80,23 @@ bin/
     ├── history.py             # gaia history    — recent agent sessions
     ├── install.py             # gaia install    — migrate the DB, wire settings and symlinks, record the manifest (run manually; no postinstall; declares no workspace)
     ├── lint.py                # gaia lint       — read-only checks over a branch; `lint comments` is the pre-push comment limit
+    ├── login.py               # gaia login      — start a CLI login in its own session and print its link as JSON; status reports pending/complete/failed
     ├── map.py                 # gaia map        — what is live now with the verb that moves it, the five habits, intent -> capability; read-only
-    ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/checkpoint; add --replace and delete signed) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
+    ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/move/checkpoint, --from-file batches for reclassify/link/move; add --replace and link --delete signed) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
     ├── memory_story.py        # backs `gaia memory story` (lineage narration); imported by memory.py, no register() of its own
     ├── metrics.py             # gaia metrics    — usage analytics (DB-canonical episodes/anomalies + audit-log tier/commands)
     ├── migrate.py             # gaia migrate    — plan | apply the schema migration chain: backup, one transaction, --consent-chain for data-reaching chains
     ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
     ├── notifications.py       # gaia notifications — reports, reminders and routines (add/list/show/ack/snooze/cancel)
     ├── now.py                 # gaia now        — local time, UTC offset and zone; opens no database
+    ├── open.py                # gaia open       — resolve one KIND:SCOPE/ID#FIELD reference to anything Gaia stores, read-only
     ├── paths.py               # gaia paths      — report the resolved storage paths and create the ~/.gaia layout
     ├── plan.py                # gaia plan       — manage plans (one per brief, DB-canonical)
     ├── project.py             # gaia project    — move a project, its briefs and its profile into another declared workspace
     ├── query.py               # gaia query      — cross-surface read-only query (memory, episodes, harness_events)
     ├── release.py             # gaia release    — check (Layer 2 local gate) | publish (Layer 3 trigger sequence)
     ├── scan.py                # gaia scan       — project scanner over a declared workspace; writes scan results to gaia.db (DB-canonical)
-    ├── session.py             # gaia session    — preview the SessionStart birth block in-process
+    ├── session.py             # gaia session    — preview the SessionStart birth block, print a session's ledger (snapshot), set its resume point
     ├── signals.py             # gaia signals    — curated changes other sessions made, each with the command that opens it; never moves the cursor
     ├── status.py              # gaia status     — quick installation snapshot
     ├── task.py                # gaia task       — manage tasks within plans (DB-canonical)

@@ -6,9 +6,9 @@ Every agent is defined as a Markdown file with YAML frontmatter at the top. That
 
 The orchestrator (`gaia-orchestrator.md`) is special: it has no `permissionMode`; `Read` exists only to triangulate evidence with the user, while `Bash` is a lane for allowlisted coordination commands through the trusted `gaia` binary. `gaia_cli_only_guard.py` rejects every other binary and Gaia surface, so it remains unable to execute a general shell. It has no Edit, Write, Glob, or Grep.
 
-That lane covers coordination state (briefs, plans, tasks, contracts, approvals, notifications, history, metrics, memory), the substrate and installation reads (`doctor`, `status`, `defects`, `query`, `context show`/`get`, `workspace current`/`info`, `evidence show`/`list`), the coordinator-owned writes, and two verbs that read like reads and are not: `scan` — refreshing the workspace substrate is the orchestrator's own job, since that substrate is the context every dispatch carries, and it runs with no signature because it rewrites only rows a rescan restores — and `paths`, which prints the resolved storage locations and creates the `~/.gaia` layout when it is missing. What stays out is surgery on it: `context wipe`, `context prune-workspaces`, the `context move-*` family and `doctor --fix` are dispatched to a specialist. `ALLOWED_READ_PHRASES` / `ALLOWED_WRITE_PHRASES` / `EXPLICITLY_DENIED_PHRASES` in `gaia_cli_only_guard.py` are the source of truth for the exact set.
+That lane covers coordination state (briefs, plans, tasks, contracts, approvals, notifications, signals, history, metrics, memory), the substrate and installation reads (`doctor`, `status`, `defects`, `query`, `open` with `--line` or `--json`, `context show`/`get`, `workspace current`/`info`, `evidence show`/`list`), the coordinator-owned writes (among them `brief close`, `memory move` and `approvals request-set`, which files the main session's own signature request when a command it runs is denied with an `approval_id`), and two verbs that read like reads and are not: `scan` — refreshing the workspace substrate is the orchestrator's own job, since that substrate is the context every dispatch carries, and it runs with no signature because it rewrites only rows a rescan restores — and `paths`, which prints the resolved storage locations and creates the `~/.gaia` layout when it is missing. What stays out is surgery on it: `context wipe`, `context prune-workspaces`, the `context move-*` family and `doctor --fix` are dispatched to a specialist. `ALLOWED_READ_PHRASES` / `ALLOWED_WRITE_PHRASES` / `EXPLICITLY_DENIED_PHRASES` in `gaia_cli_only_guard.py` are the source of truth for the exact set.
 
-All other agents set `permissionMode: acceptEdits` so file edits inside their domain flow without extra prompts, while hooks enforce security tiers.
+The agents that edit files in their domain (`developer`, `gaia-operator`, `gaia-system`, `gitops-operator`, `platform-architect`) set `permissionMode: acceptEdits`, so their edits flow without extra prompts while the hooks enforce the security tiers. `gaia-planner` and `cloud-troubleshooter` have no Edit or Write and no `permissionMode`; `gaia-verifier` has none either, and its Write is confined to its own scratch entry.
 
 Adding a new agent is three steps: write the `.md` file here (including a `routing:` frontmatter block if the agent owns a surface), add it to `build/gaia.manifest.json` under `agents`, and run `gaia update` so `tools/scan/seed_surface_routing.py` seeds the agent's surface into the DB-backed `surface_routing` table. The agent becomes available on the next Claude Code restart. Surface routing is no longer a `config/surface-routing.json` file — each agent's `routing:` block is the source of truth.
 
@@ -50,7 +50,10 @@ dispatch project's can_read sections: whole when they fit, else one get-contract
 section, else a single count line; the agent pulls what the block only points at on demand.
         |
 Agent executes, closing its agent_contract_handoffs row with
-`gaia contract finalize`; the orchestrator reads that row
+`gaia contract finalize`; the orchestrator reads that row.
+NEEDS_VERIFICATION is accepted only from a turn bound to a plan
+task or a parent handoff; an unbound turn closes COMPLETE with
+its own verification, or BLOCKED / NEEDS_INPUT
         |
 [subagent_stop.py] fires -> validates contract, records metrics, updates episodic memory
 ```
@@ -67,7 +70,7 @@ agents/
 ├── cloud-troubleshooter.md # Live-state diagnostics: pods, services, cloud resources, drift against desired state — read-only on production
 ├── gitops-operator.md     # Kubernetes desired state in Git: Flux/Argo HelmReleases, manifests, Kustomizations — never touches the live cluster
 ├── platform-architect.md  # Infrastructure-as-code (tool-agnostic): Terraform, Terragrunt, Pulumi, CloudFormation, OpenTofu, CDK
-└── gaia-verifier.md       # Clean-context verifier: consumes task_gates, promotes NEEDS_VERIFICATION to COMPLETE
+└── gaia-verifier.md       # Clean-context verifier: re-runs a task's gates and probes them, records each verdict with gaia task gate set-status; the producer's NEEDS_VERIFICATION row stays as it closed
 ```
 
 ## Conventions

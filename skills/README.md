@@ -70,6 +70,7 @@ skills/
 ├── agent-response/        # Orchestrator: read and route a closed agent_contract_handoffs row
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
+├── cli-login/             # Technique: sign a CLI back in when its login is missing or expired (gaia login start, close NEEDS_INPUT on the link, confirm on resume)
 ├── code-review/           # Technique: explicit read-only module/branch/PR review, evidence reconciliation and portable report
 ├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
@@ -137,7 +138,7 @@ needs it, even if also declared in frontmatter. The overlap is deliberate: listi
 | cloud-troubleshooter | agent-protocol, security-tiers, command-execution, investigation, fast-queries | — |
 | platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
 | gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
-| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review; technical-writing for a README the change touches |
+| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards, technical-writing | code-standards; code-review for explicit review; technical-writing for a README the change touches |
 | gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, code-standards | code-standards, code-review, gaia-patterns, gaia-audit, agent-creation, skill-creation, gaia-release, gaia-verify as applicable |
 | gaia-verifier | agent-protocol, security-tiers, command-execution, verification-oracle, verification-rubric | — |
 | gaia-planner | agent-protocol, security-tiers, investigation, command-execution, gaia-planner | — |
