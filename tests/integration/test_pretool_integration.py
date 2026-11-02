@@ -53,7 +53,7 @@ def _build_pretool_stdin(tool_name: str, tool_input: dict) -> str:
     })
 
 
-def _run_pretool_bash_flow(command: str) -> tuple:
+def _run_pretool_bash_flow(command: str, session_id: str = "", agent_type: str = "") -> tuple:
     """Run the full PreToolUse flow for a Bash command.
 
     Returns:
@@ -70,7 +70,7 @@ def _run_pretool_bash_flow(command: str) -> tuple:
 
     # Step 3: Business logic validates
     validator = BashValidator()
-    bash_result = validator.validate(validation_req.command)
+    bash_result = validator.validate(validation_req.command, session_id=session_id, agent_type=agent_type)
 
     # Step 4: Map BashValidationResult -> ValidationResult for adapter
     vr = ValidationResult(
@@ -235,7 +235,8 @@ class TestBlockedCommandFlow:
     def test_git_push_force_signs_what_it_destroys(self):
         """T3-approvable: git push --force asks for a signature (sign.destroys), not exit 2."""
         event, bash_result, response = _run_pretool_bash_flow(
-            "git push --force origin main"
+            "git push --force origin main",
+            session_id="integration-test-session", agent_type="claude-code-primary",
         )
 
         assert bash_result.allowed is False

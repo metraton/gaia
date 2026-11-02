@@ -12,15 +12,13 @@ from __future__ import annotations
 import json
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 
 import pytest
 
+from tests.hooks.adapters.test_opencode_attestation_provenance import bare_gaia_on_path
 from tests.integration import test_opencode_consent_retry_e2e as e2e
-
-pytestmark = pytest.mark.skipif(shutil.which("bun") is None, reason="the OpenCode plugin runs under bun")
 
 T3 = "gaia scan"
 PHRASES = {
@@ -35,9 +33,10 @@ PHRASES = {
 
 
 @pytest.fixture()
-def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
+def db_env(tmp_path, monkeypatch, bootstrapped_db_template, bun):
     from modules.core.paths import clear_path_cache
 
+    bare_gaia_on_path(tmp_path, monkeypatch)
     env, db_path = e2e._isolated_env(tmp_path / "state", bootstrapped_db_template)
     monkeypatch.chdir(env["WORKSPACE"])
     for key in ("GAIA_DB", "GAIA_DATA_DIR", "GAIA_OPENCODE_ATTESTATION_DIR"):

@@ -13,6 +13,7 @@ from modules.security.protected_path_guard import unprovable_write_target
 from modules.security.tiers import SecurityTier
 from modules.tools.bash_validator import BashValidator
 from modules.tools.shell_parser import parse_command
+from tests.hooks.adapters.test_opencode_attestation_provenance import bare_gaia_on_path
 
 _ADD = "gaia memory add --name=feedback_x --type=feedback --kind=defect --initiative=gaia_system --workspace=me "
 
@@ -44,6 +45,7 @@ SECRET_PROSE = [
 
 @pytest.fixture(autouse=True)
 def _orchestrator_lane(tmp_path, monkeypatch):
+    bare_gaia_on_path(tmp_path, monkeypatch)
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("GAIA_DB", raising=False)
     monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
