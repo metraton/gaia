@@ -109,10 +109,11 @@ _FILESYSTEM_WRITE_COMMANDS = frozenset({
     "out-file", "clear-content", "clc", "icacls", "attrib",
 })
 
-# Shell operators that separate independent command components. Splitting on
-# these keeps a read in one component from being associated with a writer in
-# another (``cat .claude/settings.json && ls`` must not fire on ``ls``).
-_OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
+def _components(command: str) -> List[str]:
+    """The commands *command* runs, split on the operators the shell sees: one inside quotes is text."""
+    from ..tools.shell_parser import parse_command
+
+    return parse_command(command)
 
 
 _UNKNOWN_DIR = " (relative to a directory left unknown by cd -, popd or pushd)"
@@ -217,7 +218,7 @@ def _fold_cwd(component: str, cwd: Optional[str]) -> Optional[str]:
 
 def _proven_cwd(command: str, cwd: Optional[str]) -> Optional[str]:
     """The cwd in effect after the command's leading cd clauses."""
-    for component in _OPERATOR_SPLIT.split(command):
+    for component in _components(command):
         component = component.strip()
         if not component or not re.match(r"(?:cd|pushd|popd)(?:\s|$)", component):
             break
@@ -328,7 +329,7 @@ _WELL_KNOWN_VARIABLE = re.compile(
 def unprovable_write_target(command: str, cwd: Optional[str] = None) -> Optional[str]:
     """A write target holding a variable neither the line nor a well-known environment variable resolves, or a substitution."""
     for line in _substituted_lines(command):
-        for component in _OPERATOR_SPLIT.split(line):
+        for component in [c for piece in [line, *extract_substitutions(line)] for c in _components(piece)]:
             tokens = _tokenize(strip_grouping_wrappers(component.strip())) if component.strip() else []
             while tokens and _ASSIGNMENT.fullmatch(tokens[0]):
                 tokens = tokens[1:]
@@ -352,7 +353,7 @@ def _computed_target_names_root(command: str, cwd: Optional[str]) -> Optional[st
     """The install root any word or substitution names when the line writes to an unprovable target."""
     if unprovable_write_target(command, cwd) is None:
         return None
-    pieces = extract_substitutions(command) + _BACKTICK.findall(command) + _OPERATOR_SPLIT.split(command)
+    pieces = extract_substitutions(command) + _BACKTICK.findall(command) + _components(command)
     for piece in pieces:
         for word in _tokenize(piece.strip()) if piece.strip() else []:
             hit = _install_root_spelling(word.split("=", 1)[-1].strip("()"), cwd)
@@ -363,7 +364,7 @@ def _computed_target_names_root(command: str, cwd: Optional[str]) -> Optional[st
 
 def _line_assignments(command: str) -> dict:
     values: dict = {}
-    for component in _OPERATOR_SPLIT.split(command):
+    for component in _components(command):
         for token in _tokenize(strip_grouping_wrappers(component.strip())) if component.strip() else []:
             match = _ASSIGNMENT.fullmatch(token)
             if match:
@@ -460,7 +461,7 @@ def _line_names_install_root_unread(command: str, cwd: Optional[str]) -> Optiona
     read_only = True
     programs: List[str] = []
     running_cwd = cwd
-    for component in _OPERATOR_SPLIT.split(command):
+    for component in _components(command):
         component = component.strip()
         tokens = _tokenize(strip_grouping_wrappers(component)) if component else []
         assignments = 0
@@ -562,7 +563,7 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
     seen_cwds = [cwd]
     for line in _substituted_lines(command):
         running_cwd = cwd
-        for component in _OPERATOR_SPLIT.split(line):
+        for component in _components(line):
             component = component.strip()
             if not component:
                 continue
@@ -581,7 +582,7 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
     # yields nothing at all for a single-quoted or escaped mention, so a
     # protected path merely NAMED inside an argument stays free.
     for inner in extract_substitutions(command):
-        for inner_component in _OPERATOR_SPLIT.split(inner):
+        for inner_component in _components(inner):
             inner_component = inner_component.strip()
             if not inner_component:
                 continue

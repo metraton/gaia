@@ -17,6 +17,7 @@ if str(HOOKS_DIR) not in sys.path:
 
 import pytest
 
+from modules.security.tiers import SecurityTier
 from modules.tools.bash_validator import BashValidator
 from modules.tools.hook_response import (
     read_permission_decision,
@@ -92,11 +93,12 @@ def test_subagent_mutative_wrapper_is_denied_with_the_correct_form(command):
 
 
 @pytest.mark.parametrize("command", MUTATIVE_WRAPPERS)
-def test_orchestrator_mutative_wrapper_keeps_its_dialog(command):
+def test_orchestrator_mutative_wrapper_is_denied_with_its_approval_id(command):
     result = _validate(command, is_subagent=False)
 
     assert not result.allowed
-    assert read_permission_decision(result.block_response) == "ask"
+    assert read_permission_decision(result.block_response) == "deny"
+    assert result.approval_id is not None
 
 
 # A wrapper behind a chain reaches the compound-T3 deny before the wrapper
@@ -156,11 +158,16 @@ def test_subagent_every_shell_string_spelling_is_refused(command):
 
 
 @pytest.mark.parametrize("command", SHELL_STRING_SPELLINGS)
-def test_orchestrator_every_shell_string_spelling_keeps_its_dialog(command):
+def test_orchestrator_every_shell_string_spelling_is_never_refused_as_a_wrapper(command):
+    """The orchestrator keeps the T2 dialog for a readable inner; any T3 spelling is denied with its approval_id."""
     result = _validate(command, is_subagent=False)
 
     assert not result.allowed
-    assert read_permission_decision(result.block_response) == "ask"
+    if result.tier is SecurityTier.T2_DRY_RUN:
+        assert read_permission_decision(result.block_response) == "ask"
+    else:
+        assert read_permission_decision(result.block_response) == "deny"
+        assert result.approval_id is not None
 
 
 # A shell given a script path, or only asked about itself, runs no string.

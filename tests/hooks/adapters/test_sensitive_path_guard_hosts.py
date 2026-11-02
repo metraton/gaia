@@ -288,8 +288,8 @@ def test_sensitive_path_guard_opencode_account_write_asks_the_signature_bash_ask
         assert _signature_request(verdict), (tool, verdict)
 
 
-def test_sensitive_path_guard_main_session_account_write_is_asked_like_bash(home):
-    """Outside delegate mode the main session is asked inline, by either tool."""
+def test_sensitive_path_guard_main_session_account_write_is_refused_by_either_tool(home):
+    """Neither tool asks the main session inline: Bash has no requester, Write is sent to a specialist."""
     from adapters.tool_policy import ToolPolicy
     from modules.tools.bash_validator import validate_bash_command
 
@@ -297,8 +297,8 @@ def test_sensitive_path_guard_main_session_account_write_is_asked_like_bash(home
     bash = validate_bash_command(f"echo standin >> {target}")
     write = ToolPolicy()._write_edit_verdict("Write", {"file_path": target}, is_subagent=False)
     assert bash.allowed is False and bash.approval_id is None
-    assert write.consent is not None and write.consent.approval_id is None
-    assert "grants access to your own account" in write.consent.reason
+    assert write.decision == "deny" and write.consent is None
+    assert "grants access to your own account" in write.reason and "Dispatch a specialist" in write.reason
 
 
 def test_sensitive_path_guard_ordinary_write_outside_the_project_stays_free(home):

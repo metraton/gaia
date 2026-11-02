@@ -340,8 +340,12 @@ def check_presentable(payload: Mapping[str, Any]) -> None:
         raise NotPresentableError(missing)
 
 
-def request_line(payload: Mapping[str, Any]) -> str:
-    """The request that replaces phraseless ``payload`` with a phrased one; each ``<...>`` is the requester's."""
+def request_line(payload: Mapping[str, Any], agent_id: str = "") -> str:
+    """The request that replaces phraseless ``payload`` with a phrased one; each ``<...>`` is the requester's.
+
+    A given *agent_id* is spelled as ``--agent-id``, for a requester whose
+    shell has no ``GAIA_DISPATCH_AGENT`` to seal the request under.
+    """
     items = _payload_items(payload)
     if payload.get("operation") == _FILE_OPERATION:
         words = ["gaia approvals request-file-write", "--path", shlex.quote(_targets(payload)[0])]
@@ -368,6 +372,8 @@ def request_line(payload: Mapping[str, Any]) -> str:
             "--verification", shlex.quote("<how the result will be checked>"),
             "--shared-state", shlex.quote("<whether it rewrites shared state, and which>"),
         ]
+    if agent_id:
+        words += ["--agent-id", shlex.quote(agent_id)]
     return " ".join(words)
 
 

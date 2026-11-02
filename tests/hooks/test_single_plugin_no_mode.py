@@ -46,21 +46,18 @@ def _total_detection_failure(tmp_path, monkeypatch):
     yield
 
 
-def test_main_session_t3_still_yields_native_ask():
-    """Floor survives: a main-session T3 command routes to native ask."""
+def test_main_session_t3_still_yields_a_signable_deny():
+    """Floor survives with no plugin detected: a main-session T3 is denied with its approval_id."""
     result = validate_bash_command(
         "terraform apply -auto-approve",
         is_subagent=False,
         session_id="no-mode-session",
+        agent_type="claude-code-primary",
     )
     assert not result.allowed
     out = result.block_response["hookSpecificOutput"]
-    assert out["permissionDecision"] == "ask", (
-        "The main-session T3 mutation-safety floor must return a native "
-        "'ask' even with no plugin detected -- it is independent of mode."
-    )
-    # Native ask, not the orchestrator deny+approval_id path.
-    assert "approval_id:" not in out["permissionDecisionReason"]
+    assert out["permissionDecision"] == "deny"
+    assert f"approval_id: {result.approval_id}" in out["permissionDecisionReason"]
 
 
 def test_delegate_gate_is_on_for_orchestrator():

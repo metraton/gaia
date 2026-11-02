@@ -231,7 +231,6 @@ _NETWORK_EXECUTABLES = frozenset({
     "fetch",
 })
 _STDIN_REDIRECTS = frozenset({"<", "<>", "<<", "<<<", "<<-"})
-_COMPONENT_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
 # ssh options taking a value, and the ones that keep stdin from the remote side.
 _SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
@@ -408,7 +407,9 @@ def classify_stage(command: str) -> StageType:
 
 def redirected_into_sender(command: str) -> str:
     """The sender in *command* whose stdin a ``<`` redirect or a heredoc feeds, or ""."""
-    for component in _COMPONENT_SPLIT.split(command):
+    from ..tools.shell_parser import parse_command
+
+    for component in parse_command(command):
         lexer = shlex.shlex(component, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         try:

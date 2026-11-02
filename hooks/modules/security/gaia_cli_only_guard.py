@@ -638,6 +638,9 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # take back consent Gaia issued. Granting stays out: `approve` is denied below.
     ("approvals", "reject"),
     ("approvals", "revoke"),
+    # The phrased request a main-session T3 denial points to: it only stores
+    # the command for the user's signature, and the retry still passes this lane.
+    ("approvals", "request-set"),
 })
 
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
@@ -1186,19 +1189,17 @@ def _flags(valued: str, valueless: str = "") -> _FlagGrammar:
     return frozenset(valued.split()), frozenset(valueless.split())
 
 
-# Every option an admitted phrase may carry; a flag absent here is refused, so a
-# flag added to a verb tomorrow stays outside the lane until it is vetted.
-# Withheld on purpose although argparse defines them: doctor --fix, memory add
-# --replace, memory link --delete (signed operations), approvals reject --all,
-# task set-status --override/--reason, notifications ack --all-workspaces.
-# tests/hooks/modules/security/test_orchestrator_flag_lane.py pins this table
-# against the live parsers, so a drift in either direction fails there.
+# An option absent here is refused until vetted; test_orchestrator_flag_lane.py pins this table
+# to the live parsers, with the defined options withheld on purpose listed in its WITHHELD.
 _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("approvals", "history"): _flags("--limit --status", "--json"),
     ("approvals", "list"): _flags("--session", "--json --orphans-only --all-sessions --include-stale"),
     ("approvals", "pending"): _flags("--session", "--json --all-sessions --include-stale"),
     ("approvals", "question"): _flags("", "--details"),
     ("approvals", "reject"): _flags("--reason", "--json"),
+    ("approvals", "request-set"): _flags(
+        "--command --what --question --does --impact --cwd --expect-exit --rationale "
+        "--verification --shared-state --rollback --agent-id", "--json"),
     ("approvals", "revoke"): _flags("--reason", "--yes"),
     ("approvals", "show"): _flags("", "--json --consent-surface"),
     ("approvals", "stats"): _flags("", "--json"),
@@ -1328,8 +1329,8 @@ _VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
 # fixed; the test that pins _FLAG_GRAMMAR pins this table too.
 _FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
     **dict.fromkeys([
-        ("approvals", "list"), ("approvals", "pending"), ("approvals", "stats"),
-        ("brief", "list"), ("context", "get"), ("context", "get-contract"),
+        ("approvals", "list"), ("approvals", "pending"), ("approvals", "request-set"),
+        ("approvals", "stats"), ("brief", "list"), ("context", "get"), ("context", "get-contract"),
         ("context", "scan"), ("context", "show"), ("contract", "proposals", "list"),
         ("contract", "validate"), ("contract", "view"), ("defects",), ("doctor",),
         ("evidence", "list"), ("history",), ("lint", "comments"), ("memory", "add"),

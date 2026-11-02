@@ -34,6 +34,7 @@ WITHHELD = {
     ("memory", "add"): {"--replace"},
     ("memory", "link"): {"--delete"},
     ("approvals", "reject"): {"--all"},
+    ("approvals", "request-set"): {"--session-id"},
     ("task", "set-status"): {"--override", "--reason"},
     ("notifications", "ack"): {"--all-workspaces"},
 }

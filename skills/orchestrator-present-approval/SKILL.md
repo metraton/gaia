@@ -25,6 +25,12 @@ a specialist that asks for a signature, or is blocked on a command, asks the
 user nothing. It ends its turn and returns `APPROVAL_REQUEST` with the
 approval id in its contract. You decide when to ask.
 
+A T3 command you run yourself is denied the same way, never sent to the
+host's permission prompt. Run the request line its denial prints, which
+carries `--agent-id` so the request is yours, then present the
+`approval_id` it prints like any other. A protected write you attempt is
+refused outright: dispatch a specialist for it.
+
 1. Run `gaia approvals question <approval_id> [<approval_id> ...]` with the
    pending ids -- up to 4 questions in all, one per command.
 2. Call your question tool (AskUserQuestion in Claude Code, question in

@@ -473,7 +473,7 @@ def _kind(response, function) -> str:
     text = ast.unparse(response)
     if text.endswith(".block_response"):
         return "passthrough"
-    if "'ask'" in text or "decision" in text:
+    if "'ask'" in text or "decision" in text or "_COMPOUND_T3_DENIAL" in text:
         return "approvable"
     if isinstance(response, ast.Name) and f"{response.id} = build_hook_permission_response('ask'" in ast.unparse(function):
         return "approvable"

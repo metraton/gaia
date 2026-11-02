@@ -112,7 +112,11 @@ _FIND_PATTERN_FLAGS = frozenset({
 _INPUT_REDIRECTS = frozenset({"<", "<>"})
 _OTHER_REDIRECTS = frozenset({">", ">>", ">|", ">&", "&>", "&>>", "<<", "<<<", "<<-"})
 
-_OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
+def _components(command: str) -> List[str]:
+    """The commands *command* runs, split on the operators the shell sees: one inside quotes is text."""
+    from ..tools.shell_parser import parse_command
+
+    return parse_command(command)
 
 
 def _tokenize(component: str) -> List[str]:
@@ -162,7 +166,7 @@ def _sent_arguments(arguments: List[str]) -> List[str]:
 
 def remote_copy_destination(command: str) -> str:
     """The scp or rsync component of *command* whose destination is another host, or ""."""
-    for component in _OPERATOR_SPLIT.split(command):
+    for component in _components(command):
         tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
         if not tokens or command_name(tokens[0]) not in ("scp", "rsync"):
             continue
@@ -181,7 +185,7 @@ def _is_local_operand(operand: str) -> bool:
 def copy_written_paths(command: str) -> List[str]:
     """The local destinations the copy and transfer tools in *command* write."""
     written: List[str] = []
-    for component in _OPERATOR_SPLIT.split(command):
+    for component in _components(command):
         tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
         base = command_name(tokens[0]) if tokens else ""
         if base not in _COPIERS or base == "sftp":
@@ -248,7 +252,7 @@ def _copy_operands(base: str, arguments: List[str]) -> Tuple[List[str], bool]:
 def http_client_written_paths(command: str) -> List[str]:
     """The files the HTTP clients in *command* write through their output flags."""
     written: List[str] = []
-    for component in _OPERATOR_SPLIT.split(command):
+    for component in _components(command):
         tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
         if not tokens or command_name(tokens[0]) not in _UPLOADERS:
             continue
@@ -370,9 +374,9 @@ def reads_sensitive_path(command: str, cwd: Optional[str] = None) -> str:
     """
     if not command:
         return ""
-    pieces = list(_OPERATOR_SPLIT.split(command))
+    pieces = list(_components(command))
     for inner in extract_substitutions(command):
-        pieces.extend(_OPERATOR_SPLIT.split(inner))
+        pieces.extend(_components(inner))
     for component in pieces:
         component = component.strip()
         if component:
@@ -435,12 +439,46 @@ def code_reads_sensitive(command: str, cwd: Optional[str] = None) -> str:
     return ""
 
 
+_MEMORY_WRITE_VERBS = frozenset({"add", "append", "reclassify", "link"})
+_MEMORY_TEXT_OPTIONS = frozenset({"--body", "--description", "--method"})
+
+
+def memory_text_as_data(command: str) -> Optional[str]:
+    """*command* with its memory-write text values blanked, when it is one plain trusted ``gaia memory`` write; else None.
+
+    Only a line the shell runs as exactly one command with no substitution
+    qualifies, so a read or a mutation anywhere else on it is judged whole.
+    """
+    import shlex
+
+    from ..tools.shell_parser import parse_command, shell_words
+
+    components = parse_command(command)
+    if len(components) != 1 or extract_substitutions(command):
+        return None
+    words = shell_words(components[0])
+    if len(words) < 3 or not is_gaia_cli(words[0]) or words[1] != "memory" or words[2] not in _MEMORY_WRITE_VERBS:
+        return None
+    kept, blank_next = [], False
+    for word in words:
+        name, equals, _value = word.partition("=")
+        if blank_next:
+            word, blank_next = "x", False
+        elif name in _MEMORY_TEXT_OPTIONS:
+            word, blank_next = (f"{name}=x", False) if equals else (word, True)
+        kept.append(word)
+    return shlex.join(kept)
+
+
 def check(command: str, cwd: Optional[str] = None, program: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Bash entry point: ``(True, None)`` or ``(False, reason)``.
 
     *program* is the command as written, heredoc bodies included, when
     *command* had them removed; the code an interpreter runs is read from it.
     """
+    elided = memory_text_as_data(program or command)
+    if elided is not None:
+        command = program = elided
     header = data_heredoc_header(program or command)
     if header is not None:
         command = program = header

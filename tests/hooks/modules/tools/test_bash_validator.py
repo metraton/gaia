@@ -27,6 +27,15 @@ def validator():
     return BashValidator()
 
 
+def _from_main_session(validator, command):
+    """Validate *command* as Claude Code's main session does: a session and the primary identity, so a T3 seals."""
+    return validator.validate(command, session_id="ses-bash-validator", agent_type="claude-code-primary")
+
+
+def _decision(result):
+    return result.block_response["hookSpecificOutput"]["permissionDecision"]
+
+
 class TestBashValidator:
     """Test BashValidator class."""
 
@@ -51,24 +60,26 @@ class TestBashValidator:
         "git push origin main",
     ])
     def test_t3_commands_blocked_by_dangerous_verb_detector(self, validator, command):
-        """Test T3 commands are blocked with a structured block_response (ask)."""
-        result = validator.validate(command)
+        """A T3 command is denied with the approval it can be signed through."""
+        result = _from_main_session(validator, command)
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
         assert "dangerous" in result.reason.lower() or "t3" in result.reason.lower()
-        # Block response uses hookSpecificOutput format with "ask" for native dialog
         assert result.block_response is not None
-        assert "hookSpecificOutput" in result.block_response
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert _decision(result) == "deny" and result.approval_id
 
-    def test_mutative_command_returns_ask_without_nonce(self, validator):
-        """T3 mutative commands return 'ask' for native dialog (no nonce generated)."""
-        result = validator.validate("terraform apply")
+    def test_mutative_command_is_denied_with_an_approval_id_and_no_nonce(self, validator):
+        result = _from_main_session(validator, "terraform apply")
         assert result.allowed is False
         assert result.block_response is not None
         reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
         assert "NONCE:" not in reason
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert _decision(result) == "deny" and result.approval_id
+
+    def test_a_t3_without_a_requester_is_refused_unsigned(self, validator):
+        result = validator.validate("terraform apply")
+        assert result.allowed is False and result.approval_id is None
+        assert result.rule == "floor.no-requester"
 
     # Commands blocked by dangerous verb detector (before reaching GitOps validator)
     @pytest.mark.parametrize("command", [
@@ -77,11 +88,11 @@ class TestBashValidator:
     ])
     def test_blocks_mutative_gitops_commands(self, validator, command):
         """Test mutative GitOps commands are blocked by dangerous verb detector."""
-        result = validator.validate(command)
+        result = _from_main_session(validator, command)
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
-        assert "dangerous" in result.reason.lower()
-        assert result.block_response is not None
+        assert result.reason.startswith("T3 mutative command")
+        assert result.block_response is not None and result.approval_id
 
     def test_blocks_invalid_commit_message(self, validator):
         """Test blocks git commit with invalid format."""
@@ -144,12 +155,11 @@ class TestCompoundCommandValidation:
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "chaining" in result.reason.lower()
 
-    def test_multiple_t3_components_return_first_block_response(self, validator):
-        """Compound commands should preserve the first blocked component response."""
-        result = validator.validate("git commit -m 'feat: test' && git push origin main")
+    def test_a_compound_t3_is_sent_to_a_plan_first_request(self, validator):
+        result = _from_main_session(validator, "git commit -m 'feat: test' && git push origin main")
         assert result.allowed is False
-        assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert _decision(result) == "deny" and "request-set" in result.reason
+        assert not result.rule.startswith("floor.")
 
     def test_blocks_deny_in_compound(self, validator):
         """Test blocks compound with denied command."""
@@ -189,21 +199,21 @@ class TestPipeDestinationFallsThroughToAsk:
     mutation through silently.
     """
 
-    def test_destination_apply_resolves_to_ask_not_deny(self, validator):
+    def test_destination_apply_resolves_to_a_signature_not_the_cloud_floor(self, validator):
         """The exact case that motivated the redesign."""
-        result = validator.validate("kustomize build overlay | kubectl apply -f -")
+        result = _from_main_session(validator, "kustomize build overlay | kubectl apply -f -")
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
         assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert "request-set" in result.reason and not result.rule.startswith("floor.")
 
-    def test_destination_apply_via_echo_manifest_resolves_to_ask(self, validator):
+    def test_destination_apply_via_echo_manifest_resolves_to_a_signature(self, validator):
         """Security must not relax: arbitrary piped-in content reaching a
         mutative destination CLI still requires consent."""
-        result = validator.validate('echo "<manifest>" | kubectl apply -f -')
+        result = _from_main_session(validator, 'echo "<manifest>" | kubectl apply -f -')
         assert result.allowed is False
         assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert "request-set" in result.reason and not result.rule.startswith("floor.")
 
     def test_origin_case_unchanged_still_deny(self, validator):
         """The origin direction (kubectl get | grep) is NOT touched by this
@@ -646,7 +656,7 @@ class TestBlockedCommandsPriority:
 
     def test_git_force_push_with_git_c_flag_signs_instead_of_exit_2(self, validator):
         """A force push toward the default branch asks for a signature naming what it destroys."""
-        result = validator.validate("git -C repo push origin main --force")
+        result = _from_main_session(validator, "git -C repo push origin main --force")
         assert result.allowed is False
         assert "security policy" not in result.reason.lower()
         assert "Rule: sign.destroys." in result.reason
@@ -771,7 +781,7 @@ class TestIndirectExecInnerVerb:
     """
 
     def test_bash_c_mv_routes_to_the_approval_flow(self, validator):
-        result = validator.validate('bash -c "mv foo bar"')
+        result = _from_main_session(validator, 'bash -c "mv foo bar"')
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
         assert result.block_response is not None
@@ -779,7 +789,7 @@ class TestIndirectExecInnerVerb:
         assert "mv foo bar" in result.reason
 
     def test_bash_c_rm_routes_to_the_approval_flow(self, validator):
-        result = validator.validate('bash -c "rm -rf /tmp/x"')
+        result = _from_main_session(validator, 'bash -c "rm -rf /tmp/x"')
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
         assert result.block_response is not None

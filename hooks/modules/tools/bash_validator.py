@@ -178,6 +178,9 @@ class BashValidationResult:
     approval_id: Optional[str] = None
     rule: str = ""
     undetermined: str = ""
+    # The (rule, undetermined) a T3 would sign under, kept when no requester
+    # could be named, so a nested probe still reads it as a signature.
+    withheld: Optional[Tuple[str, str]] = None
 
     def __post_init__(self):
         if self.suggestions is None:
@@ -393,10 +396,13 @@ def _rules_t3_outcome(decide):
     @functools.wraps(decide)
     def wrapper(command: str, verb: str, category: str, *, rule: str = "", **kwargs) -> BashValidationResult:
         result = decide(command, verb, category, **kwargs)
+        signing, undetermined = signing_rule(verb, category, command, rule)
+        if signing.startswith("unknown.") and not undetermined:
+            undetermined = "the span the decision reads"
         if not result.rule:
-            result.rule, result.undetermined = signing_rule(verb, category, command, rule)
-            if result.rule.startswith("unknown.") and not result.undetermined:
-                result.undetermined = "the span the decision reads"
+            result.rule, result.undetermined = signing, undetermined
+        elif result.rule == "floor.no-requester":
+            result.withheld = (signing, undetermined)
         return result
     return wrapper
 
@@ -1258,11 +1264,6 @@ class BashValidator:
                 verb="account-path-write",
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
-                native_ask_reason=(
-                    f"[T3_APPROVAL_REQUIRED] This command writes "
-                    f"'{account_write_target}', which grants access to your "
-                    f"own account."
-                ),
                 session_id=session_id,
                 agent_type=agent_type,
             )
@@ -1274,10 +1275,6 @@ class BashValidator:
                 verb="unprovable-write-target",
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
-                native_ask_reason=(
-                    f"[T3_APPROVAL_REQUIRED] This command writes '{unprovable_target[:80]}', "
-                    f"a path only the shell can resolve, so Gaia cannot tell where it lands."
-                ),
                 session_id=session_id,
                 agent_type=agent_type,
             )
@@ -1292,10 +1289,6 @@ class BashValidator:
                 verb="egress",
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
-                native_ask_reason=(
-                    f"[T3_APPROVAL_REQUIRED] '{redirect_sender[:80]}' sends "
-                    f"data off this machine."
-                ),
                 session_id=session_id,
                 agent_type=agent_type,
             )
@@ -1578,9 +1571,13 @@ class BashValidator:
         signed = None
         for xargs_command in xargs_commands:
             verdict = BashValidator.validate.__wrapped__(self, xargs_command, cwd=cwd)
-            asks = verdict.block_response is not None and read_permission_decision(verdict.block_response) == "ask"
+            asks = verdict.withheld is not None or (
+                verdict.block_response is not None and read_permission_decision(verdict.block_response) == "ask"
+            )
             if not (verdict.allowed or asks):
                 return verdict
+            if verdict.withheld is not None:
+                verdict.rule, verdict.undetermined = verdict.withheld
             signed = signed or (None if verdict.allowed else verdict)
         for reading in readings:
             blocked = is_blocked_command(reading)
@@ -1614,7 +1611,7 @@ class BashValidator:
             allowed=False,
             tier=SecurityTier.T3_BLOCKED,
             reason=_COMPOUND_T3_DENIAL,
-            block_response=build_hook_permission_response("deny" if is_subagent else "ask", _COMPOUND_T3_DENIAL),
+            block_response=build_hook_permission_response("deny", _COMPOUND_T3_DENIAL),
             rule=rule,
             undetermined=undetermined,
         )
@@ -1859,27 +1856,16 @@ class BashValidator:
                         consumed_approval_id=db_approval_id,
                     )
             else:
-                # Converge on the single T3 decision point.  When there is an
-                # orchestrator above (subagent context), it denies with a
-                # persisted approval_id; otherwise (the main session) it falls
-                # back to the native ask dialog.
                 _record_plan_command_denial(
                     _plan_grant_for_denial(command), "plan_command_not_reserved",
                     session_id=session_id, tool_use_id=tool_use_id,
                     agent_type=agent_type,
-                )
-                native_ask_reason = (
-                    f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
-                    f"Command: {command}\n"
-                    f"Verb: '{result.verb}' ({result.category})\n"
-                    f"Reason: {result.reason}"
                 )
                 return decide_t3_outcome(
                     command,
                     verb=result.verb,
                     category=result.category,
                     has_orchestrator_above=is_subagent,
-                    native_ask_reason=native_ask_reason,
                     session_id=session_id,
                     agent_type=agent_type,
                     guidance=result.guidance,
@@ -1998,23 +1984,11 @@ class BashValidator:
                                 consumed_approval_id=db_approval_id,
                             )
 
-                    # No grant matched -- converge on the single T3 decision
-                    # point so a flag-dependent mutation in a subagent routes to
-                    # deny+approval_id (Gaia approval flow) instead of escaping to
-                    # the native ask dialog.  Orchestrator context still falls
-                    # back to ask.
-                    native_ask_reason = (
-                        f"[T3_APPROVAL_REQUIRED] Flag-dependent mutation detected.\n"
-                        f"Command: {command}\n"
-                        f"Flag: {flag_result.matched_pattern} ({flag_result.command_family})\n"
-                        f"Reason: {flag_result.reason}"
-                    )
                     return decide_t3_outcome(
                         command,
                         verb=flag_result.matched_pattern or flag_result.command_family,
                         category="MUTATIVE",
                         has_orchestrator_above=is_subagent,
-                        native_ask_reason=native_ask_reason,
                         session_id=session_id,
                         agent_type=agent_type,
                         cwd=cwd,
@@ -2126,7 +2100,7 @@ class BashValidator:
             if signed is not None:
                 return signed
             reason = _COMPOUND_T3_DENIAL
-            decision = "deny" if is_subagent else "ask"
+            decision = "deny"
             rule, undetermined = (
                 signing_rule(tripped.verb, tripped.category, tripped_command, tripped.rule)
                 if tripped is not None else signing_rule("", "MUTATIVE", command)
@@ -2319,21 +2293,11 @@ class BashValidator:
                 )
                 if signed is not None:
                     return signed
-            # Converge on the single T3 decision point.  A file_to_exec
-            # composition in a subagent must route to deny+approval_id (Gaia
-            # approval flow) rather than escaping to the native ask dialog;
-            # orchestrator context still falls back to ask.
-            native_ask_reason = (
-                f"[T3_APPROVAL_REQUIRED] Potentially dangerous pipe composition.\n"
-                f"Pattern: {result.pattern}\n"
-                f"Reason: {result.reason}"
-            )
             return decide_t3_outcome(
                 decomposed.raw,
                 verb=result.pattern,
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
-                native_ask_reason=native_ask_reason,
                 session_id=session_id,
                 agent_type=agent_type,
             )
@@ -2667,18 +2631,20 @@ def _find_pending_plan_set_in_db(command: str, session_id: str, agent_id: str) -
     return None
 
 
-def _phrases_request_line(approval_id: str, payload: Optional[dict] = None) -> str:
+def _phrases_request_line(approval_id: str, payload: Optional[dict] = None, *, requester: str = "") -> str:
     """The request line the denial asks for when the named pending has no phrases; else empty.
 
     No host shows a request without its requester's phrases (PD10), so naming
     such a pending as the approval to report would strand the requester.
+    *requester* names a main-session requester, whose shell carries no
+    dispatch identity for the request to be sealed under.
     """
     from gaia.approvals import core
     from gaia.approvals.store import get_by_id
 
     if payload is None:
         payload = json.loads((get_by_id(approval_id) or {}).get("payload_json") or "{}")
-    return core.request_line(payload) if core.missing_phrases(payload) else ""
+    return core.request_line(payload, agent_id=requester) if core.missing_phrases(payload) else ""
 
 
 #: What the sealed payload may state for impact, rollback and verification,
@@ -2946,7 +2912,6 @@ def decide_t3_outcome(
     category: str,
     *,
     has_orchestrator_above: bool,
-    native_ask_reason: str,
     session_id: str = "",
     agent_type: str = "",
     command_set: list | None = None,
@@ -2959,32 +2924,19 @@ def decide_t3_outcome(
     the pending request so the grant matches only there.
 
     Every T3 classifier -- mutative verbs, pipe composition (file_to_exec), and
-    flag-dependent mutations -- converges here so the deny-vs-ask policy is
-    expressed in ONE place instead of being re-decided (and diverging) per
-    classifier.
-
-    Routing dimension: ``has_orchestrator_above`` -- True when there is an
-    orchestrator above this turn that owns the Gaia approval flow (a subagent
-    running under the orchestrator).  In that case the command is DENIED with a
-    persisted ``approval_id`` so the orchestrator can drive the approval cycle.
-
-    When there is no orchestrator above (the main session / orchestrator
-    itself, which cannot hand off a T3 approval to itself), the command falls
-    back to the native Claude Code ``ask`` dialog -- a deliberate, correct
-    defensive fallback. This is the main-session T3 mutation-safety floor: it
-    is driven solely by ``has_orchestrator_above`` (False for the main
-    session) and is independent of any plugin mode.
-
-    The ``block_response`` on the returned result already encodes the outcome
-    (deny+approval_id, or native ask); the Claude Code adapter delivers it
-    verbatim.
+    flag-dependent mutations -- converges here, and every caller gets the same
+    outcome: a deny naming a persisted ``approval_id``, or a refusal with none.
+    The main session is no exception: a host permission prompt would let the
+    command run without the consent Gaia records, so its denial carries the
+    request line with ``--agent-id`` and the orchestrator presents it through
+    ``gaia approvals question``.
 
     Args:
         command: Full Bash command being classified.
         verb: Detected mutative verb (or a classifier-specific label).
         category: Verb category ("MUTATIVE", "DESTRUCTIVE", ...).
-        has_orchestrator_above: True when a subagent runs under the orchestrator.
-        native_ask_reason: Reason text for the native-ask fallback branch.
+        has_orchestrator_above: True when a subagent runs under the orchestrator;
+            False names the main session as the requester.
         session_id: Session ID for pending-approval scoping.
         agent_type: Originating agent name (for the sealed payload).
         command_set: Optional list of ``{command, rationale}`` dicts. When it
@@ -2994,16 +2946,12 @@ def decide_t3_outcome(
             instead of a single semantic-signature pending. ONE user approval
             then covers the whole chain; each sub-command is still consumed
             byte-for-byte by its own signature at retry. A None / single-item
-            set keeps the singular behaviour. Only honoured in the
-            subagent-under-orchestrator branch (the native-ask branch has no
-            COMMAND_SET concept).
+            set keeps the singular behaviour.
         guidance: The classifier's non-mutating alternative, when it knows one.
-            Only the deny branch needs it: ``native_ask_reason`` is composed by
-            the caller, which already interpolates the reason carrying it.
 
     Returns:
         A blocked BashValidationResult (allowed=False, tier T3) whose
-        block_response is either a "deny" (with approval_id) or an "ask".
+        block_response is a "deny", naming an approval_id unless it refuses.
     """
     refusal = _categorical_refusal(command, cwd)
     if refusal is not None:
@@ -3018,7 +2966,7 @@ def decide_t3_outcome(
 
     from gaia.redaction import has_clear_secret
 
-    if has_orchestrator_above and has_clear_secret(command):
+    if has_clear_secret(command):
         from gaia.approvals.core import CLEAR_SECRET_REFUSAL
 
         reason = f"T3 {category.lower()} command refused: {CLEAR_SECRET_REFUSAL}."
@@ -3045,218 +2993,165 @@ def decide_t3_outcome(
                 )
     is_chain_command_set = len(_normalized_set) > 1
 
-    if has_orchestrator_above:
-        # No requester in the host event: nothing is sealed and no approval_id
-        # is named, because a request bound to a guessed identity could be
-        # consumed by whoever shares the guess.
-        from gaia.approvals.core import RequesterError, resolve_requester
-        try:
-            resolve_requester(session_id, agent_type)
-        except RequesterError as exc:
-            reason = f"T3 {category.lower()} command denied without a signature: {exc}"
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=reason,
-                block_response=build_hook_permission_response("deny", reason),
-                rule="floor.no-requester",
-            )
+    # No requester in the host event: nothing is sealed and no approval_id is
+    # named, because a request bound to a guessed identity could be consumed by
+    # whoever shares the guess.
+    from gaia.approvals.core import RequesterError, resolve_requester
+    try:
+        resolve_requester(session_id, agent_type)
+    except RequesterError as exc:
+        reason = f"T3 {category.lower()} command denied without a signature: {exc}"
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T3_BLOCKED,
+            reason=reason,
+            block_response=build_hook_permission_response("deny", reason),
+            rule="floor.no-requester",
+        )
+    requester = "" if has_orchestrator_above else agent_type
 
-        # Subagent-under-orchestrator: deny + persisted approval_id so the
-        # orchestrator can run the approval cycle.  Reuse an existing pending
-        # approval on retry to avoid generating duplicates while the user reviews.
-        #
-        # For a COMMAND_SET chain the pending id is CONTENT-derived (matching the
-        # plan-first intake), so a retry of the same chain produces the same id
-        # and the fingerprint-dedup in insert_requested reuses the pending. The
-        # singular reuse probe (_find_pending_in_db) matches a SINGLE command's
-        # signature and must NOT be consulted for the chain -- it would match one
-        # leftover single pending of a sub-command and degrade the chain back to
-        # a single grant. So the chain path skips it entirely.
-        if not is_chain_command_set:
-            # A pending plan-first COMMAND_SET carrying this exact command is
-            # named ahead of the singular probe. The consent being sought is
-            # the set's, and only the set's id routes the user's reply into the
-            # reservation lane; a singular id named here -- freshly minted or
-            # reused -- strands the set, because approving it never creates a
-            # grant and the retry blocks again.
-            approval_id = _find_pending_plan_set_in_db(command, session_id, agent_type)
+    # A chain's pending id is content-derived, so a retry reuses it through the
+    # fingerprint dedup in insert_requested; the singular probe would match a
+    # leftover pending of one sub-command and degrade the chain to one grant.
+    if not is_chain_command_set:
+        # A pending plan-first COMMAND_SET carrying this exact command is named
+        # ahead of the singular probe: only the set's id routes the user's reply
+        # into the reservation lane, and a singular id would strand the set.
+        approval_id = _find_pending_plan_set_in_db(command, session_id, agent_type)
+        if approval_id:
+            logger.info(
+                "Naming pending plan-first COMMAND_SET approval_id=%s for: %s",
+                approval_id, command[:80],
+            )
+        else:
+            approval_id = _find_pending_in_db(session_id, command, agent_type)
             if approval_id:
                 logger.info(
-                    "Naming pending plan-first COMMAND_SET approval_id=%s for: %s",
+                    "Reusing pending approval_id=%s for retry: %s",
                     approval_id, command[:80],
                 )
-            else:
-                approval_id = _find_pending_in_db(session_id, command, agent_type)
-                if approval_id:
-                    logger.info(
-                        "Reusing pending approval_id=%s for retry: %s",
-                        approval_id, command[:80],
-                    )
-            if approval_id:
-                reason = build_t3_blocked_denial_message(
-                    approval_id=approval_id,
-                    command=command,
-                    verb=verb,
-                    category=category,
-                    guidance=guidance,
-                    request_line=_phrases_request_line(approval_id),
-                )
-                hook_deny = build_hook_permission_response("deny", reason)
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=f"T3 {category.lower()} command: {command[:60]}",
-                    block_response=hook_deny,
-                    approval_id=approval_id,
-                )
-
-        # No existing pending -- insert via DB (D16: exclusive path).
-        sealed_payload = _build_sealed_payload(
-            command=command,
-            verb=verb,
-            category=category,
-            agent_type=agent_type,
-            command_set=_normalized_set if is_chain_command_set else None,
-            cwd=cwd,
-            session_id=session_id,
-        )
-        try:
-            from gaia.approvals.store import insert_requested
-            # COMMAND_SET chains use a CONTENT-derived id (deterministic over the
-            # sub-command list) so a retry of the same chain reproduces the same
-            # id and reuses the pending via fingerprint dedup -- identical to the
-            # plan-first intake in handoff_persister. Singular T3 keeps uuid4.
-            supplied_id = None
-            if is_chain_command_set:
-                from gaia.approvals.store import derive_command_set_id
-                supplied_id = derive_command_set_id(
-                    [it["command"] for it in _normalized_set]
-                )
-            approval_id = insert_requested(
-                sealed_payload,
-                agent_id=agent_type or None,
-                session_id=session_id or None,
-                approval_id=supplied_id,
+        if approval_id:
+            reason = build_t3_blocked_denial_message(
+                approval_id=approval_id,
+                command=command,
+                verb=verb,
+                category=category,
+                guidance=guidance,
+                request_line=_phrases_request_line(approval_id, requester=requester),
             )
-        except Exception as _store_err:
-            logger.warning(
-                "DB insert_requested failed after retries for subagent; "
-                "denying the already-classified T3 command: %s -- %s",
-                command[:80], _store_err,
-            )
-            # ---- Q1 sensor: persist-failure (always-on) ----------------------
-            # Diagnosability: the logger above routes through a NullHandler when
-            # GAIA_DEBUG is unset (the default), so its warning is a no-op and the
-            # exact exception would be unrecoverable. Persist the underlying error
-            # to the always-on audit sink (audit-*.jsonl, not gated by GAIA_DEBUG)
-            # so the NEXT occurrence of a persistence failure is diagnosable after
-            # the fact. Best-effort: never let the diagnostic sink mask the
-            # outcome of this branch. Tagged "approval_persist_failed" -- the
-            # canonical vocabulary `gaia metrics` groups on (persist-failure
-            # sensor, complementary to the t3_degraded_block sensor below).
-            try:
-                from ..audit.logger import log_error
-                log_error(
-                    component="gaia.approvals",
-                    error_type="approval_persist_failed",
-                    detail=f"{type(_store_err).__name__}: {_store_err}",
-                    context={
-                        "command": command[:200],
-                        "agent_id": agent_type or "",
-                        "session_id": session_id or "",
-                    },
-                )
-            except Exception:
-                pass
-
-            # ---- Deny-list re-assertion (defense-in-depth) -------------------
-            # The Q3 degraded-allow must NEVER cover a deny-listed destructive
-            # command. validate() Phase 3a/3b (is_blocked_command) already
-            # blocks them BEFORE reaching decide_t3_outcome. We re-assert it here
-            # so THIS branch is structurally incapable of allowing a blocked
-            # command even if the upstream flow ever changed -- a blocked command
-            # falls to a permanent hard deny (exit 2), never a degraded allow.
-            _blocked = is_blocked_command(command)
-            if _blocked.is_blocked:
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=f"Command blocked by security policy: {_blocked.category}",
-                    suggestions=[_blocked.suggestion] if _blocked.suggestion else [],
-                    rule=blocked_rule(_blocked.category),
-                )
-
-            # ---- Degradation sensor (always-on) ------------------------------
-            # Reuse the approval store's SAME fingerprint (SHA-256 of the
-            # canonical sealed_payload) so the audit event redacts the command to
-            # a hash -- no secret is logged. Best-effort: a fingerprint failure
-            # must not change the outcome.
-            try:
-                from gaia.approvals.chain import fingerprint_payload
-                _fp = fingerprint_payload(sealed_payload)
-            except Exception:
-                _fp = None
-            try:
-                from ..audit.logger import log_event
-                log_event(
-                    event="t3_degraded_block",
-                    component="gaia.bash_validator",
-                    tier="T3",
-                    reason="approval_persist_failed",
-                    fingerprint=_fp,
-                    # This branch only runs inside `has_orchestrator_above`, i.e.
-                    # a subagent running under the orchestrator.
-                    origin="subagent",
-                    context={"verb": verb, "category": category},
-                )
-            except Exception:
-                pass
-
-            # ---- Policy: deny, never a permission ----------------------------
-            # Reaching this point means the command was ALREADY classified T3 and
-            # only the approval record failed to persist. This branch used to
-            # ALLOW it through, so that an unattended run would not hang on a
-            # human prompt -- but the allow granted precisely what the
-            # classification had just decided to withhold, and a persistence
-            # outage silently became blanket consent for every mutation behind
-            # it. Denying instead does not reintroduce the hang it was avoiding:
-            # a deny returns immediately and the session continues, and it
-            # reaches only commands that were already going to stop and ask.
-            reason = build_t3_degraded_block_message()
             hook_deny = build_hook_permission_response("deny", reason)
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
-                reason="T3 degraded-block: approval persistence failed",
+                reason=f"T3 {category.lower()} command: {command[:60]}",
                 block_response=hook_deny,
-                rule="floor.approval-store",
+                approval_id=approval_id,
             )
-        reason = build_t3_blocked_denial_message(
-            approval_id=approval_id,
-            command=command,
-            verb=verb,
-            category=category,
-            guidance=guidance,
-            request_line=_phrases_request_line(approval_id, sealed_payload),
+
+    sealed_payload = _build_sealed_payload(
+        command=command,
+        verb=verb,
+        category=category,
+        agent_type=agent_type,
+        command_set=_normalized_set if is_chain_command_set else None,
+        cwd=cwd,
+        session_id=session_id,
+    )
+    try:
+        from gaia.approvals.store import insert_requested
+        supplied_id = None
+        if is_chain_command_set:
+            from gaia.approvals.store import derive_command_set_id
+            supplied_id = derive_command_set_id(
+                [it["command"] for it in _normalized_set]
+            )
+        approval_id = insert_requested(
+            sealed_payload,
+            agent_id=agent_type or None,
+            session_id=session_id or None,
+            approval_id=supplied_id,
         )
+    except Exception as _store_err:
+        logger.warning(
+            "DB insert_requested failed after retries; "
+            "denying the already-classified T3 command: %s -- %s",
+            command[:80], _store_err,
+        )
+        # The logger is a no-op unless GAIA_DEBUG is set, so the error goes to
+        # the always-on audit sink, under the name `gaia metrics` groups on.
+        try:
+            from ..audit.logger import log_error
+            log_error(
+                component="gaia.approvals",
+                error_type="approval_persist_failed",
+                detail=f"{type(_store_err).__name__}: {_store_err}",
+                context={
+                    "command": command[:200],
+                    "agent_id": agent_type or "",
+                    "session_id": session_id or "",
+                },
+            )
+        except Exception:
+            pass
+
+        # Re-asserted so this branch cannot soften a deny-listed command even if
+        # the upstream floor check moves.
+        _blocked = is_blocked_command(command)
+        if _blocked.is_blocked:
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=f"Command blocked by security policy: {_blocked.category}",
+                suggestions=[_blocked.suggestion] if _blocked.suggestion else [],
+                rule=blocked_rule(_blocked.category),
+            )
+
+        # The fingerprint stands in for the command, so no secret is logged.
+        try:
+            from gaia.approvals.chain import fingerprint_payload
+            _fp = fingerprint_payload(sealed_payload)
+        except Exception:
+            _fp = None
+        try:
+            from ..audit.logger import log_event
+            log_event(
+                event="t3_degraded_block",
+                component="gaia.bash_validator",
+                tier="T3",
+                reason="approval_persist_failed",
+                fingerprint=_fp,
+                origin="subagent" if has_orchestrator_above else "orchestrator",
+                context={"verb": verb, "category": category},
+            )
+        except Exception:
+            pass
+
+        # Deny, never allow: a persistence outage must not become blanket
+        # consent for every mutation behind it.
+        reason = build_t3_degraded_block_message()
         hook_deny = build_hook_permission_response("deny", reason)
         return BashValidationResult(
             allowed=False,
             tier=SecurityTier.T3_BLOCKED,
-            reason=f"T3 {category.lower()} command: {command[:60]}",
+            reason="T3 degraded-block: approval persistence failed",
             block_response=hook_deny,
-            approval_id=approval_id,
+            rule="floor.approval-store",
         )
-
-    # No orchestrator above (orchestrator itself, or security context): the
-    # native Claude Code 'ask' dialog handles approval.  No approval_id.
-    hook_ask = build_hook_permission_response("ask", native_ask_reason)
+    reason = build_t3_blocked_denial_message(
+        approval_id=approval_id,
+        command=command,
+        verb=verb,
+        category=category,
+        guidance=guidance,
+        request_line=_phrases_request_line(approval_id, sealed_payload, requester=requester),
+    )
+    hook_deny = build_hook_permission_response("deny", reason)
     return BashValidationResult(
         allowed=False,
         tier=SecurityTier.T3_BLOCKED,
-        reason=f"Dangerous {category.lower()} command requires approval: {command[:60]}",
-        block_response=hook_ask,
+        reason=f"T3 {category.lower()} command: {command[:60]}",
+        block_response=hook_deny,
+        approval_id=approval_id,
     )
 
 

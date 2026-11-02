@@ -336,9 +336,10 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
   notifications  ack | add | snooze | cancel
                  add is a reminder or routine only (--at, --cron or --every);
                  snooze and cancel take ONE id.
-  approvals      reject | revoke
-                 withdraw ONE approval by id -- both only take back consent
-                 Gaia issued. Granting and sweeping stay outside this lane.
+  approvals      reject | revoke | request-set
+                 reject and revoke withdraw ONE approval by id, taking back
+                 consent Gaia issued; request-set phrases a signature your own
+                 denial asked for. Granting and sweeping stay outside this lane.
   memory         add | append | reclassify | move | link | checkpoint
   scan
                  re-index this workspace's repos into (workspace, project)

@@ -1977,8 +1977,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    * `surface.render_batch` letters a mixed call (D37, D38).
    * The presentation, the decision and the grant stay each requester's: SHOWN
    * names the requesting session, and `opencode-decide` binds the grant to
-   * that session and agent. Only the attested orchestrator that dispatched a
-   * requester may ask, because only this edge knows OpenCode's session tree.
+   * that session and agent. Only the attested orchestrator that requested the
+   * signature itself or dispatched its requester may ask, because only this
+   * edge knows OpenCode's session tree.
    * Two signatures of one specialist session are refused in one call: the
    * session holds one bound retry at a time, so the second approval would
    * not activate.
@@ -2012,8 +2013,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (!shown.ok || typeof sessionID !== "string" || !sessionID || typeof role !== "string" || !role) {
         throw new Error(`Gaia found no requesting session and agent for ${ask.approvalID}`)
       }
-      if (await parentOf(sessionID) !== call.sessionID) {
-        throw new Error(`Gaia opens ${ask.approvalID} only from the orchestrator that dispatched its requester ${sessionID}`)
+      if (sessionID !== call.sessionID && await parentOf(sessionID) !== call.sessionID) {
+        throw new Error(
+          `Gaia opens ${ask.approvalID} only from the orchestrator that requested it or dispatched its requester ${sessionID}`,
+        )
       }
       if (prepared.some((entry) => entry.approval.sessionID === sessionID)) {
         throw new Error(

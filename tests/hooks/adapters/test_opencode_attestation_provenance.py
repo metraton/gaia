@@ -95,6 +95,18 @@ def drive(ledger, monkeypatch, path_without_host_gaia):
     return run
 
 
+def bare_gaia_on_path(tmp_path, monkeypatch):
+    """Put this checkout's CLI on PATH as bare ``gaia``, the spelling the classifier reads as Gaia's own.
+
+    A checkout's ``bin/gaia`` named by path is judged as a script and signs, so
+    a verdict on that spelling cannot show the control-plane lane letting a read through.
+    """
+    bindir = tmp_path / "gaia-bin"
+    bindir.mkdir()
+    (bindir / "gaia").symlink_to(_REPO / "bin" / "gaia")
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
 def _drive(scenario):
     """Return every event the real plugin sent Gaia for this scenario."""
     from tests.conftest import bridge_runtime_env
@@ -141,7 +153,7 @@ def _control_plane_turn(drive):
     )
 
 
-def test_a_host_issued_claim_confers_the_control_plane_lane(drive):
+def test_a_host_issued_claim_confers_the_control_plane_lane(drive, tmp_path, monkeypatch):
     """The affirmative claim, over the plugin's own emission end to end."""
     from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
 
@@ -163,9 +175,12 @@ def test_a_host_issued_claim_confers_the_control_plane_lane(drive):
     assert payload["role_context"]["delegation_depth"] == 0
     assert payload["agent_type"] == "gaia-orchestrator"
     assert classify_session_role(payload) is SessionRole.ORCHESTRATOR
+    bare_gaia_on_path(tmp_path, monkeypatch)
+    command = "gaia plan show brief"
+    read = dict(emitted, args={"command": command}, originalArgs={"command": command})
     assert OpenCodeAdapter().adapt_pre_tool_use(
-        OpenCodeAdapter().parse_event(json.dumps(emitted))
-    ).output.get("action") != "deny"
+        OpenCodeAdapter().parse_event(json.dumps(read))
+    ).output.get("action") == "allow"
 
 
 @pytest.mark.parametrize("binary", ["gaia", str(_REPO / "opencode" / "bridge.py")])

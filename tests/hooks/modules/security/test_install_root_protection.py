@@ -181,11 +181,12 @@ class TestFileToolSurface:
 
     @pytest.mark.parametrize("relative", PLANTED)
     @pytest.mark.parametrize("tool,key", [("Write", "file_path"), ("NotebookEdit", "notebook_path")])
-    def test_main_session_write_asks(self, install_root, relative, tool, key):
+    def test_main_session_write_is_sent_to_a_specialist(self, install_root, relative, tool, key):
         verdict = ClaudeCodeAdapter()._write_edit_verdict(
             tool, {key: str(install_root / relative)}, is_subagent=False,
         )
-        assert verdict.consent is not None
+        assert verdict.decision == "deny" and verdict.consent is None
+        assert "Dispatch a specialist" in verdict.reason
 
     def test_development_checkout_write_passes(self, dev_checkout):
         verdict = ClaudeCodeAdapter()._write_edit_verdict(

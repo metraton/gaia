@@ -17,6 +17,7 @@ from tests.hooks.adapters.test_opencode_attestation_provenance import (  # noqa:
     _REPO,
     _emitted,
     _policy_payload,
+    bare_gaia_on_path,
     drive,
     ledger,
     path_without_host_gaia,
@@ -63,12 +64,13 @@ def _root_bash(requests):
     )
 
 
-def test_the_attested_orchestrator_runs_gaia_now_and_is_pointed_there_from_date(drive):
+def test_the_attested_orchestrator_runs_gaia_now_and_is_pointed_there_from_date(drive, tmp_path, monkeypatch):
     requests = _now_turns(drive)
     root = _root_bash(requests)
     assert classify_session_role(_policy_payload(root)) is SessionRole.ORCHESTRATOR
 
-    assert _verdict(root).get("action") != "deny"
+    bare_gaia_on_path(tmp_path, monkeypatch)
+    assert _verdict(root, "gaia now").get("action") == "allow"
 
     date = _verdict(root, "date")
     assert date["action"] == "deny"

@@ -293,10 +293,19 @@ class ShellCommandParser:
             char = command[i]
 
             # Handle escape sequences
-            if char == '\\' and i + 1 < len(command):
+            if char == '\\' and not in_single_quote and i + 1 < len(command):
                 current.append(char)
                 current.append(command[i + 1])
                 i += 2
+                continue
+
+            if char == '$' and command.startswith("'", i + 1) and not (in_single_quote or in_double_quote):
+                try:
+                    end = _ansi_c_body(command, i + 2)[1]
+                except ValueError:
+                    end = len(command)
+                current.append(command[i:end])
+                i = end
                 continue
 
             # Handle single quotes

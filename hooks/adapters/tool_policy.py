@@ -489,9 +489,8 @@ class ToolPolicy:
 
         if not result.allowed:
             logger.warning("BLOCKED: %s - %s", command[:100], result.reason)
-            # The T3 deny-vs-native-ask decision was already made in the
-            # validator (decide_t3_outcome): a subagent under the orchestrator
-            # gets a deny naming its approval_id; the main session an ask.
+            # decide_t3_outcome already chose the deny: it names the approval_id
+            # for any caller with a requester; none is ever a native ask.
             if result.block_response is not None:
                 return self._verdict_from_block_response(result)
             return PolicyVerdict(refusal=self._format_blocked_message(result))
@@ -979,12 +978,7 @@ class ToolPolicy:
         )
 
         if not is_subagent:
-            return PolicyVerdict(consent=ConsentRequest(
-                operation=consent_path,
-                kind="file",
-                reason=ask_reason,
-                tier="T3_BLOCKED",
-            ))
+            return PolicyVerdict(decision="deny", reason=f"{ask_reason} Dispatch a specialist to write it.")
 
         from gaia.approvals import core
         try:
@@ -1001,17 +995,11 @@ class ToolPolicy:
         except Exception as exc:
             logger.warning(
                 "Failed to persist pending file-path approval for subagent; "
-                "falling back to ask: %s (%s)", consent_path, exc,
+                "denying: %s (%s)", consent_path, exc,
             )
-            return PolicyVerdict(consent=ConsentRequest(
-                operation=consent_path,
-                kind="file",
-                reason=(
-                    f"{ask_reason} (Pending approval persistence failed; "
-                    "native dialog fallback.)"
-                ),
-                tier="T3_BLOCKED",
-            ))
+            return PolicyVerdict(
+                decision="deny", reason=f"{ask_reason} (Pending approval persistence failed.)",
+            )
         if verdict["decision"] == "allow":
             logger.info("File-path grant active, allowing %s through: %s", tool_name, consent_path)
             return PolicyVerdict()
