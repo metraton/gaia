@@ -1,12 +1,13 @@
-"""The one renderer of a signature's surface: one one-line question per command (D33, D37).
+"""The one renderer of a signature's surface, in each host's layout.
 
 Gaia composes every line a user reads; the requester only seals short phrases
 (title, question, and per item what it does and its impact, plus the rollback)
-and a host only shows the result. Each command of a signature is its own
-question, on one line, the same text in both hosts, in the machine format of
-D37: bracketed fields under a ``[ GAIA-SECURITY ]`` prefix whose labels are fixed
-English, while the requester's phrases stay in the user's language. A Details
-re-ask replaces each command's question with its one-line Details text. Phrase
+and a host only shows the result. Claude Code asks one question per signature
+(:func:`render_signatures`): who asks, its commands numbered one per line, and
+what the set does, with real line breaks. OpenCode, whose question shows no line
+break, asks one one-line question per command (:func:`render_batch`, D33) in
+the machine format of D37: bracketed fields under a ``[ GAIA-SECURITY ]`` prefix.
+Either way a Details re-ask replaces each question with its Details text. Phrase
 limits are checked when a request is sealed (:func:`check_phrases`, called by
 ``core.seal_request``), so an over-long phrase is returned to its author
 instead of reaching a presentation; nothing is truncated.
@@ -24,8 +25,8 @@ from gaia.approvals.core import SealError, _ensure_hooks_importable, is_signed
 TITLE_MAX = 120
 QUESTION_MAX = 60
 LINE_MAX = 100
-#: Host limits of one AskUserQuestion call: its header and its question count.
-#: A question is one command, so one signature covers at most BATCH_MAX commands.
+#: Host limits of one question call: its header and its question count. An
+#: OpenCode question is one command, so a signature is sealed with at most BATCH_MAX.
 HEADER_MAX = 12
 BATCH_MAX = 4
 OPTION_WORDS_MAX = 8
@@ -46,6 +47,8 @@ OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 _PREFIX = "[ GAIA-SECURITY ]"
 #: The prefix however a model spaced it, unspaced included: the user reads any spacing as Gaia's.
 _TYPED_PREFIX = re.compile(r"\[\s*GAIA-SECURITY\s*\]")
+#: The opening of Claude Code's question, however a model worded the count.
+_TYPED_REQUEST = re.compile(r"(?i)\bpide\s+\S+\s+(comandos?|archivos?)\b")
 _RELATIVE_START = re.compile(r"\.{1,2}(/|$)")
 _FILE_NAME = re.compile(r"[\w-]\.[A-Za-z][A-Za-z0-9]{0,7}$")
 _NO_AGENT = "agente sin identificar"
@@ -62,12 +65,11 @@ class SurfaceLimitError(SealError):
 
 @dataclass(frozen=True)
 class Surface:
-    """One signature as both hosts show it: one question per sealed command (D33).
+    """One signature as a host shows it: its questions, their Details re-asks and their texts.
 
-    ``questions[i]`` asks signed command ``i`` and shows the unsigned steps
-    around it in their order; ``details_questions[i]`` is its Details re-ask.
-    ``text`` shows every step in its position, one per line, an unsigned step
-    included and marked; ``details`` is the Details texts.
+    ``details_questions[i]`` is the Details re-ask of ``questions[i]``. In
+    Claude Code's layout there is one of each; in OpenCode's, one per signed
+    command, each carrying the unsigned steps around it.
     """
 
     approval_id: str
@@ -321,6 +323,54 @@ def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
     return " ".join([_PREFIX, *fields])
 
 
+def _request_opening(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+    """``<agent> pide <k> comando(s):``, counting only the signed items."""
+    signed = [item for item in items if is_signed(item)]
+    noun = "comando" if any("command" in item for item in signed) else "archivo"
+    return f"{_agent(payload)} pide {len(signed)} {noun}{'' if len(signed) == 1 else 's'}:"
+
+
+def _numbered_step(position: int, item: Mapping[str, Any]) -> str:
+    codes = item.get("expect_exit") or []
+    notes = [] if is_signed(item) else ["paso sin firma"]
+    if codes and is_signed(item):
+        notes.append(f"salida permitida: {','.join(str(code) for code in codes)}")
+    return f"{position}. {_target(item)}" + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def _what_line(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+    plural = len([item for item in items if is_signed(item)]) > 1
+    return f"Qué hace{'n' if plural else ''}: {_one_line(payload.get('what') or _NO_DOES)}"
+
+
+def _request_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+    """Claude Code's question: who asks, every step numbered on its own line, and what the set does."""
+    steps = [_numbered_step(position, item) for position, item in enumerate(items, start=1)]
+    return "\n".join([_request_opening(payload, items), *steps, _what_line(payload, items)])
+
+
+def _request_details_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+    """Claude Code's Details re-ask: each step with what it does and its impact, then the set's verification, shared state and rollback."""
+    lines = [_request_opening(payload, items)]
+    for position, item in enumerate(items, start=1):
+        lines.append(_numbered_step(position, item))
+        lines.append(f"   Hace: {_one_line(item.get('does') or _NO_DOES)}")
+        lines.append(f"   Impacto: {_one_line(item.get('impact') or _NO_IMPACT)}")
+        folder = _details_folder(payload, item)
+        if folder:
+            lines.append(f"   Carpeta: {_one_line(folder)}")
+        captured = _captured_work(item.get("command"))
+        if captured:
+            lines.append(f"   Capturado: {_one_line(captured)}")
+    lines += [
+        _what_line(payload, items),
+        f"Verificación: {_one_line(payload.get('verification') or _NO_VERIFICATION)}",
+        f"Estado compartido: {_one_line(payload.get('shared_state') or _NO_SHARED_STATE)}",
+        f"Deshacer: {_one_line(payload.get('rollback_hint') or _NO_ROLLBACK)}",
+    ]
+    return "\n".join(lines)
+
+
 def _question(text: str, header: str) -> dict:
     question = {
         "question": text,
@@ -397,6 +447,57 @@ def render(payload: Mapping[str, Any], approval_id: str) -> Surface:
     return render_at(payload, approval_id, 1, question_count(payload))
 
 
+def render_signature(
+    payload: Mapping[str, Any], approval_id: str, position: int, total: int,
+) -> Surface:
+    """Render one request as Claude Code asks it: one question, the ``position``-th of ``total`` signatures."""
+    items = _items(payload)
+    asked = [item for item in items if is_signed(item)]
+    if not asked:
+        raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
+    if len(asked) > BATCH_MAX:
+        raise SurfaceLimitError(
+            f"approval {approval_id} seals {len(asked)} commands; a signature is "
+            f"asked with at most {BATCH_MAX}"
+        )
+    text = _request_text(payload, items)
+    details = _request_details_text(payload, items)
+    return Surface(
+        approval_id=approval_id,
+        text=text,
+        details=details,
+        questions=(_question(text, batch_header(position, total)),),
+        details_questions=(_question(details, batch_header(position, total, details=True)),),
+    )
+
+
+def render_signatures(
+    requests: Sequence[tuple[Mapping[str, Any], str]],
+) -> list[Surface]:
+    """Render the requests one Claude Code question call asks: one question per signature, ``Firma N/M``, at most BATCH_MAX."""
+    if not 1 <= len(requests) <= BATCH_MAX:
+        raise SurfaceLimitError(
+            f"a question call asks 1 to {BATCH_MAX} signatures, one question each, "
+            f"not {len(requests)}; ask fewer signatures per call"
+        )
+    surfaces = [
+        render_signature(payload, approval_id, position, len(requests))
+        for position, (payload, approval_id) in enumerate(requests, start=1)
+    ]
+    _require_distinct(surfaces)
+    return surfaces
+
+
+def _require_distinct(surfaces: Sequence[Surface]) -> None:
+    """Refuse a call two of whose questions read the same: the host indexes each answer by its text."""
+    for kind in ("questions", "details_questions"):
+        texts = [q["question"] for s in surfaces for q in getattr(s, kind)]
+        if len(set(texts)) != len(texts):
+            raise SurfaceLimitError(
+                "two questions of one call read the same; ask those signatures in separate calls"
+            )
+
+
 def is_signature_question(question: Mapping[str, Any]) -> bool:
     """Whether a host question object has the shape of a signature: its header or its options."""
     header = str(question.get("header") or "")
@@ -426,6 +527,13 @@ def looks_like_signature(question: Mapping[str, Any]) -> bool:
     )
 
 
+def reads_as_request(question: Mapping[str, Any]) -> bool:
+    """Whether a Claude Code question reads as a signature: :func:`looks_like_signature` or the ``pide … comando`` opening."""
+    return looks_like_signature(question) or (
+        _TYPED_REQUEST.search(str(question.get("question") or "")) is not None
+    )
+
+
 def render_batch(
     requests: Sequence[tuple[Mapping[str, Any], str]],
 ) -> list[Surface]:
@@ -452,12 +560,7 @@ def render_batch(
             render_at(payload, approval_id, 1, count, signature=signature_letter(index))
             for index, ((payload, approval_id), count) in enumerate(zip(requests, counts))
         ]
-    for kind in ("questions", "details_questions"):
-        texts = [q["question"] for s in surfaces for q in getattr(s, kind)]
-        if len(set(texts)) != len(texts):
-            raise SurfaceLimitError(
-                "two questions of one call read the same; ask those signatures in separate calls"
-            )
+    _require_distinct(surfaces)
     return surfaces
 
 

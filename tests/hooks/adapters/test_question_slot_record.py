@@ -43,7 +43,7 @@ def _request(n: int, question: str, branch: str | None = None) -> str:
         [{"command": f"git push origin feat/d31-{branch or n}", "cwd": "/tmp/d31-repo",
           "does": f"git push: sube la rama {n} al remoto.",
           "impact": "La rama queda visible para todo el equipo."}],
-        what=f"Publicar la rama {n} en el remoto.",
+        what=f"Publicar la rama {branch or n} en el remoto.",
         question=question,
         session_id=f"ses-d31-requester-{n}", agent_id="developer",
         requested_from="/tmp/d31-repo", rollback="Borrar la rama remota.",

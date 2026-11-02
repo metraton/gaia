@@ -131,13 +131,21 @@ def test_the_questions_the_user_answers_show_every_unsigned_step_in_order(host):
 
     opencode = _opencode_presentation(store.get_by_id(approval_id), SESSION, "call-unsigned")
 
-    for questions in (json.loads(asked.stdout)["questions"], opencode["signature"]["questions"]):
-        assert len(questions) == 2, "only the signed steps are asked"
-        shown = " ".join(question["question"] for question in questions)
-        positions = [shown.find(f"[ {command} ]") for command in steps]
-        assert -1 not in positions and positions == sorted(positions), shown
-        for unsigned in (COMMIT, log, status):
-            assert f"[ UNSIGNED STEP ] [ {unsigned} ]" in shown, shown
+    [claude_code] = json.loads(asked.stdout)["questions"]
+    lines = claude_code["question"].splitlines()
+    assert lines[0].endswith(" pide 2 comandos:"), "only the signed steps are counted"
+    assert lines[1:6] == [
+        f"{position}. {command}" + (" (paso sin firma)" if command in (COMMIT, log, status) else "")
+        for position, command in enumerate(steps, start=1)
+    ]
+
+    questions = opencode["signature"]["questions"]
+    assert len(questions) == 2, "only the signed steps are asked"
+    shown = " ".join(question["question"] for question in questions)
+    positions = [shown.find(f"[ {command} ]") for command in steps]
+    assert -1 not in positions and positions == sorted(positions), shown
+    for unsigned in (COMMIT, log, status):
+        assert f"[ UNSIGNED STEP ] [ {unsigned} ]" in shown, shown
 
 
 def test_signed_set_request_shows_unsigned_steps_in_position_without_reserving_them(host):
@@ -150,8 +158,8 @@ def test_signed_set_request_shows_unsigned_steps_in_position_without_reserving_t
 
     [shown] = core.question_batch([approval_id])
     lines = shown.text.splitlines()
-    assert [line.endswith(f"[ {command} ]") for line, command in zip(lines, (PUSH, COMMIT, MERGE_ONE))] == [True] * 3
-    assert len(shown.questions) == 2, "only the signed steps are asked"
+    assert lines[0].endswith(" pide 2 comandos:"), "only the signed steps are counted"
+    assert lines[1:4] == [f"1. {PUSH}", f"2. {COMMIT} (paso sin firma)", f"3. {MERGE_ONE}"]
 
     _approve(approval_id)
     adapter = _adapter()

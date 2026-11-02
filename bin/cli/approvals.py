@@ -1408,9 +1408,9 @@ def _opencode_question(approval_id: str, details: bool) -> dict:
 def cmd_question(args) -> int:
     """Print the question-tool input that asks pending signatures, and nothing else.
 
-    In Claude Code it asks one question per command of the given signatures,
-    at most 4 in all (D33), or with ``--details`` each command's Details
-    question, and records which signature it handed out at which slot, so the
+    In Claude Code it asks one question per signature, at most 4, or with
+    ``--details`` each signature's Details question, and records which
+    signature it handed out at which slot, so the
     PreToolUse hook tells apart two pending signatures that render alike (D31).
     In an OpenCode shell, marked by ``GAIA_HOST_SESSION_ID``, the same batch
     is checked but each signature is carried only by its id, one placeholder
@@ -1429,7 +1429,7 @@ def cmd_question(args) -> int:
         approval_ids.append(approval_id)
     try:
         if opencode:
-            surfaces = core.question_batch(approval_ids, one_per_session=True)
+            surfaces = core.question_batch(approval_ids, one_per_session=True, per_command=True)
         else:
             surfaces = core.hand_out_question(approval_ids, session_id="", agent_id="")
     except core.SealError as exc:
@@ -2519,11 +2519,10 @@ def register(subparsers) -> None:
         help="Print the AskUserQuestion input that asks 1 to 4 pending signatures",
         description=(
             "Print, as JSON, the exact AskUserQuestion input for the given pending\n"
-            "approvals, one question per signature in the order given. Each\n"
-            "question holds only its short question with Approve / Reject /\n"
-            "Details; Gaia shows each signature's block as the question opens\n"
-            "(D29: the hook in Claude Code, the plugin in OpenCode). Pass it\n"
-            "unchanged: Gaia checks it and binds each answer."
+            "approvals, in the order given, with Approve / Reject / Details. In\n"
+            "Claude Code each signature is one question listing its commands;\n"
+            "in OpenCode each command is one question. Pass it unchanged: Gaia\n"
+            "checks it and binds each answer."
         ),
     )
     p_question.add_argument(
@@ -2588,7 +2587,11 @@ def register(subparsers) -> None:
     p_audit.set_defaults(func=cmd_audit_secrets)
 
     p_request_set = sub.add_parser(
-        "request-set", help="Create a governed plan-first COMMAND_SET request"
+        "request-set",
+        help=(
+            "Create a governed plan-first COMMAND_SET request: the commands of one "
+            "purpose; unrelated commands go in separate requests"
+        ),
     )
     p_request_set.add_argument(
         "--command", action="append", required=True,

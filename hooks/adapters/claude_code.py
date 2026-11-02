@@ -938,17 +938,17 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     def _adapt_ask_user_question(tool_input: dict, *, hook_data: dict) -> HookResponse:
         """Record the signatures of a question Gaia built, or deny one it did not build.
 
-        A question without a signature's shape is left alone. One with it must
-        be, byte for byte, the objects ``gaia approvals question`` printed:
-        each command's question carries its signature in its own text (D33),
-        so each position is recorded as shown under this tool_use_id and the
-        hook returns no decision, which could let the question be skipped.
+        A question that does not read as a signature is left alone. One that
+        does, a model's lookalike included, must be, byte for byte, the objects
+        ``gaia approvals question`` printed: one question per signature, so
+        each position is recorded as shown under this tool_use_id and the hook
+        returns no decision, which could let the question be skipped.
         """
         from gaia.approvals import core, surface
 
         questions = tool_input.get("questions")
         if not isinstance(questions, list) or not any(
-            isinstance(question, dict) and surface.is_signature_question(question)
+            isinstance(question, dict) and surface.reads_as_request(question)
             for question in questions
         ):
             return HookResponse(output={}, exit_code=0)
@@ -1102,8 +1102,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         """Decide each signature shown in this call from the labels chosen at its positions.
 
         Only signatures PreToolUse recorded as shown under this tool_use_id are
-        decided, each by the answers to its own questions, one per command
-        (D33): ``Approve``, ``Reject`` and ``Details`` are the option keys, and
+        decided, each by the answer to its own question: ``Approve``,
+        ``Reject`` and ``Details`` are the option keys, and
         any other text (the Other row, a dismissal) or no answer counts as no
         choice. ``core.signature_decision`` folds them into one decision. A
         label is never searched for an approval id. An Approve that activates
