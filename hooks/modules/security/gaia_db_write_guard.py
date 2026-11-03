@@ -314,7 +314,7 @@ def _free_form(command: str, invocations: List[_Invocation]) -> bool:
     while index < len(args):
         word = args[index]
         name = word.lstrip("-").lower()
-        if not word.startswith("-") or word == "-":
+        if not word.startswith("-"):
             operands.append(word)
         elif name in _FREE_VALUE_OPTIONS:
             index += 1
