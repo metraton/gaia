@@ -20,6 +20,7 @@ Provides:
     - load_anchors(): Load persisted anchors for a session+agent+instance
     - extract_tool_calls_from_transcript(): Parse early tool calls from JSONL transcript
     - compute_anchor_hits(): Compare tool call args against anchors
+    - cleanup_anchors(): Remove one agent instance's anchor file
     - cleanup_stale_anchor_files(): Age-based sweep of orphaned anchor files
 """
 
@@ -32,20 +33,15 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-# How many early tool calls to check
 MAX_TOOL_CALLS_TO_CHECK = 5
 
-# Tool types that have inspectable path/keyword arguments
 TRACKABLE_TOOLS = {"Glob", "Grep", "Read", "Bash"}
 
 # Minimum anchor length to avoid false-positive matches on short strings
 MIN_ANCHOR_LENGTH = 4
 
-# Age-based cleanup for orphaned anchor files (mirrors REMINDER_TTL_SECONDS in
-# artifact_skill_reminder.py -- the established sibling pattern for this class
-# of Gaia tmp-dir cache file). A subagent dispatch is expected to complete well
-# within this window; anything older is either an orphan (SubagentStop never
-# fired) or already-consumed and forgotten.
+# Equals REMINDER_TTL_SECONDS in artifact_skill_reminder.py. A file older than
+# this is an orphan (SubagentStop never fired) or already consumed.
 ANCHOR_TTL_SECONDS = 6 * 60 * 60
 
 
@@ -72,7 +68,6 @@ def extract_anchors(context_payload: Dict[str, Any]) -> Set[str]:
     anchors: Set[str] = set()
     contract = context_payload.get("project_knowledge", {})
 
-    # Anchor-worthy field name patterns
     anchor_fields = re.compile(
         r"(path|name|cluster|project|region|namespace|service|image|"
         r"base_path|config_path|module_path|repository|bucket|sa$|"
@@ -86,7 +81,7 @@ def extract_anchors(context_payload: Dict[str, Any]) -> Set[str]:
         if isinstance(obj, dict):
             for key, value in obj.items():
                 if isinstance(value, str) and value and anchor_fields.search(key):
-                    # Normalize: strip leading ./ for path matching
+                    # lstrip removes every leading "." and "/" character
                     clean = value.lstrip("./")
                     if len(clean) >= MIN_ANCHOR_LENGTH:
                         anchors.add(clean)
@@ -98,7 +93,6 @@ def extract_anchors(context_payload: Dict[str, Any]) -> Set[str]:
 
     _walk(contract)
 
-    # Also extract from top-level metadata
     metadata = context_payload.get("metadata", {})
     for key in ("project_id", "cluster_name", "region"):
         val = metadata.get(key)
@@ -119,9 +113,9 @@ def _anchor_file_path(session_id: str, agent_type: str, agent_id: str) -> Option
     Returns None when agent_id is missing: the host-assigned per-dispatch
     instance id is the discriminator this key exists for, and a file saved or
     looked up without it would either collide across parallel same-type
-    dispatches (the bug this key fixes) or never be found by a symmetric
-    caller. Both save and load route through this one builder so the
-    sanitization and truncation can never drift between the two sides.
+    dispatches or never be found by a symmetric caller. Save, load and
+    cleanup all route through this one builder so the sanitization and
+    truncation cannot drift between them.
     """
     if not agent_id:
         return None
@@ -180,10 +174,10 @@ def load_anchors(session_id: str, agent_type: str, agent_id: str) -> Set[str]:
         session_id: Current session identifier.
         agent_type: Agent name.
         agent_id: Host-assigned per-dispatch subagent instance id -- the SAME
-            value SubagentStop receives, the same one SubagentStart used
-            to save. A missing agent_id degrades to an empty set (never a
-            crash, never a fabricated match) so the caller's hit-rate
-            computation stays NULL rather than reporting a false 0.0.
+            value save_anchors was given. A missing agent_id degrades to an
+            empty set (never a crash, never a fabricated match) so the
+            caller's hit-rate computation stays NULL rather than reporting a
+            false 0.0.
 
     Returns:
         Set of anchor strings, or empty set if not found.
@@ -198,8 +192,7 @@ def load_anchors(session_id: str, agent_type: str, agent_id: str) -> Set[str]:
         logger.debug("Failed to load anchors: %s", e)
         result = set()
 
-    # Background hygiene, tied to the read side so it runs once per subagent
-    # completion rather than on every dispatch (see cleanup_stale_anchor_files).
+    # The sweep runs on the read side, once per subagent completion.
     try:
         cleanup_stale_anchor_files()
     except Exception as e:
@@ -311,7 +304,7 @@ def compute_anchor_hits(
     """Compare tool call arguments against known anchors.
 
     For each tool call, checks if any anchor appears as a substring in the
-    tool's searchable arguments. This is a lightweight prefix/substring match.
+    tool's searchable arguments.
 
     Args:
         tool_calls: List from extract_tool_calls_from_transcript().
@@ -385,13 +378,9 @@ def cleanup_anchors(session_id: str, agent_type: str, agent_id: str) -> None:
 def cleanup_stale_anchor_files(now: Optional[float] = None) -> None:
     """Remove anchor files older than ``ANCHOR_TTL_SECONDS``.
 
-    Best-effort background hygiene, mirroring
-    ``artifact_skill_reminder.cleanup_stale_markers``. Ages by filesystem
-    mtime rather than an embedded timestamp (anchor files store a bare JSON
-    list, no wrapper metadata), which is also what lets this sweep reclaim
-    BOTH the current three-part naming scheme and any leftover two-part
-    files from before this key changed -- age, not name shape, decides
-    removal. Never raises: a failed sweep must not affect the caller.
+    Ages by filesystem mtime rather than an embedded timestamp (anchor files
+    store a bare JSON list, no wrapper metadata), so age, not name shape,
+    decides removal. Best-effort: ``load_anchors`` catches whatever it raises.
     """
     anchor_dir = _anchors_dir()
     if not anchor_dir.exists():

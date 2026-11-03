@@ -6,37 +6,34 @@ settings.json allow list, ALL commands reach this hook -- it is the sole
 enforcement layer for dangerous command detection.
 
 5-Phase Pipeline:
-  1. UNWRAP      -- ShellUnwrapper strips wrapper shells (bash -c, sh -c, ...);
-                    depth >= _OBFUSCATION_DEPTH_LIMIT = permanent block.
-                    Existing _detect_indirect_execution() runs as fallback for
-                    eval, python -c, node -e, etc.
+  1. UNWRAP      -- ShellUnwrapper measures wrapper-shell nesting (bash -c,
+                    sh -c, ...); depth >= _OBFUSCATION_DEPTH_LIMIT = permanent
+                    block. _detect_indirect_execution() then judges shell
+                    wrappers, eval, python -c, node -e and the rest of
+                    INDIRECT_EXEC_PATTERNS.
   2. DECOMPOSE   -- StageDecomposer splits into operator-linked stages.
-  3. CLASSIFY    -- blocked_commands + cloud_pipe_validator + mutative_verbs
-                    per stage (existing logic, unchanged).
+  3. CLASSIFY    -- blocked_commands + cloud_pipe_validator + mutative_verbs.
   4. COMPOSITION -- cross-stage composition rules (exfiltration, RCE,
                     obfuscated exec via pipe analysis).
   5. AGGREGATE   -- combine stage results into final BashValidationResult.
 
-Earlier flat-pipeline order preserved within phases for backward compat:
+Order within and before the phases:
   - Footer stripping runs before phase 1 (EARLY NORMALIZATION)
   - Smart sanitization (strip nohup / trailing & / trailing redirect) also
-    runs in EARLY NORMALIZATION, after footer stripping and after the
-    gaia.db / subagent-memory / protected-path write guards, but before
-    phase 1. It strips the decorator and lets the CLEANED command flow
-    into phase 1 like any other command -- it never classifies the
-    command itself, so a decorator can never move a command's tier by
+    runs in EARLY NORMALIZATION, after footer stripping and after the write
+    guards, but before phase 1. It strips the decorator and lets the CLEANED
+    command flow into phase 1 like any other command -- it never classifies
+    the command itself, so a decorator can never move a command's tier by
     hiding it from phases 1-5 (see _try_sanitize_command's docstring).
-  - Indirect execution detection is the first check in phase 1
+  - Indirect execution detection follows the unwrap check in phase 1
   - Blocked commands run before cloud_pipe and mutative_verbs in phase 3
 
 Phase 0 -- GAIA CLI ONLY GUARD (gaia_cli_only_guard.check): runs before
 everything above, including footer stripping and smart sanitization. It is a
 closed-by-default restriction for the ORCHESTRATOR role only (see that
-module's docstring) and is a no-op for every other caller today, because
-delegate_mode does not yet grant the orchestrator a Bash lane at all. It is
-wired in ahead of any command-text transformation on purpose: it evaluates
-the RAW string the harness sent, never a version something upstream already
-normalized. Only invoked when a caller supplies `hook_payload` -- see
+module's docstring), which delegate_mode grants a Bash lane that reaches it. It
+evaluates the RAW string the harness sent, never a version something upstream
+already normalized. Only invoked when a caller supplies `hook_payload` -- see
 validate()'s own docstring for why "not supplied" and "supplied with an
 empty role" are kept distinct rather than collapsed by a default.
 """
@@ -85,11 +82,6 @@ from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
     last_check_found_expired,
-    # DEPRECATED (T2.1 cutover): the filesystem pending-file helpers
-    # (write_pending_approval, find_pending_for_command, generate_nonce) are no longer used in the T3 subagent intercept
-    # path. They remain in approval_grants.py for M3/M4 consumers (e.g.,
-    # filesystem-based activation in pre_tool_use) until those layers are
-    # migrated. Do not re-introduce these calls in _validate_atomic_command.
 )
 from ..security.approval_messages import (
     build_t3_approval_instructions,
@@ -407,40 +399,22 @@ def _rules_t3_outcome(decide):
     return wrapper
 
 
-# Patterns for AI tool attribution footers (auto-stripped from commits).
-# Covers Claude Code, GitHub Copilot, Aider, Windsurf, Codex, Gemini, the
-# Anthropic model family (Opus/Sonnet/Haiku), and any future tool using the
-# Co-authored-by git trailer convention.
-#
-# IMPORTANT: this list is the DETECTOR (`_detect_claude_footers`). It MUST stay
-# aligned with the line patterns in `_strip_claude_footers` -- if the stripper
-# can remove a footer the detector cannot see, the strip never fires (the
-# early-normalization guard only strips when the detector returns True). Every
-# footer shape the stripper removes has a corresponding detector entry here.
-#
-# None of these patterns anchor on a newline, so they also catch footers that
-# arrive in a SECOND `-m "..."` argument (no preceding newline) -- the detector
-# fires, and the stripper's `-m`-aware branch removes them.
+# AI attribution footers (Claude Code, Copilot, aider, Windsurf, Cursor, Codex,
+# Gemini, the Anthropic model names) that `_detect_claude_footers` looks for.
+# The stripper only runs when the detector fires, so every shape
+# `_strip_claude_footers` removes needs an entry here.
+# No pattern anchors on a newline, so a footer in a second `-m "..."` argument matches too.
 FORBIDDEN_FOOTER_PATTERNS = [
     r"Generated with\s+Claude Code",
     r"Generated with\s+\[?Claude Code\]?",
-    # Bare robot-emoji "Generated with ..." line (e.g. "🤖 Generated with ...")
-    # WITHOUT requiring the literal "Claude Code" after it -- the stripper has
-    # always removed this shape; the detector now sees it too.
     r"🤖\s*Generated with",
-    # Robot emoji on its own is a strong AI-attribution signal.
     r"🤖",
     r"Co-Authored-By:\s+Claude\b",
-    # Claude Code session trailer: "Claude-Session: https://claude.ai/code/..."
-    # The trailer key and the session URL are independent signals -- either
-    # alone identifies the footer.
     r"Claude-Session:",
     r"claude\.ai/code/session",
-    # Anthropic model family attributed via Co-Authored-By / Co-authored-with.
     r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bOpus\b",
     r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bSonnet\b",
     r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bHaiku\b",
-    # "Approved-by:" attribution trailer.
     r"Approved-by:",
     r"Co-authored-by:\s+GitHub Copilot\b",
     r"Co-authored-by:\s+aider\b",
@@ -460,7 +434,6 @@ INDIRECT_EXEC_PATTERNS = [
     re.compile(r"^\s*node\s+-e\s+", re.IGNORECASE),
     re.compile(r"^\s*perl\s+-e\s+", re.IGNORECASE),
     re.compile(r"^\s*ruby\s+-e\s+", re.IGNORECASE),
-    # Process substitution and heredoc piped to shell
     re.compile(r"^\s*bash\s+<\(", re.IGNORECASE),
     re.compile(r"^\s*sh\s+<\(", re.IGNORECASE),
 ]
@@ -551,29 +524,14 @@ class BashValidator:
     def _resolve_bare_gaia_token_for_guard(self, command: str) -> str:
         """Rewrite a bare `gaia` binary token to its $PATH-resolved absolute path.
 
-        For gaia_cli_only_guard.check() ONLY -- the string this returns is
-        never executed, only handed to the guard's identity check.
+        For gaia_cli_only_guard.check() only: the returned string is never
+        executed. The guard requires an absolute binary path (it does not trust
+        the ambient $PATH), so a bare word would never pass; resolving it here
+        lets a normally typed `gaia ...` reach the guard's package-provenance
+        identity check, which a binary no trusted package declares still fails.
 
-        The guard itself deliberately requires the binary token to already be
-        an absolute path in the command text (gaia_cli_only_guard.py, Design
-        decision 2): it does not trust the ambient $PATH at analysis time,
-        because that environment need not match the one the command actually
-        runs under. That is the right call for the guard's own comparison,
-        but left alone it would also deny a `gaia contract view` typed the
-        normal way, since a bare word never satisfies `os.path.isabs`. This
-        method is the wiring-side fix: it resolves the bare token through
-        $PATH here, at the call site, and hands the guard an absolute-path
-        candidate to run its package-provenance identity check against
-        (is_trusted_gaia_binary) -- so a poisoned $PATH resolving to a
-        binary no trusted package declares still fails and is denied
-        exactly as before. Resolving does not
-        widen what the guard accepts; it only lets a normally-typed
-        invocation reach the same identity check an absolute path already
-        would.
-
-        Returns *command* unchanged when there is no bare `gaia` token in
-        binary position of any stage, or when $PATH has no `gaia` to find --
-        the guard's own absolute-path check then denies as it always did.
+        Returns *command* unchanged when no stage has a bare `gaia` token or
+        $PATH has no `gaia`.
         """
         decomposed = self._decomposer.decompose(command)
         if not decomposed.stages:
@@ -609,16 +567,13 @@ class BashValidator:
     def _detect_indirect_execution(
         self, command: str, is_subagent: bool = False,
     ) -> Optional[BashValidationResult]:
-        """Detect indirect execution wrappers that can bypass regex blocking.
+        """Judge indirect execution wrappers, which hide the real command in a string.
 
-        Commands like 'bash -c "az group delete"' hide the real command inside
-        a string.  We classify these as T2 (mutative) so they require user
-        approval via the nonce workflow, giving the human a chance to inspect
-        what will actually run.  A shell wrapper launched by a subagent is
-        refused with the correct form instead: the user cannot meaningfully
-        answer a dialog for a shape the subagent should not have composed.
-
-        Returns BashValidationResult if indirect execution detected, else None.
+        A wrapped command that is blocked is denied. A subagent's wrapper is
+        refused with the correct form; for the main session a mutative one
+        returns None and reaches the T3 gate, and any other asks the host.
+        Inline interpreter code (python3 -c, ...) also returns None, to its own
+        scanner in mutative_verbs. None as well when no wrapper is present.
         """
         shell_string = shell_command_string(command)
         peeled = _peel_leading_command_wrappers(command)[0]
@@ -893,11 +848,10 @@ class BashValidator:
             1. UNWRAP      - strip shell wrappers, detect obfuscation
             2. DECOMPOSE   - split into operator-linked stages
             3. CLASSIFY    - blocked_commands + cloud_pipe + mutative_verbs
-            4. COMPOSITION - cross-stage pattern checks (stub for T4)
+            4. COMPOSITION - cross-stage pipe rules (_phase4_check_composition)
             5. AGGREGATE   - combine results into final verdict
 
-        A phase 0, ahead of all of the above, is described where it runs
-        below (GAIA CLI ONLY GUARD).
+        A phase 0, ahead of all of the above, runs the GAIA CLI ONLY GUARD.
 
         Args:
             command: Command string to validate
@@ -905,66 +859,25 @@ class BashValidator:
             session_id: Session ID for approval scoping
             agent_type: Name of the originating agent (for pending approval context)
             hook_payload: The full stdin JSON dict from the harness, when the
-                caller has one. The live adapter path (claude_code.py's
-                _adapt_bash) always supplies it; back-compat call sites that
-                predate it (validate_bash_command(), pre_tool_use.py's
-                _handle_bash, and direct-construction tests) do not, and
-                leaving it unset -- `None`, never a substituted `{}` -- is
-                what keeps the guard below correctly inert for them instead
-                of misreading their absence as an empty orchestrator role.
+                caller has one. `None`, never a substituted `{}`, keeps the
+                phase 0 guard inert: a dict with an empty agent_type is the
+                orchestrator role and is guarded.
             cwd: The caller's directory when no hook_payload carries one.
 
         Returns:
             BashValidationResult with validation details
         """
-        # The fail-open breadcrumb describes THE COMMAND BEING GATED, so it is
-        # dropped here rather than left to expire with the process. Entering
-        # this method is the only moment at which a new command becomes the
-        # subject of the gate; anything noted before it belongs to a previous
-        # command, and a later gate failure reading it would deny this one on a
-        # classification that was never about it. Ahead of Phase 0 because that
-        # guard can return early, and an early return must not be a way for the
-        # stale mark to survive. See modules.security.fail_open.
+        # The fail-open mark belongs to the previous command; dropped ahead of
+        # phase 0, which can return early. See modules.security.fail_open.
         clear_classification()
         self.last_warning = ""
         cwd = (hook_payload or {}).get("cwd") or cwd
 
-        # ================================================================
-        # PHASE 0: GAIA CLI ONLY GUARD (orchestrator role closure)
-        # First guard in the pipeline -- ahead of the three write guards
-        # below and ahead of EARLY NORMALIZATION -- because it is a
-        # closed-by-default restriction keyed on the CALLER'S ROLE, and
-        # nothing may transform `command` (footer stripping, nohup/&/
-        # redirect sanitization) before that role-based closure evaluates
-        # the string exactly as the harness sent it.
-        #
-        # `hook_payload` is passed through to the guard UNCHANGED, never
-        # flattened into a pre-extracted role flag here -- see
-        # gaia_cli_only_guard.py's own docstring (Design decision 1) for
-        # why an intermediate flattening is itself a place the "empty
-        # field reads as false" failure mode could be reintroduced.
-        #
-        # `hook_payload is None` (this parameter's own absence) and "a
-        # payload whose agent_type happens to be empty" are two distinct
-        # cases, deliberately not collapsed by a shared default:
-        #   - None: no caller supplied a payload at all (a legacy call
-        #     site -- see this method's docstring) -- the guard does not
-        #     apply, and validate() proceeds exactly as it always has.
-        #   - a dict, even an empty one or one with agent_type=="": this
-        #     IS the harness payload, so the guard runs. An empty
-        #     agent_type classifies as the orchestrator role inside
-        #     classify_session_role (Gaia's installer writes
-        #     `agent: gaia-orchestrator` into settings, and a session that
-        #     never got that field populated is still the orchestrator's
-        #     own main thread) -- so it is evaluated, never silently
-        #     skipped for looking blank.
-        #
-        # A bare `gaia contract view`, typed normally, resolves through
-        # $PATH here (see _resolve_bare_gaia_token_for_guard) into an
-        # absolute-path candidate BEFORE the guard's own exact realpath
-        # comparison runs -- the guard's identity check itself is
-        # unchanged and still denies a poisoned $PATH resolving elsewhere.
-        # ================================================================
+        # Phase 0 runs ahead of every transformation of `command`, because the
+        # role closure must judge the string exactly as the harness sent it.
+        # The payload goes to the guard unflattened: classify_session_role reads
+        # an empty agent_type as the orchestrator role (gaia_cli_only_guard.py,
+        # Design decision 1).
         if hook_payload is not None:
             from ..security.gaia_cli_only_guard import check as check_gaia_cli_only
 
@@ -988,13 +901,9 @@ class BashValidator:
 
         command = command.strip()
 
-        # ================================================================
-        # HOST CONSENT VERB GUARD
-        # The verbs that record SHOWN and apply a reply are the OpenCode
-        # plugin's, run from its own spawn; from a shell they would let a
-        # requester approve itself. Categorical for every role and host, and
-        # ahead of the sealed-retry lane so no signature can carry them.
-        # ================================================================
+        # The OpenCode plugin's consent verbs run from its own spawn; from a
+        # shell they would let a requester approve itself. Categorical, and ahead
+        # of the sealed-retry lane so no signature can carry them.
         consent_verb_allowed, consent_verb_reason = check_host_consent_verb(
             command, cwd=cwd,
         )
@@ -1014,29 +923,17 @@ class BashValidator:
                 agent_type=agent_type, hook_payload=hook_payload,
             )
 
-        # ================================================================
-        # EARLY NORMALIZATION: Strip AI attribution footers before any
-        # other processing.  This ensures the same normalized command
-        # string is used for blocked-command checks, compound parsing,
-        # mutative verb detection, pending approval writes, AND pending
-        # approval lookups.  Without this, write_pending_approval() and
-        # find_pending_for_command() could see different strings on the
-        # first attempt vs. retry, causing nonce mismatch loops.
-        # ================================================================
+        # EARLY NORMALIZATION: footers are stripped first so every later check
+        # and the pending-approval lookup see the same string on retry.
         command_was_modified = False
         if self._detect_claude_footers(command):
             command = self._strip_claude_footers(command)
             command_was_modified = True
             logger.info("Auto-stripped Claude Code footer from commit command")
 
-        # ================================================================
-        # PUBLISH ATTRIBUTION GUARD
-        # Refuse a publishing command (gh pr|issue|release|api, git
-        # commit) whose text still carries Claude attribution after the strip
-        # above -- in the command string or in a body file it names. Runs
-        # before tier classification so a refused command never mints an
-        # approval; a granted retry re-reads its body files.
-        # ================================================================
+        # Refuses a publishing command whose text or named body file still
+        # carries Claude attribution after the strip; ahead of tier
+        # classification so a refusal mints no approval.
         attribution_allowed, attribution_reason = check_publish_attribution(
             command, cwd,
         )
@@ -1067,14 +964,8 @@ class BashValidator:
         # redirect is not a data heredoc at all and is read whole.
         write_guard_scope = data_heredoc_header(command) or command
 
-        # ================================================================
-        # GAIA DB WRITE GUARD
-        # Reject direct sqlite3 writes to ~/.gaia/gaia.db that bypass the
-        # store API / agent_permissions enforcement.  Runs on the full
-        # (footer-normalized) command BEFORE unwrap/decompose so heredocs
-        # and bash -c wrappers are inspected intact -- decomposition would
-        # otherwise split the sqlite3 invocation from its write verb.
-        # ================================================================
+        # The guards from here to the sensitive-read check run before
+        # unwrap/decompose so wrappers and heredocs are inspected intact.
         db_write_allowed, db_write_reason = check_gaia_db_write(write_guard_scope)
         if not db_write_allowed:
             logger.warning("BLOCKED gaia.db direct write: %s", command[:100])
@@ -1088,18 +979,8 @@ class BashValidator:
                 ],
             )
 
-        # ================================================================
-        # SUBAGENT MEMORY-WRITE GUARD
-        # Reject direct curated-memory mutations (`gaia memory add|append|
-        # reclassify|delete|link|checkpoint`) attempted from a subagent dispatch
-        # context, EXCEPT for the sanctioned writers (gaia-operator). The
-        # orchestrator (is_subagent False) is never blocked here. Categorical
-        # deny, NOT approvable: the correct subagent path is to PROPOSE via a
-        # `memory_delta` proposal, not to escalate. Runs on the full
-        # (footer-normalized) command BEFORE unwrap/decompose so compound
-        # chains and wrappers are inspected intact. See the memory skill's
-        # "Who writes" section for the contract this enforces.
-        # ================================================================
+        # A subagent proposes memory through `memory_delta`; the direct write is
+        # a categorical deny, not an approval. See the memory skill's "Who writes".
         mem_write_allowed, mem_write_reason = check_subagent_memory_write(
             write_guard_scope, is_subagent=is_subagent, agent_type=agent_type,
         )
@@ -1146,13 +1027,8 @@ class BashValidator:
                 rule="floor.subagent-resume-point",
             )
 
-        # ================================================================
-        # CONTRACT OWNERSHIP GUARD
-        # A subagent that runs `gaia contract init` while it already owns a
-        # row, or writes a contract adopted by another turn, is told at the
-        # attempt and given the owner, not when the stop gate rejects its
-        # close. Categorical, no approval_id.
-        # ================================================================
+        # A subagent that inits a second contract or writes one another turn
+        # adopted is told at the attempt, not at the stop gate. Categorical.
         ownership_allowed, ownership_reason = check_contract_ownership(
             command, (hook_payload or {}).get("agent_id") or "",
             (hook_payload or {}).get("session_id") or "",
@@ -1172,19 +1048,9 @@ class BashValidator:
                 ],
             )
 
-        # ================================================================
-        # PROTECTED-PATH WRITE GUARD
-        # Reject any command that writes into the protected .claude/ tree
-        # (the Gaia hooks directory or .claude settings files). The
-        # Write/Edit sensitive-path backstop only inspects file_path params
-        # and never sees a Bash command string, so a working-tree writer such
-        # as `git mv payload.py .claude/hooks/pre_tool_use.py` (short-circuited
-        # to non-mutative via GIT_LOCAL_SAFE_SUBCOMMANDS) would otherwise
-        # overwrite hook code with no consent. Categorical deny, NOT approvable
-        # -- the .claude/ tree is a hard security boundary. Runs on the full
-        # (footer-normalized) command BEFORE unwrap/decompose so compound
-        # chains and quoted forms are inspected intact.
-        # ================================================================
+        # The Write/Edit backstop never sees a Bash command string, so a writer
+        # such as `git mv x .claude/hooks/y.py` (local-safe, non-mutative) needs
+        # this categorical guard.
         pp_write_allowed, pp_write_reason = check_protected_path_write(
             write_guard_scope, cwd=cwd
         )
@@ -1203,19 +1069,9 @@ class BashValidator:
                 ],
             )
 
-        # ================================================================
-        # SHELL-AUTHORED WRITE GUARD
-        # Reject a file write into a git working tree when the SHELL is the
-        # author (redirect, `tee`, `sed -i`, `dd of=`). A grant is scoped to a
-        # tool and a path, so routing an edit through a command string reaches
-        # the bytes with the boundary evaluated against the wrong object and no
-        # tool call naming the file. `tee` was the measured hole: it classified
-        # T0 with the write executing. Categorical deny but NOT a withholding
-        # -- the same edit via Write/Edit is permitted, so there is nothing to
-        # approve; only the channel is refused. Runs BEFORE the smart sanitizer
-        # below, which strips a trailing redirect and would otherwise delete
-        # the destination before this guard could see it.
-        # ================================================================
+        # A shell-authored write (redirect, `tee`, `sed -i`, `dd of=`) into a git
+        # tree is refused as a channel: the same edit through Write/Edit is
+        # permitted. Before the sanitizer, which strips a trailing redirect.
         shell_write_allowed, shell_write_reason = check_shell_write(
             write_guard_scope, cwd=cwd,
         )
@@ -1248,15 +1104,9 @@ class BashValidator:
                 rule="floor.secret-read",
             )
 
-        # ================================================================
-        # ACCOUNT-PATH WRITE
-        # A redirect onto a path that grants account access is legitimate work
-        # needing a signature, so it is decided here as T3 rather than by one of
-        # the categorical guards above. Position is load-bearing twice: BEFORE
-        # the sanitizer, which strips the trailing redirect the verdict rests
-        # on, and before the cloud-pipe phase, which refuses a redirect as a
-        # CHANNEL and would leave this write with no way to consent to it.
-        # ================================================================
+        # A redirect onto an account path is decided here as T3, before the
+        # sanitizer strips the redirect and before the cloud-pipe phase refuses
+        # a redirect as a channel with no way to consent.
         account_write_target = account_path_redirect_target(write_guard_scope)
         if account_write_target:
             return decide_t3_outcome(
@@ -1293,14 +1143,8 @@ class BashValidator:
                 agent_type=agent_type,
             )
 
-        # ================================================================
-        # DATA HEREDOC
-        # A quoted heredoc a Gaia CLI call reads through `--<name>-file -` is
-        # stdin data, which the operator splitter below would otherwise cut
-        # into prose "components". Runs AFTER the write guards so a refusal
-        # there still wins; see _validate_data_heredoc for why the
-        # exemption can only ever return an allowed, non-T3 verdict.
-        # ================================================================
+        # After the write guards, so their refusals win; the operator splitter
+        # would otherwise cut a data heredoc's prose into "components".
         data_heredoc_result = self._validate_data_heredoc(
             command,
             command_was_modified=command_was_modified,
@@ -1312,31 +1156,10 @@ class BashValidator:
         if data_heredoc_result is not None:
             return data_heredoc_result
 
-        # ================================================================
-        # EARLY NORMALIZATION (cont'd): SMART SANITIZATION
-        # Strip a decorator that changes nothing about WHAT will run -- a
-        # leading `nohup`, a trailing background `&`, or a trailing
-        # `> file` / `>> file` redirect -- and RE-ENTER the full
-        # classification pipeline on the cleaned command by simply letting
-        # it flow into phase 1 below, rather than returning a verdict here.
-        #
-        # This runs AFTER the three write guards above (gaia.db, subagent
-        # memory, protected-path) so a redirect INTO a guarded target
-        # (e.g. ``echo x > .claude/hooks/y``) is still caught by those
-        # guards on the undecorated command -- sanitizing first would let
-        # the redirect vanish before a guard ever saw it.
-        #
-        # HISTORICAL NOTE: an earlier version of this step classified the
-        # cleaned command itself, returning allowed=True / tier=T0
-        # immediately upon stripping a decorator. That let a genuine T3
-        # command evade its block by appending a trailing redirect --
-        # ``terraform apply`` was blocked T3, but
-        # ``terraform apply > /tmp/tf-out.txt`` was allowed T0, because the
-        # stripped command never reached the mutative-verb detection in
-        # phase 5. Measured and fixed; the vulnerability and the regression
-        # test that now guards it are documented in
-        # tests/hooks/test_sanitizer_redirect_t3_evasion.py.
-        # ================================================================
+        # SMART SANITIZATION strips nohup, a trailing `&` or a trailing redirect.
+        # It runs after the write guards, which must see a redirect into a
+        # guarded target, and returns no verdict: the cleaned command flows
+        # into phase 1 (tests/hooks/test_sanitizer_redirect_t3_evasion.py).
         sanitize_result = self._try_sanitize_command(command)
         if sanitize_result is not None:
             cleaned_command, stripped_parts = sanitize_result
@@ -1348,17 +1171,7 @@ class BashValidator:
             command = cleaned_command
             command_was_modified = True
 
-        # ================================================================
         # PHASE 1: UNWRAP
-        # Use ShellUnwrapper to detect and strip shell wrapper layers
-        # (bash -c, sh -c, env bash -c, etc.).  If the wrapper nesting
-        # depth exceeds _OBFUSCATION_DEPTH_LIMIT, permanently block
-        # the command as obfuscated.
-        #
-        # After the unwrapper, _detect_indirect_execution() runs as a
-        # fallback for patterns the unwrapper does not cover: eval,
-        # python -c, node -e, perl -e, ruby -e, process substitution.
-        # ================================================================
         unwrap_result = self._unwrapper.unwrap(command)
         if unwrap_result.depth >= _OBFUSCATION_DEPTH_LIMIT:
             return BashValidationResult(
@@ -1377,36 +1190,15 @@ class BashValidator:
         if indirect_result is not None:
             return indirect_result
 
-        # ================================================================
-        # PHASE 2: DECOMPOSE
-        # Split the command into operator-linked stages using
-        # StageDecomposer.  The decomposed result is available for
-        # phase 4 (composition rules, T4) and provides operator context
-        # that ShellCommandParser.parse() discards.
-        # ================================================================
+        # PHASE 2: DECOMPOSE keeps the operators that ShellCommandParser.parse()
+        # discards, for the phase 4 composition rules.
         classified, code_heredocs = _scan_heredocs(command)
         decomposed = self._decomposer.decompose(classified)
 
-        # ================================================================
-        # PHASE 3: CLASSIFY STAGES
-        # Apply existing classification logic in priority order:
-        #   3a. blocked_commands on full command (exit 2)
-        #   3b. blocked_commands on each compound component (exit 2)
-        #   3c. Git commit message validation
-        #   3d. Cloud pipe/redirect/chain check (corrective deny)
-        #   3e. Dispatch to single/compound classification
-        #        (mutative_verbs, safe-by-elimination)
-        #
-        # Smart sanitization (strip nohup / trailing & / trailing redirect)
-        # runs in EARLY NORMALIZATION, before phase 1 -- not here -- so the
-        # cleaned command re-enters this whole pipeline instead of
-        # short-circuiting past it.
-        # ================================================================
+        # PHASE 3: CLASSIFY STAGES (3a-3d here; 3e is the dispatch in phase 5)
 
-        # 3a. Blocked commands check on the command minus its data-heredoc
-        # bodies (exit 2). This MUST run before any other classifier to ensure
-        # permanently blocked commands (kubectl delete namespace, etc.) are
-        # caught with a reliable exit 2.
+        # 3a. Blocked commands on the command minus its data-heredoc bodies; this
+        # runs before any other classifier so a permanent block always exits 2.
         blocked_result = is_blocked_command(classified)
         if blocked_result.is_blocked:
             return BashValidationResult(
@@ -1417,15 +1209,12 @@ class BashValidator:
                 rule=blocked_rule(blocked_result.category),
             )
 
-        # 3b. Parse compound commands and check each component against the
-        # deny list.  Uses ShellCommandParser (not StageDecomposer) for
-        # backward compat — the decomposed stages are used in phase 4.
+        # 3b. Each compound component against the deny list, so
+        # "ls && kubectl delete namespace prod" is caught here.
         has_operators = self._has_operators(command)
         parsed_components = None
         if has_operators:
             parsed_components = self.shell_parser.parse(classified)
-            # Check each component against the deny list.
-            # This catches "ls && kubectl delete namespace prod" early.
             for component in parsed_components:
                 comp_blocked = is_blocked_command(component.strip())
                 if comp_blocked.is_blocked:
@@ -1466,15 +1255,8 @@ class BashValidator:
                 rule="floor.shell-write" if violation_kind(classified) == "redirect" else "floor.cloud-pipe",
             )
 
-        # ================================================================
-        # PHASE 4: CHECK COMPOSITION
-        # Cross-stage composition rules detect dangerous pipe patterns:
-        #   - Exfiltration: sensitive_read | network_write
-        #   - RCE:          network_read   | exec_sink
-        #   - Obfuscated:   decode         | exec_sink
-        #   - File-to-exec: file_read      | exec_sink  (escalate)
-        # Only pipe-connected stages are checked; &&/; are independent.
-        # ================================================================
+        # PHASE 4: CHECK COMPOSITION of pipe-connected stages; &&/; stages are
+        # independent (exfiltration, RCE, decode-to-exec, file-to-exec).
         _composition_result = self._phase4_check_composition(
             decomposed,
             is_subagent=is_subagent,
@@ -1486,26 +1268,9 @@ class BashValidator:
         if _composition_result is not None:
             return _composition_result
 
-        # ================================================================
-        # PHASE 5: AGGREGATE
-        # 3e. Dispatch to per-stage classifiers (single or compound)
-        # and combine into the final BashValidationResult.
-        #
-        # ``payload_cwd`` seeds the directory fold with the REAL invocation
-        # directory the harness already sent in ``hook_payload["cwd"]``,
-        # instead of leaving the fold to start at ``None`` -- which resolves,
-        # deep inside ``detect_mutative_command`` / ``_resolve_dir_against_cwd``,
-        # to the HOOK PROCESS's own cwd via ``os.getcwd()``, not the caller's.
-        # A relative script path with no leading ``cd`` was resolving against
-        # that wrong directory, missing, and falling to the conservative
-        # ``script-file-unreadable`` T3 verdict -- 66 measured approvals for
-        # scripts that were always readable, just looked up in the wrong place.
-        # A later explicit ``cd`` in the chain still overrides this seed
-        # exactly as before (``_peel_leading_cd`` / ``cwd_after_component``
-        # replace an absolute target and join a relative one onto whatever
-        # cwd is already in effect), so the already-covered "behind a cd"
-        # case is unaffected.
-        # ================================================================
+        # PHASE 5: AGGREGATE (3e). The invocation directory seeds the cwd fold; a
+        # fold from None would resolve a relative script against the hook's own
+        # cwd and fall to the script-file-unreadable T3. A later `cd` overrides it.
         payload_cwd = cwd
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
         program = heredoc_program(command)
@@ -1734,20 +1499,16 @@ class BashValidator:
         the deny list before dispatching to this method.
         """
 
-        # Indirect execution check for compound command components.
-        # When validate() splits "cd /tmp && python3 -c '...'" into parts,
-        # the python3 -c component needs the same indirect execution gate
-        # that the full command gets in validate().
+        # A component of a split chain ("cd /tmp && python3 -c ...") gets the same
+        # indirect-execution gate as the whole command.
         indirect_result = self._detect_indirect_execution(
             command, is_subagent=is_subagent,
         )
         if indirect_result is not None:
             return indirect_result
 
-        # Mutative verb detection.  ``cwd`` carries the effective directory
-        # folded from a preceding ``cd`` component of the chain (see
-        # _validate_compound_command), so a relative script path resolves
-        # against the workspace the chain navigated to, not the hook's own cwd.
+        # ``cwd`` is the directory folded from a preceding ``cd`` component (see
+        # _validate_compound_command), against which a relative script resolves.
         result = detect_mutative_command(command, cwd=cwd, caller=caller)
         result = production_target_verdict(command, result, cwd=cwd) or result
         if result.is_mutative:
@@ -1792,9 +1553,6 @@ class BashValidator:
                     command_set_reservation=cs_match,
                 )
 
-            # DB-primary + filesystem-fallback grant check.
-            # check_approval_grant() now returns a DB row first (Brief 71 CHECK-
-            # side cutover), falling back to filesystem when no DB row exists.
             from gaia.approvals.core import grant_lookup_filter
             grant = check_approval_grant(
                 command, session_id=session_id,
@@ -1803,9 +1561,9 @@ class BashValidator:
                 ),
             )
             if grant is not None:
-                # Consume the DB semantic grant immediately (replay protection,
-                # Gap B fix).  Single-use: a consumed grant will not match on a
-                # second attempt within the TTL window.
+                # Consume the DB semantic grant immediately (replay protection):
+                # a consumed grant will not match on a second attempt within the
+                # TTL window.
                 db_approval_id = getattr(grant, "_db_approval_id", None)
                 if db_approval_id:
                     try:
@@ -1829,8 +1587,6 @@ class BashValidator:
                         )
 
                 if grant.confirmed:
-                    # DB grants are always confirmed=True (user approved via AskUserQuestion).
-                    # Filesystem grants may be confirmed or unconfirmed.
                     logger.info(
                         "T3 command allowed via confirmed grant: %s (scope='%s')",
                         command[:80], grant.approved_scope,
@@ -1842,9 +1598,8 @@ class BashValidator:
                         consumed_approval_id=db_approval_id,
                     )
                 else:
-                    # Filesystem grant exists, not yet confirmed -- GAIA approved,
-                    # let it through. PostToolUse will confirm and consume
-                    # the grant after successful execution.
+                    # Granted but not yet confirmed: let it through; PostToolUse
+                    # confirms the grant after successful execution.
                     logger.info(
                         "T3 command passthrough via active grant: %s (scope='%s')",
                         command[:80], grant.approved_scope,
@@ -1873,16 +1628,10 @@ class BashValidator:
                     rule=result.rule,
                 )
 
-        # Flag-dependent classification (sed -i, find -exec, tar -x, etc.)
-        # This supplements mutative_verbs -- it catches flag-dependent mutations
-        # that verb-based detection misses (e.g. "sed" has no mutative verb, but
-        # "sed -i" is mutative).  Runs after blocked_commands and mutative_verbs
-        # to avoid double-classification.
-        #
-        # Git commands are EXCLUDED from the MUTATIVE path here because
-        # detect_mutative_command() already has deliberate git handling.  If it
-        # chose not to block a git command, that decision should be respected.
-        # Git BLOCKED results still fire as a safety net (force push, etc.).
+        # Flag-dependent mutations a verb scan misses ("sed" has no mutative verb,
+        # "sed -i" is). Git is excluded from the MUTATIVE path, since
+        # detect_mutative_command() handles git deliberately; a git BLOCKED
+        # result still stops the command.
         flag_result = classify_by_flags(command, caller)
         if flag_result is not None:
             if flag_result.outcome == FLAG_BLOCKED:
@@ -1897,14 +1646,9 @@ class BashValidator:
                 if flag_result.command_family.startswith("git_"):
                     pass  # Fall through to safe-by-elimination
                 else:
-                    # Check for an approved grant BEFORE deciding T3 -- mirroring
-                    # the mutative-verb branch above.  A flag-classified command
-                    # (e.g. `curl -X POST`) is just as T3 as a mutative verb, so
-                    # it must consult the same approval grant the block-approve-
-                    # retry flow minted; otherwise an approved+activated grant is
-                    # never honoured and the command re-blocks unconditionally on
-                    # every retry (the flag path never reaches the matcher).  The
-                    # consume + return semantics replicate the verb branch exactly.
+                    # A flag-classified command (`curl -X POST`) consults the same
+                    # grants as the mutative-verb branch above, or an approved
+                    # grant would never be honoured on retry.
                     try:
                         from gaia.approvals.core import match_command
                         cs_match = match_command(
@@ -2030,24 +1774,14 @@ class BashValidator:
         is validated by ``_validate_single_command``, a blocked component fails
         the chain fast, and the chain's tier is the highest component tier.
 
-        ``cwd`` is the SEED for the directory fold below (the real invocation
-        directory from the hook payload, or ``None`` when the caller has
-        none) -- not the fold's final value. A leading ``cd`` component still
-        overrides it exactly as before.
+        ``cwd`` seeds the directory fold below (the hook payload's directory, or
+        ``None``); a leading ``cd`` component overrides it.
         """
         logger.info(f"Compound command detected with {len(components)} components")
 
-        # Fold the effective cwd across components for THIS scan too, mirroring
-        # the loop below: a leading `cd X` component must resolve a later
-        # relative script (`node rel.mjs`) against X, not the hook's own cwd.
-        # Without this fold a clean chain with zero real T3 operations reads
-        # its script under the wrong cwd, finds it unreadable, and the
-        # conservative `script-file-unreadable` default falsely trips has_t3
-        # -- denying the whole chain for a mutation that was never there.
-        # Seeded with the payload's real invocation directory (``cwd``, see
-        # this method's docstring) rather than ``None``, so a chain with NO
-        # leading `cd` at all still resolves its first relative script
-        # against where the user actually ran it.
+        # The cwd is folded across components here as in the loop below, or a
+        # relative script after `cd X` would read as unreadable and falsely trip
+        # has_t3 through the script-file-unreadable default.
         has_t3 = False
         scan_cwd: Optional[str] = cwd
         # A NODE_OPTIONS set by an earlier component reaches every later node.
@@ -2117,15 +1851,8 @@ class BashValidator:
             )
 
         component_results: List[BashValidationResult] = []
-        # Fold the effective cwd across components: a `cd X` component sets the
-        # cwd for the components that FOLLOW it, so a relative script path in a
-        # later `node rel.mjs` component resolves against X, not the hook's cwd.
-        # `cd` and the script land in SEPARATE components (the chain is split on
-        # `&&`), so the fold must happen here -- detect_mutative_command only
-        # sees one component at a time. Seeded with the payload cwd (see
-        # scan_cwd above) rather than ``None``, so a chain with no leading cd
-        # still resolves its first component's relative script correctly; an
-        # explicit `cd` still overrides it via cwd_after_component below.
+        # `cd` and a later script are separate components, and
+        # detect_mutative_command sees one at a time, so the fold lives here.
         running_cwd: Optional[str] = cwd
         for i, component in enumerate(components, 1):
             # tool_use_id is withheld on purpose: a COMMAND_SET item runs alone
@@ -2255,7 +1982,7 @@ class BashValidator:
         - Exfiltration: sensitive_read | network_write  -> permanent block
         - RCE: network_read | exec_sink                 -> permanent block
         - Obfuscated exec: decode | exec_sink           -> permanent block
-        - File-to-exec: file_read | exec_sink           -> escalate (ask)
+        - File-to-exec: file_read | exec_sink           -> escalate (T3 outcome)
 
         Args:
             decomposed: Output from StageDecomposer.decompose().
@@ -2266,12 +1993,10 @@ class BashValidator:
         if not decomposed.stages or len(decomposed.stages) < 2:
             return None
 
-        # Check whether any stages are pipe-connected.
         has_pipe = any(s.operator == "|" for s in decomposed.stages)
         if not has_pipe:
             return None
 
-        # Build classified composition stages and check rules.
         comp_stages = build_composition_stages(decomposed.stages)
         result = check_composition(comp_stages)
 
@@ -2302,7 +2027,6 @@ class BashValidator:
                 agent_type=agent_type,
             )
 
-        # No composition rule fired — continue to Phase 5.
         return None
 
     def _detect_claude_footers(self, command: str) -> bool:
@@ -2390,8 +2114,7 @@ class BashValidator:
         for pattern in m_footer_patterns:
             command = re.sub(pattern, '', command, flags=re.IGNORECASE)
 
-        # Clean up trailing whitespace inside quotes/heredoc
-        # Collapse 3+ consecutive newlines to 2
+        # Collapse the blank lines a removed footer leaves behind.
         command = re.sub(r'\n{3,}', '\n\n', command)
 
         return command
@@ -2406,8 +2129,6 @@ class BashValidator:
         Returns:
             BashValidationResult with validation status
         """
-        # Extract commit message from command
-        # Handles both: git commit -m "message" and git commit -m "$(cat <<'EOF'...)"
         message = self._extract_commit_message(command)
 
         if not message:
@@ -2418,19 +2139,15 @@ class BashValidator:
                 reason="Could not extract commit message for validation"
             )
 
-        # Import validator (lazy import to avoid startup cost)
         try:
             import sys
             from pathlib import Path
 
-            # Import from sibling module (hooks/modules/validation)
             from ..validation.commit_validator import validate_commit_message
 
-            # Validate message
             validation = validate_commit_message(message)
 
             if not validation.valid:
-                # Build suggestions from errors
                 suggestions = []
                 for error in validation.errors:
                     suggestions.append(f"{error['type']}: {error['fix']}")
@@ -2440,7 +2157,7 @@ class BashValidator:
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"Commit message validation failed: {validation.errors[0]['message']}",
                     rule="floor.commit-message",
-                    suggestions=suggestions[:3]  # Limit to 3 suggestions
+                    suggestions=suggestions[:3]
                 )
 
             return BashValidationResult(
@@ -2471,8 +2188,7 @@ class BashValidator:
         Returns:
             Extracted message or None if cannot extract
         """
-        # Level 1: HEREDOC pattern (most common in Claude Code)
-        # Handles: <<'EOF', <<EOF, <<"EOF" with flexible whitespace
+        # Level 1: a HEREDOC whose delimiter is EOF: <<'EOF', <<EOF, <<"EOF"
         if "<<" in command:
             heredoc_match = re.search(
                 r"<<['\"]?EOF['\"]?\s*\n(.*?)\n\s*EOF",
@@ -2492,14 +2208,11 @@ class BashValidator:
 
         return None
 
-# ---------------------------------------------------------------------------
-# T2.1 DB-backed helpers (cutover from filesystem approval cache)
-# ---------------------------------------------------------------------------
 
 def _pending_requests_of(session_id: str, agent_id: str) -> list:
     """Return the pending requests, oldest first, whose sealed requester is this session and agent.
 
-    A pending is reused only by its own requester (D6): approving it seals a
+    A pending is reused only by its own requester: approving it seals a
     grant bound to ``requested_by``, so naming it to anyone else yields a
     grant that requester cannot consume and a second signature for the same
     command. A payload that names no requester is never reused.
@@ -2522,23 +2235,22 @@ def _pending_requests_of(session_id: str, agent_id: str) -> list:
 def _find_pending_in_db(session_id: str, command: str, agent_id: str) -> Optional[str]:
     """Return the requester's own pending approval matching this command, else None.
 
-    Replaces find_pending_for_command() (filesystem) as part of the T2.1
-    cutover. Looks up the pending requests of this session and agent and
-    matches each one's stored command against the incoming command using the
-    SAME semantic matcher the consumption path uses (check_db_semantic_grant /
-    matches_approval_signature), instead of a byte-exact comparison (Fix B).
+    Looks up the pending requests of this session and agent and matches each
+    one's stored command against the incoming command using the SAME semantic
+    matcher the consumption path uses (check_db_semantic_grant /
+    matches_approval_signature), after a byte-exact fast path.
 
-    Why semantic, not byte-exact (double-approval fix, B):
+    Why semantic, not byte-exact:
         The block-approve-retry flow can present the same operation under
         cosmetically different strings -- most commonly a shell redirect that
         the agent appends on the retry (``git push`` blocked, retried as
         ``git push 2>&1``). A byte-exact dedup would MISS the existing pending
         on that retry and mint a fresh approval_id, so the user is asked to
         approve "the same command" twice. Matching on the semantic signature
-        makes the retry reuse the existing pending: the signature already
-        normalizes redirects out (Fix A) while still binding every
-        identity-bearing token (incl. the ``-C <path>`` directory, per the
-        keep-path policy), so distinct operations are NOT collapsed together.
+        makes the retry reuse the existing pending: the signature strips
+        output redirects (``command_semantics.strip_redirect_tokens``) while
+        still binding every identity-bearing token, so distinct operations are
+        NOT collapsed together.
 
     Args:
         session_id: Session of the host event that was blocked.
@@ -2634,7 +2346,7 @@ def _find_pending_plan_set_in_db(command: str, session_id: str, agent_id: str) -
 def _phrases_request_line(approval_id: str, payload: Optional[dict] = None, *, requester: str = "") -> str:
     """The request line the denial asks for when the named pending has no phrases; else empty.
 
-    No host shows a request without its requester's phrases (PD10), so naming
+    No host shows a request without its requester's phrases, so naming
     such a pending as the approval to report would strand the requester.
     *requester* names a main-session requester, whose shell carries no
     dispatch identity for the request to be sealed under.
@@ -2648,17 +2360,11 @@ def _phrases_request_line(approval_id: str, payload: Optional[dict] = None, *, r
 
 
 #: What the sealed payload may state for impact, rollback and verification,
-#: selected only by a named input of the classifier verdict: the mutative verb,
-#: and failing that the verb category. Each statement is written out whole and
-#: reviewed here rather than composed at build time, because the producer sees
-#: intercepted command text and a verdict and never sees what the agent meant to
-#: accomplish -- a sentence assembled from the command's arguments would assert a
-#: consequence nothing determined. Neither table carries a catch-all: a verdict
-#: absent from both contributes no statement and the presented surface states the
-#: absence (``adapters.consent_presentation.VISIBLE_FIELDS``), which is the only
-#: honest answer where reach or reversibility is not a property of the verdict.
-#: rollback in particular never claims an effect can be undone when that depends
-#: on state no interception can observe.
+#: selected by the verdict's verb, else its category. The statements are written
+#: whole rather than composed from the command's arguments, which would assert a
+#: consequence nothing determined. A verdict in neither table contributes none
+#: and the presented surface states the absence
+#: (``adapters.consent_presentation.VISIBLE_FIELDS``).
 _STATEMENTS_BY_VERB: dict = {
     "push": {
         "impact": (
@@ -2740,17 +2446,10 @@ _STATEMENTS_BY_VERB: dict = {
     },
 }
 
-#: Fallback selection when the verb is none of the verbs above, keyed on the
-#: category the classifier assigned. Only the destructive category is stated:
-#: it is the one category whose direction -- removing or overwriting rather than
-#: adding -- the verdict determines on its own. No classifier reaching this
-#: producer emits it today, the same pre-existing condition as the risk_level
-#: ternary below, so production coverage rests on the verb table.
-#:
-#: Because it never fires, this table is not evidence: a statement read from
-#: here proves nothing about what a user was shown, and it must not be cited
-#: to satisfy a gate or a test that asks what production sealed. Verify that
-#: against the verb table, which is the only producer with reachable output.
+#: Fallback keyed on the verdict's category when the verb is none of the verbs
+#: above. No classifier under hooks/ emits DESTRUCTIVE, so this table never
+#: fires in production: a statement read here proves nothing about what a user
+#: was shown. Verify what production sealed against the verb table.
 _STATEMENTS_BY_CATEGORY: dict = {
     "DESTRUCTIVE": {
         "impact": (
@@ -2800,9 +2499,8 @@ def _build_sealed_payload(
     the payload names the requesting session and agent exactly as the host
     event gave them (``core.RequesterError`` when either is missing).
 
-    Used by the T2.1 cutover path when bash_validator detects a T3 command
-    and calls store.insert_requested(). The 7 D13 fields are populated from
-    what is available at intercept time.
+    Called by decide_t3_outcome before it stores the request through
+    gaia.approvals.store.insert_requested.
 
     Single vs. multi-command (COMMAND_SET):
         By default this builds a SINGLE-command payload -- ``commands`` is
@@ -2857,13 +2555,9 @@ def _build_sealed_payload(
                 )
     is_command_set = len(normalized_set) > 1
 
-    # Authored at mint, never merged in afterwards: the approvals row is
-    # write-once and its dedup fingerprint is derived from this payload at
-    # insert, so a statement added later would either be dropped or require
-    # mutating a sealed row. Neither fingerprint that binds a decision to an
-    # execution reads a descriptive field -- command_fingerprint hashes the
-    # command bytes, request_fingerprint the ordered command list -- so these
-    # statements cannot move what a post-grant retry must keep byte-identical.
+    # Authored at mint: the approvals row is write-once. Neither command_fingerprint
+    # (command bytes) nor request_fingerprint (ordered commands) reads these
+    # fields, so they cannot move what a retry must keep byte-identical.
     authored = _authored_statements(verb, category)
     from gaia.approvals.core import seal_request
 
@@ -2942,8 +2636,8 @@ def decide_t3_outcome(
         command_set: Optional list of ``{command, rationale}`` dicts. When it
             carries MORE THAN ONE item, this T3 decision covers a chain
             (``a && b && c``) whose sub-commands are all T3, and the pending is
-            minted as ONE COMMAND_SET envelope (the chain-intake path, AC-8)
-            instead of a single semantic-signature pending. ONE user approval
+            minted as ONE COMMAND_SET envelope instead of a single
+            semantic-signature pending. ONE user approval
             then covers the whole chain; each sub-command is still consumed
             byte-for-byte by its own signature at retry. A None / single-item
             set keeps the singular behaviour.
@@ -2957,11 +2651,8 @@ def decide_t3_outcome(
     if refusal is not None:
         return refusal
 
-    # Breadcrumb for the fail-open path. Reaching this function IS the moment
-    # the command becomes known to require consent, so from here on a failure
-    # anywhere in the gate must not degrade it into a permission -- see
-    # modules.security.fail_open. Recorded before any branch so it holds no
-    # matter which outcome this call produces.
+    # From here a failure anywhere in the gate must not degrade a command known
+    # to need consent into a permission; see modules.security.fail_open.
     note_mutative_classification(command, verb, category)
 
     from gaia.redaction import has_clear_secret

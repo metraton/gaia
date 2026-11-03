@@ -3,8 +3,8 @@ Task tool validator.
 
 Validates Task tool invocations:
 - Agent existence verification
-- Context provisioning enforcement
-- T3 operation detection for user approval workflow
+- Whether the agent receives injected context (by agent type)
+- T3 operation detection in the prompt and description
 """
 
 import logging
@@ -48,7 +48,7 @@ NATIVE_AGENTS = ["Explore", "Plan", "general-purpose", "claude-code-guide"]
 
 # Meta-agents that don't require context_provider.
 # gaia-system is NOT a meta-agent: it has project_context_contracts rows
-# seeded into ~/.gaia/gaia.db from its frontmatter (task #1) with
+# seeded into ~/.gaia/gaia.db from its frontmatter with
 # readable_sections = [project_identity, stack], so it receives normal
 # context injection when working on Gaia internals.
 META_AGENTS = list(NATIVE_AGENTS)
@@ -105,8 +105,9 @@ def _sanitize_candidate_fragment(fragment: str) -> str:
 def _extract_command_candidates(text: str) -> List[str]:
     """Extract command-like lines from free-form text for verb detection.
 
-    Looks for lines that start with known CLI prefixes or contain command-like
-    patterns (e.g., "git push", "terraform apply").
+    Finds each known CLI prefix (from CLI_FAMILY_LOOKUP and COMMAND_ALIASES)
+    that does not follow an alphanumeric character, and takes the rest of its
+    line (e.g., "git push", "terraform apply").
 
     Args:
         text: Free-form text (prompt or description).
@@ -129,7 +130,6 @@ def _extract_command_candidates(text: str) -> List[str]:
 
     text_lower = text.lower()
 
-    # Strategy 1: Scan the full text for known CLI command patterns
     for prefix in cli_prefixes:
         idx = 0
         while True:

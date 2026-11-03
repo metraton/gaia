@@ -2,8 +2,6 @@
 Shell Command Parser - Native Python Implementation
 
 Parses bash commands into individual components for permission validation.
-This is a workaround for Claude Code bug where settings.json permissions
-are not respected (GitHub Issue #13340).
 
 Features:
 - Parse piped commands: "cmd1 | cmd2" -> ["cmd1", "cmd2"]
@@ -209,9 +207,9 @@ def program_argv(command: str) -> List[str]:
 
 @dataclass
 class ParsedCommand:
-    """Represents a parsed shell command component."""
-    command: str  # The actual command string
-    operator: Optional[str] = None  # The operator that follows (|, &&, ||, ;)
+    """A parsed shell command component; ``parse_with_operators`` never sets ``operator``."""
+    command: str
+    operator: Optional[str] = None
 
     def __str__(self) -> str:
         return self.command
@@ -223,15 +221,16 @@ class ShellCommandParser:
 
     Parses bash commands into individual components while respecting:
     - Single quotes (preserve everything inside)
-    - Double quotes (preserve with variable expansion awareness)
+    - Double quotes (preserve everything inside)
     - Escape sequences
-    - Subshells
-    - Command substitution
+    - ANSI-C ``$'...'`` words
+
+    Parentheses and backticks are not tracked: an operator inside ``$(...)``
+    or a subshell splits the command there.
 
     Zero external dependencies - uses Python stdlib only.
     """
 
-    # Shell operators that separate commands
     OPERATORS = {
         '|': 'pipe',
         '&&': 'and',
@@ -267,10 +266,8 @@ class ShellCommandParser:
 
         command = strip_comment(command).strip()
 
-        # Split on operators while preserving quotes
         components = self._split_on_operators(command)
 
-        # Clean and filter empty components
         result = [comp.strip() for comp in components if comp.strip()]
 
         return result
@@ -285,14 +282,12 @@ class ShellCommandParser:
         current = []
         i = 0
 
-        # Quote state
         in_single_quote = False
         in_double_quote = False
 
         while i < len(command):
             char = command[i]
 
-            # Handle escape sequences
             if char == '\\' and not in_single_quote and i + 1 < len(command):
                 current.append(char)
                 current.append(command[i + 1])
@@ -308,51 +303,42 @@ class ShellCommandParser:
                 i = end
                 continue
 
-            # Handle single quotes
             if char == "'" and not in_double_quote:
                 in_single_quote = not in_single_quote
                 current.append(char)
                 i += 1
                 continue
 
-            # Handle double quotes
             if char == '"' and not in_single_quote:
                 in_double_quote = not in_double_quote
                 current.append(char)
                 i += 1
                 continue
 
-            # If inside quotes, add character and continue
             if in_single_quote or in_double_quote:
                 current.append(char)
                 i += 1
                 continue
 
-            # Check for two-character operators (&&, ||)
             if i + 1 < len(command):
                 two_char = command[i:i+2]
                 if two_char in ['&&', '||']:
-                    # Found operator - save current component
                     if current:
                         components.append(''.join(current))
                         current = []
                     i += 2
                     continue
 
-            # Check for single-character operators (|, ;, a lone &)
             if char in ['|', ';', '\n'] or (char == '&' and is_lone_ampersand(command, i)):
-                # Found operator - save current component
                 if current:
                     components.append(''.join(current))
                     current = []
                 i += 1
                 continue
 
-            # Regular character
             current.append(char)
             i += 1
 
-        # Add final component
         if current:
             components.append(''.join(current))
 
@@ -360,9 +346,10 @@ class ShellCommandParser:
 
     def parse_with_operators(self, command: str) -> List[ParsedCommand]:
         """
-        Parse command and preserve operator information.
+        Parse command into ParsedCommand objects, one per component.
 
-        Useful for understanding command flow (AND vs OR vs pipe).
+        The operators are discarded: ``operator`` stays None. StageDecomposer
+        is what recovers them.
         """
         if not command or not command.strip():
             return []
@@ -380,7 +367,6 @@ class ShellCommandParser:
         return not self.contains_operators(command)
 
 
-# Singleton instance for reuse
 _shell_parser: Optional[ShellCommandParser] = None
 
 

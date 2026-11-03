@@ -6,13 +6,10 @@ The defect this exists for: when ``adapt_subagent_stop`` returns exit_code=2
 because the turn's own persisted contract row did not close cleanly,
 the harness feeds the rejection back to the SUBAGENT, which produces one more
 turn -- and that repair turn's message REPLACES the rejected one in everything
-the orchestrator receives. Measured: an agent emitted a full diagnosis at
-20:08:10, the hook rejected it 0.386s later, and the orchestrator saw only the
-20:09:17 re-emission ("the contract is already finalized, this only adds the
-envelope"). The work existed and was lost in the relay, not in the DB.
+the orchestrator receives. The work exists but is lost in the relay, not in
+the DB.
 
-The gate is deliberately unchanged -- a turn without a contract is still
-rejected. What changes is that the rejection no longer costs the work:
+A turn without a contract is still rejected; the rejection keeps the work:
 
   * PERSIST -- the substantive text (everything that is not the contract fence)
     is written under ``<data_dir>/rejected_turns/<key>.txt``, so it survives the
@@ -57,15 +54,10 @@ _CONTRACT_MARKERS = ('"agent_status"', "'agent_status'")
 # exists to prevent.
 _MAX_INLINE_CHARS = 20000
 
-# THE PRESERVED FILE HAS NO CEILING, and that is deliberate. An earlier
-# revision capped it, which destroyed evidence outright: a SINGLE 30030-char
-# turn with no accumulation at all was stored truncated to 20107 -- 9923
-# characters of the agent's own work gone, in the one module whose entire
-# purpose is that a rejection must not cost the work. What made the loop
-# expensive was never the file; it was RE-READING it on every pass, and that is
-# bounded where it belongs -- ``_MAX_INLINE_CHARS`` and the caller's shrinking
-# per-attempt budget cap what is REINJECTED. The number of passes is itself now
-# bounded by the rejection circuit breaker, so accumulation cannot run away.
+# The preserved file has no size cap: truncating it would destroy the agent's
+# own work, which this module exists to keep. What is bounded is what gets
+# REINJECTED -- ``_MAX_INLINE_CHARS`` and the caller's shrinking per-attempt
+# budget -- and the number of passes, by the rejection circuit breaker.
 
 _SUFFIX = ".txt"
 _KEY_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")

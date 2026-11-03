@@ -8,10 +8,8 @@ harness closes the Task reporting a non-error status, and surfaces as the
 result a STALE text block -- the last text the model happened to emit before
 the cut.
 
-THE SIGNATURE IS THE PERSISTED ROW, NOT THE MESSAGE TEXT. It used to be the
-absence of a fenced ``agent_contract_handoff`` block in that text; the fence is
-being retired as a delivery channel, so keying on its absence would have
-reclassified every successful turn as cut. What a turn that reached its own end
+THE SIGNATURE IS THE PERSISTED ROW, NOT THE MESSAGE TEXT: the final message
+carries no contract block. What a turn that reached its own end
 leaves behind is a contract row that EXISTS and is FINALIZED, addressed by the
 harness-minted run id the result itself carries (``agentId``) -- the same
 coordinate ``gaia contract view --harness-id`` reads by, resolved through the
@@ -22,10 +20,9 @@ Persistence is a separate, non-blocking step (``observe_task_result``). The
 row read is injectable (``inspect_task_result(..., row_state=...)``) so the
 signature stays testable in both directions without a database.
 
-The harness names this tool ``Agent``; ``Task`` is its former name, still
-honored as a hooks.json matcher but no longer what the payload carries. Both
-names are accepted (``TASK_TOOL_NAMES``) so the dispatch does not depend on
-which one a given harness version reports.
+The harness names this tool ``Agent``; ``Task`` is its other name, also a
+hooks.json matcher. Both names are accepted (``TASK_TOOL_NAMES``) so the
+dispatch does not depend on which one a given harness version reports.
 
 Gotchas:
 - A Task the harness itself reports as errored, cancelled, or interrupted is
@@ -74,7 +71,7 @@ _VISIBLE_FAILURE_STATUSES = frozenset(
 _TERMINAL_STATUSES = frozenset({"completed", "complete", "success", "succeeded", "done"})
 
 # Statuses for a turn that has not ended yet -- a background dispatch reports
-# the launch, not a result, so the missing fence means nothing.
+# the launch, not a result, so no finalized row is expected yet.
 _PENDING_STATUSES = frozenset(
     {"async_launched", "pending", "running", "in_progress", "queued", "started"}
 )
@@ -134,11 +131,10 @@ _PREVIEW_CHARS = 400
 # under-sizing it is not free at all. That asymmetry, not precision, is why the
 # total sits at 2.5s.
 #
-# The quarter-second interval is unchanged: it re-queries the row directly
-# rather than reading a clock, so shortening it loses no information, and it is
-# what lets the dominant race (p50 = 0s, see _await_finalization) resolve
-# almost immediately. Only the retry count moved, 3 -> 11 (2 -> 10 retries),
-# to raise the bound from ~0.5s to 2.5s without slowing the common, fast case.
+# The quarter-second interval re-queries the row directly rather than reading
+# a clock, which lets the dominant race (p50 = 0s, see _await_finalization)
+# resolve almost immediately; the 10 retries after the first read set the 2.5s
+# bound.
 _FINALIZE_GRACE_ATTEMPTS = 11
 _FINALIZE_GRACE_SECONDS = 0.25
 
@@ -280,10 +276,8 @@ _EVIDENCE_LIST_FIELDS: Tuple[str, ...] = (
 )
 
 # Field-read priority for the ONE armed --field command the summary line
-# hands back. open_gaps and cross_layer_impacts lead because agent-protocol
-# names them as the highest-signal reads (a gap declared gets routed; a
-# cross-layer impact is what no other field records); the rest follow in
-# reverse canonical order.
+# hands back: _EVIDENCE_LIST_FIELDS reversed, so open_gaps and
+# cross_layer_impacts come first.
 _FIELD_READ_PRIORITY: Tuple[str, ...] = (
     "open_gaps", "cross_layer_impacts", "verbatim_outputs", "key_outputs",
     "files_checked", "commands_run", "patterns_checked",
@@ -305,8 +299,7 @@ def _populated_evidence_fields(evidence: Mapping[str, Any]) -> List[Tuple[str, i
     """[(field_name, count), ...] for every NON-EMPTY evidence_report list field.
 
     Canonical order (``_EVIDENCE_LIST_FIELDS``); a field absent, null, or an
-    empty list is not named at all -- naming only what there IS to read is
-    the whole value of the line (agent-protocol principle 5).
+    empty list is not named at all.
     """
     out: List[Tuple[str, int]] = []
     for name in _EVIDENCE_LIST_FIELDS:
@@ -365,15 +358,16 @@ def build_contract_summary_line(
 ) -> Optional[str]:
     """The best line this Agent/Task result supports -- MODE A, MODE B, or None.
 
-    MODE A (unchanged): the row is resolvable and FINALIZED -- the state,
-    verification result, and populated evidence-field counts, plus the read
-    command armed with the real id. This is the synchronous-dispatch case the
-    Claude Code docs describe, where PostToolUse fires once the subagent has
-    actually closed. When the envelope proposes project facts in
-    ``memory_delta`` or project-context updates in ``update_contracts``, a line
-    for each names how many and the contract holding them.
+    MODE A: the row is resolvable and FINALIZED -- the state, verification
+    result, and populated evidence-field counts, plus the read command armed
+    with the real id. This is the synchronous-dispatch case, where PostToolUse
+    fires once the subagent has actually closed. The envelope's conclusion
+    follows on its own line, and a line per proposal kind
+    (``memory_delta``, ``update_contracts``) or refusal, as
+    ``proposal_notices.proposal_notice`` renders them, each shown once per
+    session (``gaia.conclusions.claim``).
 
-    MODE B (new): the row is NOT yet finalized (missing, or still DISPATCHED)
+    MODE B: the row is NOT yet finalized (missing, or still DISPATCHED)
     but the result still carries an ``agentId`` -- the async-launch case,
     where PostToolUse fires at LAUNCH, not at close. See
     ``_launch_pointer_line``.
@@ -641,9 +635,9 @@ def detect_task_cut(
 def _trace(hook_data: Mapping[str, Any], **fields: Any) -> None:
     """Append one observer line to the hook trace. Never raises.
 
-    The observer is non-blocking by contract, which previously meant a write
-    that failed left no evidence anywhere -- indistinguishable from a cut that
-    never happened. The trace is where that evidence goes now.
+    The observer is non-blocking, so a failed write would otherwise leave no
+    evidence anywhere -- indistinguishable from a cut that never happened. The
+    trace is where that evidence goes.
     """
     try:
         from ..core.hook_trace import record_hook_invocation

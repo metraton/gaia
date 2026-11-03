@@ -1,23 +1,14 @@
 """
 Dispatch-side contract identity -- minted real, injected adoptable.
 
-The born-at-dispatch path (``ClaudeCodeAdapter._maybe_birth_dispatched_row``)
-stamps a nascent ``agent_contract_handoffs`` row before the subagent runs. That
-row used to be born under a SYNTHETIC key -- ``dispatch.{sid}.{agent}.{key}``
-for ``contract_id`` and the agent NAME for ``agent_id`` -- which no consumer of
-the contract substrate can adopt:
-
-  * ``gaia.contract.drafts._agent_of`` recovers the agent handle by splitting a
-    draft id on its FIRST dot, so the synthetic key yielded the literal
-    ``"dispatch"`` instead of a handle.
-  * ``gaia.contract.validator.AGENT_ID_PATTERN_TEXT`` (``^a[0-9a-f]{16,}$``)
-    rejects an agent NAME such as ``gaia-system`` outright.
-
-So the row existed but nothing could converge onto it: the agent minted its own
-unrelated identity via ``gaia contract init`` and finalized a SECOND row. This
-module owns the other half: minting an identity that is REAL (it satisfies the
-validator) and ADOPTABLE (its ``contract_id`` has the draft-id shape the CLI's
-``--draft-id`` addresses). The identity reaches the subagent through the
+The born-at-dispatch path (``ToolPolicy._maybe_birth_dispatched_row`` in
+``hooks/adapters/tool_policy.py``) stamps a nascent ``agent_contract_handoffs`` row before the subagent runs. This
+module mints the identity that row is born under: REAL (it satisfies
+``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``, ``^a[0-9a-f]{16,}$``, which
+rejects an agent NAME such as ``gaia-system``) and ADOPTABLE (its
+``contract_id`` has the draft-id shape ``--draft-id`` addresses, so
+``gaia.contract.drafts._agent_of``, which splits a draft id on its FIRST dot,
+recovers the agent handle). The identity reaches the subagent through the
 dispatch kernel rendered from the claimed row (``modules/context/kernel_builder``),
 not through a block rendered here.
 
@@ -38,12 +29,9 @@ from __future__ import annotations
 import pathlib as _pl
 import sys as _sys
 
-# Heading of the injected contract block. Consumers (tests, and the agent
-# reading its own context) locate the identity by this marker, never by
-# position in the payload. The dispatch kernel (modules/context/
-# kernel_builder.py, KERNEL_HEADING) renders the block under this same
-# marker; the constant survives here as the marker's protocol-side name now
-# that the legacy identity-block renderer is retired.
+# Heading of the injected contract block. The dispatch kernel
+# (modules/context/kernel_builder.py) renders the block under this same text
+# as its own KERNEL_HEADING constant.
 IDENTITY_BLOCK_HEADING = "# Your Contract"
 
 

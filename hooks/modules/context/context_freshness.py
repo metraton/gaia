@@ -1,10 +1,10 @@
 """
-Context freshness checker for SessionStart hook.
+Context freshness checker.
 
-Determines whether project-context rows in ~/.gaia/gaia.db are fresh enough
-to skip a rescan. Queries the max(updated_at) over project_context_contracts
-for the current workspace. When no rows exist (workspace not yet seeded), the
-result is is_fresh=False so the SessionStart hook triggers a scan.
+Determines whether the project-context sections of the current workspace in
+gaia.db are newer than a threshold: the newest updated_at that
+gaia.store.project_context.workspace_sections returns. No rows reads as
+is_fresh=False. Nothing under hooks/, gaia/, bin/ or tools/ calls it.
 
 Public API:
     - check_freshness(project_root: Path = None) -> FreshnessResult
@@ -20,7 +20,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Context freshness threshold (hours) -- env var overrides default
+# GAIA_SCAN_STALENESS_HOURS, else CONTEXT_FRESHNESS_HOURS, overrides it.
 DEFAULT_FRESHNESS_HOURS = 24
 
 
@@ -87,10 +87,10 @@ def check_freshness(project_root: Path = None) -> FreshnessResult:
 
     Returns:
         FreshnessResult with is_fresh, reason, and age_hours. Reasons:
-            - "missing": gaia.db unavailable or no rows for this workspace
-            - "stale": MAX(updated_at) older than threshold
-            - "fresh": MAX(updated_at) within threshold
-            - "error": exception during evaluation
+            - "missing": gaia.db absent, no workspace, a DB error or no rows
+            - "stale": newest updated_at older than threshold
+            - "fresh": newest updated_at within threshold
+            - "error": the timestamp could not be parsed or compared
     """
     db_path = _get_db_path()
     if db_path is None or not db_path.exists():
@@ -112,8 +112,7 @@ def check_freshness(project_root: Path = None) -> FreshnessResult:
 
     try:
         last_scan_dt = datetime.fromisoformat(max_updated_at)
-        # Normalize to UTC: rows written by the scanner use timezone-aware
-        # isoformat, but legacy migrations may write naive timestamps.
+        # A naive timestamp is read as UTC.
         if last_scan_dt.tzinfo is None:
             last_scan_dt = last_scan_dt.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)

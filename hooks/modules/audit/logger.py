@@ -2,8 +2,6 @@
 Audit logger for tool executions.
 
 Logs all tool executions to daily audit log files.
-Note: session-<id>.jsonl was removed — it duplicated the daily audit log
-with no additional value (session_id was always "default").
 """
 
 import os
@@ -64,12 +62,10 @@ class AuditLogger:
         # silently drift the Activity Today section by the host's UTC offset.
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        # Extract command for bash tools
         command = ""
         if tool_name.lower() == "bash":
             command = redact_text(str(parameters.get("command", "")))
 
-        # Create audit record
         audit_record = {
             "timestamp": timestamp,
             "session_id": self.session_id,
@@ -81,7 +77,6 @@ class AuditLogger:
             "tier": tier,
         }
 
-        # Write to daily audit log (session log removed — was always "session-default.jsonl")
         # Filename rotates on UTC midnight, matching `timestamp` above.
         daily_log_file = self.log_dir / f"audit-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
         self._write_record(daily_log_file, audit_record)
@@ -142,7 +137,7 @@ class AuditLogger:
         GAIA_DEBUG), so a policy-level signal is diagnosable after the fact and
         loadable by ``gaia metrics`` via the ``audit-*.jsonl`` glob. Where
         ``log_error`` emits ``event="error"`` records, this emits an arbitrary
-        ``event`` tag (e.g. ``t3_degraded_allow``) alongside a component and the
+        ``event`` tag (e.g. ``t3_degraded_block``) alongside a component and the
         optional tier / reason / fingerprint / origin fields the metrics layer
         discriminates on.
 
@@ -152,7 +147,7 @@ class AuditLogger:
         same ``_sanitize_params`` redaction the execution audit uses.
 
         Args:
-            event: Machine event tag (e.g. "t3_degraded_allow").
+            event: Machine event tag (e.g. "t3_degraded_block").
             component: Subsystem that raised the event (e.g. "gaia.bash_validator").
             tier: Optional security tier string (e.g. "T3").
             reason: Optional underlying-cause tag (e.g. "approval_persist_failed").

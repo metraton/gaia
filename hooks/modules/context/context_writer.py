@@ -25,12 +25,6 @@ carries no keys to merge and could only express the wholesale replace, so it is
 refused at both seams -- skipped by
 ``contract_validator.parse_update_contracts`` on the way in, and refused by
 :func:`apply_update` at the write itself.
-
-Public API:
-    - apply_update(update, agent_name, workspace, db_path, project, proposed_by) -> dict
-    - process_update_contracts(contract_dict, task_info) -> dict
-    - apply_proposal(clause, workspace, db_path, dry_run, project, proposed_by, proposer_agent) -> dict
-    - proposed_entries(clause) -> (entries, note)
 """
 
 import json
@@ -42,10 +36,6 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-
-# ============================================================================
-# 1. apply_update
-# ============================================================================
 
 def _get_db_path() -> Optional[Path]:
     try:
@@ -91,9 +81,7 @@ def _merge_section_payload(stored: Any, delta: dict) -> dict:
     loss this merge exists to prevent, re-entered by the front door. The posture
     on a fact that stopped being true is to MARK it: ``promote._mark_missing``
     stamps ``MISSING_MARK_KEY`` and keeps the entry, and a mis-keyed row is
-    re-keyed with ``superseded_by`` rather than hard-deleted. A targeted delete
-    verb did exist once and was removed on exactly these grounds -- see the note
-    in ``tests/test_writer_surgical_reconciliation.py``.
+    re-keyed with ``superseded_by`` rather than hard-deleted.
     """
     from gaia.store.project_context import merge_section_payload
 
@@ -261,10 +249,6 @@ def apply_update(
         if con is not None:
             con.close()
 
-
-# ============================================================================
-# 2. process_update_contracts (envelope path)
-# ============================================================================
 
 def _section_keys(contract_name: str, workspace: str, db_path: Optional[Path]) -> set:
     """Top-level keys of the section as ``workspace`` reads it, or an empty set when it holds none."""
@@ -512,7 +496,7 @@ def process_update_contracts(
 
     Args:
         contract_dict: Parsed JSON contract dict (from parse_contract()).
-        task_info: Task metadata (agent, db_path, cloud_scope, workspace, and
+        task_info: Task metadata (agent or agent_type, db_path, workspace, and
             project -- the born row's ``dispatch_project``).
 
     Returns:
@@ -566,7 +550,6 @@ def process_update_contracts(
                 "keys": sorted(routed_entry["payload"]),
             })
 
-    # Process evidence entries (fail-together per D8 -- hook-trusted path)
     if evidence_entries:
         _apply_evidence_entries(evidence_entries, workspace, db_path, agent_name, result)
 
@@ -620,9 +603,6 @@ def _validate_evidence_payload(payload: dict) -> list:
     elif not has_text and not has_artifact:
         errors.append("evidence payload requires exactly one of 'text' or 'artifact_path'")
 
-    # Reject an artifact_path that is not already under the canonical evidence
-    # root (e.g. a repo working-tree file) instead of inserting it verbatim --
-    # same guard bin/cli/ac.py and bin/cli/brief.py already apply.
     artifact_path = payload.get("artifact_path")
     if artifact_path is not None:
         import sys as _sys
@@ -650,14 +630,12 @@ def _apply_evidence_entries(
 ) -> None:
     """Insert evidence rows from update_contracts evidence clauses.
 
-    Implements fail-together semantics (D8): if ANY entry has a validation
-    error, NO rows are inserted for the batch.  Other contract types in the
-    same update_contracts array are unaffected.
+    If ANY entry has a validation error, NO rows are inserted for the batch.
+    Other contract types in the same update_contracts array are unaffected.
 
     Successful inserts are appended to result["contracts"] as "evidence:<id>"
     strings.  Failures are appended to result["rejected"] and result["errors"].
     """
-    # Phase 1: validate ALL entries before touching the DB (fail-together)
     all_errors = []
     for i, entry in enumerate(entries):
         payload = entry.get("payload", {})
@@ -676,7 +654,6 @@ def _apply_evidence_entries(
         )
         return
 
-    # Phase 2: all valid -- insert each entry
     import sys as _sys
     import pathlib as _pl
     _repo_root = _pl.Path(__file__).resolve().parent.parent.parent.parent

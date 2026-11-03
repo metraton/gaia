@@ -82,22 +82,14 @@ def _load_audit_records_since(
     return records
 
 
-# The degraded-T3 sensor was renamed by commit 273e2bb from "t3_degraded_allow"
-# to "t3_degraded_block" (the branch used to let a T3 through non-blocking when
-# approval persistence failed; it now denies instead). Both tags name the SAME
-# sensor firing -- only the outcome changed -- so both are folded into one
-# counter under the CURRENT tag name. Without this, every pre-rename record
-# (the legacy tag, still real audit history on disk) would silently stop being
-# counted the moment the emitter's spelling changed, which is its own way of
-# losing signal: a sensor should not erase its own past by being renamed.
+# The degraded-T3 sensor is emitted as "t3_degraded_block"; audit records on
+# disk may carry the legacy tag "t3_degraded_allow". Both name the SAME sensor
+# firing, so both are folded into one counter under the current tag.
 _DEGRADED_T3_CURRENT_EVENT = "t3_degraded_block"
 _DEGRADED_T3_LEGACY_EVENT = "t3_degraded_allow"
 
-# Mirrors hooks/modules/security/fail_open.py::FAIL_OPEN_EVENT. Not imported
-# (that module is out of this change's scope and under concurrent edit
-# elsewhere) -- kept as a literal, same convention already used here for the
-# other event tags, which are also independently duplicated rather than
-# shared via import.
+# Same literal as hooks/modules/security/fail_open.py::FAIL_OPEN_EVENT, which
+# the aggregation must match; keep them equal.
 _HOOK_FAIL_OPEN_EVENT = "hook_fail_open"
 
 
@@ -118,8 +110,8 @@ def _summarize_security_events(event_records: List[Dict]) -> Dict[str, Any]:
     """Aggregate the always-on synthetic security events over the window.
 
     Discriminates the sensors written to audit-*.jsonl:
-      * ``t3_degraded_block`` (event tag, current name since commit 273e2bb;
-        legacy name ``t3_degraded_allow`` folded in) -- a T3 whose approval
+      * ``t3_degraded_block`` (event tag; legacy name ``t3_degraded_allow``
+        folded in) -- a T3 whose approval
         failed to persist; broken down ``by_reason`` (why persistence failed)
         and ``by_outcome`` (whether that degraded branch allowed the command
         through, the legacy/pre-rename behavior, or blocked it, the current
@@ -225,18 +217,15 @@ def generate_summary(
     total = len(exec_records)
     total_duration = sum(r.get("duration_ms", 0) for r in exec_records)
 
-    # Classify commands from audit log 'command' field
     command_types = defaultdict(int)
     for r in exec_records:
         cmd = r.get("command", "")
         command_types[_classify_command(cmd)] += 1
 
-    # Count by tier
     tiers = defaultdict(int)
     for r in exec_records:
         tiers[r.get("tier", "unknown")] += 1
 
-    # Top command types
     top_commands = sorted(
         command_types.items(),
         key=lambda x: x[1],

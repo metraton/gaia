@@ -4,7 +4,7 @@ This directory contains the modular hook system for Gaia.
 
 ## What is this?
 
-A refactored, maintainable architecture for Claude Code hooks. Instead of monolithic 1000+ line files, the logic is split into focused modules that can be tested, maintained, and extended independently.
+The logic of the Claude Code hooks, split into modules the entry points in `hooks/` and the adapters in `hooks/adapters/` import.
 
 ## Where does this fit?
 
@@ -12,8 +12,8 @@ A refactored, maintainable architecture for Claude Code hooks. Instead of monoli
 Claude Code invokes hook
         |
         v
-[session_start.py] --------> [modules/context/context_freshness] -> Staleness check
-        |                     [modules/scanning/scan_trigger]     -> Auto-refresh
+[session_start.py] --------> [modules/session/session_lifecycle] -> Registry, sweeps, birth block
+        |
         v
 [pre_tool_use.py] ---------> [modules/security/*] -> Tier classification
         |                     [modules/tools/*]   -> Bash/Task validation
@@ -21,10 +21,12 @@ Claude Code invokes hook
     Tool executes
         |
         v
-[post_tool_use.py] --------> [modules/audit/*]    -> Logging & metrics
+[post_tool_use.py] --------> [modules/audit/*]    -> Logging & event detection
                               [modules/session/*]  -> Session context updates
-                              [modules/agents/*]   -> Anomaly detection
+                              [modules/agents/*]   -> Task result observation
 ```
+
+`context/context_freshness.py` and `scanning/scan_trigger.py` have no caller: SessionStart scans no workspace.
 
 ## Module Structure
 
@@ -155,31 +157,26 @@ SendMessage is validated as a PreToolUse event (not a separate hook event):
 A dispatched subagent receives its project context at SubagentStart, as the `# Project context` block of the kernel `context/kernel_builder.py` renders: the dispatch project's `can_read` sections, whole when they fit, else one `gaia context get-contract` pointer per section, else a count line.
 
 ### State Sharing
-Pre-hook saves state to `.claude/.hooks_state.json`, which post-hook reads to get:
+Pre-hook saves a `HookState` per `(session_id, tool_use_id)` under `.claude/.hooks_state/` (`.claude/.hooks_state.json` when either id is missing), which post-hook reads to get:
 - Security tier assigned
 - Command executed
 - Timestamp for duration calculation
 
-### Functional Metrics
-`generate_summary()` now actually works - reads JSONL metrics files and aggregates:
+### Metrics
+`generate_summary()` reads the audit logs and aggregates:
 - Total executions
-- Success rate
 - Average duration
 - Top command types
 - Tier distribution
+- Security events
 
 ## Usage
 
 ### Entry Points
 
+The host runs each hook with the event JSON on stdin. The metrics summary:
+
 ```bash
-# Pre-hook (validation)
-python3 pre_tool_use.py --test
-
-# Post-hook (audit)
-python3 post_tool_use.py --test
-
-# Metrics
 gaia metrics
 ```
 
@@ -197,7 +194,7 @@ print(f"Blocked: {result.blocked}, Reason: {result.reason}")
 
 # Classify command tier
 tier = classify_command_tier("kubectl get pods")
-print(f"Tier: {tier}")  # SecurityTier.T0
+print(f"Tier: {tier}")  # SecurityTier.T0_READ_ONLY
 
 # Validate Bash command (full pipeline: blocked -> mutative verbs -> safe by elimination)
 validator = BashValidator()
@@ -206,7 +203,7 @@ print(f"Allowed: {result.allowed}, Tier: {result.tier}")
 
 # Get metrics summary
 summary = generate_summary(days=7)
-print(f"Success rate: {summary['success_rate']:.1%}")
+print(f"Executions: {summary['total_executions']}")
 ```
 
 ## Architecture Notes
@@ -266,4 +263,4 @@ The list is short on purpose. A reader left off it over-asks, which is the cost 
 - **T0**: Read-only (get, list, describe, show)
 - **T1**: Local validation (validate, lint, fmt, check)
 - **T2**: Simulation (plan, template, diff, --dry-run)
-- **T3**: State-modifying (apply, delete, push, commit)
+- **T3**: State-modifying (apply, delete, push); `git commit` and `git add` are local-only and free

@@ -25,16 +25,14 @@ from ..core.paths import get_session_dir
 from ..core.state import get_session_id
 from .contract_validator import parse_contract
 
-# Single source of truth: gaia.state.VALID_PLAN_STATUSES (a tuple). Kept as a
-# set here for backward-compatible membership checks (``status in VALID_PLAN_STATUSES``).
-# Any change to the canonical tuple propagates here automatically.
+# Single source of truth: gaia.state.VALID_PLAN_STATUSES (a tuple), held here
+# as a set for membership checks.
 try:
     from gaia.state import VALID_PLAN_STATUSES as _CANONICAL_PLAN_STATUSES
     VALID_PLAN_STATUSES = set(_CANONICAL_PLAN_STATUSES)
 except ImportError:
-    # Fallback for environments where the gaia package is not on sys.path
-    # (e.g. legacy hook execution before gaia/ landed). Kept identical to the
-    # canonical tuple so the runtime contract validator continues to work.
+    # Fallback for when the gaia package is not on sys.path. Keep identical to
+    # the canonical tuple.
     VALID_PLAN_STATUSES = {
         "IN_PROGRESS",
         "APPROVAL_REQUEST",
@@ -187,14 +185,10 @@ class ResponseContractValidation:
         return asdict(self)
 
 
-# ============================================================================
-# JSON contract -> dataclass extraction helpers
-# ============================================================================
-
 def _get_str(d: dict, key: str) -> str:
     """Get a string value from a dict, trying both lower-case and UPPER-CASE keys.
 
-    Explicit empty lists/strings are preserved as-is (not coerced to "").
+    Only None falls through to the upper-case key; an explicit "" is returned as is.
     """
     val = d.get(key)
     if val is None:
@@ -239,8 +233,7 @@ def _get_list(d: dict, key: str) -> List[str]:
 def _extract_agent_status(contract: dict) -> AgentStatusBlock:
     """Build an AgentStatusBlock from the parsed ``agent_contract_handoff`` dict.
 
-    Single-mode: ``agent_state`` is the canonical turn-status field (renamed
-    from ``plan_status`` in plan 34 task 4).
+    ``agent_state`` is the canonical turn-status field.
     """
     agent_status = contract.get("agent_status")
     if not agent_status or not isinstance(agent_status, dict):
@@ -471,10 +464,6 @@ def _parse_memory_delta_field(raw: Any) -> MemoryDeltaBlock:
     return MemoryDeltaBlock(True, version, proposals, warnings)
 
 
-# ============================================================================
-# Public parse helpers (operate on agent_output string via parse_contract)
-# ============================================================================
-
 def parse_agent_status(agent_output: str, parsed_contract: Optional[dict] = None) -> AgentStatusBlock:
     """Parse agent_status from agent output using the agent_contract_handoff block."""
     contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
@@ -654,35 +643,18 @@ def validate_response_contract(
             if not consolidation.fields.get(field, []):
                 missing.append(field)
 
-    # ------------------------------------------------------------------
-    # Approval request validation (T2.2 blocking promotions)
-    #
-    # approval_request.verification is blocking (missing -> invalid, not
-    # just an advisory warning). approval_request.rollback is advisory
-    # (non-blocking) because the hook seals a rollback for only five verbs:
-    # bash_validator _STATEMENTS_BY_VERB carries push, apply, delete,
-    # destroy and create, and neither statement table carries a catch-all,
-    # so every other verb still relays rollback=null. Treating that as a
-    # blocking violation produced ~600 of 678 recorded false-positive
-    # anomalies (AC-5). Other approval_request fields remain as warnings.
-    #
-    # impact is deliberately absent from the blocking set even though the
-    # hook seals one for those same five verbs: promoting it would fail
-    # every plan-first request, because `gaia approvals request-set` has no
-    # --impact flag to forward one -- the missing sibling of --rollback and
-    # --verification. That flag is the condition for revisiting this.
-    # ------------------------------------------------------------------
+    # A missing approval_request.verification blocks the close. A missing
+    # rollback only warns: bash_validator's _STATEMENTS_BY_VERB seals one for
+    # push, apply, delete, destroy and create alone, and neither statement
+    # table has a catch-all, so every other verb relays rollback=null. The
+    # other required fields, impact included, warn too.
     warnings: List[str] = []
     approval_req = contract.get("approval_request")
     if approval_req and isinstance(approval_req, dict):
-        # Non-blocking (advisory): rollback is null for verbs the hook authors
-        # no statement for (only push, apply, delete, destroy and create seal one).
         if not approval_req.get("rollback"):
             warnings.append("APPROVAL_REQUEST_ROLLBACK")
-        # Blocking: verification must be present (T2.2)
         if not approval_req.get("verification"):
             missing.append("APPROVAL_REQUEST_VERIFICATION")
-        # Advisory: remaining required fields
         for field in APPROVAL_REQUEST_REQUIRED_FIELDS:
             if field in ("rollback", "verification"):
                 continue  # already handled as blocking above
@@ -692,7 +664,6 @@ def validate_response_contract(
         if risk and risk not in VALID_RISK_LEVELS:
             warnings.append(f"APPROVAL_REQUEST_INVALID_RISK_LEVEL:{risk}")
 
-    # Blocking: verification.result must be "pass" when status is COMPLETE (T2.2)
     if status.agent_state == "COMPLETE":
         evidence_block = contract.get("evidence_report") or {}
         verification = evidence_block.get("verification")

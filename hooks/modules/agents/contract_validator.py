@@ -2,44 +2,19 @@
 Contract validation for agent output: structural checks, evidence parsing,
 command extraction, PLAN_STATUS parsing, and exit code derivation.
 
-The canonical fenced-block format is ``agent_contract_handoff`` with field
-name ``agent_state`` (renamed from ``plan_status`` in plan 34 task 4). Legacy
-HTML-comment blocks (``<!-- AGENT_STATUS -->``, etc.) are **not** parsed. As a
+The fenced-block format parsed here is ``agent_contract_handoff`` with field
+name ``agent_state``. HTML-comment blocks (``<!-- AGENT_STATUS -->``, etc.) are **not** parsed. As a
 tolerant fallback, a ```json``` fence is also accepted when its body already
-has the shape of a handoff envelope (an ``agent_status.agent_state`` key) --
-this covers the recurring case of an
-agent mislabeling the fence out of the generic-JSON habit. The fallback is
-content-based, not a relaxation of field validation: once a dict is
-extracted, its SHAPE is delegated to the portable core
-(``gaia.contract.validator.validate_form``) -- the SAME core the CLI and the
-hook gate validate against. This module owns only fence extraction (the one
-migration-only piece the core deliberately does not do, since it takes an
-already-parsed dict, never raw text); it does not re-implement shape
-validation. ``validate()`` / ``validate_response_contract()`` add only the
-check the form layer deliberately does not own (approval-request blocking)
-on top of that shared core.
+has the shape of a handoff envelope (an ``agent_status.agent_state`` key).
+Once a dict is extracted, its SHAPE is delegated to
+``gaia.contract.validator.validate_form``, the core the CLI and the hook gate
+also use; this module owns the fence extraction, since the core takes an
+already-parsed dict. ``validate()`` adds only the approval-request check.
 
-Both fence regexes require the closing ``` `` `` to start its own line
-(preceded by a real newline) and be followed only by whitespace/end-of-string.
-This tolerates triple-backtick sequences quoted *inside* the JSON body (e.g.
-a code block cited verbatim in ``verbatim_outputs``) without truncating the
-capture at the first such sequence -- a valid JSON string cannot contain a
-literal embedded newline, so an inline quoted fence is never mistaken for the
-block's real closing fence.
-
-Provides:
-    - parse_contract(): Extract structured dict from an agent_contract_handoff
-                        fenced block
-    - validate(): Check agent output against contract requirements -> ValidationResult
-    - extract_commands_from_evidence(): Parse COMMANDS_RUN field from fenced text
-    - extract_commands_executed(): Union COMMANDS_RUN from the persisted row
-                        envelope and the fenced text (see merge_commands_executed())
-    - merge_commands_executed(): Order-preserving, dedup-aware union of two
-                        already-extracted command sequences
-    - extract_plan_status_from_output(): Extract agent_state string
-    - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS
-    - parse_update_contracts(): Parse update_contracts array clause
-    - parse_failure_report(): Parse the optional failure_report clause (advisory)
+Both fence regexes require the closing ``` `` `` to start its own line and be
+followed only by whitespace/end-of-string, so triple-backtick sequences quoted
+inside the JSON body (a code block in ``verbatim_outputs``) do not truncate
+the capture: a valid JSON string cannot contain a literal newline.
 
 memory_delta is parsed by response_contract.parse_memory_delta, not here; the
 form layer deliberately leaves that proposal-only field advisory.
@@ -52,12 +27,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-# SSOT for SHAPE validation (M6/AC-13): the fence parsing below (parse_contract)
-# remains this module's job -- extracting a dict out of legacy fenced text is a
-# migration-only concern the portable core deliberately does not own (it takes
-# an already-parsed dict, never raw text). Once extracted, the dict's SHAPE is
-# validated by the SAME core the CLI and the hook gate use, not by a second,
-# locally re-implemented shape check. See gaia/contract/validator.py.
 from gaia.contract.validator import (
     CANONICAL_REPAIR_MESSAGE,
     FormErrorCode,
@@ -94,32 +63,11 @@ class ValidationResult:
     error_message: str
 
 
-# ============================================================================
-# JSON contract parser (single-mode: agent_contract_handoff with agent_state)
-# ============================================================================
-
-# Single supported fenced tag for agent handoff envelope.
 _TAG_HANDOFF = "agent_contract_handoff"
 
-#
-# The closing fence must start its own line (preceded by ``\n``) and be
-# followed only by whitespace or end-of-string. A naive non-greedy
-# ``(.*?)```` `` matches the FIRST literal ``` `` `` anywhere in the body --
-# which truncates the capture (and breaks ``json.loads``) whenever the
-# contract legitimately quotes triple-backtick fenced content inline (e.g.
-# a code block cited in ``verbatim_outputs``). A valid JSON string cannot
-# contain a real embedded newline (it must be escaped as ``\n`` -- two
-# literal characters), so a quoted fence inside a JSON string value is never
-# preceded by an actual line break; requiring the closing ``` `` `` to start
-# a real line is therefore sufficient to skip over it and find the fence
-# that actually closes the block.
 _RE_HANDOFF = re.compile(r'```agent_contract_handoff\s*\n(.*?)\n```(?=\s|\Z)', re.DOTALL)
 
-# Tolerant fallback (see module docstring): a ```json``` fence is accepted
-# ONLY when its body already has the shape of a handoff envelope. This does
-# not widen what counts as a valid contract -- it widens which fence label
-# is accepted for a body that already is one. Same own-line closing-fence
-# requirement as _RE_HANDOFF, for the same reason.
+# Fallback fence label (see module docstring), with the same own-line closing fence.
 _RE_JSON_FALLBACK = re.compile(r'```json\s*\n(.*?)\n```(?=\s|\Z)', re.DOTALL)
 
 
@@ -141,24 +89,15 @@ def _looks_like_handoff_envelope(parsed: Any) -> bool:
 def parse_contract(agent_output: str) -> Optional[dict]:
     """Extract structured contract dict from an ``agent_contract_handoff`` block.
 
-    The single supported envelope uses ``agent_state`` as the canonical
-    turn-status field (renamed from the former ``plan_status`` envelope key,
-    plan 34 task 4). It matches the persisted
-    ``agent_contract_handoffs.agent_state`` column; the lifecycle column
-    ``episodes.plan_status`` keeps its own name.
-
     The parsed dict is augmented with a ``_contract_tag`` key
     (``"agent_contract_handoff"``) so downstream callers can identify the
     source uniformly.
 
     When no correctly-tagged fence is found, falls back to scanning ```json```
-    fences for one whose body already has the shape of a handoff envelope
-    (see ``_looks_like_handoff_envelope``); the LAST such block wins, matching
-    the protocol convention that the contract is the final block of the turn.
-    This fallback only accepts payloads that are already structurally a
-    handoff -- it never accepts a fence whose body lacks ``agent_status``,
-    and it never relaxes the required-field validation performed downstream
-    by ``validate()`` / ``validate_response_contract()``.
+    fences for one whose body has the shape of a handoff envelope (see
+    ``_looks_like_handoff_envelope``); the LAST such block wins, since the
+    contract is the final block of the turn. Required-field validation is
+    unchanged downstream.
 
     Args:
         agent_output: Complete output from agent execution.
@@ -194,27 +133,14 @@ def parse_contract(agent_output: str) -> Optional[dict]:
 
 
 def _resolve_status(agent_status: dict) -> str:
-    """Resolve the effective status string from an agent_status dict.
-
-    The canonical field is ``agent_state`` (matches DB column
-    ``agent_contract_handoffs.agent_state``, renamed from the former
-    ``plan_status`` envelope key in plan 34 task 4).
-    """
+    """Resolve the effective status string (upper-cased ``agent_state``) from an agent_status dict."""
     agent_state = str(agent_status.get("agent_state", "")).strip()
     return agent_state.upper().rstrip(".,;")
 
 
-# ============================================================================
-# JSON contract validation helpers
-# ============================================================================
-
-# Translation table: gaia.contract.validator.FormError.field (dotted, the
-# core's vocabulary) -> this module's pre-existing legacy uppercase token
-# vocabulary (what callers of validate()/ValidationResult.missing already
-# depend on -- see tests/hooks/test_response_contract.py and
-# tests/hooks/modules/agents/test_contract_validator.py). This module does
-# NOT re-decide shape validity; it only relabels the SSOT's verdict so its
-# existing callers keep working unchanged.
+# gaia.contract.validator.FormError.field (dotted) -> the uppercase tokens that
+# callers of validate()/ValidationResult.missing read; shape validity is not
+# decided here.
 _FORM_MISSING_FIELD_TOKENS = {
     "agent_contract_handoff": ("AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"),
     "agent_status": ("AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"),
@@ -248,8 +174,6 @@ def _legacy_tokens_for_form_error(error) -> List[str]:
     if error.code is FormErrorCode.VERIFICATION_RESULT:
         return [_FORM_VERIFICATION_TOKENS.get(error.field, "VERIFICATION_RESULT_MUST_BE_PASS")]
     if error.code is FormErrorCode.VERIFICATION_SHAPE:
-        # R3: an additive code with no legacy predecessor -- its own value is
-        # the token (distinct from the VERIFICATION_RESULT_* vocabulary).
         return ["VERIFICATION_SHAPE"]
     if error.code is FormErrorCode.MISSING_FIELD:
         if error.field in _FORM_MISSING_FIELD_TOKENS:
@@ -264,46 +188,30 @@ def _legacy_tokens_for_form_error(error) -> List[str]:
 def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) -> ValidationResult:
     """Validate agent output using the parsed agent_contract_handoff dict.
 
-    SHAPE (M1/AC-1 four named codes: AGENT_ID_FORMAT, PLAN_STATUS,
-    VERIFICATION_RESULT, MISSING_FIELD) is delegated entirely to the portable
-    core, ``gaia.contract.validator.validate_form`` -- the SAME core the CLI
-    (M2) and the hook gate (M4) validate against (AC-13: fence fallback shares
-    one core, it does not re-implement shape validation). ``contract`` may be
-    ``None`` (no parseable fenced block at all): validate_form(None) reports
-    that uniformly as a MISSING_FIELD, so the "no contract" and "malformed
-    contract" cases funnel through one call.
-
-    What stays HERE, additively, because it is out of the form layer's scope
-    by design (see gaia/contract/validator.py's "NO TASK CONTEXT" design
-    note):
-    - approval_request.verification blocking check
+    SHAPE is delegated to ``gaia.contract.validator.validate_form``; ``None``
+    (no parseable fenced block) is reported by it as a MISSING_FIELD. What
+    stays here is the blocking approval_request.verification check, which the
+    form layer does not own (see its "NO TASK CONTEXT" design note).
 
     Args:
         contract: Parsed dict from parse_contract(), or None when no fenced
             block was found at all.
-        task_info: Task metadata (kept for signature stability; the
-            injected-context-driven consolidation check retired with the
-            preloaded-context payload).
+        task_info: Unused; kept so callers' signatures stay stable.
 
     Returns:
         ValidationResult with is_valid, missing fields list, and error_message.
     """
     all_missing: List[str] = []
 
-    # agent_status + evidence_report SHAPE -- delegated to the SSOT core.
     form_result = validate_form(contract)
     for error in form_result.errors:
         for token in _legacy_tokens_for_form_error(error):
             if token not in all_missing:
                 all_missing.append(token)
 
-    # approval_request.verification must be present (blocking).
-    # approval_request.rollback is advisory only (non-blocking) because the
-    # hook seals a rollback for only five verbs: bash_validator
-    # _STATEMENTS_BY_VERB carries push, apply, delete, destroy and create,
-    # and neither statement table carries a catch-all, so every other verb
-    # still relays rollback=null -- treating that as a blocking violation
-    # produced ~600 of 678 recorded false-positive anomalies (AC-5).
+    # verification blocks; rollback is advisory, because bash_validator's
+    # _STATEMENTS_BY_VERB seals one for only five verbs (push, apply, delete,
+    # destroy, create) and every other verb relays rollback=null.
     approval_req = contract.get("approval_request") if isinstance(contract, dict) else None
     if approval_req and isinstance(approval_req, dict):
         if not approval_req.get("rollback"):
@@ -316,10 +224,6 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
 
     if all_missing:
         fields_str = ", ".join(all_missing)
-        # The rich repair guidance is the SAME core's canonical message (AC-13):
-        # the fence fallback does not carry its own, second copy of the repair
-        # template. error_summary() adds the specific defect list the core
-        # found (empty when the only failures are the additive checks above).
         form_detail = form_result.error_summary()
         detail_line = f"\nDefects: {form_detail}\n" if form_detail else "\n"
         error_message = (
@@ -335,31 +239,17 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
     return ValidationResult(is_valid=True, missing=[], error_message="")
 
 
-# ============================================================================
-# Main validation entry point
-# ============================================================================
-
 def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     """Validate agent output against contract requirements.
 
-    Accepts the single canonical ``agent_contract_handoff`` fenced-block format.
-
-    This is the MIGRATION-ONLY fallback path for the legacy fenced block
-    (AC-13): ``parse_contract`` extracts a plain dict from the raw fenced
-    text -- fence extraction is the one piece of work the portable core
-    intentionally does not do -- and the resulting dict is handed to
-    ``_validate_from_handoff``, which validates SHAPE through the SAME core
-    (``gaia.contract.validator.validate_form``) the CLI (M2) and the hook
-    gate (M4) use. There is no second, locally re-implemented shape
-    validator here.
+    ``parse_contract`` extracts the dict from the fenced text and
+    ``_validate_from_handoff`` validates it.
 
     Checks:
-    1. AGENT_STATUS block with agent_state and agent_id (SSOT core)
-    2. EVIDENCE_REPORT with required fields, when status requires it (SSOT core)
-    3. Blocking promotions: verification.result=pass for COMPLETE (SSOT core);
-       approval_request.verification when present -- additive
-    4. Loop-state blocking: iteration < max_iterations with metric below
-       threshold -- additive
+    1. AGENT_STATUS block with agent_state and agent_id (validate_form)
+    2. EVIDENCE_REPORT with required fields (validate_form)
+    3. verification.result=pass for COMPLETE (validate_form);
+       approval_request.verification when present (additive)
 
     Args:
         agent_output: Complete output from agent execution.
@@ -372,22 +262,12 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     return _validate_from_handoff(contract, task_info)
 
 
-# ============================================================================
-# Functions absorbed from evidence_parser.py (backward compatible)
-# ============================================================================
-
 def _commands_from_contract_dict(contract: Optional[dict]) -> List[str]:
     """The COMMANDS_RUN filter, given an already-parsed contract dict.
 
-    Both sources of ``commands_executed`` -- the fenced text (parsed by
-    :func:`extract_commands_from_evidence`) and a turn's persisted row
-    envelope (parsed once by the caller, never re-read here) -- end up
-    passing an envelope dict through this ONE function. That is what keeps
-    the two sources shape-compatible without a separate normalization step:
-    whatever shape either producer used for an entry (the canonical plain
-    string, or a tolerated ``{"command": ...}``/``{"cmd": ...}`` dict) is
-    resolved identically for both, so a caller merging their outputs is
-    always merging two lists of plain command strings.
+    The fenced text and a turn's persisted row envelope both pass through this
+    one function, so an entry (a plain string or a ``{"command": ...}`` /
+    ``{"cmd": ...}`` dict) resolves identically for both.
 
     Commands whose result indicates they were NOT actually run (e.g. "not
     run", "skipped", "n/a", "not executed") are excluded.
@@ -434,43 +314,23 @@ def merge_commands_executed(
 ) -> List[str]:
     """Union two already-extracted command sequences into one ordered list.
 
-    ``row_commands`` is this turn's persisted dispatch-row envelope (written
-    incrementally, in real time, by ``gaia contract set/add/fill``);
+    ``row_commands`` is this turn's persisted dispatch-row envelope;
     ``fence_commands`` is the fenced ``agent_contract_handoff`` block in the
-    final message text. Each is independently a faithful sequence -- this
-    only reconciles the two into one, on three decisions:
+    final message text. Both are plain command strings
+    (``_commands_from_contract_dict`` normalizes them).
 
-    Dedup criterion: literal text equality, scoped to the ALIGNED position
-    between the two sequences (via :class:`difflib.SequenceMatcher`), not a
-    set-membership dedup over the whole list. A command that is genuinely
-    run twice on purpose stays twice, because each source lists it twice and
-    an aligned block of repeats matches as one equal run of length 2, not
-    one deduplicated entry -- collapsing by naive set membership would lose
-    that repetition, which is real. The cost of the aligned-position choice:
-    the same command run once by each source, in a stretch where the two
-    sequences otherwise disagree, is not always recognized as "the same
-    occurrence" and can surface twice -- accepted, because the alternative
-    (matching by value regardless of position) is what would erase an
-    intentional repeat.
+    Dedup is by literal equality at the ALIGNED position
+    (:class:`difflib.SequenceMatcher`), not set membership, so a command run
+    twice on purpose stays twice. The cost: the same command listed once by
+    each source inside a stretch where they otherwise disagree can surface
+    twice.
 
-    Order: row-first. Where the two sequences agree (the expected case --
-    the fence is normally the same envelope the row was finalized with),
-    the shared run is emitted once, in that order. Where they diverge for a
-    stretch, the row's version of that stretch is emitted before the
-    fence's exclusive items, because the row is the turn's incrementally
-    time-stamped record (agent-protocol's "write in flight" discipline)
-    while the fence is composed once, at the end, from memory -- and a
-    record composed at the close is the second telling, not the first.
+    Order is row-first: an agreeing run is emitted once, and where the
+    sequences diverge the row's stretch precedes the fence's exclusive items,
+    because the row is written in flight and the fence composed at the close.
 
-    Shape: both inputs are expected to already be plain command strings --
-    :func:`_commands_from_contract_dict` is the single normalizer both the
-    fence and the row envelope pass through before reaching here, so this
-    function itself does no shape handling.
-
-    ``autojunk=False`` is deliberate: :class:`difflib.SequenceMatcher`'s
-    default junk heuristic can down-weight a command that recurs often in
-    one of the two lists, which is exactly the intentional-repeat case this
-    merge must not distort.
+    ``autojunk=False`` keeps the junk heuristic from down-weighting a command
+    that recurs often in one list, which is the intentional-repeat case.
     """
     matcher = difflib.SequenceMatcher(
         None, row_commands, fence_commands, autojunk=False
@@ -496,14 +356,11 @@ def extract_commands_executed(
     merged with the fenced ``agent_contract_handoff`` text, so neither
     source's gap loses commands the other source has.
 
-    ``row_envelope`` is the SAME already-resolved dict a caller such as
-    ``ClaudeCodeAdapter.adapt_subagent_stop`` already holds (its
-    ``_authoritative_envelope`` local, resolved by the SubagentStop gate --
-    see ``hooks/adapters/claude_code.py``) -- this performs no DB query and
-    no disk read of its own; it only re-derives commands from a dict the
-    caller passes in, plus the raw text it already had.
+    ``row_envelope`` is the dict the SubagentStop gate already resolved
+    (``_authoritative_envelope`` in ``hooks/adapters/subagent_stop_core.py``);
+    this function reads neither the DB nor the disk.
 
-    See :func:`merge_commands_executed` for the dedup/order/shape decisions.
+    See :func:`merge_commands_executed` for the dedup and order decisions.
     """
     fence_commands = extract_commands_from_evidence(agent_output)
     row_commands = _commands_from_contract_dict(
@@ -511,10 +368,6 @@ def extract_commands_executed(
     )
     return merge_commands_executed(row_commands, fence_commands)
 
-
-# ============================================================================
-# T2.3 Clause parsers (new envelope fields)
-# ============================================================================
 
 _VALID_EVIDENCE_TYPES = frozenset({
     "text", "file", "command_output", "url", "screenshot",
@@ -524,7 +377,7 @@ _VALID_EVIDENCE_TYPES = frozenset({
 def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
     """Validate the payload of an evidence update_contracts clause.
 
-    Enforces the flat-field shape from D6 (brief plan decisions):
+    Enforces the flat-field shape:
     - ``brief_id`` required, must be int (or string coercible to int)
     - ``ac_id``    required, non-empty string
     - ``type``     required, must be in the valid evidence type enum
@@ -541,7 +394,6 @@ def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
         errors.append("evidence payload must be an object/dict")
         return errors
 
-    # brief_id: required, must be coercible to int
     raw_brief_id = payload.get("brief_id")
     if raw_brief_id is None:
         errors.append("evidence payload missing required field: brief_id")
@@ -553,12 +405,10 @@ def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
                 f"evidence payload brief_id must be an integer, got {type(raw_brief_id).__name__!r}: {raw_brief_id!r}"
             )
 
-    # ac_id: required, non-empty string
     ac_id = payload.get("ac_id")
     if not ac_id or not str(ac_id).strip():
         errors.append("evidence payload missing or empty required field: ac_id")
 
-    # type: required, must be in enum
     ev_type = payload.get("type")
     if not ev_type:
         errors.append(
@@ -571,7 +421,6 @@ def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
             f"must be one of {sorted(_VALID_EVIDENCE_TYPES)}"
         )
 
-    # text / artifact_path: mutually exclusive, at least one required
     has_text = payload.get("text") is not None
     has_artifact = payload.get("artifact_path") is not None
 
@@ -585,11 +434,8 @@ def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
             "evidence payload requires exactly one of 'text' or 'artifact_path'"
         )
 
-    # artifact_path must already live under the canonical evidence store --
-    # a path elsewhere (a repo working tree, /tmp, ...) is rejected by name
-    # rather than inserted verbatim. Mirrors bin/cli/ac.py and bin/cli/brief.py,
-    # which apply the same gaia.evidence.fs.require_canonical_artifact_path
-    # guard to artifact_path references.
+    # bin/cli/ac.py and bin/cli/brief.py apply the same
+    # require_canonical_artifact_path guard.
     artifact_path = payload.get("artifact_path")
     if artifact_path is not None:
         try:
@@ -611,21 +457,15 @@ def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
     is a dict, and carries a ``payload`` that is itself a JSON object) is
     returned as-is.
 
-    A non-object ``payload`` is rejected here rather than passed on, because a
-    payload is a DELTA the writer deep-merges into the stored section: only a
-    dict has keys to merge, so any other type could only replace the whole
-    section, silently discarding the entries the delta never mentioned. The
-    writer refuses such a payload as well
-    (``context_writer.apply_update``) -- this is the earlier of the two gates,
-    the one that stops the entry before a permission query or a write
-    transaction is opened for it.
+    A non-object ``payload`` is rejected here because a payload is a DELTA the
+    writer deep-merges into the stored section: any other type could only
+    replace the whole section. ``context_writer.apply_update`` refuses it too;
+    this gate stops the entry before a permission query or write transaction.
 
     Structural failures (not a dict, missing required keys) are skipped and
-    logged.  Payload-level validation for specific contract types (e.g.
-    ``evidence``) is intentionally **not** performed here so that callers can
-    apply type-specific semantics (e.g. fail-together for evidence batches per
-    D8).  Use ``validate_evidence_update_contract_payload()`` directly when
-    pre-validating evidence payloads before calling the writer.
+    logged.  Payload-level validation per contract type (e.g. ``evidence``) is
+    left to the callers; ``validate_evidence_update_contract_payload()``
+    pre-validates evidence payloads.
 
     Returns an empty list when the clause is absent or entirely malformed.
     """
@@ -654,17 +494,14 @@ def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
             )
             continue
 
-        # EXTENSION_POINT: add additional contract-type validators here
-        # Note: evidence payload validation (validate_evidence_update_contract_payload)
-        # is applied at write time by context_writer._apply_evidence_entries() with
-        # fail-together semantics (D8). Do not filter evidence entries here.
-
+        # Evidence entries are validated at write time by
+        # context_writer._apply_evidence_entries, which fails the batch together.
         results.append(entry)
     return results
 
 
 def parse_conclusion(contract: dict) -> Optional[str]:
-    """The specialist's verdict for the orchestrator, read from ``user_facing_summary`` on rows closed before the rename."""
+    """The specialist's verdict for the orchestrator, as ``gaia.contract.validator.conclusion_of`` reads it."""
     from gaia.contract.validator import conclusion_of
 
     return conclusion_of(contract)
@@ -677,14 +514,9 @@ def parse_failure_report(contract: dict) -> Optional[Dict[str, Any]]:
     what it attempted, what broke, and the observed proof -- kept separate
     from ``open_gaps`` (the unknown, not a defect).
 
-    Advisory means advisory: absent, explicit null, or malformed all return
-    None -- the "no hay" signal, never a raised exception and never a
-    partial/best-effort dict a caller could mistake for a clean report.
-    Well-formedness is delegated to the SAME shape check the validator (and
-    the SubagentStop gate) apply -- ``gaia.contract.validator.validate_form``'s
-    FAILURE_REPORT_SHAPE code -- so a block malformed enough to be rejected
-    at write time is never read here as if it were clean; there is one
-    definition of "well-formed", not a second one that could drift apart.
+    Absent, explicit null, or malformed all return None, never an exception or
+    a partial dict. Well-formedness is ``validate_form``'s FAILURE_REPORT_SHAPE
+    code, the same check the SubagentStop gate applies.
 
     Returns the normalized dict on success::
 
@@ -722,10 +554,9 @@ def parse_failure_report(contract: dict) -> Optional[Dict[str, Any]]:
 def extract_plan_status_from_output(agent_output: str) -> str:
     """Extract the effective agent_state string from agent output.
 
-    Reads the canonical ``agent_state`` field (renamed from ``plan_status`` in
-    plan 34 task 4) from the ``agent_contract_handoff`` block. Returns the raw
-    status string (e.g. "COMPLETE", "BLOCKED", "NEEDS_INPUT") or empty string
-    if not found. (Function name retained for import stability.)
+    Reads ``agent_state`` from the ``agent_contract_handoff`` block. Returns the
+    upper-cased status string (e.g. "COMPLETE", "BLOCKED", "NEEDS_INPUT") or
+    empty string if not found.
     """
     contract = parse_contract(agent_output)
     if contract is None:
@@ -749,10 +580,6 @@ def extract_exit_code_from_output(agent_output: str) -> int:
             return 1
     return 0
 
-
-# ============================================================================
-# Cross-field validation: verbatim_outputs consistency (Option D)
-# ============================================================================
 
 _VERBATIM_PLACEHOLDER_PATTERNS = re.compile(
     r"^(N/?A|none|no\s+output|no\s+output\s+captured|not\s+applicable|"
@@ -847,10 +674,6 @@ def validate_verbatim_outputs_consistency(
         ),
     }
 
-
-# ============================================================================
-# Approval request validation
-# ============================================================================
 
 _APPROVAL_STATUSES = {"APPROVAL_REQUEST"}
 

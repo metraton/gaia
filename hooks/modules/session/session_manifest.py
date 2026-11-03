@@ -25,16 +25,12 @@ from ..context.user_sections import CONTEXT_BUDGET, USER_HEADER, tool_lines
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _read_gaia_version() -> Optional[str]:
     """Best-effort read of the installed gaia version.
 
-    Walks up from this file until a package.json with a ``version`` field is
-    found. Returns the version string or None if no readable package.json is
-    on the ancestor chain. Never raises.
+    Walks up from this file to the first package.json and returns its
+    ``version``, or None when that file has none, is unreadable, or no
+    package.json is on the ancestor chain. Never raises.
     """
     try:
         here = Path(__file__).resolve()
@@ -60,11 +56,10 @@ def _describe_gaia_version(version: str) -> str:
     A `gaia dev` build ships the same semver as the release it was packed from,
     so the bare version cannot distinguish the pristine release from the Nth
     local iteration of it; `gaia.dev_builds` keeps that count in a sidecar
-    (never in the five version sources the release gate cross-checks).
+    (never in the version sources the release gate cross-checks).
 
     Returns *version* unchanged whenever the counter is absent, corrupt, or
-    unreadable -- the same fail-to-silence discipline as the memory block, and
-    the reason SessionStart cannot be broken by this annotation.
+    unreadable, so this annotation cannot break SessionStart.
     """
     try:
         from gaia.dev_builds import describe_version
@@ -414,10 +409,6 @@ def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX, db_path=None) -
         return ""
 
 
-# ---------------------------------------------------------------------------
-# Builders
-# ---------------------------------------------------------------------------
-
 PROJECTS_HEADER = "## Workspaces I manage"
 ENVIRONMENT_HEADER = "## Environment"
 DUE_HEADER = "## Due"
@@ -465,7 +456,7 @@ def build_due_section(workspace: Optional[str]) -> str:
 
 
 def _installation_values() -> list[str]:
-    """``gaia=<version> channel=<channel>`` as values: a live re-scan of the declared install, else the package.json walk; CLAUDE_PLUGIN_ROOT means the plugin channel."""
+    """``gaia=<version> channel=<channel>`` as values: a live re-scan of the declared install, else the package.json walk; a process running from a plugin install is the plugin channel."""
     installation = _scan_live_gaia_installation() or {}
     version = installation.get("version") or _read_gaia_version()
     if not version:
@@ -562,11 +553,12 @@ def _display_name(row: dict) -> str:
 
 
 def _read_roster() -> list[dict]:
-    """The managed workspaces, each with its root and its active projects; ``[]`` on any error.
+    """The managed workspaces, each with its root and its active projects.
 
-    A workspace is managed while it holds a root or a project and has not been
-    retired. A project is its ``projects`` row unless it vanished from disk
-    or is a second clone another project's contract entry marks ``copy_of``.
+    A workspace is listed while it is not retired and holds at least one
+    project. A project is an active ``projects`` row unless it is a second
+    clone another project's contract entry marks ``copy_of``. Raises on a
+    database error; ``projects_renderer`` is what turns that into "".
     """
     from gaia.identity_shape import COPY_MARK_KEY, classify_identity_shape, is_reserved_slug
     from gaia.store.project_context import workspace_sections, workspaces_with_section
@@ -634,8 +626,8 @@ def build_projects_section(max_chars: int) -> str:
     projects busiest first (turns dispatched in the window, then live-pending
     count, then name). When the full section does not fit it degrades in
     order: three projects per group, only the projects with pending work,
-    group names with counts, one line per workspace. The two pointer lines
-    land whatever ``max_chars`` is.
+    group names with counts, one line per workspace. That last form is
+    returned even when it exceeds ``max_chars``.
     """
     return projects_renderer()(max_chars)
 
@@ -774,10 +766,6 @@ def build_schema_direction_block() -> str:
         logger.debug("build_schema_direction_block failed (non-fatal): %s", exc)
         return ""
 
-
-# ---------------------------------------------------------------------------
-# Assembler
-# ---------------------------------------------------------------------------
 
 def orchestrator_user_rows() -> list[dict]:
     """The user rows the orchestrator's context indexes: every live fact and preference of the user."""

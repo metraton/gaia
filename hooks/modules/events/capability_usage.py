@@ -1,4 +1,4 @@
-"""Record gaia CLI calls and skill loads in harness_events; argument values are never stored."""
+"""Record gaia CLI calls and skill loads in harness_events, without argument values, and a subagent's tool calls for its finalize."""
 
 from __future__ import annotations
 

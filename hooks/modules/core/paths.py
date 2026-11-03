@@ -2,7 +2,8 @@
 Unified path resolution for gaia hooks.
 
 Path resolution follows three base directories:
-- PLUGIN_ROOT (.claude/): Code, config, agents, skills, context providers
+- The .claude directory (find_claude_dir()): the nearest one found searching
+  upward from the cwd
 - DATA HOME (gaia.paths.data_dir(): GAIA_DATA_DIR, default ~/.gaia): logs,
   events and session state, shared by every channel so switching between the
   plugin, npm and inline launches keeps one history
@@ -54,22 +55,18 @@ def find_claude_dir() -> Path:
     """
     current = Path.cwd()
 
-    # If we're already in a .claude directory, return it
     if current.name == ".claude":
         return current
 
-    # Look for .claude in current directory
     claude_dir = current / ".claude"
     if claude_dir.exists():
         return claude_dir
 
-    # Search upward through parent directories
     for parent in current.parents:
         claude_dir = parent / ".claude"
         if claude_dir.exists():
             return claude_dir
 
-    # Fallback - use current directory's .claude (but don't create it yet)
     logger.warning(f"No .claude directory found, using {current}/.claude")
     return current / ".claude"
 
@@ -80,9 +77,8 @@ def get_plugin_data_dir() -> Path:
     Get the directory holding what this install records about itself.
 
     Resolution order:
-    1. CLAUDE_PLUGIN_DATA env var (set by Claude Code >= 2.1.78), one per
-       plugin id (gaia-gaia-dev, gaia-gaia-marketplace, gaia-inline)
-    2. Fallback to find_claude_dir() for backward compatibility
+    1. CLAUDE_PLUGIN_DATA env var
+    2. find_claude_dir()
 
     Logs, events and session state are not kept here: they live in the data
     home (get_data_home()), which every channel shares.
@@ -98,7 +94,6 @@ def get_plugin_data_dir() -> Path:
         data_dir = Path(plugin_data)
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
-    # Fallback: data co-located with code in .claude/
     return find_claude_dir()
 
 

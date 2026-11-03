@@ -4,13 +4,10 @@ Per-turn circuit breaker for the contract-rejection loop.
 The defect this exists for: the SubagentStop gate rejects a turn with
 exit_code=2, the harness hands that rejection back to the SUBAGENT, and the
 subagent tries again -- with no layer anywhere counting how many times that
-already happened. Measured: one agent retried ELEVEN times on the same
-rejection code and spent 361k tokens; another, the day before, ten. The
-rejection message was byte-identical on attempt one and attempt eleven, so the
-agent had no way to know it was in a loop, and the relay file it re-read grew
-to 37 KB.
+already happened. The rejection message is byte-identical on every attempt, so
+the agent has no way to know it is in a loop.
 
-Three things were missing and are supplied here:
+This module supplies three things:
 
   * A COUNT that outlives the attempt but dies with the turn. It lives in the
     relay's own directory (``<data_dir>/rejected_turns/<key>.attempts``) under
@@ -27,11 +24,8 @@ Three things were missing and are supplied here:
     ``hooks/adapters/claude_code.py``) -- specifically, NOT re-emitting
     ``hookSpecificOutput.additionalContext``, the one stdout key the harness
     hands back to the subagent as a system reminder and that therefore RESUMES
-    the very turn being cut. Measured by suppression against the live harness:
-    with that key emitted, a tripped turn crossed the gate 7 more times; with
-    it suppressed, the turn ended by itself on the next pass. A caller that
-    reads ``tripped=True`` and still emits that key has counted correctly and
-    not cut anything.
+    the very turn being cut. A caller that reads ``tripped=True`` and still
+    emits that key has counted correctly and not cut anything.
 
 The trip is DEGRADED AND LOUD, and the hard constraint is that it is degraded:
 ending a turn is not certifying it. Nothing here finalizes a contract row,
@@ -44,12 +38,12 @@ A trip is STICKY: once a key has tripped, further rejections of that key report
 the trip again rather than starting a fresh count, so a re-entered turn can
 never restart the loop it was cut out of.
 
-The count also carries the loop's remaining insumo gap: an agent that repeats
-a rejection knew WHICH FIELD was wrong and nothing else -- not what it was
-dispatched to do, not what it was told last time. :func:`retry_notice` now
-reinjects the dispatch's own objective (bounded) and the PREVIOUS attempt's
-typed rejection codes (one attempt's worth, carried in this same counter) --
-both degrading to nothing, silently, when their input is absent.
+An agent that repeats a rejection knew WHICH FIELD was wrong and nothing else
+-- not what it was dispatched to do, not what it was told last time.
+:func:`retry_notice` therefore reinjects the dispatch's own objective
+(bounded) and the PREVIOUS attempt's typed rejection codes (one attempt's
+worth, carried in this same counter) -- both degrading to nothing, silently,
+when their input is absent.
 """
 
 from __future__ import annotations

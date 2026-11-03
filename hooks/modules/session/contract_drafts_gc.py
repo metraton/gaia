@@ -4,10 +4,10 @@ SessionStart contract-drafts garbage collection.
 The contract-draft substrate (``~/.gaia/contract_drafts/*.json``) holds one
 JSON file per agent contract draft. ``gaia contract init/set/add/fill`` build a
 draft incrementally, and ``finalize`` writes the terminal ``agent_contract_
-handoffs`` DB row -- but finalize NEVER deletes the draft file. Left unbounded,
-the directory grows without limit (observed: ~382 accumulated files).
+handoffs`` DB row -- but finalize never deletes the draft file.
 
-This module prunes draft files older than a threshold at SessionStart.
+This module prunes the draft files the shared retention policy selects at
+SessionStart.
 
 Design invariants (sibling of ``db_backup.py``):
   * SessionStart-only: runs once per session at launch, never during a turn,
@@ -20,20 +20,16 @@ Design invariants (sibling of ``db_backup.py``):
     constant and reads no retention env var, so there is nothing here to drift.
     ``gaia cleanup``'s ``_prune_contract_drafts`` calls the identical policy
     function, which is what makes the manual dry-run a true preview of this
-    sweep. It was not always: the CLI once implemented its own age-only cutoff,
-    and on a 383-file corpus the two selected 100 (all ``spent``) against 0 --
-    a preview that showed nothing hours before the sweep removed ~100 files.
+    sweep.
   * Best-effort: every per-file failure is swallowed; a failure NEVER blocks
     session start (same posture as ``db_backup`` and
     ``cleanup._prune_old_files``).
 
-Why age alone was not enough: the age-only rule never collected anything in
-practice. Drafts accumulate continuously, so at any moment nearly the whole
-directory is younger than the threshold -- 481 files had built up while every
-one of them sat inside a 7-day window. The DB-aware ``spent`` rule is what
-actually reclaims them: a draft whose turn already has a terminal
-``agent_contract_handoffs`` row is a spent copy of a durable record. Age
-remains as the backstop for drafts that never finalized.
+Age alone reclaims little, because drafts accumulate continuously and nearly
+all sit inside the age window. The DB-aware ``spent`` rule reclaims them: a
+draft whose turn already has a terminal ``agent_contract_handoffs`` row is a
+spent copy of a durable record. Age remains as the backstop for drafts that
+never finalized.
 
 Thresholds: ``GAIA_CONTRACT_DRAFTS_MAX_DAYS`` (default 7 days) and
 ``GAIA_CONTRACT_DRAFTS_GRACE_HOURS`` (default 24 hours) -- both read by the
@@ -50,11 +46,10 @@ logger = logging.getLogger(__name__)
 def _load_policy():
     """Import the shared retention policy module, or None when unavailable.
 
-    Mirrors the historical two-step import: hooks run from a directory where
-    the repo root may not be on ``sys.path`` yet, so a first failure retries
-    after inserting it. The MODULE is returned rather than one function so the
-    thresholds come from the same place as the criterion -- this module keeps no
-    retention constants of its own to drift out of step.
+    Hooks run from a directory where the repo root may not be on ``sys.path``
+    yet, so a first failure retries after inserting it. The MODULE is returned
+    rather than one function so the thresholds come from the same place as the
+    criterion.
     """
     try:
         import gaia.contract.drafts as policy
@@ -135,9 +130,9 @@ def gc_contract_drafts(
             continue
 
     if deleted:
-        # Report the policy's own reasons rather than restating the thresholds:
-        # this module no longer knows them, and the reason is what a reader
-        # needs to tell an ordinary spent sweep from the aged backstop firing.
+        # Report the policy's own reasons rather than restating the thresholds,
+        # which this module does not know: the reason tells an ordinary spent
+        # sweep from the aged backstop firing.
         reasons: dict = {}
         for record in selected:
             key = str(record.get("reason") or "?")

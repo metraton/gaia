@@ -1,19 +1,13 @@
 """
 Workflow metrics capture and persistence.
 
-Renamed from metrics_recorder.py for clarity. T4 of brief
-``episodic-workflow-to-db`` removed the JSONL file writers from this module
--- ``run-snapshots.jsonl`` and ``metrics.jsonl`` are no longer produced. The
-signals those files captured (tier, default_skills_snapshot, plus the full
-metrics dict) are now persisted on the ``episodes`` table by
-``hooks/modules/memory/episode_writer.write()`` via ``store_episode()``, which
-calls ``gaia.store.writer.insert_episode()``. The ``context_snapshot`` signal
-retired with the preloaded-context payload (dispatch-kernel migration); old
-episodes still carry it, and ``bin/cli/metrics.py`` tolerates its absence.
+This module writes no files. The signals it computes (tier,
+default_skills_snapshot, plus the full metrics dict) are persisted on the
+``episodes`` table by ``hooks/modules/memory/episode_writer.write()`` via
+``store_episode()``, which calls ``gaia.store.writer.insert_episode()``.
 
 Provides:
-    - get_workflow_memory_dir(): Resolve workflow memory directory (kept for
-      readers and signal flag files; T6 retires it for writes).
+    - get_workflow_memory_dir(): Resolve workflow memory directory.
     - record(): Build metrics dict and return it. No filesystem side effects.
 """
 
@@ -35,7 +29,8 @@ def get_workflow_memory_dir() -> Path:
     Resolution order:
     1. WORKFLOW_MEMORY_BASE_PATH env var (testing override)
     2. CLAUDE_PLUGIN_DATA / project-context / workflow-episodic-memory
-    3. .claude/project-context/workflow-episodic-memory (backward compat)
+    3. .claude/project-context/workflow-episodic-memory (when CLAUDE_PLUGIN_DATA
+       is unset, via get_plugin_data_dir())
     """
     base_path = os.environ.get("WORKFLOW_MEMORY_BASE_PATH")
     if base_path:
@@ -202,11 +197,9 @@ def record(
     # it fires only at agent completion (no start timestamp available).
     duration_ms = None
 
-    # Use exit_code from task_info (derived from AGENT_STATUS block) instead
-    # of naive text matching which gives false positives on "No errors found".
     exit_code = task_info.get("exit_code", 0)
 
-    # Approximate token count: 4 chars per token is a reliable heuristic for LLM output
+    # Approximation: 4 characters per token.
     output_tokens_approx = len(agent_output) // 4
 
     commands_executed = commands_executed or []
@@ -226,7 +219,7 @@ def record(
         "output_length": len(agent_output),
         "output_tokens_approx": output_tokens_approx,
         "tags": task_info.get("tags", []),
-        "prompt": task_info.get("description", ""),  # Store for episodic
+        "prompt": task_info.get("description", ""),
         "commands_executed": commands_executed,
         "commands_executed_count": len(commands_executed),
         "context_updated": bool(context_update_result.get("updated", False)),
@@ -237,7 +230,6 @@ def record(
         "context_anchor_hit_rate": anchor_hits.get("hit_rate") if anchor_hits else None,
     }
 
-    # --- Transcript-analysis enrichment (T010) ---
     if transcript_analysis is not None:
         metrics["input_tokens"] = transcript_analysis.input_tokens
         metrics["cache_creation_tokens"] = transcript_analysis.cache_creation_tokens
@@ -249,18 +241,9 @@ def record(
         metrics["model_used"] = transcript_analysis.model
         metrics["api_call_count"] = transcript_analysis.api_call_count
 
-    # --- Compliance enrichment (T010) ---
     if compliance_result is not None:
         metrics["compliance_score"] = compliance_result.total
         metrics["compliance_grade"] = compliance_result.grade
-
-    # T4 of brief episodic-workflow-to-db removed the run-snapshots.jsonl
-    # and metrics.jsonl writers. The signals those files captured (tier,
-    # default_skills_snapshot, plan_status, agent,
-    # commands_executed, exit_code) are persisted on the ``episodes`` row
-    # written by hooks/modules/memory/episode_writer.write() via
-    # store_episode(), which the audit pipeline calls with this dict as
-    # workflow_metrics + context["metrics"]. No filesystem side effects here.
 
     logger.debug(
         "Captured workflow metrics: %s (duration: %sms, exit: %s, commands: %s)",

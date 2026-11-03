@@ -20,15 +20,15 @@ from ..core.paths import get_session_dir
 
 logger = logging.getLogger(__name__)
 
-# Default retention period for session events
 DEFAULT_RETENTION_HOURS = 24
 
 
 class SessionContextWriter:
     """Update active session context for critical events.
 
-    Thread-safe via file locking. Applies a configurable retention
-    policy (default 24h, override via SESSION_RETENTION_HOURS env var).
+    Concurrent writers are serialized by an exclusive file lock. Applies a
+    configurable retention policy (default 24h, override via
+    SESSION_RETENTION_HOURS env var).
     """
 
     def __init__(self, context_path: Path = None):
@@ -43,7 +43,7 @@ class SessionContextWriter:
         """Update active context with event data.
 
         Appends the event to the critical_events list, applies retention
-        policy, and writes back atomically with file locking.
+        policy, and rewrites the file in place under the lock.
 
         Args:
             event_data: Event dict (must include at least event_type).
@@ -66,7 +66,6 @@ class SessionContextWriter:
 
                 context["critical_events"].append(event_data)
 
-                # Keep only events within retention window
                 retention_hours = int(
                     os.environ.get(
                         "SESSION_RETENTION_HOURS",

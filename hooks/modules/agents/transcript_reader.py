@@ -61,11 +61,10 @@ def read_full_transcript_text(transcript_path: str) -> str:
     which matters because the host records a skill load as a
     ``<command-name>skill-name</command-name>`` tag inside a ``user``-role
     tool-result entry, not inside anything the assistant itself says. A
-    fingerprint search scoped to the assistant's own words (or worse, only
-    its LAST message, as the SubagentStop caller used to do) never sees
-    that tag or the skill body it wraps -- restricting the window there is
-    what let skill_injection_verifier miss a skill that genuinely loaded
-    earlier in the turn.
+    fingerprint search scoped to the assistant's own words (or only its LAST
+    message) never sees that tag or the skill body it wraps, so
+    skill_injection_verifier would miss a skill that loaded earlier in the
+    turn.
 
     Falls back to empty string on any error so the hook never crashes.
     """
@@ -171,8 +170,7 @@ def extract_minted_agent_id_from_transcript(transcript_path: str) -> Optional[st
     while ``gaia contract init`` mints its own id and keys the on-disk draft by
     ``{minted-agent-id}.{token}``. Both match ``^a[0-9a-f]{16,}$``, so resolving
     a draft under the harness id fails SILENTLY -- no draft matches the glob and
-    ``resolve_draft_id`` simply returns None, which is what left the M4
-    missing-fence reconstruction and the T9 backstop's draft lookup inoperative.
+    ``resolve_draft_id`` simply returns None.
 
     The turn's own transcript is where the two spaces meet, but MENTIONING a
     draft id is not OWNING it: a turn that runs ``gaia contract view --draft-id
@@ -184,9 +182,8 @@ def extract_minted_agent_id_from_transcript(transcript_path: str) -> Optional[st
     contract init`` MINT REPORT alone, which no other agent's id can appear in,
     and fails CLOSED: zero reports, or two reports naming different ids
     (a re-``init``, or a mint report quoted into the prompt), both yield None.
-    A None is the pre-existing "no draft found" path -- the caller falls back to
-    the harness id, the reconstruction declines, and the turn is rejected as it
-    was before. That is the cost of a miss, and it is the one worth paying.
+    A None is the "no draft found" path: the caller falls back to the harness
+    id and the reconstruction declines.
 
     Read RAW rather than through ``iter_transcript_entries`` on purpose: the id
     lives inside tool_use inputs and tool_result payloads, which the normalized

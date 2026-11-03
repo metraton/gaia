@@ -3,8 +3,8 @@
 The ceiling is ``ceiling=<N>`` from the dispatch prompt, else the dispatched
 agent's frontmatter ``maxTurns``, else none (:func:`effective_ceiling`, also
 read by the kernel's ``ceiling:`` line). Each host counts the subagent's calls
-that are allowed to run -- Claude Code at PreToolUse, whose matchers reach
-Read, Edit, Write, Glob and Grep; OpenCode at ``tool.execute.after``, which
+that are allowed to run -- Claude Code at PreToolUse, for the tools in the
+adapter's ``_POLICY_TOOLS``; OpenCode at ``tool.execute.after``, which
 fires for every tool that ran -- keyed by the harness id its contract row was
 stamped with at SubagentStart. On the call that reaches :data:`NOTICE_PERCENT`
 of the ceiling it returns a notice the model reads with that call's result.

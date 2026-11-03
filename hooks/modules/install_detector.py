@@ -1,10 +1,5 @@
 """
 install_detector.py -- the workspace a hook writes under.
-
-Public API::
-
-    resolve_workspace(cwd: Optional[str] = None) -> str
-        Returns the current workspace identity via gaia.project.current().
 """
 
 from __future__ import annotations
@@ -15,9 +10,9 @@ from typing import Optional
 def resolve_workspace(cwd: Optional[str] = None) -> str:
     """Return the current workspace identity.
 
-    Pure delegation to gaia.project.current() -- no fallback logic
-    implemented here. B0 owns the three-level fallback (git remote ->
-    directory name -> literal "global").
+    Pure delegation to gaia.project.current(): the declared workspace
+    containing *cwd*, else the literal "global". Unlike
+    gaia.project.resolve_workspace it reads no environment variable.
 
     Args:
         cwd: Optional working directory. When None, gaia.project.current()

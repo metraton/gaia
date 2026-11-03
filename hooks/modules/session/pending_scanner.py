@@ -1,24 +1,9 @@
-"""Retired pending-scanner surfacing helpers and formatters.
+"""Pending-approval formatting helpers.
 
-Cross-session surfacing of pending approvals has been removed:
-
-  * ``scan_pending_db()`` -- the DB feed that surfaced pendings into the
-    SessionStart [ACTIONABLE] block -- has been deleted. Nothing injects
-    pendings into the orchestrator context anymore. The DB remains the
-    canonical pending store; TTL hygiene (``approval_cleanup``) keeps it free
-    of orphans by reading ``gaia.approvals.store.list_pending`` directly, and
-    the user inspects/acts on pendings on demand via ``gaia approvals``
-    (which reads the store through its own ``_scan_pending_shared`` path).
-
-  * ``scan_pending_approvals()`` was retired at the Task E FS cutover: no
-    pending-*.json files have been written since. The stub returns [] so any
-    residual callers fail safely without raising.
-
-The ``format_pending_summary`` helper (with its ``_truncate_smart`` support
-helper) is retained as a generic formatting utility, locked in by
-``tests/hooks/modules/session/test_pending_scanner.py``. ``format_pending_detail``
-and the module-level ``_format_age`` had no remaining callers (production or
-test) after the redesign and were removed as dead code (see Task T10 sweep).
+Nothing here reads pendings: they live in the DB and are read on demand via
+``gaia approvals``. ``scan_pending_approvals`` is a stub that returns ``[]``;
+``format_pending_summary`` (with ``_truncate_smart``) renders a list of pending
+dicts and is exercised by ``tests/hooks/modules/session/test_pending_scanner.py``.
 """
 
 import logging
@@ -34,14 +19,7 @@ def scan_pending_approvals(
     current_session_id: Optional[str] = None,
     exclude_live_sessions: bool = False,
 ) -> List[Dict]:
-    """Filesystem pending scan — retired as of Task E FS retirement.
-
-    No new pending-*.json files are written after the M2 cutover. The DB is the
-    sole pending store, read on demand via `gaia approvals`.
-
-    Signature preserved for backward compatibility with callers that still
-    reference the function.  Returns [] unconditionally.
-    """
+    """Return ``[]`` unconditionally: pendings are in the DB, not in pending-*.json files."""
     return []
 
 

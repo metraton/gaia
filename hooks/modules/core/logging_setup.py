@@ -1,18 +1,12 @@
 """
 Shared logging setup for hook entry points.
 
-Every hook entry point (pre_tool_use, post_tool_use, session_start, ...)
-used to wire its own ``logging.basicConfig(handlers=[FileHandler(...)])``
-writing to ``.claude/logs/hooks-YYYY-MM-DD.log``. That log is plain-text
-Python debug output with no schema and no consumer -- unlike the audit log
-(``modules.audit.logger``), nothing in Gaia reads it back. Writing it on
-every turn, by default, in every installation, was pure noise.
-
-``configure_hook_logging()`` centralizes that wiring in one place and gates
-the file handler behind ``GAIA_DEBUG``: by default, hook loggers attach a
-``NullHandler`` (``logger.info(...)`` / ``.error(...)`` calls become cheap
-no-ops and no file is created). Set ``GAIA_DEBUG=1`` to opt into the old
-behavior for local troubleshooting.
+``configure_hook_logging()`` is the one place every hook entry point
+(pre_tool_use, post_tool_use, session_start, ...) wires Python logging. The
+file log it can write is plain-text debug output with no schema and no
+consumer -- unlike the audit log (``modules.audit.logger``), nothing in Gaia
+reads it back -- so the file handler is gated behind ``GAIA_DEBUG``: by default
+the root logger gets a ``NullHandler`` and no file is created.
 """
 from __future__ import annotations
 
@@ -39,11 +33,9 @@ def configure_hook_logging(hook_name: str) -> None:
             entry point's file name, e.g. "pre_tool_use").
 
     By default (``GAIA_DEBUG`` unset), attaches a ``NullHandler`` to the
-    root logger so hook code that calls ``logger.info``/``.warning``/
-    ``.error`` is a cheap no-op and no ``hooks-*.log`` file is created.
+    root logger when it has no handler, and no ``hooks-*.log`` file is created.
     When ``GAIA_DEBUG`` is truthy, attaches a ``FileHandler`` writing to
-    ``.claude/logs/hooks-YYYY-MM-DD.log``, matching the previous default
-    behavior, for local debugging.
+    ``<data home>/logs/hooks-YYYY-MM-DD.log``.
     """
     root = logging.getLogger()
     if _debug_enabled():

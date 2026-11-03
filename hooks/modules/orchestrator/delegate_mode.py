@@ -6,7 +6,7 @@ roles -- the orchestrator's own main thread AND a main thread started with
 Mutative and bulk-investigation tools (Edit, Write, Glob, Grep, etc.) are
 blocked; Read (read-only, T0) is allowed so either can triangulate evidence
 with the user -- validate a document or an image against a specialist's
-contract. Delegate-first remains an identity instruction, not a hook lock.
+contract.
 
 Bash is the one exception, and it is granted to the ORCHESTRATOR role alone
 -- never to NAMED_SPECIALIST, which stays fully denied Bash like every other
@@ -26,44 +26,20 @@ has to clear ``gaia_cli_only_guard`` (wired as Phase 0 of
 ``gaia`` CLI and its allowlisted verbs. This module only decides whether the
 tool call reaches that guard at all.
 
-Detection is a taxonomy over the TWO identity fields the harness provides,
-not the presence of one of them. Claude Code documents them verbatim:
+``classify_session_role`` crosses the TWO identity fields the harness provides
+into three roles. ``agent_id`` is present only in a dispatched subagent;
+``agent_type`` is present in a subagent and on the main thread of a session
+started with ``--agent`` (without ``agent_id``). So ``agent_id`` alone answers
+"am I a dispatched subagent?", not "am I the orchestrator?". The orchestrator
+is an empty ``agent_type``, a name in ``ORCHESTRATOR_AGENT_TYPES``, or a
+verified OpenCode ``role_context``: Gaia's installer selects it through the
+settings ``agent`` field, which the harness treats like ``--agent``.
 
-    agent_id   -- "Subagent identifier. Present only when the hook fires from
-                  within a subagent (e.g., a tool called by an AgentTool
-                  worker). Absent for the main thread, even in --agent
-                  sessions. Use this field (not agent_type) to distinguish
-                  subagent calls from main-thread calls."
-    agent_type -- "Agent type name (e.g., "general-purpose",
-                  "code-reviewer"). Present when the hook fires from within a
-                  subagent (alongside agent_id), or on the main thread of a
-                  session started with --agent (without agent_id)."
-
-So ``agent_id`` alone answers "am I a dispatched subagent?" -- it does NOT
-answer "am I the orchestrator?". A main thread started with ``--agent
-developer`` has no ``agent_id`` and is not the orchestrator; the old binary
-proxy (``not agent_id``) read that absence as orchestrator-ness.
-``classify_session_role`` crosses both fields into three roles instead, and
-the orchestrator is identified by NAME (``ORCHESTRATOR_AGENT_TYPES``)
-because Gaia's own installer selects it through the settings ``agent``
-field, which the harness treats exactly like ``--agent``: the
-orchestrator's own main thread therefore also arrives carrying an
-``agent_type``.
-
-Distinguishing the three roles is a true statement about the harness's shape
-and stays. What to DO with a NAMED_SPECIALIST main thread is a separate
-decision: this module denies it, same as the orchestrator, because a
-``--agent <specialist>`` session runs OUTSIDE the real dispatch path. The
-dispatch kernel a turn runs under (born row + `modules.context.kernel_builder`)
-is built only when the orchestrator actually dispatches --
-a `--agent` session never enters that path, so a named specialist granted
-tools here would run WITH tools but WITHOUT the context a genuine dispatch
-provides, which is worse than being blocked. Gaia's own design treats this
-mode as out of scope: agents are tested and used through the orchestrator,
-never invoked standalone. So NAMED_SPECIALIST is denied like ORCHESTRATOR,
-but under its OWN reason -- it must never receive the orchestrator's
-"delegate to a specialist" message, which would tell a specialist to
-delegate to itself.
+A NAMED_SPECIALIST main thread is denied like the orchestrator because a
+``--agent <specialist>`` session runs OUTSIDE the dispatch path: the dispatch
+kernel (born row + `modules.context.kernel_builder`) is built only on a real
+dispatch, so tools without that context are worse than a block. Its denial
+carries its OWN reason, so a specialist is never told to delegate to itself.
 """
 
 from __future__ import annotations
@@ -106,17 +82,13 @@ ORCHESTRATOR_ALLOWED_TOOLS = frozenset({
     # OpenCode plugin tool that flags the main session for compaction on idle.
     "gaiacompactwhenidle",
 
-    # Direct evidence reading (read-only, T0). Lets the orchestrator
-    # triangulate with the user -- validate a document or an image
-    # (e.g. a Playwright screenshot) against a specialist's contract.
-    # Governed by identity instruction (delegate-first); Bash, Edit,
-    # Write, Glob, and Grep remain blocked by absence from this set.
+    # Read-only evidence reading; Bash has its own role-scoped lane
+    # (_orchestrator_bash_is_allowed), every other tool is blocked by absence.
     "read",
 })
 
-# Adapter-owned marker used to select a host-specific tool vocabulary without
-# teaching the Claude policy about Codex names.  CodexAdapter adds this only to
-# the in-process normalized payload; it is never trusted from tool_input.
+# Top-level key of the normalized hook payload (never read from tool_input)
+# whose value CODEX_HOST selects the Codex tool vocabulary below.
 HOST_MARKER_KEY = "_gaia_host"
 CODEX_HOST = "codex"
 
@@ -307,16 +279,18 @@ ORCHESTRATOR_AGENT_TYPES = frozenset({
 class SessionRole(str, Enum):
     """Who is calling, over the harness's (agent_id, agent_type) pair.
 
-    SUBAGENT is the only role delegate mode leaves unrestricted. ORCHESTRATOR
+    SUBAGENT (``agent_id`` present: a dispatch) is the only role delegate mode
+    leaves unrestricted. ORCHESTRATOR (a main thread, unnamed or named as the
+    orchestrator)
     and NAMED_SPECIALIST are both gated -- a --agent main thread runs outside
     the real dispatch path and never receives the per-agent context a
     genuine dispatch builds -- but each is denied under its own, distinct
     reason (see ``check_delegate_mode``).
     """
 
-    SUBAGENT = "subagent"                    # agent_id present: a dispatch
-    ORCHESTRATOR = "orchestrator"            # main thread, unnamed or named as the orchestrator
-    NAMED_SPECIALIST = "named_specialist"    # main thread of a --agent <specialist> session
+    SUBAGENT = "subagent"
+    ORCHESTRATOR = "orchestrator"
+    NAMED_SPECIALIST = "named_specialist"
 
     def __str__(self) -> str:
         return self.value

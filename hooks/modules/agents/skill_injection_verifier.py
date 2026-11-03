@@ -33,9 +33,6 @@ logger = logging.getLogger(__name__)
 # Each skill maps to a list of candidate fingerprints -- at least one must appear
 # in the transcript for the skill to be considered present.
 SKILL_FINGERPRINTS: Dict[str, List[str]] = {
-    # agent-protocol lost a third fingerprint, "agent_contract_handoff", when the
-    # fenced block was retired: the skill no longer names it, so the phrase could
-    # only ever prove a dead format. The two survivors are still unique to it.
     "agent-protocol": [
         "agent_state",
         "evidence_report",
@@ -123,14 +120,12 @@ def verify_skill_injection(
     for skill_name in expected_skills:
         fingerprints = SKILL_FINGERPRINTS.get(skill_name)
         if fingerprints is None:
-            # No fingerprints defined for this skill -- skip (cannot verify)
             logger.debug(
                 "No fingerprints defined for skill '%s', skipping verification",
                 skill_name,
             )
             continue
 
-        # At least one fingerprint must appear in the transcript
         found = any(fp in transcript_text for fp in fingerprints)
         if not found:
             missing_skills.append(skill_name)

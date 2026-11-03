@@ -5,7 +5,7 @@ has correlated the starting subagent to its born ``agent_contract_handoffs``
 row:
 
   * ``# Your Contract``  -- identity, goal, role/surface, the project the
-    dispatch ran from (v44, ``dispatch_project``) with the workflow that
+    dispatch ran from (``dispatch_project``) with the workflow that
     project declared in its ``project_identity`` entry, section scope, and
     (for a plan-task-bound turn) the task's acceptance gates. DATA ONLY: the
     block carries no instructions; the pedagogy lives in the agent-protocol
@@ -14,8 +14,8 @@ row:
     context, memory (search/list/show/get-relevant -- open to every subagent
     regardless of role), and its own contract (both the read verbs --
     view/list/validate -- and the incremental-fill ones --
-    set/add/fill/finalize) ON DEMAND (nothing is precargado beyond these
-    blocks in the target architecture). This is the INDEX of what the turn
+    set/add/fill/finalize) ON DEMAND (nothing beyond these blocks is
+    preloaded). This is the INDEX of what the turn
     can look up on its own -- a capability the turn already has but that is
     not announced here does not exist for the turn in practice. Per-role
     extras are declared in the agent's frontmatter (``cli:`` key, same
@@ -30,14 +30,16 @@ row:
     ``modules.context.user_sections``). The user's own rows never reach a
     kernel: the preferences that touch this output travel in the goal.
     Omitted entirely when no row is selected -- never an empty heading.
-  * ``# Environment``    -- the OS, the gaia CLI path and the tools on PATH, one capped line.
-
+  * ``# Environment``    -- the session's environment line (OS, host, gaia CLI
+    path, tools on PATH) and up to ``KERNEL_TOOL_LINES`` of the user's
+    ``tool=`` lines.
   * ``# Standing notes``     -- an INDEX (slug + one line, never a body) of the
     dispatch project's live anchor notes, hard-capped at
-    ``PROJECT_NOTES_BUDGET``, rendered after the user's rows and before the CLI
-    index: the host truncates a kernel from the end, so a long kernel loses the
-    CLI index first and the notes only after it. Omitted when the dispatch has
-    no project or the project has no notes. Bodies are opened on demand with
+    ``PROJECT_NOTES_BUDGET``, rendered after ``# Scope memory`` and
+    ``# Project context`` and before ``# Environment`` and the CLI index: the
+    host truncates a kernel from the end, so a long kernel loses the CLI index
+    first and the notes only after it. Omitted when the dispatch has no project
+    or the project has no notes. Bodies are opened on demand with
     ``gaia memory show <slug>``.
 
 ``# Your skills`` is a further block, rendered only for a host that preloads
@@ -47,10 +49,11 @@ Code preloads those bodies itself, so ``build_kernel_context`` carries it only
 ``with_skills``.
 
 Everything renders from the ROW (goal from ``dispatch_prompt``, scope from
-``kernel_sections`` persisted at birth) plus four reads: ``task_gates`` for
+``kernel_sections`` persisted at birth) plus store reads: ``task_gates`` for
 the acceptance block, the dispatch project's ``project_identity`` entry for its
-declared workflow, its ``can_read`` sections for ``# Project context``, and
-``memory`` for the user's rows.
+declared workflow, its ``can_read`` sections for ``# Project context``,
+``memory`` for the scope rows and standing notes, and the user's tool rows for
+``# Environment``.
 
 Gotchas:
   * ``kernel_sections`` arrives as a JSON string on the row; this module
@@ -104,19 +107,17 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _GOAL_WRAP_WIDTH = 96
 _GOAL_INDENT = "  "
 
-# The base CLI lines every turn receives, verbatim (user-approved text).
-# Every verb/flag here is executable as written -- checked against the real
-# CLI, not just its --help text -- because this block is the index of what
-# the turn can look up on its own: what it does not announce, for the turn
-# does not exist. Memory reads are open to any subagent regardless of role;
-# nothing here is orchestrator-only.
+# The base CLI lines every turn receives, verbatim. Every verb/flag here must
+# be executable as written, because this block is the index of what the turn
+# can look up on its own: a command it does not announce does not exist for
+# it. Memory reads are open to any subagent regardless of role; nothing here
+# is orchestrator-only.
 #
 # Line 0 (`get`) and line 1 (`get-contract`) resolve --section against two
 # DIFFERENT namespaces -- the fixed workspace shape (apps/services/stack/
 # git/...) vs project_context_contracts.contract_name -- and can_read/
-# can_write (in `# Your Contract`) names the SECOND one. Do not collapse
-# them back into one line: that collapse is exactly the bug this pair fixes
-# (see bin/cli/context.py's module docstring).
+# can_write (in `# Your Contract`) names the SECOND one, so they stay two
+# lines.
 _CLI_BASE_LINES = (
     "  gaia context get --section <s>   # forma del workspace (apps/services/stack/git/...), a demanda",
     "  gaia context get-contract --section <s>   # contratos de contexto (project_identity, stack, ...) -- namespace de can_read/can_write",
@@ -316,7 +317,7 @@ def build_dispatch_kernel(
         f"surface: {sections.get('surface') or ''}".rstrip(),
     ]
 
-    # v44: the project the dispatch ran from ("name (/abs/path)"), resolved at
+    # The project the dispatch ran from ("name (/abs/path)"), resolved at
     # birth. A datum of the assignment -- which project to pull context for --
     # not the orchestrator's routing reasoning. Omitted when the birth resolved
     # no project.
@@ -449,12 +450,8 @@ def _record_kernel_telemetry(
     get-relevant surfaces use (``gaia.store.writer.record_memory_access``);
     never a second implementation. Bumps the ``"kernel"`` axis
     (``kernel_count``/``last_kernel_at``), NOT ``"injection"``: this block
-    fires on EVERY subagent dispatch over the same fixed rows (the user's
-    standing rows), which used to dominate the
-    injection axis by construction (measured: the kernel's rows led any
-    injection ranking, 37/37/26 against 17 or less for everything else).
-    Splitting it into its own axis is forward-only -- what it already added
-    to ``injection_count`` before this split stays there, unmoved. Every
+    fires on EVERY subagent dispatch over the same standing scope rows, which
+    would dominate the injection axis by construction. Every
     failure mode is swallowed here, on top of ``record_memory_access``'s own
     internal best-effort contract -- this block ships on EVERY dispatch, so a
     telemetry defect must never surface as a broken kernel, unlike a single
@@ -661,7 +658,7 @@ def _readable_group_sections(row: Mapping[str, Any], *, db_path=None) -> list:
 
 
 def build_group_context_block(group: str, members: list, *, max_chars: int) -> str:
-    """Render ``# Project context`` for a group as one pointer per member section, else one line naming the group's ficha."""
+    """Render ``# Project context`` for a group as one pointer per member section, else one line naming `gaia context project`."""
     if not members:
         return ""
     head = [PROJECT_CONTEXT_HEADING, "", f"{group} is a group; the sections its members hold:"]

@@ -254,7 +254,7 @@ def recorded_in_manifest():
     """Record in the workspace's install manifest whatever the block writes into the workspace.
 
     Recording never fails the session: a manifest that cannot be read or
-    written leaves the write in place and unrecorded, as before manifests.
+    written leaves the write in place and unrecorded.
     """
     tracked = manifest = version = None
     try:
@@ -305,7 +305,6 @@ def _authoritative_merge(current: set[str], ours: set[str]) -> list[str]:
     for tools outside Gaia's scope.
     """
     gaia_tool_names = {_tool_name(e) for e in ours}
-    # Keep only user entries whose tool name Gaia doesn't manage
     user_entries = {e for e in current if _tool_name(e) not in gaia_tool_names}
     return sorted(user_entries | ours)
 
@@ -347,7 +346,6 @@ def setup_project_permissions() -> bool:
         return False
     settings_path = claude_dir / "settings.local.json"
 
-    # Load existing settings.local.json (has enabledPlugins from install)
     existing = {}
     if settings_path.exists():
         try:
@@ -366,7 +364,6 @@ def setup_project_permissions() -> bool:
         logger.info("Project permissions already include gaia rules, skipping")
         return False
 
-    # Update only permissions and attribution, preserve everything else (enabledPlugins, etc.)
     existing["attribution"] = {**attribution, **HIDDEN_ATTRIBUTION}
     existing["permissions"] = merged
 
@@ -380,8 +377,9 @@ def ensure_plugin_registry() -> None:
     """Create plugin-registry.json if missing.
 
     Detection strategies (in order):
-    1. CLAUDE_PLUGIN_ROOT env var (plugin marketplace mode):
-       Path looks like .../cache/marketplace/gaia/4.4.0-rc.2
+    1. CLAUDE_PLUGIN_ROOT env var (plugin marketplace mode): name and version
+       from .claude-plugin/plugin.json, else from the path, which looks like
+       .../cache/marketplace/gaia/4.4.0-rc.2
     2. NPM package detection: resolve package name and version from
        node_modules path and package.json
     """
@@ -395,11 +393,9 @@ def ensure_plugin_registry() -> None:
     plugin_version = None
     source = None
 
-    # Strategy 1: CLAUDE_PLUGIN_ROOT (plugin marketplace or --plugin-dir)
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     if plugin_root:
         root_path = Path(plugin_root)
-        # First, try to read .claude-plugin/plugin.json (most reliable)
         plugin_json = root_path / ".claude-plugin" / "plugin.json"
         if plugin_json.exists():
             try:
@@ -409,7 +405,6 @@ def ensure_plugin_registry() -> None:
                 source = "plugin-mode"
             except (json.JSONDecodeError, OSError):
                 pass
-        # Fallback: parse path (marketplace layout: .../name/version)
         if not plugin_name:
             parts = root_path.parts
             if len(parts) >= 2:
@@ -417,7 +412,6 @@ def ensure_plugin_registry() -> None:
                 plugin_version = parts[-1]
                 source = "plugin-mode"
 
-    # Strategy 2: NPM package detection
     if not plugin_name:
         npm_info = _detect_npm_package_info()
         if npm_info:
@@ -447,14 +441,12 @@ def _detect_npm_package_info() -> tuple[str, str | None] | None:
     module_path = Path(__file__).resolve()
     parts = module_path.parts
 
-    # Find node_modules in path and extract package name
     pkg_name = None
     pkg_root = None
     for i, part in enumerate(parts):
         if part == "node_modules" and i + 1 < len(parts):
             next_part = parts[i + 1]
             if next_part.startswith("@") and i + 2 < len(parts):
-                # Scoped package: @scope/name
                 pkg_name = parts[i + 2]
                 pkg_root = Path(*parts[:i + 3])
             else:
@@ -466,7 +458,6 @@ def _detect_npm_package_info() -> tuple[str, str | None] | None:
     if not pkg_name or pkg_name != "gaia":
         return None
 
-    # Try to read version from package.json
     version = None
     if pkg_root:
         pkg_json = Path("/") / pkg_root / "package.json"
@@ -479,18 +470,6 @@ def _detect_npm_package_info() -> tuple[str, str | None] | None:
 
     return (pkg_name, version)
 
-
-# ---------------------------------------------------------------------------
-# Workspace hook registration -- the single writer.
-#
-# Every path that registers Gaia's hooks in a workspace (`gaia install`,
-# `gaia update`, and the SessionStart/UserPromptSubmit setup below) goes
-# through sync_workspace_hooks, which decides ownership with
-# is_gaia_hook_command alone. The plugin channel registers hooks through the
-# plugin's own hooks.json, so there it leaves zero Gaia entries in the
-# workspace; the npm channel is read from settings files, so there it writes
-# exactly the (event, matcher, command) triples hooks.json ships.
-# ---------------------------------------------------------------------------
 
 _PLUGIN_ROOT_HOOKS_TOKEN = "${CLAUDE_PLUGIN_ROOT}/hooks/"
 
@@ -687,7 +666,8 @@ def sync_workspace_hooks(
     The only writer of Gaia hook entries in workspace settings. ``"npm"`` bakes
     *hooks_json_path* through the stable ``.claude/hooks`` link -- its parent
     resolved, the link itself not followed, so a repointed install never
-    leaves a dead store path behind; ``"plugin"`` registers nothing. A
+    leaves a dead store path behind; ``"plugin"`` registers nothing, its hooks
+    coming from the plugin's own hooks.json. A
     settings file that cannot be parsed is left untouched. Returns
     ``(action, details)``, action one of updated, noop, skipped, error.
     """

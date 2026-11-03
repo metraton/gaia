@@ -39,12 +39,8 @@ cloud CLI itself.
 
 ``CLOUD_CLI_PATTERN`` itself is DERIVED from ``NATIVE_OUTPUT_FLAG_CLIS``
 (``security.mutative_verbs``), not maintained as an independent list here.
-That registry is the single place a new CLI gets added, and its own
-docstring carries the "why this is a different axis than mutability"
-rationale plus the include/exclude completeness test
-(``tests/hooks/modules/security/test_mutative_verbs.py``,
-``test_pipe_policy_registry_completeness``) that fails when a relevant
-CLI is left unclassified rather than deliberately excluded.
+That registry is the single place a new CLI gets added; the comment above it
+says why a read-only invocation of these CLIs is held to the same rule.
 """
 
 import logging
@@ -59,23 +55,20 @@ from ..security.shell_substitution import mask_quoted_text
 
 logger = logging.getLogger(__name__)
 
-# Cloud/infra CLIs covered by this policy, derived from the consolidated
-# registry so there is exactly one list to update, not two. Sorted longest
-# name first purely for deterministic, readable regex source (`\b` after the
-# alternation already prevents any prefix-overlap ambiguity regardless of
-# order).
+# Derived from NATIVE_OUTPUT_FLAG_CLIS so there is one list to update. Sorted
+# longest name first for a deterministic pattern source; `\b` after the
+# alternation makes the order irrelevant to what matches.
 CLOUD_CLI_PATTERN = re.compile(
     r'^\s*(' + '|'.join(sorted(NATIVE_OUTPUT_FLAG_CLIS, key=len, reverse=True)) + r')\b',
     re.IGNORECASE
 )
 
-# Violation definitions: (name, regex, corrected_approach)
+# (name, regex, corrected_approach)
 VIOLATIONS = [
     (
         "pipe",
-        # Match a single pipe `|` but NOT logical OR `||`.
-        # Negative lookbehind (?<!\|) skips the second `|` of `||`.
-        # Negative lookahead (?!\|) skips the first `|` of `||`.
+        # Single `|` only: the lookbehind skips the second `|` of `||` and
+        # the lookahead the first.
         re.compile(r'(?<!\|)\|(?!\|)'),
         (
             "Use native output flags instead of piping to shell utilities.\n"
@@ -87,11 +80,7 @@ VIOLATIONS = [
     ),
     (
         "redirect",
-        # Match `>` or `>>` for file redirection, but NOT:
-        # - `>&` (file descriptor duplication, e.g. `2>&1`)
-        # - `--` prefixed flags or other non-redirect uses
-        # Negative lookbehind (?<![>&]) avoids matching the `>` in `>&1`.
-        # Negative lookahead (?![>&]) avoids matching `>` when followed by `&`.
+        # `>` or `>>`, but not `>&` (fd duplication such as `2>&1`).
         re.compile(r'(?<![>&])>{1,2}(?![>&])'),
         (
             "Use the Write tool to write output to a file instead of shell redirection.\n"
@@ -101,8 +90,7 @@ VIOLATIONS = [
     ),
     (
         "chaining",
-        # Match `;` or `&&` but NOT `||` (which is now correctly handled
-        # by the pipe regex above via negative lookahead).
+        # `;` or `&&`. `||` matches no rule here.
         re.compile(r';|&&'),
         (
             "Run each command as a separate, atomic Bash call instead of chaining.\n"
@@ -115,22 +103,25 @@ VIOLATIONS = [
 
 @dataclass
 class PipeViolation:
-    """A detected pipe/redirect/chaining violation."""
-    rule: str            # e.g. "pipe", "redirect", "chaining"
-    pattern: str         # the literal character(s) that triggered it
-    correction: str      # human-readable corrected approach
-    cloud: bool = False  # True when a cloud/infra-only rule fired, False for a universal one
+    """A detected pipe/redirect/chaining violation.
+
+    ``rule`` is the rule name ("pipe", "redirect", "chaining", "background"),
+    ``pattern`` the literal text that triggered it, ``correction`` the
+    human-readable corrected approach, and ``cloud`` is True when a
+    cloud/infra-only rule fired, False for a universal one.
+    """
+    rule: str
+    pattern: str
+    correction: str
+    cloud: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Universal violations — apply to ALL commands regardless of CLI
-# ---------------------------------------------------------------------------
+# Apply to ALL commands regardless of CLI.
 UNIVERSAL_VIOLATIONS = [
     (
         "redirect",
-        # Match `>` or `>>` for file redirection, but NOT:
-        # - `>&` (file descriptor duplication, e.g. `2>&1`)
-        # - process substitution `<(` or `>(` (used in bash -c / diff)
+        # `>` or `>>`, but not `>&` (fd duplication such as `2>&1`) nor
+        # `>(` (process substitution).
         re.compile(r'(?<![>&])>{1,2}(?![>&(])'),
         (
             "Use the Write tool to write output to a file instead of shell redirection.\n"
@@ -140,10 +131,7 @@ UNIVERSAL_VIOLATIONS = [
     ),
     (
         "background",
-        # Match trailing `&` (background execution), but NOT `&&` or `>&`.
-        # Negative lookbehind for `>` avoids `>&` (fd dup).
-        # Negative lookbehind for `&` avoids the second `&` in `&&`.
-        # Negative lookahead for `&` avoids the first `&` in `&&`.
+        # A single `&`: not `&&`, and not the `&` of `>&`.
         re.compile(r'(?<![>&])&(?!&)'),
         (
             "Do not run commands in the background with &. Background execution\n"
@@ -227,18 +215,12 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
     Skips characters inside single or double quoted strings to avoid
     false positives (e.g. --filter='status:RUNNING' contains no violation).
     """
-    # Strip quoted substrings before scanning for operators.
-    # This prevents false positives from flag values like --filter='a|b'.
     unquoted = _strip_quoted_sections(command)
 
     is_cloud = _command_has_cloud_cli_stage(command)
     has_pipe_origin = _command_has_cloud_pipe_origin(command)
 
     if is_cloud:
-        # Cloud CLIs: check ALL rules (pipe, redirect, chaining), except the
-        # "pipe" rule is skipped when the only cloud-CLI involvement is as a
-        # pipe destination -- see the docstring above and
-        # _command_has_cloud_pipe_origin.
         for rule_name, pattern, correction in VIOLATIONS:
             if rule_name == "pipe" and not has_pipe_origin:
                 continue
@@ -251,7 +233,6 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
                     cloud=True,
                 )
 
-    # All commands (cloud and non-cloud): check universal rules
     for rule_name, pattern, correction in UNIVERSAL_VIOLATIONS:
         match = pattern.search(unquoted)
         if match:
@@ -267,8 +248,8 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
 def _strip_quoted_sections(text: str) -> str:
     """Replace content inside single and double quotes with spaces, honoring backslash escapes.
 
-    A quote left open falls back to the escape-blind toggle this rule has always
-    used, so an unparseable command is read no more leniently than before.
+    A quote left open is masked by the escape-blind toggle instead
+    (``_toggle_quoted_sections``), so an unparseable command is still masked.
     """
     masked = mask_quoted_text(text)
     return masked if masked is not None else _toggle_quoted_sections(text)
@@ -288,7 +269,7 @@ def _toggle_quoted_sections(text: str) -> str:
             in_double = not in_double
             result.append(ch)
         elif in_single or in_double:
-            result.append(' ')  # mask the character
+            result.append(' ')
         else:
             result.append(ch)
 
@@ -300,15 +281,15 @@ def build_block_response(violation: PipeViolation, command: str) -> dict:
     Build the structured JSON block that tells Claude Code to block the command
     and return a corrective reason to the agent.
 
-    Uses permissionDecision: "deny" with exit 0 (NOT exit 2) so the agent
-    receives the correction message and adjusts rather than stopping entirely.
+    The response is a "deny" permission decision built by
+    ``build_hook_permission_response``, carrying the correction as its reason.
 
     Args:
         violation: The detected violation.
         command:   The original command string (truncated in reason for readability).
 
     Returns:
-        Dict suitable for json.dumps() and print() in the hook entry point.
+        The host permission-response dict.
     """
     truncated = command[:120] + ('...' if len(command) > 120 else '')
     scope = " in cloud/infra commands" if violation.cloud else ""
@@ -335,7 +316,6 @@ def validate_cloud_pipe(command: str) -> Optional[dict]:
     Check a command for cloud pipe/redirect/chaining violations.
 
     Returns a block-response dict if a violation is found, None otherwise.
-    The caller should json.dumps() the result and exit(0).
 
     Args:
         command: The raw bash command string.
