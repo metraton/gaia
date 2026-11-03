@@ -38,7 +38,7 @@ from typing import Iterator, List, Optional, Tuple
 
 from .canonical_path import canonical_path, command_name
 from .data_heredoc import data_heredoc_header
-from .mutative_verbs import _peel_leading_command_wrappers, detect_mutative_command
+from .mutative_verbs import CATEGORY_UNKNOWN, _peel_leading_command_wrappers, detect_mutative_command
 from .shell_substitution import extract_substitutions
 from .shell_write_guard import _split_components, _tokenize, _writer_targets, downloader_paths
 
@@ -64,6 +64,10 @@ _QUOTED_OR_STDIN_REDIRECT = re.compile(
     r"|(?<![<\d])0?<(?![<&])\s*(?P<path>\"[^\"]*\"|'[^']*'|\S+)"
 )
 _COMPUTED_WORDS = re.compile(r"[$`]|[<>]\(")
+_PIPE_INTO_SQLITE = re.compile(
+    r"(?P<producer>(?:\"[^\"]*\"|'[^']*'|[^|;&\n\"'])*)(?<!\|)\|(?!\|)\s*(?P<sqlite>sqlite3\b[^&;|\n]*)", re.IGNORECASE
+)
+_LITERAL_PRODUCERS = frozenset({"echo", "printf"})
 _MAX_READ_DEPTH = 3
 _MAX_SCRIPT_BYTES = 1 << 20
 _SHELL_CD = re.compile(r"(?:^|[;&|(\s])(?:cd|pushd|popd)\b")
@@ -85,6 +89,12 @@ UNREADABLE_SCRIPT_MESSAGE = (
     "A `.read` or `<` redirect against gaia.db names a script this guard could "
     "not read, so it could not prove the script does not write the store. Use "
     "the `gaia` CLI, or run the statements directly."
+)
+
+UNPROVEN_STDIN_MESSAGE = (
+    "Input piped into sqlite3 against gaia.db comes from something other than "
+    "one readable file or inline literal SQL, so this guard could not prove it "
+    "does not write the store. Use the `gaia` CLI, or run the statements directly."
 )
 
 UNJUDGEABLE_SHELL_MESSAGE = (
@@ -172,8 +182,13 @@ def _shell_rejection(command: str, cwd: Optional[str]) -> Optional[str]:
         component = component.strip()
         if not component:
             continue
-        if is_blocked_command(component).is_blocked or detect_mutative_command(component, cwd=cwd).is_mutative:
+        if is_blocked_command(component).is_blocked:
             return REJECTION_MESSAGE
+        verdict = detect_mutative_command(component, cwd=cwd)
+        if verdict.is_mutative:
+            return REJECTION_MESSAGE
+        if verdict.category == CATEGORY_UNKNOWN:
+            return UNJUDGEABLE_SHELL_MESSAGE
         for guard in (check, protected_path_guard.check, shell_write_guard.check, sensitive_read_guard.check):
             if not guard(component, cwd)[0]:
                 return REJECTION_MESSAGE
@@ -193,6 +208,26 @@ def _redirected_script_rejection(command: str, cwd: Optional[str]) -> Optional[s
             rejection = _script_rejection(script, cwd, 1)
             if rejection:
                 return rejection
+    return None
+
+
+def _piped_script_rejection(command: str, cwd: Optional[str]) -> Optional[str]:
+    for match in _PIPE_INTO_SQLITE.finditer(command):
+        if not _SQLITE_INVOCATION.search(match["sqlite"]):
+            continue
+        producer = match["producer"].strip()
+        tokens = _tokenize(producer)
+        name = command_name(tokens[0]) if tokens else ""
+        operands = [t for t in tokens[1:] if not t.startswith("-")]
+        if name == "cat" and len(operands) == 1:
+            script = _script_text(operands[0], cwd)
+            if script is None:
+                return UNREADABLE_SCRIPT_MESSAGE
+            rejection = _script_rejection(script, cwd, 1)
+            if rejection:
+                return rejection
+        elif name not in _LITERAL_PRODUCERS or _COMPUTED_WORDS.search(producer) or "<" in producer:
+            return UNPROVEN_STDIN_MESSAGE
     return None
 
 
@@ -229,7 +264,7 @@ def _sql_rejection(command: str, cwd: Optional[str] = None) -> Optional[str]:
         return None
     shell_cwd = None if _SHELL_CD.search(command) else cwd
     if invoked:
-        rejection = _redirected_script_rejection(command, shell_cwd)
+        rejection = _redirected_script_rejection(command, shell_cwd) or _piped_script_rejection(command, shell_cwd)
         if rejection:
             return rejection
     return _dot_rejection(command, shell_cwd, 0, store_open=invoked)

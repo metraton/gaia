@@ -339,7 +339,6 @@ def test_shell_dot_command_that_cannot_be_judged_rejected(dot_command):
 @pytest.mark.parametrize("dot_command", [
     ".shell ls /tmp",
     ".system echo hi",
-    ".shell pwd",
     ".shell git status",
 ])
 def test_shell_dot_command_running_a_read_allowed(dot_command):
@@ -354,6 +353,78 @@ def test_shell_dot_command_inside_a_read_script_is_judged(tmp_path):
 
 def test_shell_dot_command_against_another_database_is_not_judged():
     assert check('sqlite3 /tmp/other.db ".shell kubectl apply -f x.yaml"') == (True, None)
+
+
+@pytest.mark.parametrize("dot_command", [".shell pwd", ".system zzunknowncli run"])
+def test_shell_dot_command_the_classifier_cannot_place_rejected(dot_command):
+    allowed, reason = check(f'sqlite3 {STORE} "{dot_command}"')
+    assert allowed is False
+    assert "could not prove" in reason
+
+
+@pytest.mark.parametrize("body", [
+    "UPDATE apps SET status = 'x';",
+    "SELECT 1;\nPRAGMA user_version = 3;",
+    "SELECT 1;\n.shell kubectl apply -f x.yaml",
+])
+@pytest.mark.parametrize("template", [
+    "cat {path} | sqlite3 {store}",
+    "cat '{path}' | sqlite3 {store}",
+    "cat -n {path} | sqlite3 {store} -cmd '.mode csv'",
+    "cat {path} | sqlite3 -cmd '.mode csv' {store}",
+])
+def test_piped_script_that_writes_rejected(tmp_path, body, template):
+    path = _script(tmp_path, body)
+    assert check(template.format(store=STORE, path=path)) == (False, REJECTION_MESSAGE)
+
+
+def test_piped_script_that_only_reads_allowed(tmp_path):
+    path = _script(tmp_path, "SELECT * FROM apps;")
+    assert check(f"cat {path} | sqlite3 {STORE}") == (True, None)
+    assert check(f"cat {path} | sqlite3 {STORE} -cmd '.mode csv'") == (True, None)
+
+
+def test_piped_relative_script_resolves_against_the_given_directory(tmp_path):
+    _script(tmp_path, "SELECT 1;")
+    assert check(f"cat script.sql | sqlite3 {STORE}", cwd=str(tmp_path)) == (True, None)
+    _script(tmp_path, "DELETE FROM apps;")
+    assert check(f"cat script.sql | sqlite3 {STORE}", cwd=str(tmp_path)) == (False, REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("command", [
+    f"cat /nonexistent/script.sql | sqlite3 {STORE}",
+    f"cat script.sql | sqlite3 {STORE}",
+    f"cat $SCRIPT | sqlite3 {STORE}",
+    f"cat /tmp/a.sql /tmp/b.sql | sqlite3 {STORE}",
+    f"cat | sqlite3 {STORE}",
+    f"cat /dev/stdin | sqlite3 {STORE}",
+    f"cat <<EOF | sqlite3 {STORE}\nSELECT 1;\nEOF",
+    f"head -c 100 /tmp/a.sql | sqlite3 {STORE}",
+    f"python3 /tmp/emit.py | sqlite3 {STORE}",
+    f"echo $QUERY | sqlite3 {STORE}",
+    f"printf '%s' \"$(cat /tmp/a.sql)\" | sqlite3 {STORE}",
+    f"echo 'SELECT 1;' | tee /tmp/x | sqlite3 {STORE}",
+])
+def test_piped_stdin_that_cannot_be_proven_rejected(command):
+    allowed, reason = check(command)
+    assert allowed is False
+    assert "could not prove" in reason
+
+
+@pytest.mark.parametrize("command", [
+    f"echo 'SELECT 1;' | sqlite3 {STORE}",
+    f"printf 'SELECT 1;\\n' | sqlite3 {STORE} -cmd '.mode csv'",
+])
+def test_piped_inline_literal_sql_is_left_to_the_statement_check(command):
+    assert check(command) == (True, None)
+
+
+def test_piped_inline_literal_write_rejected():
+    assert check(f"echo 'UPDATE apps SET status = 1;' | sqlite3 {STORE}") == (False, REJECTION_MESSAGE)
+
+
+def test_pipe_into_another_database_is_not_judged():
+    assert check("cat /nonexistent/script.sql | sqlite3 /tmp/other.db") == (True, None)
 
 
 def test_bash_wrapped_write_rejected():
