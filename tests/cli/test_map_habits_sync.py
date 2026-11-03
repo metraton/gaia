@@ -6,7 +6,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 IDENTITY = REPO / "agents" / "gaia-orchestrator.md"
 MEMORY = REPO / "skills" / "memory" / "SKILL.md"
-REMINDERS = REPO / "skills" / "reminders" / "SKILL.md"
 AGENT_RESPONSE = REPO / "skills" / "agent-response" / "SKILL.md"
 
 _spec = importlib.util.spec_from_file_location("gaia_cli_map", REPO / "bin" / "cli" / "map.py")
@@ -15,7 +14,7 @@ _spec.loader.exec_module(gaia_map)
 
 HABIT_ANCHORS = (
     ("a doubt, an idea or a pending", "Where it goes", MEMORY, "voices a doubt, an idea or a pending"),
-    ("beside something to do", "one-line proposal of a reminder, saved on their yes", REMINDERS,
+    ("beside something to do", "one-line proposal of a reminder, saved on their yes", IDENTITY,
      "one-line proposal of a reminder, saved on their yes"),
     ("ids arrive in a return", "project's thread row", AGENT_RESPONSE, "Ids that arrive in a return"),
     ("names a thing", "gaia map <word>", IDENTITY, "`gaia map <word>` for a word it does not place"),
