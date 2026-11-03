@@ -1,8 +1,7 @@
 """
 gaia ac -- Manage acceptance criteria for briefs in the Gaia DB substrate.
 
-Architecture: Opción B (DB canónica). All mutating operations write only to
-``~/.gaia/gaia.db``.
+All mutating operations write only to the Gaia database (``gaia.db``).
 
 Subcommands:
     gaia ac set-status <brief> <ac_id> <status>  Transition AC status
@@ -76,10 +75,6 @@ def _resolve_file_arg(inline_val, file_val, flag_name):
         raise ValueError(f"--{flag_name}-file: cannot read '{file_val}': {exc}")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _resolve_workspace(explicit: str | None) -> str:
     from gaia.project import cli_workspace
     return cli_workspace(explicit)
@@ -92,10 +87,6 @@ def _err(msg: str, as_json: bool = False) -> int:
         print(f"Error: {msg}", file=sys.stderr)
     return 1
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 def _cmd_set_status(args) -> int:
     from gaia.store.writer import set_ac_status
@@ -251,10 +242,6 @@ def _cmd_edit(args) -> int:
         print(f"Updated AC '{ac_id}' in brief '{brief_name}'")
     return 0
 
-
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
 
 def register(subparsers) -> None:
     """Register the `ac` subcommand with the root parser."""

@@ -18,7 +18,8 @@ them is the single most common mistake made with this command group:
   in the project-context contract of the same name, reachable through
   `get-contract`, never through `get`/`show`.
 
-Subcommands:
+Subcommands (the registered accept, move-contracts, move-memory and move-project are
+not listed; `gaia context --help` is complete):
   gaia context show [--section SECTION] [--json]   Display context from SQLite substrate (tabular)
                                                      -- resolves --section against the WORKSPACE SHAPE
   gaia context scan [--dry-run] [--json]            Run project scanner (legacy)
@@ -27,15 +28,17 @@ Subcommands:
                     [--include-missing]              -- resolves --section against the WORKSPACE SHAPE,
                                                         NOT project-context contract names
   gaia context get-contract [--workspace W]         Read ONE project-context contract by name (read-only) --
-                    --section S [--json] [--text]     resolves --section against project_context_contracts.
+                    [--project P] --section S         resolves --section against project_context_contracts.
+                    [--json] [--text]
                                                         contract_name, the SAME names as an agent's
                                                         can_read/can_write kernel menu
   gaia context dump [--workspace W]                 (deprecated) alias for `gaia context get`
   gaia context project NAME [--workspace W]         Read-only ficha for ONE project: row, facets,
                     [--json]                          project_identity contract entry, curated-memory
                                                         index -- resolves by exact name or basename of path
-  gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
-  gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
+  gaia context query "<SQL>"                        Run a SELECT/WITH/EXPLAIN/PRAGMA statement
+  gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete a workspace's scannable rows (CASCADE);
+                    [--purge-memory]                  curated memory is kept unless --purge-memory
   gaia context prune-workspaces [--dry-run] [--yes] Delete PHANTOM workspaces (0 projects, 0 curated
                     [--json]                        collateral); backs up the DB before any delete
   gaia context relocate --manifest FILE             Copy workspace contract rows under their owning
@@ -57,10 +60,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-# ---------------------------------------------------------------------------
-# Root detection
-# ---------------------------------------------------------------------------
-
 def _find_project_root(start: Path) -> Path | None:
     """Locate the project root that owns a .claude/ directory.
 
@@ -72,10 +71,9 @@ def _find_project_root(start: Path) -> Path | None:
        that have the directory even if project-context.json is retired).
     3. Walk up from ``start`` for any .claude/ directory (canonical fallback).
 
-    Note (T1.3): the legacy Pass 1 that looked for project-context.json by
-    file existence has been removed. Project context now lives exclusively in
-    gaia.db (project_context_contracts table). The .claude/ directory itself
-    is the authoritative marker.
+    No lookup of project-context.json by file existence: project context
+    lives exclusively in gaia.db (project_context_contracts table). The
+    .claude/ directory itself is the authoritative marker.
     """
     import os
     plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
@@ -100,10 +98,6 @@ def _find_project_root(start: Path) -> Path | None:
 
     return None
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 def _render_context_tabular(ctx: dict, section: str | None = None) -> None:
     """Render the canonical context shape as human-readable text (tabular)."""
@@ -208,9 +202,8 @@ def _cmd_show(args) -> int:
 def _cmd_scan(args) -> int:
     """Handle `gaia context scan [--dry-run] [--json]`.
 
-    Delegates to `bin/cli/scan.py:cmd_scan` in-process. The legacy
-    standalone scanner subprocess shell-out has been removed in favour of
-    a direct module call -- one process, shared sys.path, no fork overhead.
+    With --dry-run it reports the project root and last scan and runs nothing;
+    otherwise it delegates to `bin/cli/scan.py:cmd_scan` in-process.
     """
     project_root = _find_project_root(Path.cwd())
     if project_root is None:
@@ -224,7 +217,7 @@ def _cmd_scan(args) -> int:
     dry_run = getattr(args, "dry_run", False)
 
     if dry_run:
-        # Report what would be scanned. Reads last_scan_at from DB (T1.3).
+        # Report what would be scanned. Reads last_scan_at from DB.
         last_scan = None
         try:
             from gaia.project import current as _project_current
@@ -277,10 +270,6 @@ def _cmd_scan(args) -> int:
     return _cmd_scan_impl(scan_args)
 
 
-# ---------------------------------------------------------------------------
-# B1+ SQLite substrate subcommands: dump / query / wipe
-# ---------------------------------------------------------------------------
-
 _SELECT_VERBS = {"select", "with", "explain", "pragma"}
 
 
@@ -289,14 +278,13 @@ def _cmd_get(args) -> int:
     [--include-missing]`.
 
     Emits the canonical workspace shape from the SQLite substrate.
-    Defaults to JSON output. Use --text for the same tabular renderer as `show`.
-    Fix #5: exits 1 with message when workspace does not exist in the DB.
+    Defaults to JSON output. Use --text for the same tabular renderer as `show`
+    (a --section prints JSON either way). Exits 1 when the workspace does not
+    exist in the DB.
 
     --include-missing surfaces the soft-deleted rows (status='missing') that the
-    default active view hides. The soft-delete itself is intentional: `gaia scan`
-    demotes a project that vanished from disk instead of dropping it, so the
-    "existed but no longer on disk" record stays consultable. Without the flag
-    that record was written but unreadable through the CLI.
+    default active view hides: `gaia scan` demotes a project that vanished from
+    disk instead of dropping it.
 
     --section here resolves against the WORKSPACE SHAPE (apps/services/stack/
     git/environment/...), NOT a project-context contract name. To read a
@@ -318,7 +306,7 @@ def _cmd_get(args) -> int:
         print(f"gaia context get: error reading store: {exc}", file=sys.stderr)
         return 1
 
-    # Fix #5: workspace not found
+    # Workspace not found
     if ctx is None:
         print(f"workspace '{workspace}' not found", file=sys.stderr)
         return 1
@@ -381,12 +369,11 @@ def _cmd_get_contract(args) -> int:
     which resolves against the fixed workspace shape (apps/services/stack/
     git/environment/...); see the module docstring for the distinction that
     trips this up in practice. Never mutates project_context_contracts --
-    its write paths are `accept` (a recorded proposal) and
-    `move-contracts` (re-keying).
+    `accept`, `move-contracts` and `relocate` write it.
 
-    Workspace defaults to `gaia.project.current()` (the caller's cwd); pass
-    --workspace explicitly to name it, so it is always clear which
-    workspace/project the returned contract belongs to.
+    Workspace defaults to `gaia.project.current()` (the caller's cwd). With
+    --project it reads that project's section (`project_sections`), which
+    falls back to the workspace's row when the project holds none.
     """
     section = getattr(args, "section", None)
     if not section:
@@ -799,17 +786,16 @@ def _cmd_project(args) -> int:
     user's rows), then the count of the project's lessons and live pendings
     with the `gaia memory get-relevant` read that opens each.
 
-    Resolution tries an EXACT `projects.name` match first, then the basename
-    of `projects.path` -- the fix for a legacy row scanned under an opaque
-    slot name (e.g. `bildwiz-5`) whose real repo is the basename the user
-    actually names (e.g. `control-tower-livekit`); the response says so
-    explicitly rather than resolving silently. Failure semantics: an EMPTY
-    field and an ABSENT one are never the same response --
-      * resolved (exactly one row, by either pass): exit 0, full ficha.
+    Resolution tries `projects.name` first (exact, then ignoring case), then
+    the basename of `projects.path` (a legacy row scanned under an opaque slot
+    name such as `bildwiz-5` is found by its repo name, and the response says
+    so), then the underscore and hyphen spellings of NAME. Failure semantics:
+      * resolved (exactly one row, by any pass): exit 0, full ficha.
       * ambiguous (the SAME name/basename matches rows in more than one
         workspace, or more than one row in the scope given): exit 1, listing
-        every candidate with its workspace -- the error enumerates rather
-        than guessing.
+        every candidate with its workspace.
+      * not found, but NAME is a group: exit 0, the group's members with the
+        sections each holds.
       * not found: exit 1, with the closest names/basenames found in scope
         (and, when --workspace narrowed the search, whether the exact name
         exists in another workspace instead).
@@ -1005,8 +991,9 @@ def _cmd_project(args) -> int:
 def _cmd_query(args) -> int:
     """Handle `gaia context query "<SQL>"`.
 
-    Executes a read-only SELECT (or EXPLAIN/PRAGMA/WITH) against the substrate.
-    Other verbs are rejected with a non-zero exit code.
+    Runs the statement when its first word is select, with, explain or pragma
+    (`_SELECT_VERBS`); any other first word exits 2. Only that first word is
+    checked.
     """
     sql = (getattr(args, "sql", "") or "").strip()
     if not sql:
@@ -1047,9 +1034,9 @@ def _cmd_wipe(args) -> int:
     """Handle `gaia context wipe --workspace W [--yes] [--purge-memory]`.
 
     Deletes the scannable rows for the workspace (CASCADE removes children).
-    scan-v2 SV3: curated memory is PRESERVED across the wipe by default; pass
-    --purge-memory to also destroy it (explicit human curation). Requires
-    interactive confirmation unless --yes is passed.
+    Curated memory is PRESERVED across the wipe by default; pass
+    --purge-memory to also destroy it. Requires interactive confirmation
+    unless --yes is passed.
     """
     workspace = getattr(args, "workspace", None)
     if not workspace:
@@ -1083,9 +1070,8 @@ def _cmd_wipe(args) -> int:
 
     purge_memory = getattr(args, "purge_memory", False)
     try:
-        # scan-v2 SV3 (Vector 4): preserve curated memory across the wipe by
-        # default. --purge-memory is the explicit-human-curation escape hatch
-        # that restores the original full CASCADE (memory destroyed).
+        # Curated memory survives the wipe by default; --purge-memory restores
+        # the full CASCADE (memory destroyed).
         wipe_workspace(workspace, preserve_memory=not purge_memory)
     except Exception as exc:
         print(f"gaia context wipe: error: {exc}", file=sys.stderr)
@@ -1368,7 +1354,7 @@ def _cmd_move_project(args) -> int:
 
 
 def _cmd_accept(args) -> int:
-    """Handle ``gaia context accept CONTRACT_ID [--workspace W] [--dry-run]``.
+    """Handle ``gaia context accept CONTRACT_ID [--workspace W] [--dry-run] [--json]``.
 
     Accepts the ``update_contracts`` proposal a specialist's turn recorded into
     project context. Each part lands under the project it names, else the
@@ -1587,10 +1573,6 @@ def _cmd_move_memory(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
-
 def register(subparsers) -> None:
     """Register the `context` subcommand with the root parser."""
     ctx_parser = subparsers.add_parser(
@@ -1686,11 +1668,6 @@ def register(subparsers) -> None:
     )
     _add_get_args(dump_parser)
 
-    # gaia context get-contract  (read ONE project-context contract by name)
-    # Read-only counterpart to `move-contracts`: resolves --section against
-    # project_context_contracts.contract_name, the same names an agent's
-    # can_read/can_write kernel menu lists. `get`/`show` never reach this
-    # table -- see the module docstring for the two-namespaces trap.
     gc_parser = ctx_subparsers.add_parser(
         "get-contract",
         help="Read ONE project-context contract by name (project_identity, "
@@ -1935,11 +1912,8 @@ def register(subparsers) -> None:
     mm_parser.add_argument("--yes", action="store_true", default=False,
                            help="Skip interactive confirmation")
 
-    # gaia context move-project --decision D --from-workspace/--from-name
-    #                           --to-workspace/--to-name
-    # (T3: the verb token 'move-project' hyphen-splits to 'move', which is in
-    # MUTATIVE_VERBS -- gated as T3 without touching the security layer. This is
-    # the write path that EXECUTES a scan-v2 move_candidate a human adjudicated.)
+    # gaia context move-project (T3: the verb token 'move-project' hyphen-splits to
+    # 'move', which is in MUTATIVE_VERBS -- gated as T3 without touching the security layer.)
     mp_parser = ctx_subparsers.add_parser(
         "move-project",
         help="Resolve an adjudicated scan-v2 move_candidate (re-key a projects "

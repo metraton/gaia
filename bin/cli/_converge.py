@@ -7,7 +7,7 @@ module never guesses a source -- the caller passes an `origin` descriptor.
 
 This module owns the READ half of the convergence routine: it inspects the 5
 install surfaces of a destination workspace and classifies each into one of the
-3 idempotency cases the design names --
+3 idempotency cases --
 
     * ALIGNED -- the surface already matches the origin (a no-op reconcile);
     * STALE   -- the surface exists but diverges from the origin (reconcile
@@ -18,7 +18,7 @@ plus a 4th UNKNOWN degrade when a surface cannot be inspected (never a false
 ALIGNED). The DB surface additionally carries a schema-DIRECTION verdict
 (forward / reverse / aligned) mirroring the bootstrap direction guard.
 
-The 5 surfaces (design):
+The 5 surfaces:
   1. PATH `gaia` (bare, unqualified invocation)
   2. hooks wired into `.claude/settings.local.json`
   3. workspace `node_modules/@jaguilar87/gaia`
@@ -31,9 +31,9 @@ link` writes the global shim; Gaia never rewrites it -- `install._warn_launcher_
 only detects when it wins PATH precedence over Gaia's own launcher), and
 `scripts/bootstrap_database.py`'s forward migration + direction guard
 (surface 5). Keeping inspection here -- pure, read-only, dependency-light --
-lets `gaia dev`, `gaia release`, and `gaia doctor` share ONE classification of
-"where does the destination stand relative to the origin?" without duplicating
-it three ways.
+lets `gaia dev` and `gaia release` share ONE classification of "where does
+the destination stand relative to the origin?" without duplicating it.
+`gaia doctor` reuses only `launcher_package` and `_package_version`.
 """
 
 from __future__ import annotations
@@ -112,10 +112,6 @@ def _surface(surface: str, state: str, detail: str, **extra) -> dict:
     return r
 
 
-# ---------------------------------------------------------------------------
-# Surface 1 -- PATH gaia
-# ---------------------------------------------------------------------------
-
 def inspect_path_gaia(origin_version: "str | None") -> dict:
     """Classify the bare-`gaia`-on-PATH surface against the origin's version.
 
@@ -147,10 +143,6 @@ def inspect_path_gaia(origin_version: "str | None") -> dict:
     )
 
 
-# ---------------------------------------------------------------------------
-# Surface 2 -- hooks in .claude/settings.local.json
-# ---------------------------------------------------------------------------
-
 def inspect_hooks_settings(workspace: Path, plugin_channel: bool = False) -> dict:
     """Classify the workspace's wired-hooks surface.
 
@@ -179,10 +171,6 @@ def inspect_hooks_settings(workspace: Path, plugin_channel: bool = False) -> dic
     return _surface(SURFACE_HOOKS_SETTINGS, STATE_STALE, "settings.local.json present but no hooks wired")
 
 
-# ---------------------------------------------------------------------------
-# Surface 3 -- workspace node_modules/@jaguilar87/gaia
-# ---------------------------------------------------------------------------
-
 def inspect_workspace_node_modules(workspace: Path, origin_version: "str | None") -> dict:
     """Classify the workspace-local node_modules install against the origin.
 
@@ -209,10 +197,6 @@ def inspect_workspace_node_modules(workspace: Path, origin_version: "str | None"
     )
 
 
-# ---------------------------------------------------------------------------
-# Surface 4 -- global npm install
-# ---------------------------------------------------------------------------
-
 def inspect_global_npm(npm_global_bin: "Path | None", origin_version: "str | None") -> dict:
     """Classify the global npm `gaia` surface against the origin.
 
@@ -222,8 +206,7 @@ def inspect_global_npm(npm_global_bin: "Path | None", origin_version: "str | Non
     ABSENT  -- no global bin dir, or no `gaia` shim in it.
     UNKNOWN -- a global `gaia` exists but its version cannot be read.
     ALIGNED -- global version == origin_version (or origin unknown).
-    STALE   -- global version differs from the origin (the stale-global-shadow
-               case the npm-link reconcile of surface 4 closes).
+    STALE   -- global version differs from the origin.
     """
     if npm_global_bin is None:
         return _surface(SURFACE_GLOBAL_NPM, STATE_ABSENT, "npm global bin dir not resolved")
@@ -249,10 +232,6 @@ def inspect_global_npm(npm_global_bin: "Path | None", origin_version: "str | Non
     )
 
 
-# ---------------------------------------------------------------------------
-# Surface 5 -- DB schema (with direction)
-# ---------------------------------------------------------------------------
-
 def inspect_db_schema(expected_version: int, db_path: Path) -> dict:
     """Classify the DB schema surface AND the migration direction.
 
@@ -261,9 +240,10 @@ def inspect_db_schema(expected_version: int, db_path: Path) -> dict:
     ALIGNED  (DIR_ALIGNED)  -- live == expected.
     STALE    (DIR_FORWARD)  -- live < expected: code ahead, forward migration
                                pending (safe -- bootstrap migrates forward).
-    STALE    (DIR_REVERSE)  -- live > expected: code BEHIND the DB, the
-                               finalize-breaking drift the bootstrap direction
-                               guard REFUSES (never install code older than DB).
+    STALE    (DIR_REVERSE)  -- live > expected: code BEHIND the DB. The
+                               bootstrap direction guard refuses it unless the
+                               ledger's minimum code version admits this code,
+                               which this function does not read.
 
     The `direction` key carries the DIR_* verdict; state is STALE for both
     forward and reverse (both diverge from the origin), so a caller that only
@@ -311,10 +291,6 @@ def inspect_db_schema(expected_version: int, db_path: Path) -> dict:
     )
 
 
-# ---------------------------------------------------------------------------
-# Aggregate
-# ---------------------------------------------------------------------------
-
 def converge_report(
     workspace: Path,
     *,
@@ -353,25 +329,11 @@ def converge_report(
     return {"surfaces": surfaces, "converged": converged, "reverse_direction": reverse}
 
 
-# ---------------------------------------------------------------------------
-# Shared driver -- ONE inspect + format + degrade path for dev AND release
-# ---------------------------------------------------------------------------
-#
-# `converge_report` above is the PURE aggregate (every external dependency
-# injected). The three helpers below are the shared DRIVER both callers use so
-# the "resolve the DB path, inspect, format the report, degrade on failure"
-# sequence is written ONCE, not once in `gaia dev` and again in `gaia release`.
-# They stay import-light: the caller still resolves `expected_version` (from
-# `cli.doctor`) and `npm_global_bin` (from `cli.install`) and injects them, so
-# this module never imports doctor/install and stays a leaf.
+# The caller resolves expected_version (cli.doctor) and npm_global_bin
+# (cli.install) and injects them, so this module imports neither and stays a leaf.
 
 def default_db_path() -> Path:
-    """The gaia.db path both callers inspect: ``$GAIA_DB`` or ``~/.gaia/gaia.db``.
-
-    Written once here so `gaia dev` and `gaia release` resolve the SAME DB path
-    for the schema-direction surface rather than each spelling out the env
-    lookup (and risking a drift between them).
-    """
+    """The gaia.db path both callers inspect: ``$GAIA_DB`` or ``~/.gaia/gaia.db``; ``GAIA_DATA_DIR`` is not read."""
     return Path(
         os.environ.get("GAIA_DB", str(Path("~/.gaia/gaia.db").expanduser()))
     ).expanduser()
@@ -429,7 +391,7 @@ def run_convergence_report(
             npm_global_bin=npm_global_bin,
             plugin_channel=plugin_channel,
         )
-    except Exception as exc:  # never let inspection break the caller
+    except Exception as exc:
         if not quiet:
             emit(f"  [?] convergence: inspection failed ({exc})")
         return {"surfaces": [], "converged": False, "reverse_direction": False, "error": str(exc)}

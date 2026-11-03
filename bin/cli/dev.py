@@ -15,8 +15,8 @@ this source checkout; the only thing a consumer ever depends on is a packed
 tarball.
 
     1. `npm pack` the CURRENT source tree (via `_pack_helpers.pack_tarball`,
-       shared with the Phase-2 `gaia release check` gate -- one pack
-       primitive, not two) into a STABLE, persistent per-workspace
+       shared with `gaia release` -- one pack primitive, not two) into a
+       STABLE, persistent per-workspace
        directory: `gaia.paths.cache_dir() / "dev-pack" / workspace_id()`
        (see `default_pack_dest`), not a `tempfile.TemporaryDirectory()`.
        Each attempt uses a fresh retained child directory so packing cannot
@@ -55,7 +55,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-# bin/cli/dev.py -> bin/cli -> bin -> gaia/ (this source tree's root)
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 if str(_PACKAGE_ROOT) not in sys.path:
@@ -89,10 +88,6 @@ def _restart_warning(host: str) -> str:
         "     so until you restart, this session keeps running the OLD hooks."
     )
 
-
-# ---------------------------------------------------------------------------
-# Package-manager detection + tarball install (pack mode)
-# ---------------------------------------------------------------------------
 
 def detect_package_manager(workspace: Path) -> str:
     """Return "pnpm" when the workspace is pnpm-managed, else "npm".
@@ -372,10 +367,6 @@ def wire_workspace_via_installed_gaia(
     }
 
 
-# ---------------------------------------------------------------------------
-# Orchestration
-# ---------------------------------------------------------------------------
-
 def default_pack_dest(workspace: Path) -> Path:
     """Return the stable, persistent pack destination for *workspace*.
 
@@ -433,7 +424,7 @@ def content_address_tarball(tarball: Path) -> Path:
         stem = stem.split("+", 1)[0]
     new_path = tarball.with_name(f"{stem}+{sha8}.tgz")
     if new_path != tarball:
-        os.replace(tarball, new_path)  # atomic within the same directory
+        os.replace(tarball, new_path)
     return new_path
 
 
@@ -587,10 +578,7 @@ def _run_pack_mode(
     host: str,
 ) -> int:
     """Install through the consumer package manager; report failures without fake rollback."""
-    # keep_tarball is retained for CLI compatibility only: now that the
-    # pack destination is always stable and persistent (never a tmp dir
-    # cleaned up on exit), there is nothing left to delete, so the flag is
-    # a no-op.
+    # --keep-tarball and --no-global-link are accepted for compatibility and do nothing.
     del keep_tarball, no_global_link
     install_mod.require_supported_host(host)
 
@@ -616,10 +604,6 @@ def _run_pack_mode(
     if pack_res["action"] not in ("created", "updated", "noop"):
         return 1
 
-    # Content-address the packed tarball's FILENAME so a same-version repack
-    # with changed content gets a new pnpm store key -> a forced fresh
-    # extraction (the packaged version stays clean). See
-    # content_address_tarball for the mechanism.
     tarball = content_address_tarball(Path(pack_res["tarball"]))
     _report_step(
         name="content-address tarball",
@@ -667,8 +651,6 @@ def _run_pack_mode(
         return 1
     write_recovery_evidence(recovery_path, workspace, before, "complete", failed=False)
 
-    # READ half of the shared convergence routine: confirm the destination's 5
-    # surfaces converged on this origin (the local source). Read-only.
     _print_convergence_report(workspace, pack_res.get("version"), quiet=quiet)
 
     # Counted only now that the build actually landed, so a run that failed to
@@ -742,10 +724,6 @@ def _run_plugin_channel(workspace: Path, *, quiet: bool, verbose: bool, pack_des
         print()
     return 0
 
-
-# ---------------------------------------------------------------------------
-# Plugin interface
-# ---------------------------------------------------------------------------
 
 def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the 'dev' subcommand."""

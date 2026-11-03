@@ -1,70 +1,16 @@
 """
 gaia doctor -- System health checks for Gaia.
 
-Checks (in order):
-   5. package-integrity  - scripts/bootstrap_database.sh shipped + exec
-  10. gaia-version       - package.json readable
-  15. last-install-error - ~/.gaia/last-install-error.json (postinstall failure marker)
-  20. claude-code        - CLI installed
-  30. python             - Python 3.9+ available
-  35. workspace-init     - .claude/, plugin-registry, settings hooks (npm channel) present
-  36. install-channel    - which channel is active: plugin, npm local, or both
-  40. plugin-mode        - ops vs security, registry valid
-  45. schema-version     - gaia.db schema_version against CLI expectation and the
-                        database's compatibility window (min_code_version)
-  47. schema-ddl         - live CHECK constraints match schema.sql (ledger-vs-DDL)
-  49. workspace-roots    - active workspaces have the root `gaia worktree create` needs
-  50. symlinks           - .claude/ symlinks resolve
-  52. component-naming   - skill/agent frontmatter name matches dir/file name
-  53. skill-cross-refs   - agent `skills:` refs resolve to skills/<name>/SKILL.md
-  55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
-  56. source-parity     - installed package == the Gaia source checkout it was built from
-  57. install-provenance - gaia dev records per channel (source SHA, commits behind, drift); else file: vs npm install
-  58. global-cli-alignment - PATH gaia vs workspace-expected install (version/content drift)
-  59. executed-copy-alignment - node_modules/@jaguilar87/gaia resolves to the checkout, or a
-                        stale tarball the pin restored over a dev link (names the realpath)
-  60. identity           - orchestrator agent configured
-  61. opencode-host-liveness - reads identity.attest ledger for the CURRENT
-                        host run; pass only with a recorded attestation,
-                        explicit absence (never a false ok) without one
-  62. opencode-background-subagents - opencode channel recorded but the shell
-                        lacks the variable OpenCode needs for background subagents (info)
-  63. workspace-registry - phantom workspaces, stale aliases, dangling worktree/copy
-                        facets, unevidenced integrations (what `workspace curate` fixes)
-  65. agent-routing     - surface_routing table (DB) primary agents resolve to files
-  70. settings           - permissions, deny rules
-  72. hook-registrations - each shipped (event, matcher) registered exactly once across
-                        plugin hooks.json, settings.local.json, settings.json, user settings
-  74. hook-commands      - each registered Gaia hook command resolves to an existing
-                        interpreter and file (orphans after `npm uninstall`)
-  80. hook-files         - all hook scripts present
-  90. project-context    - project-context.json valid
- 100. project-dirs       - paths declared in context exist
- 110. memory-store       - episodes table present in gaia.db (DB-canonical)
- 120. memory_fts5_db     - episodes_fts present in gaia.db
- 130. memory_fts5_count  - FTS5 index complete
- 145. hooks-importable   - every hooks/ module imports on this platform (noisy fail)
- 150. hooks-active-fresh - running session's hooks == currently wired build
+The checks are the functions registered with ``@register_check(name, order)``;
+``cmd_doctor`` runs them in ascending ``order``.
 
-Severity: pass / info / warning / error
+Severity: pass / info / warning / error (error = Gaia is broken for the user,
+warning = degraded but usable, info = advisory).
 Exit codes: 0=healthy, 1=warnings, 2=errors
 
-Design notes (Pass 4 overhaul):
-  - Diagnostic-only. Every failed check carries an actionable `fix` hint
-    that points to a concrete user action ("reinstall", "run gaia install",
-    "upgrade Gaia") -- never to `--fix`. The auto-fix surface (Identity
-    agent field, FTS5 backfill) remains from earlier passes for backward
-    compatibility but no new check opts into it.
-  - Severity is consistent: ERROR = Gaia is broken for the user, WARNING =
-    degraded but usable, INFO = advisory.
-  - The summary line at the end counts checks by severity and tells the
-    user where to look for fixes (inline hints above).
-
-References:
-  - brew doctor: every warning carries an inline remediation; no --fix mode.
-  - npm doctor: 7 well-scoped checks, context-specific hints when one fails.
-  - rustup: package integrity via SHA + manifest; corruption detected at
-    use-time, repair is reinstall.
+A warning or error prints its ``fix`` hint inline. Checks only report; the one
+exception is ``--fix``, which repairs the orchestrator ``agent`` field in
+settings.local.json and rebuilds the ``episodes_fts`` index.
 """
 
 import argparse
@@ -90,13 +36,7 @@ def command_arg(value) -> str:
     return quote(value)
 
 
-# ============================================================================
-# Check Registry
-# ============================================================================
-
-# Global ordered registry of (order, name, fn) tuples populated by
-# @register_check. cmd_doctor iterates this list rather than a hardcoded
-# array. Order values are spaced (10, 20, 30...) to leave room for inserts.
+# (order, name, fn) tuples populated by @register_check and run by cmd_doctor in order.
 _CHECKS = []
 
 
@@ -114,10 +54,6 @@ def register_check(name: str, order: int):
         return fn
     return decorator
 
-
-# ============================================================================
-# Helpers
-# ============================================================================
 
 def _result(name: str, severity: str, detail: str, fix: str = None) -> dict:
     """Create a check result dict."""
@@ -149,14 +85,15 @@ def _derive_workspace(override: str = None) -> Path:
        When that has neither ``package.json`` nor ``.claude/`` -- a global
        install, where it is the npm prefix -- the recorded root holding the
        cwd (step 5) wins, else the cwd itself when its install manifest shows
-       Gaia wired it.
+       Gaia wired it, else that folder as it is.
     3. Sanity-check that ``@jaguilar87`` and ``gaia`` both appear somewhere
        after that ``node_modules`` segment, confirming the script really is
        running from inside the gaia package tree.
     4. If the derived workspace IS the Gaia source package itself (its
        package.json has name "@jaguilar87/gaia"), treat the workspace as a
        dev self-install and look one directory up for the real consumer
-       workspace (which should also have node_modules/@jaguilar87/gaia/).
+       workspace (which must also have node_modules/@jaguilar87/gaia/);
+       without one, step 5 applies.
     5. If the script is NOT inside any node_modules/.../@jaguilar87/gaia/
        tree (the plugin, a global install, a checkout), the workspace is the
        root recorded in gaia.db that contains ``CLAUDE_PROJECT_DIR`` when the
@@ -181,10 +118,6 @@ def _derive_workspace(override: str = None) -> Path:
     ``node_modules`` is always the one directly under the real workspace
     root, regardless of how many package-manager-internal layers sit between
     it and the actual ``@jaguilar87/gaia`` package files.
-
-    This replaces the old ``_find_project_root()`` walk-up-from-cwd logic
-    that caused false-positive HEALTHY reports when the user was cd'd into
-    the Gaia source repo (which has its own healthy .claude/).
     """
     # --- Explicit override via --workspace flag ---
     if override:
@@ -200,7 +133,7 @@ def _derive_workspace(override: str = None) -> Path:
     # --- GAIA_WORKSPACE_PATH env (baked by the Windows launcher) ---
     # Consulted BEFORE the __file__ derivation but AFTER --workspace. Only
     # honored when it resolves to a dir with .claude/; otherwise fall through
-    # (never a cwd walk-up -- that was removed on purpose). See docstring 1b.
+    # (never a cwd walk-up). See docstring 1b.
     env_ws = os.environ.get("GAIA_WORKSPACE_PATH")
     if env_ws:
         candidate = Path(env_ws).expanduser().resolve()
@@ -239,7 +172,7 @@ def _derive_workspace(override: str = None) -> Path:
             parent_nm = parent / "node_modules" / "@jaguilar87" / "gaia"
             if parent_nm.is_dir():
                 return parent
-            # No consumer found above the source repo -- fall through to error.
+            # No consumer above the source repo -- fall through to the recorded workspace.
         elif pkg_json.is_file() or (workspace / ".claude").is_dir():
             return workspace
         else:
@@ -312,11 +245,10 @@ def _package_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
-# The schema version this CLI build expects to find in gaia.db. When the
-# bootstrap script applies a new schema migration it must bump this constant
-# in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
-# upgrades the CLI past a schema bump but does not re-run `gaia install`,
-# `check_schema_version` raises a warning telling them how to repair.
+# The schema version this CLI build expects to find in gaia.db. Adding
+# scripts/migrations/v<PREV>_to_v<N>.sql bumps this constant in the same commit
+# (tests/cli/test_schema_version_lockstep.py enforces it). A database behind
+# this number makes `check_schema_version` warn and point at `gaia migrate apply`.
 EXPECTED_SCHEMA_VERSION = 73
 
 # Locations the doctor reads outside the workspace, module-level so tests can
@@ -665,18 +597,12 @@ def _command_problems(command: str, project_root: Path, plugin_root: "Path | Non
     return problems
 
 
-# ============================================================================
-# Health Checks
-# ============================================================================
-
 @register_check("Package integrity", order=5)
 def check_package_integrity() -> dict:
     """Check that critical files the package SHOULD ship are present.
 
-    The npm `files` array IS our manifest (like rustup's manifest.toml).
-    Past install failures traced back to a missing DB bootstrapper
-    inside the published tarball -- this check fails loud at diagnostic time
-    so the user knows their install is broken (vs. silently failing later).
+    The list is fixed in this function. A missing file is an error, so a
+    tarball published without the DB bootstrapper fails here instead of later.
 
     The authoritative bootstrapper is the cross-platform Python port
     scripts/bootstrap_database.py: `install.py::_run_bootstrap`, the lazy
@@ -773,7 +699,7 @@ def check_last_install_error() -> dict:
 
 @register_check("Claude Code", order=20)
 def check_claude_code() -> dict:
-    """Check that the Claude Code running this session is new enough to honour onFailure."""
+    """Report the Claude Code version, flag one too old to honour onFailure, info when none is installed."""
     from gaia.hook_shell import claude_code_version_finding, running_host_binary  # noqa: PLC0415
 
     finding = claude_code_version_finding()
@@ -1038,17 +964,15 @@ def check_plugin_mode(project_root: Path) -> dict:
 def check_schema_version() -> dict:
     """Check that gaia.db schema matches the CLI's EXPECTED_SCHEMA_VERSION.
 
-    Bootstrap.sh inserts row (version, applied_at, description) on each
-    install. If a user upgrades the CLI past a schema bump without running
-    `gaia install`, MAX(version) < EXPECTED -- we warn with a concrete hint.
+    MAX(version) below EXPECTED_SCHEMA_VERSION is a warning that points at
+    `gaia migrate plan` and `gaia migrate apply`.
 
     A DB newer than the code is judged by its compatibility window
     (``gaia.store.writer.writes_refused``): inside it is a warning, past it an
     error, because the store refuses every write there.
 
-    Skipped cleanly when:
-      - sqlite3 cannot open the DB (fresh machine, no DB yet)
-      - schema_version table missing (legacy DB from before this check)
+    No DB file is info; a DB sqlite cannot open, a missing schema_version
+    table (legacy DB) or an unreadable one is a warning.
     """
     db_path = _db_path()
 
@@ -1071,8 +995,7 @@ def check_schema_version() -> dict:
 
     try:
         cur = con.cursor()
-        # schema_version table introduced in EXPECTED_SCHEMA_VERSION=1.
-        # If the table is missing, the DB predates the migration -- warn.
+        # A missing schema_version table means a legacy DB -- warn.
         cur.execute(
             "SELECT name FROM sqlite_master "
             "WHERE type='table' AND name='schema_version'"
@@ -1151,9 +1074,9 @@ def check_db_backups() -> dict:
 def check_episodes_growth() -> dict:
     """Report gaia.db growth: FILE size vs the episodes TABLE size (distinct).
 
-    There was previously no visibility into gaia.db growth. The ``episodes``
-    table is the dominant growth driver and is now pruned automatically at 90
-    days (gaia.store.writer.prune_episodes). This check surfaces:
+    The ``episodes`` table is the dominant growth driver and is pruned
+    automatically at 90 days (gaia.store.writer.prune_episodes). This check
+    surfaces:
 
       * the gaia.db FILE size on disk (the whole database, all tables + indexes
         + freelist), and
@@ -1162,11 +1085,10 @@ def check_episodes_growth() -> dict:
       * the freelist -- pages freed by DELETEs but not yet returned to the OS
         (reclaimable with ``VACUUM``).
 
-    The file size and the table size are DIFFERENT numbers and were previously
-    conflated (the message read "episodes ~<file size>MB", implying the whole
-    file was episodes). Reporting them separately makes it obvious how much of
-    the file is the episodes table vs other tables vs dead freelist space. It
-    is informational only -- it never fails the doctor run.
+    The file size and the table size are DIFFERENT numbers; reporting them
+    separately shows how much of the file is the episodes table vs other
+    tables vs dead freelist space. It is informational only -- it never fails
+    the doctor run.
 
     Skipped cleanly when the DB does not exist yet or cannot be read; the
     episodes table size falls back to "unavailable" when the SQLite build has
@@ -1253,8 +1175,9 @@ def check_workspace_roots() -> dict:
     """Report active workspaces whose root is unrecorded, naming the declaration that records it.
 
     ``gaia worktree create`` refuses every repository of such a workspace, and
-    only `gaia workspace declare` records a root. The finding is info, not a warning: a fresh install creates exactly these
-    rows, and they limit worktree creation, not the health of the install.
+    only `gaia workspace declare` records a root. The finding is info, not a
+    warning: a fresh install creates exactly these rows, and they limit
+    worktree creation, not the health of the install.
     """
     from gaia.paths import db_path  # noqa: PLC0415
 
@@ -1518,12 +1441,9 @@ def check_schema_v12_tables() -> dict:
 def check_schema_ddl_consistency() -> dict:
     """Compare live CHECK constraints in gaia.db against gaia/store/schema.sql.
 
-    This check is the complement of `check_schema_version`. That check catches
-    "doctor.py and bootstrap.sh disagree about which version is current". This
-    one catches "the ledger says vN but the live DDL was never actually
-    migrated" -- the failure mode introduced when bootstrap used to stamp the
-    schema_version row unconditionally while CREATE TABLE IF NOT EXISTS in
-    schema.sql short-circuited on existing DBs.
+    This check is the complement of `check_schema_version`. That check compares
+    the ledger's version with EXPECTED_SCHEMA_VERSION. This one catches "the
+    ledger says vN but the live DDL was never actually migrated".
 
     Mechanism:
       1. SELECT sql FROM sqlite_master for each critical table.
@@ -1531,12 +1451,11 @@ def check_schema_ddl_consistency() -> dict:
       3. Parse the corresponding CHECK from gaia/store/schema.sql.
       4. Compare as sets; report drift.
 
-    Critical tables monitored: `memory.type` (widening in v2 was the bug that
-    motivated this check). When future migrations widen other CHECKs, add a
-    row to `_DDL_TARGETS`.
+    Monitored: `memory.type`. To guard another CHECK, add a row to
+    `_DDL_TARGETS`.
 
-    Skipped cleanly when the DB does not exist or the table is missing -- a
-    fresh install with no DB is not "drift", just "not initialised yet".
+    A missing DB is info and a table missing from the live DB is skipped:
+    neither is "drift", just "not initialised yet".
     """
     db_path = _db_path()
     schema_path = _package_root() / "gaia" / "store" / "schema.sql"
@@ -1589,9 +1508,6 @@ def check_schema_ddl_consistency() -> dict:
             )
             row = cur.fetchone()
             if row is None or not row[0]:
-                # Table missing in live DB: not a CHECK drift, skip silently.
-                # The schema-version / workspace-initialised checks will
-                # surface the real problem.
                 continue
             live_values = _extract_check_values(row[0], column)
             source_values = _extract_check_values(schema_text, column, table=table)
@@ -1780,7 +1696,7 @@ def check_symlinks_freshness(project_root: Path) -> dict:
     version (see bin/cli/dev.py::content_address_tarball), so two genuinely
     different dev builds both report the SAME semver. A pure
     ``_semver_tuple`` comparison therefore reports a stale dev-pack extraction
-    as "fresh". This check now ALSO compares the CONTENT hash of the resolved
+    as "fresh". This check also compares the CONTENT hash of the resolved
     vs installed hooks trees (gaia.hooks_build.hooks_content_hash), catching
     the same-version / different-content drift that semver misses. The semver
     comparison is retained as the first, coarser signal (an actually-older
@@ -1923,21 +1839,15 @@ _PARITY_NAMED_LIMIT = 5
 def check_source_parity(project_root: Path) -> dict:
     """Detect an installed package whose code is not the source it claims to be.
 
-    The gap this closes, measured twice in one day: a commit landed, its tests
-    passed, and the code never ran -- because the package Claude Code loads
-    hooks and agents from had captured the working tree at a different moment
-    (once mid-edit, a state no commit ever held). Orders 55 and 150 compare
-    wired-vs-installed and running-vs-wired, so the chain was diagnosed
-    everywhere EXCEPT its first link, and the diagnostic reported perfect
-    health while the consent layer's issuer and enforcer read different code.
+    The package Claude Code loads hooks and agents from can hold a different
+    copy of the working tree than the source checkout (even one no commit ever
+    held), so a commit's tests pass while its code never runs. Orders 55 and
+    150 compare wired-vs-installed and running-vs-wired; this one compares
+    installed-vs-source.
 
-    WARNING, never error, and the reason is the check's own usefulness: source
-    ahead of installed is also the ordinary state of a working tree between an
-    edit and the next `gaia dev`. Red-lining `gaia doctor` on that would train
-    the reader to ignore the exit code, and an ignored check diagnoses nothing.
-    The distinguishing signal is carried by the message instead -- it names the
-    diverging files, so it can never be confused with the generic staleness
-    warnings it sits beside.
+    A divergence is a warning, never an error: source ahead of installed is
+    also the ordinary state of a working tree between an edit and the next
+    `gaia dev`. The message names the diverging files.
     """
     name = "Source parity"
 
@@ -1996,7 +1906,7 @@ def check_source_parity(project_root: Path) -> dict:
 
 
 def _package_dev_command(project_root: Path) -> str:
-    """One runnable `gaia dev` line per package channel `gaia install` recorded for *project_root*."""
+    """One `gaia dev` line per package channel recorded for *project_root*, or a `<channel>` template."""
     manifest = _read_json(project_root / ".claude" / "gaia-manifest.json") or {}
     recorded = [channel for channel in ("npm", "opencode") if channel in manifest.get("package_channels", ())]
     if not recorded:
@@ -2144,7 +2054,7 @@ def _resolve_workspace_expected_gaia(project_root: Path) -> "dict | None":
     """Resolve which ``gaia`` build THIS workspace expects.
 
     Prefers the workspace's own ``node_modules/@jaguilar87/gaia`` (a local or
-    dev-pack install -- the R3-live shim case this check exists for), falling
+    dev-pack install), falling
     back to whatever ``.claude/hooks`` resolves to (mirrors
     ``check_symlinks_freshness``) when there is no node_modules install.
 
@@ -2197,9 +2107,7 @@ def check_global_cli_alignment(project_root: Path) -> dict:
     @jaguilar87/gaia`` left over from before local/dev installs became the
     norm) can sit earlier on PATH than the workspace's own gaia, so a bare
     ``gaia <subcommand>`` silently runs the global copy instead of the
-    workspace's dev-pack shim -- with no warning that the two differ. This is
-    exactly the hole that let an rc.4 global CLI shadow an R3-live workspace
-    shim unnoticed.
+    workspace's dev-pack shim -- with no warning that the two differ.
 
     Two independent signals, because a dev-pack rebuild (``gaia dev``)
     content-addresses the tarball but never bumps the tarball's internal
@@ -2430,8 +2338,7 @@ def _frontmatter_skills(path: Path) -> "list[str]":
 def check_component_naming(project_root: Path) -> dict:
     """Check each skill/agent's frontmatter `name:` matches its dir/file name.
 
-    Deterministic structural check migrated from the gaia-audit skill (which
-    used to run it inline). Two conventions are enforced:
+    Two conventions are enforced:
       - skills/<dir>/SKILL.md must declare ``name: <dir>``.
       - agents/<name>.md must declare ``name: <name>``.
 
@@ -2507,7 +2414,6 @@ def check_component_naming(project_root: Path) -> dict:
 def check_skill_cross_refs(project_root: Path) -> dict:
     """Check that every skill an agent declares resolves to a real skill dir.
 
-    Deterministic cross-reference check migrated from the gaia-audit skill.
     Each agents/<name>.md frontmatter carries a ``skills:`` block-list; every
     entry must resolve to ``skills/<entry>/SKILL.md``. A dangling reference
     means the agent will fail skill injection at dispatch time, so it is an
@@ -2602,9 +2508,7 @@ def check_symbol_anchors(project_root: Path) -> dict:
     An anchored reference is resolvable: a checker can open the file and confirm
     the symbol is still there. The same reference written as prose parentheses --
     ``_is_protected()`` -- names no file, so nothing can resolve it and nothing
-    invalidates it when the symbol is deleted. Measured: one deleted symbol left
-    four stale citations across skills/, and only the single anchored one was
-    caught; the other three were prose and survived the deletion untouched.
+    invalidates it when the symbol is deleted.
 
     Matches only an EMPTY-paren backticked identifier. A call written with
     arguments (``Path("/x").unlink()``, ``execSync("kubectl delete ...")``) is
@@ -2842,16 +2746,12 @@ def check_opencode_background_subagents(project_root: Path) -> dict:
 def check_agent_resolution(project_root: Path) -> dict:
     """Check every agent the router can dispatch resolves to a real file.
 
-    Routing config moved off ``config/surface-routing.json`` -- retired and
-    git-rm'd in commit 9fac935 ("feat(routing): migrate surface routing to
-    DB-backed table") -- onto the ``surface_routing`` table in gaia.db,
-    seeded from each agent's ``routing:`` frontmatter block by
+    Routing lives in the ``surface_routing`` table in gaia.db, seeded from each
+    agent's ``routing:`` frontmatter block by
     ``tools/scan/seed_surface_routing.py`` at install time. This check reads
     that table through the SAME loader
     (``tools.context.surface_router.load_surface_routing_config``) used by
-    routing diagnostics and dispatch support. Routing is no longer injected
-    into every user turn, but a workspace where the registry works should
-    still report PASS here instead of a misleading "file not found".
+    routing diagnostics and dispatch support.
 
     Verifies that each surface's ``primary_agent`` and the top-level
     ``reconnaissance_agent`` map to an ``agents/<name>.md`` that exists. A
@@ -3080,10 +2980,9 @@ def check_hook_files(project_root: Path) -> dict:
 
 @register_check("project-context", order=90)
 def check_project_context(project_root: Path) -> dict:
-    """Check project context contracts exist in the DB (T1.3: DB-backed read).
+    """Check project context contracts exist in the DB.
 
-    Reads from project_context_contracts table in gaia.db instead of the
-    legacy project-context.json file (retired in agent-contract-handoff M1).
+    Reads from the project_context_contracts table in gaia.db.
     """
     try:
         from gaia.project import current as _project_current
@@ -3119,8 +3018,7 @@ def check_project_dirs(project_root: Path) -> dict:
     """Check paths declared in project-context contracts exist on disk.
 
     Reads the infrastructure.paths payload from project_context_contracts
-    in gaia.db (T1.3: DB-backed read). Falls back gracefully when no paths
-    contract exists.
+    in gaia.db. Falls back gracefully when no paths contract exists.
     """
     try:
         import json as _json
@@ -3175,11 +3073,7 @@ def check_project_dirs(project_root: Path) -> dict:
 
 @register_check("memory_fts5_db", order=120)
 def check_memory_fts5_db(project_root: Path) -> dict:
-    """Check if episodes_fts virtual table exists and has rows in gaia.db.
-
-    T6 migration: replaced legacy search.db filesystem check with a query
-    against the episodes_fts FTS5 table in gaia.db.
-    """
+    """Check if episodes_fts virtual table exists and has rows in gaia.db."""
     try:
         import sys as _sys
         pkg_root = str(_package_root())
@@ -3222,9 +3116,8 @@ def check_memory_fts5_db(project_root: Path) -> dict:
 def check_memory_fts5_count(project_root: Path) -> dict:
     """Check FTS5 indexed count against total episode count in gaia.db.
 
-    T6 migration: replaced legacy search_store.count()/index.json check
-    (which read search.db and ignored GAIA_DATA_DIR) with queries against
-    the canonical gaia.db -- episodes_fts for indexed, episodes for total.
+    The indexed count is episodes_fts, the total is episodes; under 90%
+    indexed is a warning.
     """
     try:
         import sys as _sys
@@ -3336,8 +3229,7 @@ def check_hooks_importable(project_root: Path) -> dict:
 def _apply_agent_fix(project_root: Path) -> dict:
     """Write agent='gaia-orchestrator' to settings.local.json top-level.
 
-    Preserves the rest of the JSON content; uses indent=2 with trailing newline
-    to keep the file format consistent with how `gaia scan` writes it.
+    Preserves the rest of the JSON content; writes indent=2 with a trailing newline.
     """
     settings_path = project_root / ".claude" / "settings.local.json"
     if not settings_path.is_file():
@@ -3392,8 +3284,6 @@ def _apply_fts5_backfill(project_root: Path) -> dict:
     it drifts from the content table (e.g. rows inserted before the triggers
     existed, or a corrupted index), the canonical repair is the FTS5
     ``'rebuild'`` command, which re-derives the full index from ``episodes``.
-    This replaced the legacy backfill that re-read the now-dead
-    ``episodes.jsonl`` filesystem file via tools/memory/search_store.py.
     """
     try:
         import sys as _sys
@@ -3484,7 +3374,7 @@ def check_hooks_active_fresh(project_root: Path) -> dict:
     build THIS session pinned at start (SessionStart hook -> session_registry
     ``pinned_build``) against the build ``.claude/hooks`` resolves to NOW.
 
-    Classification (see the four documented states):
+    Classification:
       * ACTIVE  (pass)    -- pinned build == currently wired build. The running
                              hooks ARE the current code.
       * STALE   (warning) -- pinned build != wired build. A newer build was
@@ -3576,10 +3466,6 @@ def check_hooks_active_fresh(project_root: Path) -> dict:
     )
 
 
-# ============================================================================
-# Severity display
-# ============================================================================
-
 _SEVERITY_ICONS = {
     "pass": "PASS",
     "info": "INFO",
@@ -3603,7 +3489,7 @@ def _print_human(results: list, version_detail: str = "", workspace: Path = None
 
     for r in results:
         icon = _SEVERITY_ICONS.get(r["severity"], "????")
-        # Widened from :<18 to :<22 to fit "Workspace initialized" (21 chars).
+        # A name past 22 characters pushes its detail to the right.
         print(f"    [{icon}] {r['name']:<22} {r['detail']}")
         if r["severity"] in ("warning", "error") and r.get("fix"):
             print(f"               Fix: {r['fix']}")
@@ -3625,10 +3511,6 @@ def _print_human(results: list, version_detail: str = "", workspace: Path = None
     else:
         print("  Status: HEALTHY\n")
 
-
-# ============================================================================
-# Command interface
-# ============================================================================
 
 def register(subparsers):
     """Register the doctor subcommand."""

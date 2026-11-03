@@ -199,17 +199,13 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-# Ensure the gaia package (repo root) is importable regardless of cwd,
-# mirroring the sys.path setup used by every other bin/cli/*.py plugin
-# (see bin/cli/task.py).
+# Ensure the gaia package (repo root) is importable regardless of cwd, as in the other bin/cli plugins.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# SSOT for the agent-id shape a draft_id's prefix must satisfy to be a
-# candidate for implicit adoption (see _maybe_adopt_draft). Imported from the
-# portable validator rather than re-spelled, so this floor can never drift
-# from the one the envelope itself is checked against.
+# The agent-id shape a draft_id's prefix must satisfy for implicit adoption (_maybe_adopt_draft),
+# imported from the validator so it cannot drift from the one the envelope is checked against.
 from gaia.contract.validator import (  # noqa: E402
     AGENT_ID_PATTERN_TEXT,
     LEGACY_CONCLUSION_FIELD,
@@ -222,13 +218,8 @@ from gaia.contract.validator import (  # noqa: E402
 _AGENT_ID_RE = re.compile(AGENT_ID_PATTERN_TEXT)
 
 
-# ---------------------------------------------------------------------------
-# Draft storage (T5 -- delegated to gaia.contract.drafts; see module docstring
-# "Draft identity"). This CLI holds NO draft-addressing state of its own: the
-# per-agent keying, atomic persistence, and concurrency guarantees all live in
-# that one harness-agnostic module so T6/T7/T13 build on a single surface.
-# ---------------------------------------------------------------------------
-
+# Draft storage lives in gaia.contract.drafts (see "Draft identity" above); this CLI holds
+# no draft-addressing state of its own.
 def _mint_draft_id(agent_id: str) -> str:
     """Mint a fresh contract id for ``agent_id`` (harness-agnostic)."""
     from gaia.contract.drafts import mint_draft_id
@@ -262,10 +253,6 @@ def _draft_exists(draft_id: str) -> bool:
 
     return draft_exists(draft_id)
 
-
-# ---------------------------------------------------------------------------
-# Envelope construction / mutation helpers
-# ---------------------------------------------------------------------------
 
 def _initial_envelope(agent_id: str) -> dict:
     """The starting shape for a freshly-init'd draft.
@@ -448,10 +435,6 @@ def _list_overwrite_message(overwrites: list) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Validation + output helpers
-# ---------------------------------------------------------------------------
-
 def _validate_envelope(envelope: Any, **closing):
     """Single full-verdict entry point (layer 1 form + layer 2 cross-check).
 
@@ -557,12 +540,8 @@ def _mirror_partial_to_row(draft_id: str, envelope: dict) -> dict:
     }
 
 
-# Why a mirror did not land, in the caller's terms. ``no_row`` is the one
-# ordinary case -- a draft with no dispatch behind it (a plain CLI use, or a turn
-# that minted its own identity) has nothing to mirror onto and never did; it is
-# reported in --json and stays off stderr so it does not cry wolf on every write
-# of a legitimately row-less draft. The others each mean evidence the caller
-# believes is recorded is NOT on any row, which no write may leave unsaid.
+# Why a mirror did not land. no_row is ordinary (a draft with no dispatch behind it): it is
+# reported in --json and kept off stderr; every other reason means evidence is on no row.
 _MIRROR_SKIP_EXPLANATIONS = {
     "no_row": (
         "no contract row exists for this draft, so the evidence lives only on "
@@ -643,13 +622,10 @@ def _write_if_valid(
     if refusal:
         _print_error(refusal, as_json)
         return 1
-    # What gets persisted is what got VALIDATED. Every enum in the envelope is
-    # compared normalized (agent_state upper-cased, verification.result
-    # lower-cased), and persisting the raw
-    # spelling instead left two spellings of one value in the database for
-    # every reader downstream to reconcile. Canonicalizing here, after the
-    # verdict and before the write, is the one point where the validated value
-    # and the stored value can be made the same value.
+    # Persist what was VALIDATED: enums are compared normalized (agent_state
+    # upper-cased, verification.result lower-cased), so canonicalize after the
+    # verdict and before the write, or the database holds two spellings of one
+    # value.
     canonical_changes: list = []
     envelope = canonicalize_envelope(envelope, changes=canonical_changes)
     if continuation is not None:
@@ -664,9 +640,8 @@ def _write_if_valid(
     )
     if continuation is not None:
         print(_continuation_notice(continuation), file=sys.stderr)
-    # No silent conversion: a value the write changed on its way to disk is
-    # announced on the same terms a rejection would be. The caller wrote one
-    # spelling and the record now holds another; that is worth one line.
+    # A value the write changed on its way to disk is announced on the same
+    # terms a rejection would be.
     for change in canonical_changes:
         print(f"[CANONICALIZED] {change}", file=sys.stderr)
     if mirror_outcome is not None:
@@ -700,7 +675,7 @@ def _maybe_adopt_draft(draft_id: str) -> Optional[dict]:
     A turn whose identity was born at dispatch (``insert_dispatched_handoff``
     in ``gaia.store.writer``) has a real ``agent_contract_handoffs`` row before
     it ever runs a CLI command, but that birth never writes the on-disk draft
-    file -- ``init`` used to be the only thing that did. This lets the first
+    file. This lets the first
     ``set``/``add``/``fill`` against that SAME id recreate the file itself,
     from exactly the identity the row was born under, instead of requiring a
     separate ``gaia contract init`` call first.
@@ -727,9 +702,8 @@ def _maybe_adopt_draft(draft_id: str) -> Optional[dict]:
     ``gaia.store.writer.mirror_partial_contract_handoff``) carries a full
     validated envelope instead -- and every validated envelope has an
     ``evidence_report`` key (``gaia.contract.validator`` requires it), while the
-    bare birth marker never does. That is the same "fabricate blank over real
-    evidence" defect ``cmd_view`` used to have, through the write door instead
-    of the read one: fabricating blank here would not only lose the evidence on
+    bare birth marker never does. Fabricating blank over real evidence here
+    would not only lose the evidence on
     disk, it would MIRROR the blanked envelope straight back onto the row on
     the caller's next write, destroying it a second time. So this reuses
     :func:`_freshest_envelope` -- the SAME read-only recovery ``cmd_view``
@@ -772,61 +746,6 @@ def _maybe_adopt_draft(draft_id: str) -> Optional[dict]:
     _save_draft(draft_id, envelope)
     return envelope
 
-
-# ---------------------------------------------------------------------------
-# Continuation: a turn is a contract, and closing it does not leave it open.
-#
-# When the orchestrator resumes an agent that already closed its turn, the agent
-# keeps working and its next write has to go somewhere. There is no birth event
-# on a resumption to prepare a new row at (the nascent row is written only from
-# the dispatching PreToolUse:Task; a resume arrives as SendMessage), so the FIRST
-# WRITE is the only moment available, and that is here.
-#
-# THE TRIGGER IS THE TURN, NOT THE VERDICT. What counts as closed is
-# `gaia.state.CLOSED_TURN_PLAN_STATUSES` -- every state an agent can finalize
-# under. Reading it off the narrower TERMINAL_PLAN_STATUSES instead was the
-# measured defect: a turn that closed declaring NEEDS_VERIFICATION left a row
-# that was not terminal, so the same agent's NEXT assignment merged its evidence
-# into the record an independent verifier was about to read, and its close
-# replaced the producer's verdict -- all of it returning success. The verifier's
-# own path is untouched by the widening: it converges through
-# finalize_agent_contract_handoff, whose guard is still TERMINAL_PLAN_STATUSES.
-# Both frontiers document each other at their definitions in gaia.state.
-#
-# NO CEREMONY is the binding constraint: the resumed agent passes the same
-# --draft-id it was born with and does nothing different, and the orchestrator
-# runs no preparatory verb. A fix that depended on someone remembering an extra
-# step would be worthless, because the defect being fixed IS a silent omission.
-# So the helpers below sit inside ordinary resolution:
-#
-#   * _continuation_tip_id -- FOLLOW an existing chain to its live link. Pure
-#     read; used by finalize so a resumed turn's close lands on the contract its
-#     own writes went to, not on the record it already closed.
-#   * _plan_continuation   -- PLAN a new link when the addressed contract is
-#     closed, without writing anything yet. Used only by the MUTATING verbs,
-#     because only they carry content that would otherwise be lost.
-#
-# THE MINT IS DEFERRED UNTIL THE WRITE VALIDATES, and the split above is what
-# buys that. Planning is pure: it mints an id STRING (`secrets`, no DB), builds
-# the seed envelope, and returns them. Only when the mutated envelope passes the
-# full verdict does _write_if_valid call the writer and INSERT the row. This
-# keeps this CLI's oldest guarantee intact -- a rejected write NEVER lands -- for
-# the row as well as the draft: a malformed `set` against a closed contract
-# leaves no link, no draft file and no event behind, instead of stranding an
-# empty row that nothing will ever finalize.
-#
-# finalize deliberately FOLLOWS and never OPENS. Its idempotency is a documented
-# guarantee (a repeated finalize of the same draft is a genuine no-op reporting
-# the same handoff_id), and minting on finalize would turn every retried close
-# into an empty link. A resumption with nothing to write has nothing to continue;
-# a resumption that produces work reaches a mutating verb first, and the link is
-# already open by the time finalize follows the chain to it.
-#
-# NOT SILENT: opening a link is reported on every path a caller can see -- the
-# `continuation` block in --json output, a stderr notice in plain output, a
-# harness event, and the row's own continues_handoff_id, which `gaia contract
-# chain` reads back.
-# ---------------------------------------------------------------------------
 
 _CONTINUATION_EVENT = "contract.continuation"
 
@@ -933,8 +852,9 @@ def _plan_continuation(
     will be born with, and ``pending`` carries what :func:`_commit_continuation`
     needs to INSERT the row once the write validates.
 
-    Nothing here touches the DB or the disk, which is the point -- see the
-    "THE MINT IS DEFERRED" paragraph in the section header.
+    Nothing here touches the DB or the disk, which is the point: the link is
+    inserted by :func:`_commit_continuation` only after the write validates, so
+    a rejected write leaves no link, no draft file and no event.
     """
     tip_id = _continuation_tip_id(draft_id)
     try:
@@ -1074,8 +994,8 @@ def _load_target_draft(
     "absent, adopt me") for an EXPLICIT id -- this is what makes a first
     ``set``/``add``/``fill`` against a born identity succeed with no prior
     ``init``. Both ``cmd_validate`` and ``cmd_view`` pass False: neither may
-    mutate anything on disk. ``cmd_view`` does not even call this helper for
-    its ``--draft-id`` addressing path any more -- see its own docstring for
+    mutate anything on disk. ``cmd_view`` does not call this helper for
+    its ``--draft-id`` addressing path -- see its own docstring for
     why materializing ``_initial_envelope`` was never safe for a READ verb,
     and how it recovers real evidence instead without writing.
 
@@ -1096,9 +1016,7 @@ def _load_target_draft(
         it is the seed envelope the link will be born with, held in memory.
     """
     as_json = force_json or bool(getattr(args, "json", False))
-    # One CLI process runs one verb, but the test suite calls these handlers
-    # in-process and repeatedly; a stale report would be attributed to the
-    # next write.
+    # Handlers are also called in-process and repeatedly; a stale report would be attributed to the next write.
     _SANITIZE_REPORT.clear()
     draft_id = _resolve_target_draft_id(args, as_json)
     if draft_id is None:
@@ -1129,9 +1047,8 @@ def _sanitize_inherited(envelope: dict, sanitize: bool) -> dict:
     A write validates the whole envelope and no verb removes a key, so one
     invalid key inherited from a historical row -- or from a draft file the
     CLI itself wrote before the vocabulary was closed -- rejects every `set`,
-    `fill` and `finalize`, including the write that would fix it. 70 of the
-    238 draft files on disk are in exactly that state. Repairing on the way IN
-    is what keeps the door from having no handle on the inside.
+    `fill` and `finalize`, including the write that would fix it. Repairing on
+    the way IN is what keeps the door from having no handle on the inside.
 
     Announced, never silent, and on both output paths -- the caller is about
     to write a record that differs from the one it read, which is precisely
@@ -1149,26 +1066,17 @@ def _sanitize_inherited(envelope: dict, sanitize: bool) -> dict:
     return cleaned
 
 
-# Populated by :func:`_sanitize_inherited` and drained by
-# :func:`_write_if_valid` into the --json payload. A module-level accumulator
-# rather than a threaded return value because the sanitize happens during
-# draft RESOLUTION, several frames above the write that reports it, and every
-# mutating verb would otherwise have to carry it through by hand.
+# Filled by _sanitize_inherited and drained by _write_if_valid into the --json payload; module-level
+# because the sanitize runs during draft resolution, frames above the write that reports it.
 _SANITIZE_REPORT: list = []
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 def _mint_agent_id() -> str:
     """Mint a fresh, conforming agent handle.
 
-    ``mint_draft_id`` has always minted the ``.{token}`` SUFFIX with
-    ``secrets`` and that suffix has never collided across 6540 rows; the
-    PREFIX -- the part resolution actually keys on -- was the one piece asked
-    of the model, which is where every measured collision came from. Minting
-    both here removes that asymmetry.
+    ``mint_draft_id`` mints the ``.{token}`` SUFFIX with ``secrets``; the
+    PREFIX -- the part resolution keys on -- is minted here too, so the caller
+    never has to invent a handle.
 
     Delegates to ``gaia.contract.drafts.mint_agent_id``, the SSOT the
     dispatch-side birth mints from too -- a row born at dispatch is adoptable
@@ -1187,8 +1095,8 @@ def cmd_init(args) -> int:
     explicit ``--agent-id`` still works unchanged (subject to the same
     format floor), which is what keeps every existing caller valid.
 
-    No longer the required first step for a turn whose identity was born at
-    dispatch: ``set``/``add``/``fill`` now adopt that identity implicitly on
+    Not required for a turn whose identity was born at dispatch:
+    ``set``/``add``/``fill`` adopt that identity implicitly on
     their own first call (see ``_maybe_adopt_draft``). ``view`` recovers a
     born identity too, but read-only -- it never adopts/materializes a draft
     file (see ``cmd_view``'s docstring). This command remains the FALLBACK
@@ -1204,9 +1112,8 @@ def cmd_init(args) -> int:
         agent_id = _mint_agent_id()
     draft_id = getattr(args, "draft_id", None) or _mint_draft_id(agent_id)
     envelope = _initial_envelope(agent_id)
-    # Echo the identity unambiguously. The draft_id embeds the agent_id, but
-    # asking the agent to slice a prefix off a compound id is another chance
-    # to retype it wrong -- report both, labelled, in both output modes.
+    # The draft_id embeds the agent_id, but slicing a prefix off it is a chance to retype it
+    # wrong, so both are reported, labelled, in both output modes.
     return _write_if_valid(
         envelope,
         draft_id,
@@ -1291,7 +1198,7 @@ def _freshest_envelope(contract_id: Optional[str], row: dict) -> "tuple[Optional
     """The freshest recoverable envelope for an ALREADY-RESOLVED row, without
     ever writing anything itself.
 
-    Reads the SAME two sources: for a turn still open, the on-disk draft first,
+    Reads two sources: for a turn still open, the on-disk draft first,
     since it may carry writes newer than the last DB mirror, else the row's
     own ``raw_handoff_json``, populated by ``gaia contract set/add/fill``'s
     best-effort mirror -- see ``gaia.store.writer.mirror_partial_contract_handoff``.
@@ -1513,27 +1420,16 @@ def cmd_view(args) -> int:
     ``harness_agent_id`` when the row was stamped at SubagentStart (v40) --
     so either is a safe next step from that list.
 
-    FIXED (was a live defect): with no ``--field``, ``--draft-id`` addressing
-    used to resolve through :func:`_load_target_draft`'s DEFAULT
-    ``allow_adopt=True``. When no draft FILE existed yet for an EXPLICIT,
-    already-born id -- exactly the shape of a historical or cut row reached
-    via ``contract list`` -- that adoption path (:func:`_maybe_adopt_draft`)
-    materialized a genuinely BLANK ``_initial_envelope`` (every
-    ``evidence_report`` list empty) and PERSISTED it to disk, from a READ
-    verb, discarding whatever real evidence the row's own
-    ``raw_handoff_json`` still carried (populated by that turn's own
-    ``set``/``add``/``fill`` calls before it was cut -- see
-    ``gaia.store.writer.mirror_partial_contract_handoff``). The blank
-    envelope then read back as "this turn recorded nothing", indistinguishable
-    from an honestly empty turn, and the damage was PERMANENT: once the blank
-    draft file existed, every later ``view`` of the SAME id loaded it instead
-    of ever looking at ``raw_handoff_json`` again.
-
-    This resolves ``--draft-id`` with ``allow_adopt=False`` (mirroring
-    ``cmd_validate``, which already never mutates) and, only when no draft
-    file exists, recovers via :func:`_freshest_envelope` -- the SAME
-    freshest-source-wins recovery ``--harness-id`` addressing already used --
-    instead of fabricating one. When NOTHING is recoverable at all (no draft
+    ``--draft-id`` is read without adopting: a closed row is read through
+    :func:`_freshest_envelope`, any other id loads its draft file, and only
+    when no file exists does it recover via :func:`_freshest_envelope` -- the
+    freshest-source-wins recovery ``--harness-id`` addressing uses -- instead
+    of fabricating a blank ``_initial_envelope``. Adoption through
+    :func:`_maybe_adopt_draft` would persist that blank from this READ verb,
+    it would read back as "this turn recorded nothing", and every later
+    ``view`` of the SAME id would load it instead of the evidence in the row's
+    ``raw_handoff_json`` (see
+    ``gaia.store.writer.mirror_partial_contract_handoff``). When NOTHING is recoverable at all (no draft
     file AND no row, or a row whose ``raw_handoff_json`` is itself
     missing/unparseable), that is reported as an explicit error naming the
     reason, never as a silent blank envelope: a turn that genuinely recorded
@@ -1595,11 +1491,8 @@ def cmd_view(args) -> int:
         envelope = _load_draft(draft_id)
     if envelope is None:
         if draft_file_present:
-            # The draft file exists but failed to PARSE -- distinct from "no
-            # file at all", and not the case this fix targets. Keep the
-            # pre-existing behavior (a clean error, never a fabricated
-            # envelope and never a fallback to raw_handoff_json for a file
-            # that is sitting right there, just unreadable).
+            # The file exists but failed to parse: a clean error, never a fabricated envelope
+            # or a raw_handoff_json fallback.
             _no_draft_error(as_json, draft_id)
             return 1
         row = _lookup_handoff_row_by_contract_id(draft_id)
@@ -1641,10 +1534,8 @@ def cmd_view(args) -> int:
     if opened_from:
         payload["opened_from"] = opened_from
     if source != "draft":
-        # Recovered from the persisted row's raw_handoff_json, not the live
-        # draft file -- labelled so a consumer can tell "the in-flight
-        # draft" from "reconstructed evidence for a historical/cut row",
-        # exactly as --harness-id addressing already labels its own recovery.
+        # Recovered from the row's raw_handoff_json, not the live draft file; labelled as
+        # --harness-id addressing labels its own recovery.
         payload["envelope_source"] = source
         if row is not None:
             payload["handoff_id"] = row.get("id")
@@ -1682,22 +1573,8 @@ def cmd_validate(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# list: read-only query over the PERSISTED agent_contract_handoffs rows.
-#
-# `view` reads a DRAFT on disk; nothing in the CLI exposed the finalized rows,
-# so recovering a handoff_id meant reaching for the internal writer API through
-# an interpreter. This verb closes that gap with a plain SELECT: no draft
-# resolution, no mutation, T0.
-# ---------------------------------------------------------------------------
-
-# Columns rendered by the default table view, in order. The full row is
-# available via --json; the table keeps the coordinates needed to identify a
-# turn and walk the plan-task -> producer -> verifier chain.
-#
-# `agent_name` is DERIVED, not a column of the table -- see _birth_agent_name.
-# `cut_reason` (v39) is a real column and answers "why did this turn not close
-# cleanly" without opening each row: a stuck row is legible from the list alone.
+# Columns of the default table view; the full row is in --json. agent_name is derived
+# (_birth_agent_name), not a column of the table.
 _LIST_TABLE_COLUMNS = (
     "id",
     "created_at",
@@ -1730,9 +1607,8 @@ def _birth_agent_name(row: dict) -> "str | None":
 
     * legacy rows born before the minted-identity change, whose ``agent_id``
       column happens to carry an agent name. Reading a name back out of that
-      column would mean deciding by SHAPE which handles are names, and the live
-      table mixes real names (``cloud-troubleshooter``) with fixture handles
-      (``aworkspace1``) -- a guess, not a projection;
+      column would mean deciding by SHAPE which handles are names -- a guess,
+      not a projection;
     * rows finalized cleanly, since ``finalize_agent_contract_handoff`` replaces
       ``raw_handoff_json`` wholesale with the contract envelope, which carries no
       agent name (only ``mirror_partial_contract_handoff`` preserves the marker,
@@ -1815,9 +1691,7 @@ def cmd_list(args) -> int:
         limit=args.limit,
     )
 
-    # The derived name rides alongside the real columns in BOTH renderings, so a
-    # --json consumer does not have to parse raw_handoff_json to learn which
-    # specialist a stuck row belongs to.
+    # The derived name rides alongside the real columns in both renderings.
     for row in rows:
         row["agent_name"] = _birth_agent_name(row)
 
@@ -1847,16 +1721,6 @@ def cmd_list(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# chain: read a turn's whole continuation chain from ANY of its links.
-#
-# A chain that can only be reassembled by hand does not count as readable. Given
-# one contract id -- whichever an operator happens to hold, first link or last --
-# this walks back to the root and forward to the live link and prints every
-# contract in order, so "where did this turn's later work go" and "what did this
-# link come from" are one command instead of a sequence of joins.
-# ---------------------------------------------------------------------------
-
 _CHAIN_TABLE_COLUMNS = (
     "link",
     "id",
@@ -1873,8 +1737,7 @@ def cmd_chain(args) -> int:
 
     The two ways this returns nothing are reported as the DIFFERENT diagnoses
     they are: an id that names no row (the answer is known and is empty) versus
-    a walk the substrate refused (the answer is unknown). Collapsing them told
-    an operator holding a real contract id that no such row existed.
+    a walk the substrate refused (the answer is unknown).
     """
     from gaia.store.writer import ContinuationChainUnreadable, continuation_chain
 
@@ -1953,10 +1816,9 @@ def _resolve_workspace(explicit: Optional[str]) -> str:
 def _finalize_worktree_scope() -> str:
     """"managed" when this process's cwd is inside a Gaia-managed worktree, else "shared".
 
-    Read by ``cmd_finalize`` and stamped onto every closing envelope as
-    ``worktree_scope`` -- see that call site for why this is detection-only,
-    never a gate. "unknown" is returned, never raised, when the managed
-    roots cannot be resolved.
+    Read by ``cmd_finalize`` and passed to ``stamp_harness_fields`` as
+    ``worktree_scope``; nothing in this CLI gates on it. "unknown" is
+    returned, never raised, when the managed roots cannot be resolved.
     """
     try:
         from gaia.worktree import managed_root_containing
@@ -2021,8 +1883,8 @@ def _content_rejected(envelope: dict, draft_id: str, found: dict, as_json: bool)
 
 
 def cmd_finalize(args) -> int:
-    """Validate the draft as final AND write it to the store (T7 -- the SOLE
-    idempotent writer of the agent_contract_handoffs row).
+    """Validate the draft as final AND write it to the store (the idempotent
+    writer of the agent_contract_handoffs row for a turn's clean close).
 
     Confirms the draft passes the full verdict (form + cross-check), then
     calls ``gaia.store.writer.finalize_agent_contract_handoff`` -- an
@@ -2030,11 +1892,10 @@ def cmd_finalize(args) -> int:
     see the module docstring's "Draft identity" section) -- so a full
     init->set/add->finalize cycle inserts EXACTLY ONE row, and every
     subsequent ``finalize`` of the SAME draft is a genuine no-op: no
-    duplicate row, no error, the SAME ``handoff_id`` reported back (AC-6).
+    duplicate row, no error, the SAME ``handoff_id`` reported back.
     finalize never mutates the on-disk draft itself -- only ``validate``'s
     read-only verdict plus one DB write; see gaia.store.writer for the exact
-    idempotency-key contract T8 (write-guard/permissions) and T9 (hook
-    backstop) build on.
+    idempotency-key contract.
 
     Attribution: ``--session-id`` and ``--plan-task-id`` are stamped on the row
     when supplied, making the finalized contract findable by that coordinate
@@ -2082,19 +1943,8 @@ def cmd_finalize(args) -> int:
     agent_state = agent_status.get("agent_state")
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
-    # Closing-state floor (live finding: handoff row 10955). finalize is the
-    # turn's CLEAN close -- it clears cut_reason and ends the row's life. A
-    # draft still carrying IN_PROGRESS at that seam produces a limbo row:
-    # closed clean (cut_reason NULL) yet declaring the turn never ended --
-    # invisible to `contract list --cut` AND to every terminal-state read.
-    # Every real end of a turn has a closing state (COMPLETE / NEEDS_
-    # VERIFICATION / BLOCKED / NEEDS_INPUT / APPROVAL_REQUEST); IN_PROGRESS is
-    # the one state that asserts the turn continues, so it is the one state a
-    # close may not carry. Scoped to THIS CLI seam on purpose: the rescue
-    # lanes (SubagentStop persister / reaper / salvage) write through
-    # gaia.store.writer directly and record IN_PROGRESS deliberately, as the
-    # honest verdict of a turn that was cut -- those stamp a cut lane, never a
-    # clean close.
+    # finalize is the clean close (it clears cut_reason), so IN_PROGRESS would leave a limbo row;
+    # the rescue lanes write through gaia.store.writer directly and record it under a cut reason.
     if agent_state == "IN_PROGRESS":
         msg = (
             "agent_status.agent_state is IN_PROGRESS, but finalize is the "
@@ -2114,27 +1964,9 @@ def cmd_finalize(args) -> int:
             print(f"Rejected: {msg}", file=sys.stderr)
         return 1
 
-    # Blind-verification anti-leak at the CLI seam (plan 34 task 8). The
-    # SubagentStop gate already refuses a plan-task-bound self-COMPLETE
-    # (hooks/adapters/subagent_stop_core.py::_blind_verification_required), but that gate
-    # is a SEPARATE persistence path -- `gaia contract finalize` was role-blind
-    # AND binding-blind, so a producer could bypass the gate by finalizing a bound
-    # COMPLETE straight through the CLI (the hole that leaked the 31 COMPLETEs).
-    # Close it here with the SAME binding-keyed decision, recovered by contract_id:
-    # if this turn's dispatch binding carries a plan_task_id, it is a plan-task-
-    # bound producer turn and may NOT self-COMPLETE -- refuse and tell it to set
-    # NEEDS_VERIFICATION so an independent verifier confirms the increment. A turn
-    # with NO plan_task_id (investigation / memory / a verifier turn, which binds
-    # by parent_handoff_id) is unbound and may self-COMPLETE -- unchanged.
-    #
-    # BINDING SOURCE, in priority order. An EXPLICIT ``--plan-task-id`` flag wins.
-    # The contract-keyed lookup below is the fallback and now genuinely resolves
-    # for an ADOPTED turn -- the born row is keyed by the same draft id this
-    # finalize carries -- but it still resolves to nothing for a turn that minted
-    # its own identity, which is exactly how the leak this gate closes stayed open
-    # when the two key spaces were disjoint. The flag is the coordinate the
-    # caller's own dispatch envelope carries, so a producer that declares its
-    # binding is held to it here, at the same seam the SubagentStop gate holds it.
+    # Blind verification: the SubagentStop gate (hooks/adapters/subagent_stop_core.py::
+    # _blind_verification_required) makes this decision for its own path; a turn bound to a
+    # plan_task_id (the --plan-task-id flag, else the born row's) may not self-COMPLETE.
     if agent_state == "COMPLETE":
         bound_plan_task_id = getattr(args, "plan_task_id", None)
         if bound_plan_task_id is None:
@@ -2220,11 +2052,8 @@ def cmd_finalize(args) -> int:
             workspace=workspace,
             agent_state=agent_state,
             raw_handoff_json=json.dumps(envelope),
-            # Attribution, from the EXPLICIT flags only. The CLI still never
-            # READS a harness value (decisions #1, #3) -- these arrive as
-            # arguments the caller supplies from its own dispatch envelope. Both
-            # default to None, and the writer merges them with COALESCE, so
-            # omitting them records nothing and clears nothing.
+            # Attribution comes from the explicit flags only; omitted, the writer's COALESCE
+            # records and clears nothing.
             session_id=getattr(args, "session_id", None),
             plan_task_id=getattr(args, "plan_task_id", None),
         )
@@ -2269,11 +2098,8 @@ def cmd_fill(args) -> int:
     is written, so a patch mixing a colliding list with clean scalars leaves
     the draft exactly as it was rather than half-applied.
     """
-    # fill always speaks JSON on output (its own --json flag is the PATCH
-    # payload, not an output-format toggle), so error/success reporting is
-    # JSON-shaped regardless -- force_json=True makes THIS helper's own
-    # errors (no draft / ambiguous draft) JSON-shaped too, not only the
-    # write-path errors below.
+    # fill's --json is the PATCH, so it always speaks JSON; force_json makes the helper's
+    # own errors (no draft / ambiguous draft) JSON-shaped too.
     draft_id, envelope, as_json, continuation = _load_target_draft(
         args, force_json=True, chain="open", sanitize=True
     )
@@ -2313,46 +2139,8 @@ def cmd_fill(args) -> int:
     )
 
 
-# ---------------------------------------------------------------------------
-# reconcile -- the closure path for a hook-written residue row
-# ---------------------------------------------------------------------------
-#
-# WHY THIS IS A SEPARATE VERB AND NOT A RELAXATION OF `finalize`.
-# `finalize` is the AGENT's clean close of ITS OWN turn: it loads a draft,
-# validates the full envelope, and enforces identity coherence between
-# `agent_status.agent_id` and the draft id's `{agent_id}.{token}` prefix. A
-# residue row satisfies none of those premises -- it has no draft on disk, no
-# agent authored it, and the SubagentStop backstop keys it
-# `hook-backstop.{agent_id}.{session_id}`, whose first dot-segment is the
-# literal `hook-backstop`. That made the row unclosable by construction, and by
-# every route: `_maybe_adopt_draft` refuses the prefix (it fails
-# AGENT_ID_PATTERN_TEXT) so no draft can even be materialized, and were one
-# materialized anyway, `cmd_finalize`'s coherence check would demand
-# `agent_status.agent_id == "hook-backstop"` while the validator forbids exactly
-# that value. No value satisfies both.
-#
-# Widening either check to admit the synthetic shape would widen the agent's own
-# clean-close door for every turn, to serve rows no agent ever wrote. The honest
-# fix is a door of the row's own kind: this verb never loads a draft, never
-# validates an envelope, and NEVER TOUCHES agent_state -- so it cannot promote
-# anything to COMPLETE and cannot widen the SubagentStop gate or the state enum.
-# What it changes is the CUT MARK, which is the only thing wrong with a residue
-# row: the turn's real verdict already lives on another row, and leaving the
-# duplicate marked cut turns `contract list --cut` -- the orchestrator's signal
-# for degraded work -- into mostly false positives.
-#
-# The semantics are the ones `close_born_dispatch_row` already established for a
-# SUPERSEDED scaffold (hooks/modules/agents/handoff_persister.py): record
-# `superseded_by_contract_id` as a pure link to where the verdict is, and clear
-# `cut_reason`, because nothing about that turn was degraded. This verb is that
-# same closure, reachable by hand for the rows already accumulated.
-# ---------------------------------------------------------------------------
-
-# Envelope markers written ONLY by the hook-side capture paths
-# (handoff_persister: `_capture` and the reaped branch of
-# `close_born_dispatch_row`). Requiring one is what keeps this verb off a row an
-# agent authored: a turn's own cut row (never_finalized on its real contract)
-# carries no `auto_captured`, so it stays in `--cut` where it belongs.
+# Envelope markers written only by the hook-side capture paths; requiring one keeps reconcile
+# off a row an agent authored (a turn's own cut row carries none, so it stays in `--cut`).
 _HOOK_WRITTEN_MARKERS = ("auto_captured", "reaped")
 
 
@@ -2389,6 +2177,14 @@ def cmd_reconcile(args) -> int:
     row carries) or ``--harness-id`` (the same bridge ``view`` uses). Never
     changes ``agent_state``; it stamps ``superseded_by_contract_id`` into the
     envelope and clears ``cut_reason`` so the row leaves the ``--cut`` signal.
+
+    A separate verb because ``finalize`` cannot close such a row: the
+    SubagentStop backstop keys it ``hook-backstop.{agent_id}.{session_id}``,
+    which has no draft on disk (``_maybe_adopt_draft`` refuses the prefix) and
+    fails finalize's agent_id coherence check, since the validator forbids the
+    agent_id "hook-backstop". Widening either check would widen the agent's own
+    close door for every turn. This verb loads no draft and validates no
+    envelope, so it cannot promote anything to COMPLETE.
     """
     from gaia.store.writer import (
         collapse_continuation_chains,
@@ -2400,9 +2196,7 @@ def cmd_reconcile(args) -> int:
     contract_id = getattr(args, "contract_id", None)
     harness_id = getattr(args, "harness_id", None)
 
-    # Neither coordinate is NOT a resolution fallback here: a bare
-    # `contract_id=None` lookup returns whatever row sorts first, which is the
-    # class of accidental-target bug this whole change exists to remove.
+    # No default target: a bare `contract_id=None` lookup returns whatever row sorts first.
     if not contract_id and not harness_id:
         _print_error(
             "reconcile addresses ONE row explicitly: pass --contract-id or "
@@ -2503,15 +2297,12 @@ def cmd_reconcile(args) -> int:
 
 
 def cmd_reap(args) -> int:
-    """Production caller for the host-death reaper (plan 65, task 552/T13's follow-on).
+    """Run the host-death reaper once and print its counts.
 
-    Thin CLI wrapper over ``dispatch_lifecycle.reap_stale_turn`` -- the ONLY
-    change here is gaining a real invocation path; the promotion logic itself
-    (age window, liveness check, idempotent candidate selection) stays exactly
-    what tests/contract/test_reap_stale_dispatched_handoffs.py and
-    tests/hooks/modules/agents/test_dispatch_lifecycle_reap_stale_turn.py
-    already cover. Before this verb existed, T15's own re-run of that gate had
-    no production caller and fell back to ``python3 -c``, which is not one.
+    Thin CLI wrapper over ``dispatch_lifecycle.reap_stale_turn``; the promotion
+    logic (age window, liveness check, idempotent candidate selection) lives
+    there and is covered by tests/contract/test_reap_stale_dispatched_handoffs.py
+    and tests/hooks/modules/agents/test_dispatch_lifecycle_reap_stale_turn.py.
 
     Prints the literal counts the gate demands (rows checked / promoted /
     left intact) and exits 0 on success. A second run over the same state is
@@ -2519,11 +2310,8 @@ def cmd_reap(args) -> int:
     leaves the DISPATCHED candidate set, so it is never re-selected) -- this
     wrapper adds no dedup logic of its own.
     """
-    # hooks/modules/agents/__init__.py transitively imports hooks/adapters via
-    # an ABSOLUTE `from adapters... import ...` (not `from ..adapters`), so it
-    # resolves only with hooks/ itself on sys.path -- the repo root is not
-    # enough. This is the same sys.path shape the facade's own test file uses
-    # (tests/hooks/modules/agents/test_dispatch_lifecycle_reap_stale_turn.py).
+    # hooks/modules/agents/__init__.py imports hooks/adapters absolutely (`from adapters...`),
+    # so hooks/ itself must be on sys.path; the repo root is not enough.
     _hooks_dir = str(Path(__file__).resolve().parent.parent.parent / "hooks")
     if _hooks_dir not in sys.path:
         sys.path.insert(0, _hooks_dir)
@@ -2565,10 +2353,6 @@ def cmd_reap(args) -> int:
             print("  spared: " + ", ".join(spared))
     return 0
 
-
-# ---------------------------------------------------------------------------
-# Argparse wiring (shared by register() and the standalone shim)
-# ---------------------------------------------------------------------------
 
 def cmd_fill_rate(args) -> int:
     """Report surface and conclusion fill rates over a window; exit 1 under ``--min``."""
@@ -2617,7 +2401,7 @@ def _add_agent_scope_arg(parser: argparse.ArgumentParser) -> None:
 
     When ``--draft-id`` is omitted, ``--agent-id`` narrows resolution to a
     single agent's own drafts -- the per-agent, resume-aware addressing
-    (decision #8) that lets a resumed agent find its draft without any harness
+    that lets a resumed agent find its draft without any harness
     session concept. It resolves only when that scope names exactly one live
     draft: agent ids are not unique, so a handle shared by several live drafts
     is reported as ambiguous rather than decided by recency.
@@ -2908,10 +2692,8 @@ def _build_subcommands(sub) -> None:
         help="Workspace to record the row under. Default: gaia.project.cli_workspace() "
              "(env, then the project containing the cwd, else 'global')",
     )
-    # Attribution flags -- SUPPLIED by the caller from its dispatch envelope,
-    # never read from the environment (see the module docstring's "Attribution
-    # vs. harness-agnosticism"). Omitting them records nothing and clears
-    # nothing; the writer merges both with COALESCE.
+    # Attribution flags are supplied by the caller, never read from the environment
+    # (see "Attribution vs. harness-agnosticism" above).
     p_finalize.add_argument(
         "--session-id",
         dest="session_id",
@@ -3114,10 +2896,6 @@ def _contract_default(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Plugin registration (called by bin/gaia dispatcher)
-# ---------------------------------------------------------------------------
-
 def register(subparsers) -> None:
     """Register the 'contract' subcommand group with the root parser."""
     p = subparsers.add_parser(
@@ -3144,10 +2922,6 @@ def cmd_contract(args) -> int:
         return func(args)
     return _contract_default(args)
 
-
-# ---------------------------------------------------------------------------
-# Standalone shim (for isolated testing without bin/gaia's DB bootstrap)
-# ---------------------------------------------------------------------------
 
 def _build_standalone_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

@@ -44,11 +44,8 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# plugin_setup.py owns the permission merge and the single hook writer; they
-# are orchestrated here to return the {action, path, details} contract, so
-# install/update and the session setup cannot diverge.
-# ---------------------------------------------------------------------------
+# plugin_setup.py owns the permission merge and the single hook writer; they are orchestrated
+# here to return the {action, path, details} contract, so install/update and session setup cannot diverge.
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent  # bin/cli -> bin -> pkg/
 _HOOKS_ROOT = _PACKAGE_ROOT / "hooks"
@@ -84,10 +81,6 @@ except Exception:  # noqa: BLE001
     _HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
 
 
-# ---------------------------------------------------------------------------
-# Result helper
-# ---------------------------------------------------------------------------
-
 def _result(action: str, path: Path | str, details: str) -> dict[str, Any]:
     """Build the canonical helper return dict."""
     return {"action": action, "path": str(path), "details": details}
@@ -106,10 +99,6 @@ def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-
-# ---------------------------------------------------------------------------
-# 1. settings.json
-# ---------------------------------------------------------------------------
 
 def configure_settings_json(workspace: Path, *, dry_run: bool = False) -> dict[str, Any]:
     """Create .claude/settings.json if missing. Idempotent.
@@ -391,9 +380,7 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
             permission["external_directory"] = _opencode_subagent_external_directory()
         permission.update(host_policy.get("permission", {}))
         if name == "gaia-orchestrator":
-            # The shipped manifest owns dispatch inventory.  Keeping specialist
-            # names in agent-policy.json as well made every agent addition a
-            # second, independently drifting policy edit.
+            # The shipped manifest owns dispatch inventory, not agent-policy.json.
             permission["task"] = {
                 "*": "deny",
                 **{specialist: "allow" for specialist in specialist_names},
@@ -575,10 +562,6 @@ def verify_orchestrator_artifact() -> dict[str, Any]:
     return _result("noop", _PACKAGE_ROOT, "package carries the orchestrator agent")
 
 
-# ---------------------------------------------------------------------------
-# 2. settings.local.json -- permissions + env + agent
-# ---------------------------------------------------------------------------
-
 def merge_local_permissions(
     workspace: Path,
     *,
@@ -663,11 +646,6 @@ def merge_local_permissions(
     )
 
 
-# ---------------------------------------------------------------------------
-# 3. settings.local.json -- hook registration (plugin_setup.sync_workspace_hooks)
-# ---------------------------------------------------------------------------
-
-
 def merge_local_hooks(
     workspace: Path,
     plugin_root: Path | None = None,
@@ -707,29 +685,16 @@ def merge_local_hooks(
     return _result(action, local_path, details)
 
 
-# ---------------------------------------------------------------------------
-# 4. settings.local.json -- worktree background-isolation override
-# ---------------------------------------------------------------------------
-
-# Claude Code >= 2.1.143 defaults `worktree.bgIsolation` to "worktree": any
-# background session -- including the one `claude agents` (Agent View)
-# launches by design -- gets CLAUDE_JOB_DIR set, and the harness then tries
-# to isolate writes into a git worktree. When the workspace is not a git
-# repo, the harness cannot create that worktree, and every subagent
-# Edit/Write in the workspace is silently blocked with no way out. Setting
-# bgIsolation to "none" was validated live: it unblocks writes even with
-# CLAUDE_JOB_DIR set, when there is no git working tree to isolate into.
+# Claude Code >= 2.1.143 defaults `worktree.bgIsolation` to "worktree": a
+# background session (including the one `claude agents` launches) gets
+# CLAUDE_JOB_DIR set and the harness tries to isolate writes into a git
+# worktree. Without a git repo it cannot, and every subagent Edit/Write in the
+# workspace is silently blocked; "none" unblocks them.
 #
-# That bug does not exist when the workspace IS inside a git working tree
-# -- `git worktree add` has a real repo to target, so the harness's own
-# isolation mechanism works as designed. Forcing "none" there too was a
-# measured regression, not a defense: it silently undid the isolation a
-# user turned ON (or the harness's own default), and every `gaia install`/
-# `gaia update` re-asserted it, so the override survived no longer than the
-# next install. Gaia now forces this value ONLY for a workspace that has no
-# git working tree to protect; inside one, this key is left completely
-# alone -- present or absent, "none" or "worktree" -- because there is no
-# bug here for Gaia to guard against and the choice is the user's.
+# Inside a git working tree `git worktree add` has a repo to target, so the
+# harness works as designed and forcing "none" would undo the isolation the
+# user chose. Gaia therefore forces this value ONLY for a workspace with no git
+# working tree; inside one the key is left alone, present or absent.
 _WORKTREE_BG_ISOLATION_KEY = "bgIsolation"
 _WORKTREE_BG_ISOLATION_VALUE = "none"
 
@@ -821,10 +786,6 @@ def merge_worktree_settings(workspace: Path, *, dry_run: bool = False) -> dict[s
     return _result("updated", local_path, 'set worktree.bgIsolation to "none"')
 
 
-# ---------------------------------------------------------------------------
-# 5. Symlinks under .claude/
-# ---------------------------------------------------------------------------
-
 # Directories the package exposes via .claude/<name> symlinks
 _SYMLINK_NAMES = ["agents", "tools", "hooks", "config", "skills", "opencode"]
 # Files (not dirs) we link or copy into .claude/
@@ -835,7 +796,7 @@ _SYMLINK_FILES = ["CHANGELOG.md"]
 # copy. A copy passes `resolve(strict=True)` (so doctor's Symlinks check stays
 # green) but is otherwise indistinguishable from a user-managed file, and would
 # fall into the "user-managed, never refreshed" branch -> silent staleness on a
-# reinstall/update (defect F5/R2). This registry, written next to the copies in
+# reinstall/update. This registry, written next to the copies in
 # `.claude/`, records the package VERSION each fallback copy was materialized
 # from, so the copy is (a) RECOGNIZABLE as Gaia-managed and (b) REFRESHABLE:
 # manage_symlinks re-materializes it when the stamped version drifts from the
@@ -1093,10 +1054,6 @@ def manage_symlinks(
     return out
 
 
-# ---------------------------------------------------------------------------
-# 6. plugin-registry.json
-# ---------------------------------------------------------------------------
-
 def _read_plugin_version(plugin_root: Path) -> str | None:
     """Read version from plugin_root/package.json. None on failure."""
     pkg_json = plugin_root / "package.json"
@@ -1181,10 +1138,6 @@ def register_plugin(
     action = "updated" if existing else "created"
     return _result(action, registry_path, f"registered {plugin_name}@{version} (source={source})")
 
-
-# ---------------------------------------------------------------------------
-# Re-exports for tests / callers
-# ---------------------------------------------------------------------------
 
 __all__ = [
     "configure_opencode_plugin",
