@@ -1129,7 +1129,8 @@ class BashValidator:
                 agent_type=agent_type,
             )
 
-        if sqlite_unproven_effect(write_guard_scope, cwd):
+        sqlite_free_form = sqlite_unproven_effect(write_guard_scope, cwd)
+        if sqlite_free_form:
             return decide_t3_outcome(
                 command,
                 verb="sqlite-reach",
@@ -1137,6 +1138,7 @@ class BashValidator:
                 has_orchestrator_above=is_subagent,
                 session_id=session_id,
                 agent_type=agent_type,
+                guidance=sqlite_free_form,
             )
 
         # A file fed by redirect into a sender, or copied to another host, leaves the

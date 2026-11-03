@@ -135,27 +135,24 @@ def test_a_database_the_guard_cannot_resolve_is_refused_as_unproven(command, cwd
     f"sqlite3 {OTHER} \"VACUUM INTO '/srv/.gaia/gaia.db'\"",
     f"sqlite3 {OTHER} \"SELECT writefile('/srv/.gaia/gaia.db-wal', x'00')\"",
     f"sqlite3 {OTHER} <<EOF\n.output /home/user/.gaia/gaia.db\nEOF",
+    f"sqlite3 {OTHER} '.system cp /tmp/x {STORE}'",
 ])
 def test_another_database_reaching_the_store_is_refused(command):
     _refused_as_store(command, cwd="/tmp")
 
 
+README = Path(__file__).resolve().parents[2] / "README.md"
+
+
 @pytest.mark.parametrize("command", [
     f"sqlite3 {OTHER} '.shell rm -rf /'",
-    f"sqlite3 {OTHER} '.system cp /tmp/x {STORE}'",
     f"sqlite3 {OTHER} '.once |cat ~/.ssh/id_rsa'",
-])
-def test_another_database_reaching_a_refused_command_is_refused(command):
-    assert check(command, "/tmp")[0] is False
-
-
-def test_another_database_writing_into_a_working_tree_is_refused():
-    target = Path(__file__).resolve().parents[2] / "README.md"
-    assert check(f"sqlite3 {OTHER} '.output {target}' 'SELECT 1'", "/tmp")[0] is False
-    assert check(f"sqlite3 {OTHER} \"SELECT writefile('{target}', 'x')\"", "/tmp")[0] is False
-
-
-@pytest.mark.parametrize("command", [
+    f"sqlite3 {OTHER} '.output {README}' 'SELECT 1'",
+    f"sqlite3 {OTHER} \"SELECT writefile('{README}', 'x')\"",
+    f"sqlite3 {OTHER} '.shell ls /tmp'",
+    f"sqlite3 {OTHER} '.output /tmp/out.txt' 'SELECT 1'",
+    f"sqlite3 {OTHER} <<EOF\nSELECT 1;\nEOF",
+    "sqlite3 -version",
     f"sqlite3 {OTHER} '.shell kubectl apply -f x.yaml'",
     f"sqlite3 {OTHER} '.sys git push --force origin main'",
     f"sqlite3 {OTHER} '.shell echo $(id)'",
@@ -182,24 +179,9 @@ def test_another_database_writing_into_a_working_tree_is_refused():
     f"sqlite3 {OTHER} '.ar -x'",
     f"sqlite3 {OTHER} <<EOF\n.shell kubectl apply -f x.yaml\nEOF",
 ])
-def test_another_database_reaching_beyond_itself_unprovably_is_signed(command):
+def test_another_database_off_the_free_form_signs_whatever_it_reaches(command):
     assert check(command, "/tmp") == (True, None)
-    assert sqlite_unproven_effect(command, "/tmp"), command
-
-
-@pytest.mark.parametrize("command", [
-    f"sqlite3 {OTHER} 'SELECT 1'",
-    f"sqlite3 {OTHER} 'DELETE FROM t'",
-    f"sqlite3 {OTHER} '.shell ls /tmp'",
-    f"sqlite3 {OTHER} '.output /tmp/out.txt' 'SELECT 1'",
-    f"sqlite3 {OTHER} \"SELECT writefile('/tmp/out.bin', x'00')\"",
-    f"echo 'SELECT 1;' | sqlite3 {OTHER}",
-    f"sqlite3 {OTHER} <<EOF\nSELECT 1;\nEOF",
-    "sqlite3 -version",
-])
-def test_another_database_staying_within_reach_is_left_to_the_classifier(command):
-    assert check(command, "/tmp") == (True, None)
-    assert sqlite_unproven_effect(command, "/tmp") is None
+    assert sqlite_unproven_effect(command, "/tmp") == guard.FREE_FORM_GUIDANCE
 
 
 @pytest.mark.parametrize("command", [
@@ -316,7 +298,7 @@ def test_sqlite3_off_the_free_form_signs_and_teaches_it(command):
 def test_the_signature_names_the_free_form():
     verdict = _validate(f"sqlite3 {OTHER} 'SELECT 1'")
     assert verdict.approval_id
-    assert "-readonly -safe" in verdict.reason
+    assert "sqlite3 -readonly -safe <literal path>" in str(verdict.block_response)
 
 
 @pytest.mark.parametrize("command", [

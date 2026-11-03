@@ -68,7 +68,7 @@ HOME_ENTRIES = {
     ".config/git": _WRITE_ONLY, ".gitconfig": _WRITE_ONLY,
     ".bashrc": _WRITE_ONLY, ".bash_profile": _WRITE_ONLY, ".bash_login": _WRITE_ONLY,
     ".profile": _WRITE_ONLY, ".zshrc": _WRITE_ONLY, ".zprofile": _WRITE_ONLY,
-    ".zshenv": _WRITE_ONLY,
+    ".zshenv": _WRITE_ONLY, ".sqliterc": _WRITE_ONLY, ".config/sqlite3": _WRITE_ONLY,
 }
 
 # Coding-agent CLI token and API-key files, each with the source naming the path;
