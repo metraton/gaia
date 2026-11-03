@@ -146,9 +146,23 @@ README = Path(__file__).resolve().parents[2] / "README.md"
 
 @pytest.mark.parametrize("command", [
     f"sqlite3 {OTHER} '.shell rm -rf /'",
+    f"echo .shell rm -rf / | sqlite3 {OTHER}",
+    f"sqlite3 -readonly -safe {OTHER} '.system rm -rf /'",
     f"sqlite3 {OTHER} '.once |cat ~/.ssh/id_rsa'",
+    f"sqlite3 {OTHER} \".once --bom '|cat ~/.ssh/id_rsa'\" 'SELECT 1'",
+    f"sqlite3 {OTHER} \".import '|cat ~/.ssh/id_rsa' t\"",
+    f"sqlite3 {OTHER} \"SELECT \\\"edit\\\"('x', 'rm -rf /')\"",
     f"sqlite3 {OTHER} '.output {README}' 'SELECT 1'",
-    f"sqlite3 {OTHER} \"SELECT writefile('{README}', 'x')\"",
+    f"sqlite3 {OTHER} \"SELECT [writefile]('{README}', 'x')\"",
+])
+def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
+    allowed, reason = check(command, "/tmp")
+    assert allowed is False, command
+    assert reason.startswith(guard.REACH_REJECTION_PREFIX), (command, reason)
+    assert _validate(command).approval_id is None
+
+
+@pytest.mark.parametrize("command", [
     f"sqlite3 {OTHER} '.shell ls /tmp'",
     f"sqlite3 {OTHER} '.output /tmp/out.txt' 'SELECT 1'",
     f"sqlite3 {OTHER} <<EOF\nSELECT 1;\nEOF",
@@ -179,9 +193,9 @@ README = Path(__file__).resolve().parents[2] / "README.md"
     f"sqlite3 {OTHER} '.ar -x'",
     f"sqlite3 {OTHER} <<EOF\n.shell kubectl apply -f x.yaml\nEOF",
 ])
-def test_another_database_off_the_free_form_signs_whatever_it_reaches(command):
+def test_another_database_signs_when_nothing_it_reaches_is_refused(command):
     assert check(command, "/tmp") == (True, None)
-    assert sqlite_unproven_effect(command, "/tmp") == guard.FREE_FORM_GUIDANCE
+    assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
 
 
 @pytest.mark.parametrize("command", [
@@ -288,28 +302,25 @@ def test_the_store_in_fed_content_is_found_by_inode_and_in_a_redirected_file(tmp
     f"/opt/x/sqlite3 -readonly -safe {OTHER} 'SELECT 1'",
     f"{FREE} \"VACUUM INTO '/tmp/c.db'\"",
 ])
-def test_sqlite3_off_the_free_form_signs_and_teaches_it(command):
+def test_every_sqlite3_call_on_another_database_is_at_least_signed(command):
     assert check(command, "/tmp")[1] != guard.STORE_REJECTION_MESSAGE
     assert sqlite_unproven_effect(command, "/tmp"), command
     verdict = _validate(command)
     assert verdict.allowed is False, command
 
 
-def test_the_signature_names_the_free_form():
-    verdict = _validate(f"sqlite3 {OTHER} 'SELECT 1'")
-    assert verdict.approval_id
-    assert "sqlite3 -readonly -safe <literal path>" in str(verdict.block_response)
-
-
 @pytest.mark.parametrize("command", [
     f"{FREE} 'SELECT 1'",
     f"sqlite3 --safe --readonly -json -header {OTHER} 'SELECT * FROM t' '.tables'",
-    f"{FREE} '.schema t' 'PRAGMA table_info(t)'",
+    f"{FREE} \"SELECT name, data FROM fsdir('/tmp')\"",
+    f"{FREE} \"SELECT name FROM \\\"fsdir\\\"('/tmp')\"",
 ])
-def test_the_free_form_runs_free(command):
+def test_readonly_safe_signs_since_sqlite3_3_45_1_safe_mode_still_reads_files_through_fsdir(command):
     assert check(command, "/tmp") == (True, None)
-    assert sqlite_unproven_effect(command, "/tmp") is None
-    assert _validate(command).allowed is True, command
+    assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
+    verdict = _validate(command)
+    assert verdict.approval_id, command
+    assert "fsdir()" in str(verdict.block_response)
 
 
 @pytest.mark.parametrize("init_file", ["~/.sqliterc", "~/.config/sqlite3/sqliterc"])

@@ -6,16 +6,19 @@ the line feeds sqlite3 (its operands, a pipe's producers, a heredoc, a
 here-string, a redirected file), that is gaia.db by name, realpath or inode is
 refused, and a database target (the argument, `.open`, ATTACH, VACUUM INTO) the
 guard cannot resolve to a literal path is refused as "could not prove". Reads go
-through `gaia context query`. On any other database sqlite3 runs free only in
-the read-only form ``_free_form`` proves; every other call signs
-(``sqlite_unproven_effect``). Shell writers whose destination is the store file
-are refused. The refusals are categorical, with no approval_id.
+through `gaia context query`. A shell command or file a sqlite3 call names in a
+readable payload meets the floors a plain Bash line meets and is refused when
+they refuse it. Every other sqlite3 call signs (``sqlite_unproven_effect``): no
+form is provably read-only, since `-safe` still reads files through fsdir().
+Shell writers whose destination is the store file are refused. The refusals are
+categorical, with no approval_id.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 from typing import Iterator, List, Optional, Tuple
 from urllib.parse import unquote
 
@@ -29,7 +32,7 @@ from .mutative_verbs import (
     detect_mutative_command,
 )
 from .shell_substitution import extract_substitutions
-from .shell_write_guard import _split_components, _tokenize, _unquoted_spans, _writer_targets, downloader_paths
+from .shell_write_guard import _split_components, _tokenize, _writer_targets, downloader_paths
 
 STORE_REJECTION_MESSAGE = (
     "The sqlite3 CLI is refused on gaia.db, whatever the SQL. Read the store with "
@@ -44,13 +47,14 @@ UNPROVEN_DATABASE_MESSAGE = (
     "read gaia.db with `gaia context query`."
 )
 
-FREE_FORM_GUIDANCE = (
-    "sqlite3 runs without a signature only as one plain command "
-    "`sqlite3 -readonly -safe <literal path> '<SQL>' ['.tables' ...]`: no pipe, heredoc, "
-    "here-string or redirect, no wrapper or assignment, no option beyond the output "
-    "formats, no VACUUM, and only the read-only dot-commands. gaia.db is read with "
-    "`gaia context query`."
+SIGN_GUIDANCE = (
+    "Every sqlite3 call asks for a signature: even `sqlite3 -readonly -safe` reads "
+    "any file through fsdir(), so no form of it is provably read-only. Read gaia.db "
+    "with `gaia context query`; for another database, request the signature for "
+    "this exact command."
 )
+
+REACH_REJECTION_PREFIX = "sqlite3 reaches a command or file the shell itself is refused: "
 
 FILE_WRITE_REJECTION_MESSAGE = (
     "Writing the gaia.db file from the shell (copy, move, redirect, truncate, "
@@ -84,7 +88,7 @@ _REDIRECT_WORD = re.compile(r"^\d*(?:<<<|<<-?|<>|<&|>>|>&|>\||&>>|&>|<|>)")
 _NOT_LITERAL = re.compile(r"[$`*?\[\]{}]|^~(?!/|$)")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELL_CD = re.compile(r"(?:^|[;&|(\s])(?:cd|pushd|popd)\b")
-_OPEN = re.compile(
+_DOT_COMMAND = re.compile(
     r"(?:(?P<quote>[\"'])|(?<!\S))[ \t]*\.(?P<name>[a-z]+)\b"
     r"(?P<rest>(?(quote)(?:(?!(?P=quote))[^\n])*|[^\n|;&]*))",
     re.IGNORECASE,
@@ -93,22 +97,16 @@ _SQL_GAP = r"(?:\s|/\*.*?\*/|--[^\n]*\n)*"
 _ATTACH = re.compile(rf"\bATTACH\b(?:{_SQL_GAP}DATABASE\b)?{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}AS\b))?", re.I | re.S)
 _VACUUM_INTO = re.compile(rf"\bVACUUM\b[^;]*?\bINTO\b{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}(?:;|$|[\"'])))?", re.I | re.S)
 _SQL_STRING = re.compile(r"'((?:[^']|'')*)'")
+_SQL_CALL = re.compile(
+    rf"[\"\[`]?\b(?P<fn>edit|writefile)\b(?:\\?[\"\]`])?{_SQL_GAP}\({_SQL_GAP}(?P<first>'(?:[^']|'')*')"
+    rf"(?:{_SQL_GAP},{_SQL_GAP}(?P<second>'(?:[^']|'')*'))?",
+    re.I | re.S,
+)
 _WORD = re.compile(r"[^\s'\"`(),;|<>=]+")
+_LEADING_OPTIONS = re.compile(r"^(?:-\S*\s+)*")
+_OUTPUT_SPECIALS = frozenset({"off", "stdout", "stderr"})
 _READ_LIMIT = 1 << 20
 _MAX_DEPTH = 4
-
-_FREE_SWITCHES = frozenset({
-    "readonly", "safe", "header", "headers", "noheader", "bail", "batch", "echo",
-    "ascii", "box", "column", "csv", "html", "json", "line", "list", "markdown",
-    "quote", "table", "tabs",
-})
-_FREE_VALUE_OPTIONS = frozenset({"separator", "newline", "nullvalue"})
-_FREE_DOT_COMMANDS = frozenset({
-    "databases", "dbinfo", "dump", "eqp", "fullschema", "headers", "indexes",
-    "indices", "mode", "print", "schema", "show", "stats", "tables", "timer", "width",
-})
-_UNQUOTED_SHELL_SYNTAX = re.compile(r"[*?\[\]{}$`<>()!\\]")
-_FREE_SQL_EXCLUDED = re.compile(r"\bVACUUM\b", re.IGNORECASE)
 
 
 def _store_files() -> Tuple[str, ...]:
@@ -175,11 +173,10 @@ def _names_store(word: str, cwd: Optional[str]) -> bool:
 
 
 class _Invocation:
-    """One sqlite3 run the line makes: its argument words and whether it is written as a plain command."""
+    """One sqlite3 run the line makes, by its argument words."""
 
-    def __init__(self, args: List[str], plain: bool) -> None:
+    def __init__(self, args: List[str]) -> None:
         self.args = args
-        self.plain = plain
 
     def database(self) -> Optional[str]:
         index = 0
@@ -204,23 +201,21 @@ class _Invocation:
                     yield target
 
 
-def _readings(text: str, depth: int = 0) -> Iterator[Tuple[str, bool]]:
-    """Yield each command the line runs, and whether it is a top-level component as written."""
+def _readings(text: str, depth: int = 0) -> Iterator[str]:
     from .shell_unwrapper import shell_command_string
 
     if depth > _MAX_DEPTH:
         return
-    bodies = [text, *extract_substitutions(text)]
-    for position, body in enumerate(bodies):
+    for body in [text, *extract_substitutions(text)]:
         for component in _split_components(body):
             component = component.strip()
             if not component:
                 continue
-            yield component, depth == 0 and position == 0
+            yield component
             readings, _ = _peel_wrapper_readings(component)
             for reading in readings:
                 if reading and reading != component:
-                    yield reading, False
+                    yield reading
                 for payload in _executor_floor_payloads(reading):
                     yield from _readings(payload, depth + 1)
                 inner = shell_command_string(reading)
@@ -234,7 +229,7 @@ def _invocations(command: str) -> List[_Invocation]:
     if "sqlite" not in re.sub(r"[\\'\"]", "", command).lower():
         return []
     found: List[_Invocation] = []
-    for reading, top_level in _readings(command):
+    for reading in _readings(command):
         try:
             words = shell_split(reading)
         except ValueError:
@@ -243,8 +238,7 @@ def _invocations(command: str) -> List[_Invocation]:
         while head < len(words) and _ASSIGNMENT.match(words[head]):
             head += 1
         if head < len(words) and command_name(words[head]) in _SQLITE_PROGRAMS:
-            plain = top_level and head == 0 and words[0] == "sqlite3"
-            found.append(_Invocation(words[head + 1:], plain))
+            found.append(_Invocation(words[head + 1:]))
     return found
 
 
@@ -260,7 +254,7 @@ def _read_fed_file(path: str, cwd: Optional[str]) -> str:
 
 
 def _target_verdicts(text: str, cwd: Optional[str]) -> Iterator[Optional[str]]:
-    for match in _OPEN.finditer(text):
+    for match in _DOT_COMMAND.finditer(text):
         typed = match["name"].lower()
         operands = [w.strip("'\"") for w in match["rest"].split() if not w.startswith("-")]
         if len(typed) >= 2 and "open".startswith(typed) and operands:
@@ -273,8 +267,60 @@ def _target_verdicts(text: str, cwd: Optional[str]) -> Iterator[Optional[str]]:
                 yield _database_verdict(match["arg"][1:-1].replace("''", "'"), cwd)
 
 
-def _store_verdict(command: str, cwd: Optional[str]) -> Optional[str]:
-    """Why the line's sqlite3 runs reach gaia.db or a target that cannot be resolved, or None."""
+def _command_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
+    """Refuse a shell command sqlite3 would run when a plain Bash line running it is refused."""
+    from .blocked_commands import is_blocked_command
+    from . import protected_path_guard, sensitive_read_guard, shell_write_guard
+
+    for component in _split_components(command):
+        component = component.strip()
+        if not component:
+            continue
+        if is_blocked_command(component).is_blocked:
+            return REACH_REJECTION_PREFIX + "a permanently blocked command"
+        for guard in (check, protected_path_guard.check, shell_write_guard.check, sensitive_read_guard.check):
+            allowed, reason = guard(component, cwd)
+            if not allowed:
+                return REACH_REJECTION_PREFIX + (reason or "")
+    return None
+
+
+def _file_refusal(path: str, cwd: Optional[str]) -> Optional[str]:
+    """Refuse a file sqlite3 would write when a shell redirect onto it is refused."""
+    from . import protected_path_guard, shell_write_guard
+
+    if _is_gaia_db_file(path):
+        return STORE_REJECTION_MESSAGE
+    if not path or _NOT_LITERAL.search(path) or path.lower() in _OUTPUT_SPECIALS:
+        return None
+    for guard in (protected_path_guard.check, shell_write_guard.check):
+        allowed, reason = guard(f"echo > {shlex.quote(path)}", cwd)
+        if not allowed:
+            return REACH_REJECTION_PREFIX + (reason or "")
+    return None
+
+
+def _payload_refusals(text: str, cwd: Optional[str]) -> Iterator[Optional[str]]:
+    """Judge each readable shell command and written file in *text* as the shell would."""
+    for match in _DOT_COMMAND.finditer(text):
+        typed, rest = match["name"].lower(), match["rest"].strip().strip("'\"")
+        if "shell".startswith(typed) or "system".startswith(typed):
+            yield _command_refusal(rest, cwd)
+        if any(name.startswith(typed) for name in ("once", "output", "import")):
+            target = _LEADING_OPTIONS.sub("", rest).strip("'\"")
+            if target.startswith("|"):
+                yield _command_refusal(target[1:].strip().strip("'\""), cwd)
+            elif not "import".startswith(typed) and target:
+                yield _file_refusal(target.split()[0], cwd)
+    for match in _SQL_CALL.finditer(text):
+        if match["fn"].lower() == "writefile":
+            yield _file_refusal(match["first"][1:-1].replace("''", "'"), cwd)
+        elif match["second"]:
+            yield _command_refusal(match["second"][1:-1].replace("''", "'"), cwd)
+
+
+def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
+    """Why the line's sqlite3 runs reach gaia.db, an unresolvable target, or something the shell is refused, or None."""
     from ..tools.shell_parser import shell_split
 
     invocations = _invocations(command)
@@ -297,45 +343,9 @@ def _store_verdict(command: str, cwd: Optional[str]) -> Optional[str]:
             continue
     if any(_names_store(word, cwd) for word in words):
         return STORE_REJECTION_MESSAGE
-    return next((v for text in texts for v in _target_verdicts(text, cwd) if v), None)
-
-
-def _free_form(command: str, invocations: List[_Invocation]) -> bool:
-    """True when the line is one plain ``sqlite3 -readonly -safe <path> <literal SQL>...``, nothing fed to it."""
-    components = [c for c in _split_components(command) if c.strip()]
-    if len(invocations) != 1 or not invocations[0].plain or len(components) != 1:
-        return False
-    if any(_UNQUOTED_SHELL_SYNTAX.search(command[start:end]) for start, end in _unquoted_spans(command)):
-        return False
-    if "$" in command or "`" in command:
-        return False
-    args, switches, operands = invocations[0].args, set(), []
-    index = 0
-    while index < len(args):
-        word = args[index]
-        name = word.lstrip("-").lower()
-        if not word.startswith("-"):
-            operands.append(word)
-        elif name in _FREE_VALUE_OPTIONS:
-            index += 1
-        elif name in _FREE_SWITCHES:
-            switches.add(name)
-        else:
-            return False
-        index += 1
-    if not {"readonly", "safe"} <= switches or len(operands) < 2:
-        return False
-    database, statements = operands[0], operands[1:]
-    if _NOT_LITERAL.search(database) or database.lower().startswith("file:"):
-        return False
-    for statement in statements:
-        text = statement.strip()
-        if text.startswith("."):
-            if text[1:].split(maxsplit=1)[0].lower() not in _FREE_DOT_COMMANDS:
-                return False
-        elif _FREE_SQL_EXCLUDED.search(text):
-            return False
-    return True
+    return next((v for text in texts for v in _target_verdicts(text, cwd) if v), None) or next(
+        (v for text in texts for v in _payload_refusals(text, cwd) if v), None
+    )
 
 
 def _component_writes_db(component: str) -> bool:
@@ -396,19 +406,15 @@ def _sql_scope(command: str) -> str:
 
 
 def sqlite_unproven_effect(command: str, cwd: Optional[str] = None) -> Optional[str]:
-    """``FREE_FORM_GUIDANCE`` when the line runs sqlite3 in any form but the proven read-only one, else None."""
-    scope = _sql_scope(command or "")
-    invocations = _invocations(scope)
-    if not invocations or _free_form(scope, invocations):
-        return None
-    return FREE_FORM_GUIDANCE
+    """``SIGN_GUIDANCE`` when the line runs sqlite3 at all, else None."""
+    return SIGN_GUIDANCE if _invocations(_sql_scope(command or "")) else None
 
 
 def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-    """Return ``(False, reason)`` when *command* runs sqlite3 on gaia.db or on a database it cannot resolve, or writes the store file; else ``(True, None)``."""
+    """Return ``(False, reason)`` when *command*'s sqlite3 runs reach gaia.db, a database it cannot resolve, or a command or file the shell is refused, or when it writes the store file; else ``(True, None)``."""
     if not command:
         return True, None
-    reason = _store_verdict(_sql_scope(command), cwd)
+    reason = _sqlite_refusal(_sql_scope(command), cwd)
     if reason:
         return False, reason
     if writes_db_file(command):
