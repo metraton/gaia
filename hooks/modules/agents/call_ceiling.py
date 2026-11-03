@@ -1,22 +1,18 @@
 """Tell a dispatched turn, once, that it is nearing its tool-call ceiling.
 
-A dispatch prompt may carry ``ceiling=<N>`` (``extract_dispatch_binding``), the
-tool calls the orchestrator budgets for the turn; without it the ceiling is the
-dispatched agent's frontmatter ``maxTurns``, and with neither there is none
-(:func:`effective_ceiling`, which the kernel's ``ceiling:`` line also reads).
-Each host counts the subagent's calls that are allowed to run -- Claude Code at
-PreToolUse, whose matchers reach Read, Edit, Write, Glob and Grep; OpenCode at
-``tool.execute.after``, which fires for every tool that ran -- keyed by the
-harness id its contract row was stamped with at SubagentStart. On the call that
-reaches :data:`NOTICE_PERCENT` of the ceiling it returns a notice the model
-reads with that call's result. The orchestrator's own session has no harness id
-and is never counted.
+The ceiling is ``ceiling=<N>`` from the dispatch prompt, else the dispatched
+agent's frontmatter ``maxTurns``, else none (:func:`effective_ceiling`, also
+read by the kernel's ``ceiling:`` line). Each host counts the subagent's calls
+that are allowed to run -- Claude Code at PreToolUse, whose matchers reach
+Read, Edit, Write, Glob and Grep; OpenCode at ``tool.execute.after``, which
+fires for every tool that ran -- keyed by the harness id its contract row was
+stamped with at SubagentStart. On the call that reaches :data:`NOTICE_PERCENT`
+of the ceiling it returns a notice the model reads with that call's result.
+The orchestrator's own session has no harness id and is never counted.
 
-Context use is not a fallback: no Claude Code hook input carries it, and
-OpenCode's ``tool.execute.after`` bridge payload does not either, so a dispatch
-with no token to an agent with no ``maxTurns`` gets no notice. Evidence lost
-anyway is recovered at close by the SubagentStop path; this module only warns
-during the turn.
+Context use is not a fallback: no hook input on either host carries it.
+Evidence lost anyway is recovered at close by the SubagentStop path; this
+module only warns during the turn.
 """
 
 from __future__ import annotations
@@ -64,7 +60,6 @@ def _write(path: Path, state: dict) -> None:
 
 
 def _birth_agent_name(row: Mapping[str, Any]) -> str:
-    """The agent name the row's birth envelope records, or "" once finalize replaced it."""
     from gaia.store.writer import BIRTH_AGENT_NAME_KEY
 
     try:
@@ -75,10 +70,7 @@ def _birth_agent_name(row: Mapping[str, Any]) -> str:
 
 
 def effective_ceiling(row: Mapping[str, Any], agent_name: str = "") -> Optional[int]:
-    """The turn's ceiling: ``ceiling=<N>`` in its dispatch prompt, else its agent's ``maxTurns``, else None.
-
-    ``agent_name`` defaults to the name in the row's birth envelope.
-    """
+    """``ceiling=<N>`` from the row's prompt, else ``maxTurns`` of ``agent_name`` or the birth-envelope agent, else None."""
     from modules.agents.dispatch_binding import extract_dispatch_binding
     from modules.context.kernel_builder import agent_frontmatter
 

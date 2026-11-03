@@ -186,7 +186,6 @@ def test_opencode_notice_fires_once_at_threshold():
 
 @pytest.fixture
 def fixture_agents(tmp_path, monkeypatch):
-    """Agents whose frontmatter declares maxTurns=CEILING (``bounded``) or none (``unbounded``)."""
     from modules.context import kernel_builder
 
     agents = tmp_path / "pkg" / "agents"
