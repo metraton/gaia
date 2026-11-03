@@ -16,7 +16,7 @@ around them is not parsed.
 | `task_id=<tasks.id>` | Binds the turn to a plan task: its gates render as `acceptance:` and the turn cannot self-`COMPLETE`. The id is `tasks.id`, not the plan position; `gaia task show <brief> <order>` prints both. |
 | `plan_id=<N>` | Stamps the born row's `plan_id`. Like `task_id=` and `parent_handoff_id=`, it marks the dispatch as task execution rather than a free investigation or memory turn; it does not bind a task's gates, which `task_id=` alone does. |
 | `parent_handoff_id=<N>` | Required on a verifier dispatch: `N` is the producer's contract row id. A dispatch without it runs with no binding to what it verifies. |
-| `ceiling=<N>` | The turn's tool-call ceiling. It renders as `ceiling:` in `# Your Contract`, and once, on the call that reaches 80% of `N`, a hook tells the turn to write its evidence and close, partially if needed (`hooks/modules/agents/call_ceiling.py`). Counted: every call allowed to run -- on Claude Code at PreToolUse (Bash, Task, Agent, SendMessage, Read, Edit, Write, Glob, Grep, WebSearch, WebFetch, NotebookEdit; not Skill, TodoWrite or MCP tools, which no matcher names), on OpenCode every tool that ran. Without the token no notice fires, since neither host lets a hook read context use. Not a binding coordinate. |
+| `ceiling=<N>` | The turn's tool-call ceiling, optional. Once, on the call that reaches 80% of the ceiling, a hook tells the turn to write its evidence and close, partially if needed (`hooks/modules/agents/call_ceiling.py::effective_ceiling`). Without the token the ceiling is the `maxTurns` the dispatched agent declares in its own `agents/<name>.md`: 200 gives the notice at call 160, 120 at call 96; an agent that declares none gets no notice without the token. Either way the kernel renders the same line, `ceiling: N tool calls (close notice at call M)`. The hook counts tool calls where the host applies `maxTurns` as turns -- not the same unit. Counted on Claude Code: a call counts when `record_call` records it, which happens only for a verdict the policy lets run; that call lives in `hooks/adapters/claude_code.py::_with_ceiling_notice`. Which tools reach it is read from `_POLICY_TOOLS`, `adapt_pre_tool_use` and `hooks/hooks.json`, never from this row. On OpenCode every tool that ran. Not a binding coordinate. |
 
 ## Acceptance forms (principle 2)
 
@@ -102,7 +102,7 @@ push. A failed step freezes the rest of an approved set (`execution`).
 ## Verification binding (principle 5)
 
 - A plan-bound producer closes `NEEDS_VERIFICATION`; both seams refuse its
-  self-`COMPLETE` (`hooks/adapters/claude_code.py::_blind_verification_required`,
+  self-`COMPLETE` (`hooks/adapters/subagent_stop_core.py::_blind_verification_required`,
   `bin/cli/contract.py::cmd_finalize`).
 - A failing verdict carries its cause -- `product`, `environment`,
   `broken_test` or `requirement_changed` (`agents/gaia-verifier.md`) -- and the
@@ -119,9 +119,12 @@ push. A failed step freezes the rest of an approved set (`execution`).
 
 ## Sizing and steering (principles 7 and 8)
 
-- The ceiling is a number of tool calls written in the goal, beside explicit
-  permission to close partially. For reference, a nine-file identity-and-skills
-  change with one integration was dispatched with a ceiling of about 110.
+- The ceiling is a number of tool calls written in the goal when the
+  orchestrator bounds the turn, beside explicit permission to close partially;
+  a goal without one gets the notice at 80% of the `maxTurns` the agent
+  declares, and no notice for an agent that declares none. For reference,
+  a nine-file identity-and-skills change with one integration was dispatched
+  with a ceiling of about 110.
 - Model: chosen per turn through the Agent tool's model override, favoring
   speed and just enough; a resume keeps the model the turn was born with.
 

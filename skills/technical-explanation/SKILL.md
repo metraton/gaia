@@ -153,8 +153,9 @@ meaning was not plain, it was wrong. Precision is never traded for vagueness at
 either level; what changes between them is which nouns are used and how much is
 said, not whether it is true.
 
-A one-off measurement report does not need the plain register. A situation
-described, a status summarized, a task explained, does.
+The reader decides the register (`human-register` Rule 1), never the document
+type: a measurement an agent will consume stays in the technical register, and
+the same measurement a person reads to decide gets level 1 first.
 
 ## Step 4: Drawing rules for the inline lane
 

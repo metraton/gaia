@@ -12,7 +12,12 @@ folder, when every command is `git -C` of the same one), each command
 numbered on its own line, and a closing `What it does:` / `What they do:` line
 with what the set does. In OpenCode each command is its own one-line question, marked
 `[ GAIA-SECURITY ]`. Details adds what each command does, its impact, the
-verification and the rollback. No model writes any of it.
+verification and the rollback. The specialist's phrases -- what each command
+does, its impact, the verification, the rollback -- are sealed with the
+command when it requests (`subagent-request-approval`); the frame around them
+(`Signature N/M:`, who asks and how many commands, `What it does:`) is
+composed by `gaia/approvals/surface.py` when the question is shown. Neither
+part is yours to write or change.
 You never print, copy, summarise or translate any part of it; you
 only run `gaia approvals question` and open what it gives you, unchanged. You
 can run it again at any time for the approvals still pending -- for example
@@ -60,9 +65,9 @@ refused outright: dispatch a specialist for it.
    the question tool the same way. If Gaia refuses a question, run
    `gaia approvals question` again for the ids it names.
 
-The user signs what the command does -- a push, an apply, a delete -- in their
-language, seeing the whole route before the first signature; the tier
-vocabulary never reaches them. Each grant is dispatched while it is still alive.
+The user signs what the command does -- a push, an apply, a delete -- in the
+plain English every phrase was sealed in, seeing the whole route before the
+first signature; the tier vocabulary never reaches them. Each grant is dispatched while it is still alive.
 
 ## What is not a signature
 

@@ -310,7 +310,7 @@ then are the parts lost. These earn a curated row:
    | a user preference that bends a harness default | ask first: the bend is his to agree to |
    | other user rows (facts, preferences, tools) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the user, and a name already there is reported, never overwritten — a changed preference is a new row that supersedes it, which a link reaches from any workspace |
    | contradicting or superseding a user `decision_*` row | ask first |
-   | `add --replace`/`delete`/`link --delete` | T3 approval flow; delegate to a specialist and never autoexecute. `memory_links` keeps no history, so removing an edge is as unrecoverable as a delete |
+   | `add --replace`/`delete`/`link --delete` | Outside the orchestrator's lane (`hooks/modules/security/gaia_cli_only_guard.py::ALLOWED_WRITE_PHRASES` admits no `memory delete`, and `add --replace` is denied by name): dispatched to a specialist, who requests the signature. The lane, not the tier, is why; `memory_links` keeps no history, so removing an edge is as unrecoverable as a delete |
    | `checkpoint` | autonomous after the milestone test; it is one atomic operation and remains all-or-nothing |
    | closing an objectively verifiable brief/plan | autonomous, report; prefer `gaia brief close`, which verifies before closing and syncs the stored AC status (`bin/cli/brief.py::_cmd_close`); both `close` and `set-status` are on the orchestrator's `gaia` CLI lane (`hooks/modules/security/gaia_cli_only_guard.py::ALLOWED_WRITE_PHRASES`) |
    | promoting a TASK | never direct — dispatch `gaia-verifier` |

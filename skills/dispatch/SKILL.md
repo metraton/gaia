@@ -24,11 +24,16 @@ in `reference.md`; one two-writer wave, end to end, is in `examples.md`.
 
 1. **A goal completes the kernel; it never repeats it.** The kernel is data
    only: it carries the turn's identity, the project and its declared workflow,
-   the read menu, a bound task's gates, the user's standing rows and an index of
-   the project's standing notes (bodies open on demand). The contract
+   the read menu, a bound task's gates, an index (title + `ref=memory:`) of the
+   scope's preference, fact and lesson rows -- workspace, group and project,
+   never the user's -- the user's tool rows, `# Project context` whole or as
+   pointers, and an index of the project's standing notes. The index's tail is
+   the verb that opens the rest, so a budgeted kernel is still complete, and
+   what the kernel indexes the goal does not repeat. The contract
    rules reach the specialist through the `agent-protocol` skill, not the kernel.
    The goal carries what neither can: the references already opened, the
-   premise as a claim the specialist may refute, and the acceptance. Where they
+   premise as a claim the specialist may refute, the user's preferences the
+   orchestrator chose for this turn, and the acceptance. Where they
    change the work, it also names the rawest source, the trade's instrument, a
    target precise enough to miss and the outside check that will show it is
    right: a specialist born in clean context gets that depth from the goal or
@@ -87,9 +92,15 @@ in `reference.md`; one two-writer wave, end to end, is in `examples.md`.
    at close, where a dirty one is captured as evidence rather than removed.
 
 7. **A turn is sized before it starts, and is fresh or resumed by what it must
-   know.** A tool-call ceiling fixed in advance, with permission to close
-   partially, is what lets a turn report that it ran out; a turn that exhausts
-   its context mid-work cannot. Sizing names the model too, through the Agent
+   know.** A tool-call ceiling, when the goal writes one, bounds the turn's cost
+   and tells it when to write its evidence; without one the notice reads the
+   `maxTurns` the dispatched agent declares, and an agent that declares none
+   gets no notice without the token. The host compacts a subagent's context
+   and marks a
+   turn stopped by `maxTurns` as partial and resumable, and the contract
+   written in flight survives any cut, so the ceiling is for turns meant to
+   stay small: an investigation sized by its ceiling closes partial (23% of
+   ceilinged turns did). Sizing names the model too, through the Agent
    tool's model override, favoring speed and just enough: a light model for
    read-only checks, polling and verifications, a middle one for routine edits
    and PR mechanics, the default for design, root cause and anything
@@ -111,10 +122,6 @@ in `reference.md`; one two-writer wave, end to end, is in `examples.md`.
    goal exhausts its ceiling on two.
 
 ## What the goal says, beyond the kernel
-
-The orchestrator's identity lists only the tokens a goal literally carries
-(`project=`, `ceiling=`, `parent_handoff_id=`, `task_id=`); the craft of the
-rest is here.
 
 - **Raw goal and context, never the kernel's blocks.** The goal never carries
   `# Your Contract` or contract-closing rules: the dispatch kernel supplies
@@ -146,7 +153,8 @@ rest is here.
   competent agent executes a false premise flawlessly. The reader already owes
   that refutation (`agent-protocol` principle 3); writing the premise as a
   claim is the writer's half, which keeps it from reaching the specialist as
-  an instruction.
+  an instruction. A premise the user stated is still a claim: it travels
+  marked as theirs, beside what the orchestrator already checked.
 - **A destination for every class of rationale.** Turn reasoning to the
   contract, change explanation to the PR body, cross-unit facts to docs, and
   only the why the code cannot say to code, beside the declaration whose change
@@ -169,7 +177,9 @@ rest is here.
   or date it was measured at. A question answered twice costs a turn, and the
   second answer can disagree with the first with no reason recorded for the
   disagreement. Where the source changed since that measure, the goal says so,
-  and that part is measured again.
+  and that part is measured again. The coordinate travels alone -- no value,
+  version, region or id copied beside it: the copied value is the one the
+  specialist trusts, and the one that goes stale.
 - **A seeded agent for contract-bearing work.** A host-native agent cannot
   finalize a contract row, so one is used only when the returned message is the
   whole deliverable.
@@ -195,6 +205,9 @@ rest is here.
 - **The goal that re-narrates.** Retelling a sibling's findings or the kernel's
   contents: lossy where it is new, redundant where it is not, and the retelling
   is what the specialist trusts.
+- **The method line.** "On every command put X" retells a row the kernel
+  indexes or a user preference's body; the goal holds the sense line with its
+  `ref=` and the acceptance it implies.
 - **The composed check.** A gate written as a pipeline or an exit-code capture
   is refused or reclassified before it runs, and the turn reports on a check
   nobody asked for.

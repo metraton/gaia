@@ -97,6 +97,7 @@ so the coordinates survive the session.
 | A turn in flight is heading the wrong way | Correct it in flight, continue it once it closes, or dispatch fresh — `dispatch` principle 8; the return is not the only moment to act |
 | A verification fails | Its cause decides: `product` sends the fix to the owning surface with the refuting probe's evidence id, and the producer adds that probe to the suite as its red run before changing code, so the finding stays a test; `environment` or `broken_test` makes the check itself the object — a mis-designed gate is not a code defect, and whether it guards something a user or a release would feel decides between mending it and cutting it, before any fix is re-dispatched; `requirement_changed` goes to `gaia-planner`, whose gate wording claims more than its task |
 | A verifier leaves a user-judged gate pending | Ask the user and record the answer with `gaia task gate set-status` and its evidence, as `gaia-planner` step 5 lays out |
+| A specialist refutes a premise the user stated | The refutation reaches the user first, with the evidence id that carries it, never filtered by the intent: the goal carried the premise as a claim (`dispatch`), and the refutation is the deliverable it owed |
 | Several agents are in flight | The consolidated result, said once when all have returned; an interim finding that stands alone may be reported early, a pending result is awaited rather than anticipated |
 
 ## Three traps, all measured today on real rows
