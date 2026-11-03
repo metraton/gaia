@@ -51,6 +51,21 @@ def test_worktree_verb_never_reaches_t3(argline, installed_gaia):
     assert result.allowed is True, result.reason
 
 
+def test_worktree_prune_branches_asks_for_a_signature(installed_gaia):
+    """`prune-branches` deletes local branches with `git branch -D`, so it is T3."""
+    result = BashValidator().validate(f"{installed_gaia} worktree prune-branches --repo /tmp/repo")
+    assert result.tier == SecurityTier.T3_BLOCKED, (result.tier, result.reason)
+
+
+def test_worktree_prune_branches_dry_run_stays_free(installed_gaia):
+    """`prune-branches --dry-run` only lists what would go and needs no signature."""
+    result = BashValidator().validate(
+        f"{installed_gaia} worktree prune-branches --repo /tmp/repo --dry-run"
+    )
+    assert result.tier != SecurityTier.T3_BLOCKED, (result.tier, result.reason)
+    assert result.allowed is True, result.reason
+
+
 def test_worktree_create_and_release_are_read_only_by_the_group_exception(installed_gaia):
     """`create`/`release` are the two generic-MUTATIVE_VERBS tokens this task
     exists to downgrade -- confirm the classifier's OWN category, not merely

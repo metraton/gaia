@@ -721,8 +721,7 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # this hook. `create` stays under the workspace's .project-worktrees root
     # and records its identity in the git lock reason;
     # `release` deposits a dirty worktree's diff as evidence before recycling
-    # it. No verb in the group matches COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS,
-    # `prune-branches` (deletes local branches) included.
+    # it.
     ("gaia", "worktree"): CATEGORY_READ_ONLY,
 }
 
@@ -744,6 +743,8 @@ COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str], FrozenSet[str]] = {
     # `gaia task remove` is an irreversible row deletion (no un-delete in the
     # tasks store), unlike `gaia ac remove` (AC rows can be re-added).
     ("gaia", "task"): frozenset({"remove"}),
+    # prune-branches runs `git branch -D`; SIMULATION_FLAGS frees its --dry-run.
+    ("gaia", "worktree"): frozenset({"prune-branches"}),
 }
 
 # Per-group deny verbs that live one level DEEPER than
