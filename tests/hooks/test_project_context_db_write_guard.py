@@ -243,3 +243,97 @@ def test_validator_refuses_the_store_categorically_and_signs_an_unproven_reach()
 ])
 def test_shell_writer_over_the_store_file_refused(command):
     assert check(command) == (False, guard.FILE_WRITE_REJECTION_MESSAGE)
+
+
+FREE = f"sqlite3 -readonly -safe {OTHER}"
+
+
+@pytest.mark.parametrize("command", [
+    f"echo .open {STORE} | sqlite3 {OTHER}",
+    f"printf '.open %s\\nPRAGMA journal_mode=DELETE;\\n' {STORE} | sqlite3 {OTHER}",
+    f"echo {STORE} VACUUM | xargs sqlite3",
+    f"echo '.open /home/jorge/.gaia/gaia.db' | sqlite3",
+    f"sqlite3 {OTHER} <<EOF\n  .open {STORE}\nEOF",
+    f"sqlite3 {OTHER} <<< '  .open {STORE}'",
+    f"{FREE} 'SELECT 1' '.open {STORE}'",
+])
+def test_the_store_in_content_fed_to_sqlite3_is_refused(command):
+    _refused_as_store(command, cwd="/tmp")
+
+
+def test_the_store_in_fed_content_is_found_by_inode_and_in_a_redirected_file(tmp_path, monkeypatch):
+    store = tmp_path / "store.sqlite"
+    store.write_bytes(b"")
+    monkeypatch.setenv("GAIA_DB", str(store))
+    os.link(store, tmp_path / "hard.db")
+    script = tmp_path / "s.sql"
+    script.write_text(f".open {tmp_path}/hard.db\n")
+    _refused_as_store(f"printf '.open %s\\n' {tmp_path}/hard.db | sqlite3 {OTHER}", cwd="/tmp")
+    _refused_as_store(f"sqlite3 {OTHER} < {script}", cwd="/tmp")
+
+
+@pytest.mark.parametrize("command", [
+    f"echo .shell touch /tmp/pwn | sqlite3 {OTHER}",
+    f"printf '.%s kubectl delete ns prod\\n' shell | sqlite3 {OTHER}",
+    f"sqlite3 {OTHER} \"SELECT \\\"edit\\\"('x', 'touch /tmp/pwn')\"",
+    f"sqlite3 {OTHER} \"SELECT [writefile]('/tmp/w', 'x')\"",
+    f"sqlite3 {OTHER} \"SELECT `load_extension`('/tmp/x.so')\"",
+    f"sqlite3 {OTHER} \".import '|touch /tmp/pwn' t\"",
+    f"sqlite3 {OTHER} \".once --bom '|sh'\" \"SELECT 'touch /tmp/pwn'\"",
+    f"sqlite3 {OTHER} '.output --bom |kubectl apply -f -' 'SELECT 1'",
+    f"sqlite3 {OTHER} \".once --bom '|git push --force origin main'\" 'SELECT 1'",
+    f"sqlite3 {OTHER} '.testcase x' 'SELECT 1'",
+    f"sqlite3 {OTHER} 'SELECT 1'",
+    f"sudo sqlite3 {OTHER} 'SELECT 1'",
+    f"sudo -H {FREE} 'SELECT 1'",
+    f"sqlite3 -readonly {OTHER} 'SELECT 1'",
+    f"sqlite3 -safe {OTHER} 'SELECT 1'",
+    f"{FREE} -nonce n '.nonce n' '.shell touch /tmp/pwn'",
+    f"{FREE} -unsafe-testing 'SELECT 1'",
+    f"sqlite3 -readonly -safe -init /tmp/w.sql {OTHER} 'SELECT 1'",
+    f"{FREE} -cmd '.tables' 'SELECT 1'",
+    f"HOME=/tmp/h {FREE} 'SELECT 1'",
+    f"{FREE} '.testcase x'",
+    f"{FREE} '.import /tmp/x.csv t'",
+    f"{FREE} \"SELECT '$(id)'\"",
+    f"{FREE} 'SELECT 1' && ls",
+    f"echo 'SELECT 1;' | {FREE}",
+    f"{FREE} <<< 'SELECT 1'",
+    f"{FREE} < /tmp/x.sql",
+    f"{FREE} 'SELECT 1' > /tmp/out",
+    f"{FREE}",
+    "sqlite3 -readonly -safe file:/tmp/other.db 'SELECT 1'",
+    f"/opt/x/sqlite3 -readonly -safe {OTHER} 'SELECT 1'",
+    f"{FREE} \"VACUUM INTO '/tmp/c.db'\"",
+])
+def test_sqlite3_off_the_free_form_signs_and_teaches_it(command):
+    assert check(command, "/tmp")[1] != guard.STORE_REJECTION_MESSAGE
+    assert sqlite_unproven_effect(command, "/tmp"), command
+    verdict = _validate(command)
+    assert verdict.allowed is False, command
+
+
+def test_the_signature_names_the_free_form():
+    verdict = _validate(f"sqlite3 {OTHER} 'SELECT 1'")
+    assert verdict.approval_id
+    assert "-readonly -safe" in verdict.reason
+
+
+@pytest.mark.parametrize("command", [
+    f"{FREE} 'SELECT 1'",
+    f"sqlite3 --safe --readonly -json -header {OTHER} 'SELECT * FROM t' '.tables'",
+    f"{FREE} '.schema t' 'PRAGMA table_info(t)'",
+])
+def test_the_free_form_runs_free(command):
+    assert check(command, "/tmp") == (True, None)
+    assert sqlite_unproven_effect(command, "/tmp") is None
+    assert _validate(command).allowed is True, command
+
+
+@pytest.mark.parametrize("init_file", ["~/.sqliterc", "~/.config/sqlite3/sqliterc"])
+def test_writing_a_sqlite3_init_file_signs(init_file):
+    from hooks.modules.security.sensitive_paths import is_account_path
+
+    assert is_account_path(os.path.expanduser(init_file))
+    verdict = _validate(f"echo .shell id > {init_file}")
+    assert verdict.allowed is False and verdict.approval_id
