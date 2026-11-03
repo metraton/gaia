@@ -5,13 +5,14 @@ Rejects commands writing directly to ~/.gaia/gaia.db bypassing the store API.
 
 Patterns detected:
     a sqlite3 invocation naming gaia.db (or a .gaia/*.db) together with any of
-    INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE anywhere in the command,
+    INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|VACUUM|ATTACH|REINDEX, or a
+    PRAGMA that sets a value or rewrites the file, anywhere in the command,
     case-insensitive, inside quotes / heredocs; and any shell writer whose
     DESTINATION is the gaia.db file or a side file -- cp/mv/install/ln/rsync,
     redirect, tee, dd of=, truncate, or a mutative inline interpreter naming it
     -- behind any wrapper the classifier peels.
 
-Read-only SQL (SELECT) is allowed. The write block is categorical and NOT
+Read-only SQL (SELECT, a PRAGMA that only reads) is allowed. The write block is categorical and NOT
 approvable -- like blocked_commands.py, it denies with SecurityTier.T3_BLOCKED
 and no approval_id, so there is no T3 grant that lifts it. Legitimate cases
 go through the sanctioned paths instead:
@@ -43,9 +44,17 @@ _SQLITE_INVOCATION = re.compile(
     re.IGNORECASE,
 )
 _WRITE_VERBS = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)\b",
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|VACUUM|ATTACH|REINDEX)\b",
     re.IGNORECASE,
 )
+_PRAGMA = re.compile(r"\bPRAGMA\s+(?:\w+\s*\.\s*)?(\w+)\s*([=(])?", re.IGNORECASE)
+# The parenthesized argument of these names what to read, not a value to set.
+_PRAGMA_READ_ARGUMENT = frozenset({
+    "table_info", "table_xinfo", "table_list", "index_info", "index_xinfo",
+    "index_list", "foreign_key_list", "foreign_key_check", "integrity_check",
+    "quick_check",
+})
+_PRAGMA_BARE_WRITERS = frozenset({"optimize", "wal_checkpoint", "incremental_vacuum"})
 
 REJECTION_MESSAGE = (
     "Direct SQL writes to gaia.db are not allowed. "
@@ -77,6 +86,17 @@ _TRUNCATORS = frozenset({
 _INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php"})
 
 
+def _writes_pragma(command: str) -> bool:
+    """Whether some PRAGMA in *command* sets a value or is one that rewrites the file bare."""
+    for match in _PRAGMA.finditer(command):
+        name, form = match.group(1).lower(), match.group(2)
+        if form == "=" or (form == "(" and name not in _PRAGMA_READ_ARGUMENT):
+            return True
+        if form is None and name in _PRAGMA_BARE_WRITERS:
+            return True
+    return False
+
+
 def is_db_write_attempt(command: str) -> bool:
     """Return True iff `command` matches the sqlite3-write-to-gaia.db pattern.
 
@@ -86,7 +106,9 @@ def is_db_write_attempt(command: str) -> bool:
 
     Returns:
         True if the command contains a sqlite3 invocation against gaia.db
-        AND a write verb (INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/REPLACE).
+        AND a statement that changes the store: a write verb
+        (INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/REPLACE/VACUUM/ATTACH/REINDEX)
+        or a PRAGMA that sets a value or rewrites the file.
     """
     if not command:
         return False
@@ -95,12 +117,8 @@ def is_db_write_attempt(command: str) -> bool:
     if invocation_match is None:
         return False
 
-    # The verb is searched in the whole command, so a heredoc body counts.
-    verb_match = _WRITE_VERBS.search(command)
-    if verb_match is None:
-        return False
-
-    return True
+    # Searched in the whole command, so a heredoc body counts.
+    return bool(_WRITE_VERBS.search(command)) or _writes_pragma(command)
 
 
 def _is_gaia_db_file(token: str) -> bool:

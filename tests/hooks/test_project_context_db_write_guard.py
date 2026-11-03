@@ -10,7 +10,17 @@ Tests the gaia_db_write_guard hook (B3 M6) against:
 
 from __future__ import annotations
 
-from hooks.modules.security.gaia_db_write_guard import (
+import sys
+from pathlib import Path
+
+import pytest
+
+# hooks/modules/core/state.py imports `adapters` as a top-level name.
+_HOOKS_DIR = str(Path(__file__).resolve().parents[2] / "hooks")
+if _HOOKS_DIR not in sys.path:
+    sys.path.insert(0, _HOOKS_DIR)
+
+from hooks.modules.security.gaia_db_write_guard import (  # noqa: E402
     REJECTION_MESSAGE,
     check,
     is_db_write_attempt,
@@ -53,6 +63,32 @@ def test_raw_sqlite_select_allowed():
     allowed, reason = check(cmd)
     assert allowed is True
     assert reason is None
+
+
+@pytest.mark.parametrize("sql", [
+    "PRAGMA journal_mode=DELETE",
+    "PRAGMA journal_mode=WAL",
+    "pragma main.user_version = 7",
+    "PRAGMA wal_checkpoint(TRUNCATE)",
+    "PRAGMA optimize",
+    "VACUUM",
+    "ATTACH DATABASE '/tmp/x.db' AS x",
+    "REINDEX",
+])
+def test_store_rewriting_statement_rejected(sql):
+    """Statements that rewrite the store file are refused like any other direct write."""
+    allowed, reason = check(f'sqlite3 ~/.gaia/gaia.db "{sql}"')
+    assert allowed is False
+    assert reason == REJECTION_MESSAGE
+
+
+@pytest.mark.parametrize("sql", [
+    "PRAGMA table_info(apps)",
+    "PRAGMA journal_mode",
+    "PRAGMA integrity_check",
+])
+def test_read_pragma_allowed(sql):
+    assert check(f'sqlite3 ~/.gaia/gaia.db "{sql}"') == (True, None)
 
 
 def test_bash_wrapped_write_rejected():
