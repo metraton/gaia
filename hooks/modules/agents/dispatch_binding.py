@@ -599,9 +599,10 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     # can stamp the parent binding. Left None for a non-verifier dispatch, where
     # it is optional (and only existence-checked if present).
     parent_handoff_id = _int_token(r"parent_handoff_id\s*=\s*(\d+)")
-    # The tool calls the orchestrator budgets for the turn; read at PostToolUse
-    # by ``modules.agents.call_ceiling``. Dispatch data like ``project=``,
-    # never a binding coordinate.
+    # The tool calls the orchestrator budgets for the turn; when absent,
+    # ``modules.agents.call_ceiling.effective_ceiling`` falls back to the agent's
+    # frontmatter ``maxTurns``. Dispatch data like ``project=``, never a binding
+    # coordinate.
     ceiling = _int_token(r"\bceiling\s*=\s*(\d+)")
 
     is_verifier = "verifier" in agent.lower()

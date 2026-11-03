@@ -143,7 +143,7 @@ def test_kernel_project_context_under_a_huge_prompt_is_one_line_and_the_contract
     kernel = _kernel(db, row)
 
     assert f"1 section — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
-    assert kernel.startswith(build_dispatch_kernel(row, db_path=db))
+    assert kernel.startswith(build_dispatch_kernel(row, db_path=db, agent_name="platform-architect"))
     assert len(kernel) <= KERNEL_BUDGET
 
 
@@ -216,7 +216,7 @@ def test_kernel_project_context_points_while_every_scope_row_stays(db):
     assert _pointer("stack") in kernel
     assert "s" * 1500 not in kernel
     _assert_all_scope_rows(kernel)
-    assert kernel.startswith(build_dispatch_kernel(row, db_path=db))
+    assert kernel.startswith(build_dispatch_kernel(row, db_path=db, agent_name="platform-architect"))
     assert len(kernel) <= KERNEL_BUDGET
 
 

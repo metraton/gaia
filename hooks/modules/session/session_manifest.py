@@ -253,8 +253,8 @@ def _resolve_gaia_cli_path() -> Optional[str]:
     return None
 
 
-# The orchestrator's identity refuses a dispatch that needs a tool this machine
-# lacks, so the roster must name what IS installed. `acli` has no mention in
+# The tools probed for the Environment line's "tools on PATH", so a reader
+# knows what this machine can run without asking. `acli` has no mention in
 # skills/ or agents/ and is listed anyway: it is the case this inventory exists
 # for -- installed here, invoked by nothing that names it.
 _CANDIDATE_TOOLS: tuple = (

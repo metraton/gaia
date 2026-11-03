@@ -281,7 +281,7 @@ def _declared_workflow(workspace: str, dispatch_project: str, db_path=None) -> s
 
 
 def build_dispatch_kernel(
-    row: Mapping[str, Any], *, db_path=None,
+    row: Mapping[str, Any], *, db_path=None, agent_name: str = "",
 ) -> Optional[str]:
     """Render the ``# Your Contract`` block from a claimed dispatch row.
 
@@ -333,10 +333,9 @@ def build_dispatch_kernel(
     if plan_task_id is not None:
         parts.append(f"plan_task_id: {plan_task_id}")
 
-    from modules.agents.call_ceiling import notice_threshold
-    from modules.agents.dispatch_binding import extract_dispatch_binding
+    from modules.agents.call_ceiling import effective_ceiling, notice_threshold
 
-    ceiling = extract_dispatch_binding({"prompt": row.get("dispatch_prompt")})["ceiling"]
+    ceiling = effective_ceiling(row, agent_name)
     if ceiling:
         parts.append(
             f"ceiling: {ceiling} tool calls (close notice at call {notice_threshold(ceiling)})"
@@ -374,7 +373,7 @@ def _frontmatter(path: Path) -> dict:
     return frontmatter if isinstance(frontmatter, dict) else {}
 
 
-def _agent_frontmatter(agent_name: str, agents_dir: "Path | None") -> dict:
+def agent_frontmatter(agent_name: str, agents_dir: "Path | None") -> dict:
     """The named agent's frontmatter, or {} for a name that is not a bare file stem."""
     if not agent_name or Path(agent_name).name != agent_name:
         return {}
@@ -388,7 +387,7 @@ def _agent_cli_extras(agent_name: str, agents_dir: "Path | None") -> list:
     is the source of truth. Entries are plain strings rendered verbatim
     (indented). Missing file / key / parser -> no extras.
     """
-    extras = _agent_frontmatter(agent_name, agents_dir).get("cli")
+    extras = agent_frontmatter(agent_name, agents_dir).get("cli")
     if not isinstance(extras, list):
         return []
     return [f"  {str(e).strip()}" for e in extras if str(e).strip()]
@@ -403,7 +402,7 @@ def build_skills_block(
     Each skill is listed with its description; when that would exceed
     ``SKILLS_BLOCK_BUDGET``, or ``names_only``, the names alone are listed.
     """
-    declared = _agent_frontmatter(agent_name, agents_dir).get("skills")
+    declared = agent_frontmatter(agent_name, agents_dir).get("skills")
     if not isinstance(declared, list):
         return ""
     names = [str(name).strip() for name in declared if str(name).strip()]
@@ -736,7 +735,7 @@ def build_kernel_context(
     with_skills: bool = False,
 ) -> Optional[str]:
     """The kernel payload within ``KERNEL_BUDGET``, shrunk in the order hooks/README.md names; None without a contract block."""
-    kernel = build_dispatch_kernel(row, db_path=db_path)
+    kernel = build_dispatch_kernel(row, db_path=db_path, agent_name=agent_name)
     if not kernel:
         return None
     workspace = str(row.get("workspace") or "")
