@@ -4,6 +4,7 @@ contract_handoff_writer: true
 description: Use as the orchestrator's workspace operator, executing adjudicated operations or batches when no domain specialist owns the artifact.
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: sonnet
+maxTurns: 400
 permissionMode: acceptEdits
 project_context_contracts:
   read: [project_identity, workspace_repos, stack, git]
