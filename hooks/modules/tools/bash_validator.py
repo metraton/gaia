@@ -966,7 +966,7 @@ class BashValidator:
 
         # The guards from here to the sensitive-read check run before
         # unwrap/decompose so wrappers and heredocs are inspected intact.
-        db_write_allowed, db_write_reason = check_gaia_db_write(write_guard_scope)
+        db_write_allowed, db_write_reason = check_gaia_db_write(write_guard_scope, cwd)
         if not db_write_allowed:
             logger.warning("BLOCKED gaia.db direct write: %s", command[:100])
             return BashValidationResult(

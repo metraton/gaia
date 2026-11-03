@@ -90,6 +90,135 @@ def test_read_pragma_allowed(sql):
     assert check(f'sqlite3 ~/.gaia/gaia.db "{sql}"') == (True, None)
 
 
+STORE = "~/.gaia/gaia.db"
+
+
+@pytest.mark.parametrize("statement", [
+    "ANALYZE",
+    "analyze main",
+    ".restore /tmp/x.db",
+    ".rest /tmp/x.db",
+    ".import /tmp/a.csv apps",
+    ".imp /tmp/a.csv apps",
+])
+def test_statement_that_changes_the_open_store_rejected(statement):
+    assert check(f'sqlite3 {STORE} "{statement}"') == (False, REJECTION_MESSAGE)
+    assert check(f"sqlite3 {STORE} <<EOF\n{statement}\nEOF") == (False, REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("dot_command", [
+    ".backup main /home/user/.gaia/gaia.db",
+    ".backup /home/user/.gaia/gaia.db",
+    ".save ~/.gaia/gaia.db",
+    ".sav ~/.gaia/gaia.db",
+    ".clone /home/user/.gaia/gaia.db",
+    ".output /home/user/.gaia/gaia.db",
+    ".once -e ~/.gaia/gaia.db",
+    ".backup main '/home/user/.gaia/gaia.db-wal'",
+])
+def test_dot_command_writing_the_store_file_rejected(dot_command):
+    assert check(f'sqlite3 /tmp/other.db "{dot_command}"') == (False, REJECTION_MESSAGE)
+    assert check(f"sqlite3 /tmp/other.db <<EOF\n{dot_command}\nEOF") == (False, REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("dot_command", [
+    ".backup main /tmp/copy.db",
+    ".save /tmp/copy.db",
+    ".clone /tmp/copy.db",
+    ".output /tmp/out.txt",
+    ".once /tmp/out.txt",
+    ".dump",
+    ".tables",
+])
+def test_dot_command_writing_another_file_allowed(dot_command):
+    assert check(f'sqlite3 {STORE} "{dot_command}"') == (True, None)
+    assert check(f'sqlite3 {STORE} ".mode csv" "{dot_command}" "SELECT 1"') == (True, None)
+
+
+def test_dot_command_after_a_dot_command_is_read_separately():
+    cmd = f'sqlite3 {STORE} ".tables" ".restore /tmp/x.db"'
+    assert check(cmd) == (False, REJECTION_MESSAGE)
+
+
+def _script(tmp_path, body):
+    path = tmp_path / "script.sql"
+    path.write_text(body)
+    return path
+
+
+@pytest.mark.parametrize("body", [
+    "UPDATE apps SET status = 'x';",
+    "SELECT 1;\nPRAGMA user_version = 3;",
+    "SELECT 1;\n.restore /tmp/x.db",
+    "SELECT 1;\n.backup main /home/user/.gaia/gaia.db",
+])
+def test_read_of_a_script_that_writes_rejected(tmp_path, body):
+    path = _script(tmp_path, body)
+    assert check(f'sqlite3 {STORE} ".read {path}"') == (False, REJECTION_MESSAGE)
+    assert check(f"sqlite3 {STORE} <<EOF\n.read {path}\nEOF") == (False, REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("body", [
+    "SELECT * FROM apps;",
+    ".tables\nPRAGMA table_info(apps);\n.backup main /tmp/copy.db",
+    "",
+])
+def test_read_of_a_script_that_only_reads_allowed(tmp_path, body):
+    path = _script(tmp_path, body)
+    assert check(f'sqlite3 {STORE} ".read {path}"') == (True, None)
+
+
+def test_read_follows_a_script_that_reads_another(tmp_path):
+    inner = _script(tmp_path, "DELETE FROM apps;")
+    outer = tmp_path / "outer.sql"
+    outer.write_text(f".read {inner}\n")
+    assert check(f'sqlite3 {STORE} ".read {outer}"') == (False, REJECTION_MESSAGE)
+
+
+def test_read_resolves_a_relative_script_against_the_given_directory(tmp_path):
+    _script(tmp_path, "SELECT 1;")
+    assert check(f'sqlite3 {STORE} ".read script.sql"', cwd=str(tmp_path)) == (True, None)
+    _script(tmp_path, "DELETE FROM apps;")
+    assert check(f'sqlite3 {STORE} ".read script.sql"', cwd=str(tmp_path)) == (False, REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("command", [
+    f'sqlite3 {STORE} ".read /nonexistent/script.sql"',
+    f'sqlite3 {STORE} ".read script.sql"',
+    f'sqlite3 {STORE} ".read $SCRIPT"',
+    f'sqlite3 {STORE} ".read |cat /tmp/script.sql"',
+    f'sqlite3 {STORE} ".read /dev/stdin"',
+    f'sqlite3 {STORE} ".read /tmp"',
+])
+def test_read_of_a_script_that_cannot_be_read_rejected(command):
+    allowed, reason = check(command)
+    assert allowed is False
+    assert "could not prove" in reason
+
+
+def test_read_relative_after_a_cd_cannot_be_proven(tmp_path):
+    _script(tmp_path, "SELECT 1;")
+    allowed, reason = check(f'cd /tmp && sqlite3 {STORE} ".read script.sql"', cwd=str(tmp_path))
+    assert allowed is False
+    assert "could not prove" in reason
+
+
+def test_validator_hands_the_shell_directory_to_a_relative_read(tmp_path):
+    from hooks.modules.tools.bash_validator import BashValidator
+
+    _script(tmp_path, "DELETE FROM apps;")
+    result = BashValidator().validate(
+        f'sqlite3 {STORE} ".read script.sql"',
+        is_subagent=True, session_id="ses-db-guard", agent_type="gaia-system", cwd=str(tmp_path),
+    )
+    assert result.rule == "floor.gaia-db-write"
+    assert result.reason.startswith(REJECTION_MESSAGE)
+
+
+def test_read_against_another_database_is_not_judged():
+    assert check('sqlite3 /tmp/other.db ".read /nonexistent/script.sql"') == (True, None)
+
+
 def test_bash_wrapped_write_rejected():
     """bash -c wrapping must still be detected."""
     cmd = "bash -c 'sqlite3 ~/.gaia/gaia.db \"INSERT INTO apps (name) VALUES (\\\"x\\\")\"'"
