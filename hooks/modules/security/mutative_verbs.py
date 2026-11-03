@@ -3,7 +3,7 @@ Mutative verb detector for shell commands.
 
 Simplified three-category pipeline:
   blocked_commands.py  ->  BLOCKED (exit 2, permanently denied)
-  mutative_verbs.py    ->  MUTATIVE (needs user approval via nonce)
+  mutative_verbs.py    ->  MUTATIVE (needs user approval)
   everything else      ->  SAFE (auto-approved by elimination)
 
 This module detects MUTATIVE commands by scanning tokens for known verb patterns,
@@ -11,7 +11,7 @@ dangerous flags, and command aliases. If a command is not blocked and not mutati
 it is safe by elimination -- no allowlist needed.
 
 Categories retained internally for verb classification:
-- MUTATIVE: ALL state-modifying verbs (approvable via nonce workflow)
+- MUTATIVE: ALL state-modifying verbs (approvable with the user's consent)
 - SIMULATION: plan, diff, preview, template, validate, lint, etc.
 - READ_ONLY: get, list, describe, show, logs, status, etc.
 """
@@ -156,16 +156,15 @@ class MutativeResult:
 
 MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Creation / addition
-    # NOTE: "add" removed -- safe by elimination (e.g., git add is local-only)
+    # NOTE: "add" is absent -- safe by elimination (e.g., git add is local-only)
     "apply", "create", "put", "insert", "register",
     # Modification
     "update", "patch", "set", "modify", "edit", "configure",
     "replace", "overwrite", "write",
     # Deployment / packaging
-    # NOTE: "release" removed -- it is a CLI subcommand group noun in `gh release`,
-    # `glab release`, etc. The actual mutative actions (create, delete, edit, upload)
-    # are already in MUTATIVE_VERBS. Keeping "release" here causes false positives on
-    # `gh release view` and any command with "release" as an argument string.
+    # NOTE: "release" is absent -- it is a CLI subcommand group noun in `gh release`,
+    # `glab release`, etc.; the mutative actions (create, delete, edit, upload) are
+    # already listed, and "release" would flag `gh release view`.
     "deploy", "install", "upgrade", "downgrade", "publish", "promote",
     # Scaling
     "scale", "resize", "autoscale",
@@ -177,35 +176,34 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
     # Attachment
-    # NOTE: "link" removed -- false positive in shell variable names (e.g., "for link in ...").
+    # NOTE: "link" is absent -- it would flag shell variable names (e.g., "for link in ...").
     #       The `ln` command is already covered as a COMMAND_ALIAS.
     "attach", "bind", "connect", "mount",
     # Execution
-    # NOTE: "run" removed -- safe by elimination (e.g., docker run is common dev workflow)
+    # NOTE: "run" is absent -- safe by elimination (e.g., docker run is common dev workflow)
     # "replay" re-executes a previously recorded command (e.g. `gaia approvals
-    # replay <id>` re-runs the sealed_payload of an already-used approval via
-    # `subprocess.run(cmd, shell=True)`, including commands that were
+    # replay <id>` re-presents the sealed_payload of an already-used approval
+    # and, once confirmed, re-runs its commands, including ones that were
     # originally T3). Global, not a `gaia`-specific exception: replaying a
     # stored command has the exact same effect as running it the first time,
     # so it must classify at least as mutative as the taxonomy already treats
-    # "execute"/"invoke". `--dry-run` (which only prints, never executes)
-    # still short-circuits to non-mutative via the SIMULATION_FLAGS check in
-    # Step 3, which runs before this table is ever consulted.
+    # "execute"/"invoke". `--dry-run` still short-circuits to non-mutative via
+    # the SIMULATION_FLAGS check in Step 3, which runs before this table.
     "exec", "execute", "invoke", "trigger", "send", "reply", "replay",
     # Remote execution entry points: re-run a finished run, fire a dispatch
     # event, stop a run in flight. `run` itself stays out (see above); these
     # three name the effect, so they need no per-binary anchor.
     "rerun", "dispatch", "cancel",
     # Git operations
-    # NOTE: "stash" removed -- safe by elimination (local-only operation)
-    # NOTE: "commit" removed -- local-only operation, trust system
+    # NOTE: "stash" is absent -- safe by elimination (local-only operation)
+    # NOTE: "commit" is absent -- local-only operation, trust system
     "push", "merge", "rebase",
     "rollback",
     # Access control
     "grant", "assign", "revoke", "login", "select", "get-credentials",
     # Reconciliation
     "reconcile", "rsync",
-    # Deletion / removal (approvable via nonce -- blocked_commands.py catches
+    # Deletion / removal (approvable with consent -- blocked_commands.py catches
     # the truly destructive patterns like "delete namespace", "delete-vpc", etc.)
     # NOTE: "cleanup" sits alongside "clean" rather than relying on hyphen-split
     # collapsing it to "clean" -- there is no hyphen in "cleanup" to split, and
@@ -635,11 +633,8 @@ def _classify_git_tag(semantics: CommandSemantics) -> str:
 # flags.  Use only when the API-level semantics of the verb are safe despite
 # the generic verb name being in MUTATIVE_VERBS.
 #
-# Key:   (cli_family, verb)  — cli_family comes from CLI_FAMILY_LOOKUP above.
+# Key:   (cli_family, verb)  — cli_family comes from CLI_FAMILY_LOOKUP below.
 # Value: target category constant (CATEGORY_READ_ONLY or CATEGORY_SIMULATION).
-#
-# This dict is protected by the Write/Edit T3 hook (it lives inside the hooks
-# directory).  Modifications require user approval.
 
 CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # Gmail API: "modify" only changes labels/flags on messages — it cannot
@@ -663,7 +658,7 @@ CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
 # `gaia *` exemption.  A family-wide exemption would also un-gate
 # `gaia approvals approve` / `gaia approvals revoke`, which must stay T3
 # because they ARE the consent layer itself.  Anchoring keeps the gate intact
-# everywhere except the two named planning groups.
+# everywhere except the groups named in this table.
 #
 # Key:   (base_cmd, subcommand)  — base_cmd is the resolved (pathless) CLI name,
 #        subcommand is non_flag_tokens[0] (the group token right after `gaia`).
@@ -697,20 +692,12 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # (`gcloud auth login --no-activate`); the consent is the user's own, given
     # in the browser.
     ("gaia", "login"): CATEGORY_READ_ONLY,
-    # `gaia contract <verb>` (init/set/add/fill/finalize/view/validate): the
-    # by-value agent_contract_handoff draft store under
+    # `gaia contract <verb>`: the agent_contract_handoff draft store under
     # `data_dir()/contract_drafts/` — a subagent's own turn-scoped draft, edited
-    # field-by-field across the turn and finalized once (see the
-    # `agent-protocol` skill's "Building the contract" section). Without this
-    # exemption `set`/`add` trip the generic MUTATIVE_VERBS scan (`set` and,
-    # were "add" not already removed for the git-add false-positive, `add` too)
-    # on EVERY field write, making the by-value flow impractical — a subagent
-    # would hit an approval gate on every `gaia contract set`. Mirrors brief/ac/
-    # plan/task/notifications exactly: reversible, local-only, no external side
-    # effects, no un-delete needed because there is no destructive verb in this
-    # group (no `gaia contract delete` — a draft is superseded by `finalize`,
-    # never destroyed), so the global deny-verb guard leaves every contract
-    # verb exempt.
+    # field-by-field and finalized once. Without this exemption `set` trips the
+    # generic MUTATIVE_VERBS scan on every field write. Mirrors brief/ac/plan/
+    # task/notifications: reversible, local-only, and the group has no
+    # `delete` verb for the deny-verb guard to re-gate.
     ("gaia", "contract"): CATEGORY_READ_ONLY,
     # `gaia memory <verb>` (add/append/reclassify/link/checkpoint/search/
     # show/list/stats/conflicts): curated-memory bookkeeping in gaia.db --
@@ -726,34 +713,16 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # WRITES from a dispatched subagent regardless of tier -- this exception
     # changes the tier, never who is allowed to write.
     ("gaia", "memory"): CATEGORY_READ_ONLY,
-    # `gaia worktree <verb>` (create/list/show/release): the host-agnostic
-    # door onto Gaia's own agentic-worktree machinery (gaia.worktree,
-    # gaia.retention.worktree_reclaim/worktree_collector). Without this
-    # exception `create` and `release` (both in MUTATIVE_VERBS generically)
-    # would trip the Step 4 verb scan and demand T3 -- on the OUTER `gaia`
-    # invocation, never on the `git worktree add`/`remove` subprocess the CLI
-    # runs internally, which never passes through this hook at all (it is a
-    # subprocess of the already-classified CLI process, not a separate Bash
-    # tool call). `create` is bounded by construction: the worktree is born
-    # under the workspace's git-ignored .project-worktrees root, its only
-    # network effect is fetching the remote's default branch into a
-    # remote-tracking ref, and its identity is stamped into the git lock's
-    # reason so the reclaim machinery can always find and account for it.
-    # `release` can never destroy
-    # uncaptured work -- reclaim_worktree deposits a dirty worktree's full
-    # diff as evidence BEFORE anything about it changes, and only ever calls
-    # `git worktree remove` on a worktree already confirmed clean (see
-    # gaia.retention.worktree_reclaim's module docstring). That call is
-    # forced ONLY to override an older worktree's untracked in-tree
-    # `.gaia-worktree.json` -- the one case a fresh, independently-recomputed content check
-    # (`_exempt_metadata_filename`) has already proven carries no agent work
-    # -- and stays unforced otherwise; `--force` never overrides anything
-    # this module has not itself just verified is safe. Both `create` and
-    # `release` are therefore reversible-by-design, exactly like the brief/ac/plan/
-    # task/notifications/contract/memory groups above, and there is
-    # no destructive verb in this group for the global deny-verb guard to
-    # re-gate (`create`/`list`/`show`/`release` all miss
-    # COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS).
+    # `gaia worktree <verb>`: the door onto Gaia's own worktree machinery
+    # (gaia.worktree, gaia.retention.worktree_reclaim). Without this exception
+    # `create` and `release` (both in MUTATIVE_VERBS) would trip the Step 4
+    # verb scan on the OUTER `gaia` invocation; the `git worktree add`/`remove`
+    # the CLI runs internally is a subprocess of that call and never reaches
+    # this hook. `create` stays under the workspace's .project-worktrees root
+    # and records its identity in the git lock reason;
+    # `release` deposits a dirty worktree's diff as evidence before recycling
+    # it. No verb in the group matches COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS,
+    # `prune-branches` (deletes local branches) included.
     ("gaia", "worktree"): CATEGORY_READ_ONLY,
 }
 
@@ -886,7 +855,7 @@ def _carries_revoking_flag(tokens: Union[List[str], tuple], flags: Tuple[str, ..
 # The `--help` override (Step 3.5) and any simulation flag (Step 3) are
 # resolved ABOVE this check and keep winning, so `gaia dev --help` and
 # `gaia scan --dry-run` stay READ_ONLY without re-implementing either rule
-# here. This dict lives inside the hooks directory and is itself T3-protected.
+# here.
 
 
 # Carried by `<cli> auth switch|logout` (see _check_generic_cli_shape): one
@@ -1282,10 +1251,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
             guidance=_GCLOUD_LOGIN_GUIDANCE,
         ),
     ),
-    # `config <write verb>` is generic (_check_generic_cli_shape). NOT gated,
-    # and left open on purpose: `kubectl config use-context` and `gcloud config
-    # configurations activate` carry no write verb -- `use` and `activate` are
-    # absent from the verb taxonomy -- and need their own decision.
+    # `config <write verb>` is generic (_check_generic_cli_shape). `activate`
+    # (`gcloud config configurations activate`) is in no verb table and is not
+    # anchored; `kubectl config use-context` is signed through `use` in
+    # COMPOUND_HEAD_MUTATIVE_VERBS.
     "kubectl": (
         # `run` is deliberately absent from MUTATIVE_VERBS ("safe by
         # elimination" -- a global entry would gate every `docker run` and
@@ -1306,35 +1275,23 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("pr", "update-branch")),
     ),
     # `git remote add` creates a NEW remote destination the repository will
-    # push to and fetch from thereafter -- the same "grants a new capability"
-    # shape as the IAM bindings above, reached through the same door: "add" is
-    # deliberately absent from MUTATIVE_VERBS, so the whole command fell
-    # through to Step 4 and classified READ_ONLY by elimination. Two sibling
-    # forms already gate today and are deliberately NOT re-anchored here:
-    # `git worktree add` has its own family classifier (_check_git_worktree),
-    # and `git remote set-url` -- repointing an EXISTING destination -- is
-    # already caught by the generic verb scan on "set". The one residual open
-    # surface is standing up a NEW remote, so only `remote add` is anchored.
-    # `git remote -v` / `git remote show` / `git remote rename` are untouched
-    # and stay free: the anchor path requires "add" as the second token.
+    # push to and fetch from thereafter. "add" is deliberately absent from
+    # MUTATIVE_VERBS, so without the anchor the command would classify
+    # READ_ONLY by elimination. Sibling forms are not anchored because they
+    # already gate: `git worktree add` through _check_git_worktree, and
+    # `git remote set-url` / `rename` through the verb scan ("set", "rename").
+    # `git remote -v` and `git remote show` stay free: the path requires "add"
+    # as the second token.
     "git": (
         MutativeAnchor(path=("remote", "add")),
     ),
-    # `terraform init` / `terragrunt init` re-run against a workspace that
-    # already has provider plugins and remote state -- bare init is idempotent
-    # bootstrapping and stays free. But three flags turn the same subcommand
-    # into a state-mutating operation: `-upgrade` rewrites installed provider
-    # versions, `-migrate-state` moves the backend's state to a new
-    # configuration, and `-reconfigure` discards the existing backend config
-    # and re-initializes it. None of the three carries a verb in
-    # MUTATIVE_VERBS ("init" names no lifecycle action the taxonomy tracks),
-    # so all three fell through to Step 4 and classified READ_ONLY by
-    # elimination alongside the harmless bare form. One flag-conditioned
-    # anchor per CLI (the mechanism built in the M2 PREVIA task) scopes the
-    # escalation to exactly the flags that mutate, on both infra CLIs this
-    # repository observed in use -- `terraform` and `terragrunt` do not share
-    # a base_cmd, so each needs its own entry; a bare `terraform init` /
-    # `terragrunt init` with none of the three flags is untouched.
+    # Bare `terraform init` / `terragrunt init` is idempotent bootstrapping and
+    # stays free. Three flags make it state-mutating: `-upgrade` rewrites
+    # installed provider versions, `-migrate-state` moves the backend's state
+    # to a new configuration, and `-reconfigure` discards the existing backend
+    # config. "init" carries no verb in MUTATIVE_VERBS, so a flag-conditioned
+    # anchor per CLI escalates exactly those flags; `terraform` and
+    # `terragrunt` are different base_cmds, so each needs its own entry.
     "terraform": (
         MutativeAnchor(
             path=("init",),
@@ -1373,30 +1330,20 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
 
 
 # Keyed by base command; a CLI absent from this table has no track grammar and
-# is left completely untouched. Only ``gcloud`` publishes pre-GA surfaces as a
-# word between the tool and the command, so only ``gcloud`` declares one. Every
-# word listed here is a word this layer DELETES from a command before reading
-# it, which is why the set is the two tracks gcloud actually ships and not a
-# guess: ``preview`` was a third one years ago and is gone, so including it
-# would license deleting an ordinary word for a grammar that no longer exists.
+# is left completely untouched. Every word listed here is deleted from a
+# command before it is read, so the set holds only the tracks gcloud ships
+# (``alpha``, ``beta``): any other word would be deleted for no grammar.
 RELEASE_TRACK_PREFIXES: Dict[str, FrozenSet[str]] = {
     "gcloud": frozenset({"alpha", "beta"}),
 }
 
 
-# ============================================================================
-# Inline Code Detection — Language-Agnostic 3-Layer Approach
-# ============================================================================
-# When the base command is a runtime interpreter with an inline code flag
-# (e.g., python3 -c, node -e, ruby -e, perl -e), scan the code string
-# using three layers instead of verb-matching tokens:
-#   Layer 1: Extract string literals → check against blocked_commands
-#   Layer 2: Universal dangerous API keyword patterns
-#   Layer 3: Heuristic safety classification (length, paths, encoding)
+# Inline code (python3 -c, node -e, ...) is judged by the three layers that
+# `_check_inline_code` documents, not by verb-matching tokens.
 import re as _re
 
 # ---------------------------------------------------------------------------
-# CLI → inline-code flag mapping (Step 1a)
+# CLI → inline-code flag mapping (Step 3b)
 # ---------------------------------------------------------------------------
 _INLINE_CODE_MAP: Dict[str, FrozenSet[str]] = {
     "python": frozenset({"-c"}),
@@ -1425,17 +1372,14 @@ _PYTHON_INTERPRETERS: FrozenSet[str] = frozenset({
 })
 
 # ---------------------------------------------------------------------------
-# Script-file interpreters (Step 3b2)
+# Script-file interpreters (Step 1d)
 # ---------------------------------------------------------------------------
 # Interpreters that take a SCRIPT FILE as a positional argument
-# (``python3 deploy.py``, ``bash setup.sh``, ``node migrate.js``).  Without
-# this set the verb scanner sees only the filename token -- which carries a
-# ``.`` and so is rejected as a non-subcommand -- and the command slips through
-# as safe by elimination, executing the file's mutations without approval.
-# The fix reads the file and classifies it by REAL invocation (AST for Python,
-# the blocked/mutative regex layer for shells and other interpreters), never by
-# the bare ``<interp> <file>`` shape.  ``ruby``/``perl``/``php``/``node`` have
-# no vendored AST, so their files go through the same regex layer as shells.
+# (``python3 deploy.py``, ``bash setup.sh``, ``node migrate.js``).  The verb
+# scanner sees only the filename token -- which carries a ``.`` and so is
+# rejected as a non-subcommand -- so the file is read and classified by its
+# REAL invocations: AST for Python, the source lexer for node/ruby/perl/php,
+# the blocked/mutative regex layer for shells and the rest (``_check_script_file``).
 _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
     "python", "python3",
     "python3.10", "python3.11", "python3.12", "python3.13",
@@ -1445,13 +1389,8 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
 
 # Non-shell, non-Python interpreters: their script files are SOURCE CODE in a
 # programming language, not shell command lists.  Their content lane is "code"
-# rather than "shell" so the regex classifier suppresses camelCase subcommand
-# splitting -- a camelCase token in JS/Ruby/etc. (``execPath``, ``setState``)
-# is a language identifier, not a CLI subcommand.  Suppressing it removes only
-# false positives: whole-token verbs and command aliases (``rm``/``cp`` used
-# bare), dangerous flags, and blocked-command patterns are still scanned, and
-# camelCase multi-word tokens embedded inside a quoted string argument were
-# never matched anyway (the quote makes the whole string a single token).
+# rather than "shell", so a camelCase token (``execPath``, ``setState``) is
+# read as a language identifier, not split into a CLI verb (``from_source_code``).
 _NON_SHELL_SCRIPT_INTERPRETERS: FrozenSet[str] = frozenset({
     "node", "ruby", "perl", "php", "lua", "luajit", "rscript",
 })
@@ -1459,8 +1398,8 @@ _NON_SHELL_SCRIPT_INTERPRETERS: FrozenSet[str] = frozenset({
 # File extensions whose interpreter is implied by ``./script`` (no explicit
 # interpreter token).  Maps the extension to the analysis lane used for its
 # content: "python" routes through the AST analyzer, "shell" through the
-# blocked/mutative regex layer, "code" through the same regex layer but with
-# camelCase subcommand splitting suppressed (non-shell source languages).
+# blocked/mutative regex layer, "code" through the source lexer (or, with no
+# lexer spec, the regex layer with camelCase splitting suppressed).
 _SHEBANG_EXT_LANES: Dict[str, str] = {
     ".py": "python",
     ".sh": "shell",
@@ -1497,43 +1436,28 @@ _SCRIPT_EXT_INTERPRETERS: Dict[str, str] = {
     ".php": "php",
 }
 
-# Cap on bytes read from a script file during classification.  A script larger
-# than this is unusual for the inline-evasion case and reading it in full would
-# add latency to every hook invocation; we read a bounded prefix, which is
-# enough to catch the mutative calls an evasion script front-loads.
+# Cap on bytes read from a script file during classification: a larger file is
+# read only up to the cap. Callers that need the whole file (the JS import
+# closure, the PEP 723 block) treat a read that reaches the cap as unproven.
 _MAX_SCRIPT_READ_BYTES = 256 * 1024
 
 # Maximum nesting depth for script-body / npm-run / exec-sink re-classification.
 # Each time detection descends INTO a referenced body (an interpreter reading a
 # script file, `npm run` resolving a package.json entry, an exec-sink string, or
-# the gaia-CLI re-dispatch) the depth increments by one.  A referenced body that
-# names its OWN path -- even in a usage/help heredoc such as validate-sandbox.sh's
-# ``bin/validate-sandbox.sh [--version ...]`` line -- or a mutual A->B->A cycle
-# would otherwise re-read and re-classify the same file forever, blowing Python's
-# stack ("maximum recursion depth exceeded") and crashing the PreToolUse hook.
-# Legitimate nesting is only a few levels deep (`npm run x` -> `bash a.sh` ->
-# `bash b.sh`), so this cap never truncates a real chain; it exists solely to
-# guarantee termination on a self/mutual reference.
+# the gaia-CLI re-dispatch) the depth increments by one.  A body that names its
+# own path, or a mutual A->B->A cycle, would otherwise be re-read forever and
+# crash the hook with a recursion error. Legitimate nesting is a few levels
+# deep, so the cap never truncates a real chain; it exists to guarantee
+# termination.
 #
-# REACHING THE CAP STOPS THE DESCENT AND RETAINS THE VERDICT. Those are two
-# separate acts, and conflating them was a measured hole: the body was no longer
-# opened AND the invocation fell through to ordinary token classification, which
-# answers safe by elimination -- so the level that spent the last unit of budget
-# was released rather than withheld. A nesting chain whose innermost body was a
-# script invocation passed FREE at EXACTLY this value, with the levels on either
-# side of it gated. Raising the number would only move that hole.
-#
-# The principle the three exhaustion sites now share: budget exhaustion is a
-# FAILURE TO PROVE SAFETY, not a proof of safety. A lane that declines to open a
-# body because the budget ran out is in the same epistemic position as one that
-# could not read the file, and the module already resolves that position
-# conservatively (`script-file-unreadable`, `npm-run-unresolved`). Cycle-breaking
-# needs the descent to STOP; it never needed the verdict to be free.
+# REACHING THE CAP STOPS THE DESCENT AND RETAINS THE VERDICT: falling through to
+# ordinary token classification would answer safe by elimination for the one
+# level that spent the last unit of budget. Exhaustion is a failure to prove
+# safety, the same position as an unreadable file (`script-file-unreadable`,
+# `npm-run-unresolved`), so every descending lane returns `_budget_exhausted_result`.
 _MAX_SCRIPT_RECURSION_DEPTH = 12
 
-# The verdict every lane returns when the descent budget is exhausted. Built here
-# rather than inline at the three sites so the three cannot drift apart, and so a
-# fourth descending lane added later has one obvious thing to call.
+# The verdict every descending lane returns when the budget is exhausted.
 def _budget_exhausted_result(lane: str) -> MutativeResult:
     """Return the conservative verdict for a body left unopened by the bound.
 
@@ -1559,20 +1483,13 @@ def _budget_exhausted_result(lane: str) -> MutativeResult:
     )
 
 # Maximum descent for the command-substitution lane, counted on the SAME
-# ``_depth`` budget as the script lane above -- one command may only ever be
-# opened so many times in total, whichever mix of routes did the opening.
+# ``_depth`` budget as the script lane above.
 #
-# The value is shared; the EXHAUSTION RULE is not, and the difference is the
-# point.  The script lane exhausts by declining to open the body and letting
-# ordinary token classification decide, because its cycle risk is a file that
-# names itself and there is no bounded quantity to run out of.  A substitution
-# body cannot cycle -- it is a strict substring of its parent, at least three
-# characters shorter, so the descent is finite on its own -- and that is exactly
-# why exhaustion here means the string is pathological rather than merely deep.
-# So this lane exhausts CLOSED: past the cap a command that still carries an
-# executing substitution is classified mutative WITHOUT the body being read. A
-# cap that let the command through on the way out would be a bypass with
-# instructions -- nest one level past the number and the gate stops applying.
+# A substitution body is a strict substring of its parent, so the descent is
+# finite on its own and exhaustion means the string is pathological. Past the
+# cap a command that still carries an executing substitution is classified
+# mutative WITHOUT the body being read: letting it through would stop the gate
+# applying one level past the number.
 _MAX_SUBSTITUTION_RECURSION_DEPTH = 12
 
 # Interpreter flags that CONSUME the next token as their value AND mean the
@@ -1647,23 +1564,14 @@ _INTERP_SYNTAX_CHECK_FLAGS: Dict[str, FrozenSet[str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Python ``-m <package-manager>`` re-dispatch (Brief 91, AC-7)
+# Python ``-m <package-manager>`` re-dispatch (``_check_python_module_runner``)
 # ---------------------------------------------------------------------------
-# ``python3 -m pip install x`` is the SAME operation as ``pip install x`` -- the
-# ``-m`` form merely runs the package manager as a module of the interpreter.
-# Before this guard, the interpreter (``python3``) was the base command, the
-# module name (``pip``) was swallowed into flag_tokens as the value of ``-m``,
-# and classification limped along ONLY when a generic verb (``install``)
-# happened to remain in MUTATIVE_VERBS.  That is accidental, not robust:
-#   * ``python3 -m poetry add x`` slipped through (``add`` was removed from
-#     MUTATIVE_VERBS as a git-add false-positive), bypassing T3 entirely.
-#   * the command reported cli_family=runtime, never recognized as ``package``.
-# The fix recognizes ``<python> -m <pkg-mgr> <args...>`` and RE-DISPATCHES it as
-# ``<pkg-mgr> <args...>`` so it classifies identically to the direct CLI form:
-# ``install``/``uninstall``/``add`` -> MUTATIVE/T3, ``list``/``download`` ->
-# READ_ONLY (matching real pip semantics).  Scoped to the package-manager
-# modules below so ``python3 -m pytest`` / ``python3 -m http.server`` are NOT
-# rerouted -- they fall through to ordinary detection unchanged.
+# ``python3 -m pip install x`` is the SAME operation as ``pip install x``, so
+# ``<python> -m <pkg-mgr> <args...>`` is re-dispatched as ``<pkg-mgr> <args...>``
+# and takes the direct CLI form's verdict (``add`` is absent from
+# MUTATIVE_VERBS, so ``-m poetry add x`` needs the rewrite). Any other module is
+# re-dispatched too but adopted only when mutative, so ``python3 -m pytest`` and
+# ``python3 -m http.server`` keep their ordinary classification.
 _PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
     "pip", "pip3", "pipenv", "poetry", "uv",
 })
@@ -1674,27 +1582,16 @@ _PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
 # A prefix runner executes ANOTHER command in an environment it prepares:
 # ``uv run deploy.py``, ``poetry run alembic upgrade head``, ``npx prisma
 # migrate deploy``.  Its own base token is not an interpreter, so
-# ``_check_script_file`` returns None and the wrapped command is never
-# inspected -- the invocation falls to safe-by-elimination (T0) even when the
-# wrapped script mutates.  Measured consequence: ``uv run script.py`` whose body
-# calls ``shutil.copy`` classified T0 while the identical ``python3 script.py``
-# classified T3, so the wrapper DISABLED the whole content-inspection layer.
-#
-# The fix re-dispatches the wrapped command, mirroring the two re-dispatch
-# precedents in this module (``_check_python_module_runner`` for ``python -m
-# pip``, ``_check_gaia_cli_dispatcher`` for ``bin/gaia``): rewrite the
-# invocation as the command the runner would actually execute and re-run
-# ``detect_mutative_command`` on it, so the result is IDENTICAL to the
-# unwrapped form -- including the Python AST lane's dangerous-call table, which
-# is invoked through the existing lane rather than duplicated here.
+# ``_check_script_file`` returns None and the wrapped command would never be
+# inspected. The wrapped command is rewritten as the one the runner executes
+# and re-classified by ``detect_mutative_command``, so ``uv run script.py``
+# classifies like ``python3 script.py`` (``_check_prefix_runner``).
 #
 # Each entry maps the runner to the subcommand tokens one of which must follow it
 # (``uv run``, ``npm exec``, ``bun x``, ``pnpm dlx``) or ``None`` when the
 # runner takes the wrapped command directly (``npx <pkg> <args>``).
-# ``value_flags`` are the runner's OWN options that consume the following token
-# as their value; without them the value would be mistaken for the wrapped
-# command.  This table is inherently OPEN: a runner nobody listed still bypasses
-# the lane (see the fallback rationale in ``_check_prefix_runner``).
+# This table is inherently OPEN: a runner nobody listed still bypasses the
+# lane (see the fallback rationale in ``_check_prefix_runner``).
 _PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[FrozenSet[str]]"] = {
     "uv": frozenset({"run"}),
     "uvx": None,
@@ -1841,12 +1738,9 @@ _NPX_SHELL_CALL_FLAGS: FrozenSet[str] = frozenset({"--call", "-c"})
 
 # The stdin sentinel: ``python3 -`` / ``node -`` / ``bash -`` read their PROGRAM
 # from standard input.  Unlike a script file the payload has no path to open, so
-# it cannot be inspected at classification time -- ``cat payload.py | python3``
-# is caught only because the composition layer sees the ``file_to_exec`` pipe,
-# while ``python3 - < payload.py`` reached the interpreter with no verb to match
-# and classified T0 through the FULL validator.  Treated like an unreadable
-# script file: conservative mutative.  A HEREDOC payload is excluded (the body
-# IS in the command string, and Step 3c already analyzes it).
+# it cannot be inspected at classification time and is treated like an
+# unreadable script file: conservative mutative.  A HEREDOC payload is excluded
+# (the body IS in the command string, and Step 3c already analyzes it).
 _STDIN_SCRIPT_SENTINEL = "-"
 
 # ---------------------------------------------------------------------------
@@ -1854,9 +1748,7 @@ _STDIN_SCRIPT_SENTINEL = "-"
 # ---------------------------------------------------------------------------
 # The POSIX verb scanner is blind to PowerShell: `powershell.exe -Command
 # "<script>"` collapses the payload into one opaque token, so a mutative
-# `Remove-Item` inside it is never seen (false negative), while the old `-rf`
-# flag heuristic mis-read `-NoProfile` as `-rf` and over-blocked EVERY call
-# (false positive).  This lane mirrors `_INLINE_CODE_MAP`/`_check_script_file`
+# `Remove-Item` inside it would never be seen.  This lane mirrors `_INLINE_CODE_MAP`/`_check_script_file`
 # for the Windows shell: it introspects the payload and classifies each cmdlet
 # by its Verb-Noun VERB (the part before the hyphen) against PowerShell's own
 # approved-verb taxonomy -- so a never-seen cmdlet classifies correctly by its
@@ -2065,10 +1957,10 @@ def _powershell_payload(command: str) -> "Tuple[bool, str]":
 # ---------------------------------------------------------------------------
 # Bare Windows command lane (Step 1b-win): NO powershell.exe/pwsh wrapper
 # ---------------------------------------------------------------------------
-# rc.3 hole: a PEELED `Remove-Item -Recurse -Force`, a cmd.exe `del`/`rd`, or a
+# A PEELED `Remove-Item -Recurse -Force`, a cmd.exe `del`/`rd`, or a
 # PowerShell alias (`gci`, `del`) reaches the POSIX verb scanner, which has no
-# subcommand to match, so it falls to safe-by-elimination -> T0 and mutates
-# without a gate.  The wrapped PS lane (`_check_powershell_command`) only fires
+# subcommand to match, so it would fall to safe-by-elimination -> T0.
+# The wrapped PS lane (`_check_powershell_command`) only fires
 # when base_cmd is an interpreter, so it never sees these.  This lane inverts the
 # default to conservative DEFAULT-DENY *scoped to recognized Windows tokens*: an
 # unknown verb / cmdlet / subcommand in a Windows context -> T3, mirroring the
@@ -2156,8 +2048,8 @@ _PS_ALIASES: "Dict[str, Tuple[str, str]]" = {
     "?": ("read", "Where-Object"), "where": ("read", "Where-Object"),
 }
 
-# Bare PowerShell execution aliases: recognizing them enters this lane so the
-# obfuscation scan (Step 0) can escalate them to T3 (arbitrary code execution).
+# Bare PowerShell execution aliases: recognized so step 0 of
+# `_check_windows_native_command` (obfuscation scan) escalates them to T3.
 _PS_BARE_OBFUSCATION_ALIASES: FrozenSet[str] = frozenset({"iex", "iwr", "icm"})
 
 # A PascalCase Verb-Noun token (`Remove-Item`, `Frobnicate-Thing`) is a
@@ -2179,7 +2071,7 @@ def _extract_embedded_shell_commands(code: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Layer 2: Universal dangerous API keyword patterns (category-based)
+# Layer 2b: Universal dangerous API keyword patterns (category-based)
 # ---------------------------------------------------------------------------
 _UNIVERSAL_DANGEROUS_PATTERNS: Tuple[Tuple[_re.Pattern, str, str], ...] = (
     # Category: Process Execution
@@ -2232,18 +2124,13 @@ _UNIVERSAL_DANGEROUS_PATTERNS: Tuple[Tuple[_re.Pattern, str, str], ...] = (
 # ---------------------------------------------------------------------------
 # Direct filesystem mutation in lexed source (script-file "code" lane)
 # ---------------------------------------------------------------------------
-# The lexer lane used to run ONLY the exec-sink detector, on the premise that a
-# real mutation in a source language always reaches the shell through an exec
-# sink.  That premise is false for the filesystem API: ``fs.rmSync(p, {recursive:
-# true})`` deletes without spawning anything, so ``node -e "require('fs').
-# rmSync(...)"`` classified T3 (the inline path runs the universal pattern set)
-# while the SAME call inside ``node script.js`` classified T0.  These patterns
-# close that divergence for the calls that mutate directly.
+# A mutation in a source language does not always reach the shell through an
+# exec sink: ``fs.rmSync(p, {recursive: true})`` deletes without spawning
+# anything. These patterns classify such direct calls in a script file the way
+# the inline path's universal pattern set does for ``node -e``.
 #
-# They are run on the ``verb_view`` projection -- comments blanked and string
-# CONTENTS blanked -- which is what makes them safe to add: the false positives
-# the exec-sink-only design avoided came from matching text inside a comment or
-# a string literal, and that text no longer exists in this view.
+# They run on the ``verb_view`` projection -- comments blanked and string
+# CONTENTS blanked -- so text inside a comment or a string literal cannot match.
 #
 # Two deliberate exclusions keep the lane consistent with how the shell lane
 # treats the same effects: directory CREATION (``fs.mkdirSync``) is omitted
@@ -2345,23 +2232,19 @@ def _scan_direct_mutation(code: str, language: str) -> "Optional[Tuple[str, str]
 # Exec-sink string-argument extraction (SHARED: inline code path + script-file
 # code lane)
 # ---------------------------------------------------------------------------
-# ``_scan_exec_sink_string_args`` is the single detector both the inline
-# ``-c``/``-e`` path (``_check_inline_code``) and the script-file "code" lane
-# (``_classify_script_content_by_regex``) call, so exec-sink detection cannot
-# diverge between them.
+# ``_scan_exec_sink_string_args`` is the single detector the inline ``-c``/``-e``
+# path (``_check_inline_code``), the lexer lane (``_classify_source_with_lexer``)
+# and the regex lane (``_classify_script_content_by_regex``) all call, so
+# exec-sink detection cannot diverge between them.
 #
-# The problem it closes: a command handed to a subprocess sink as a STRING
-# LITERAL -- ``execSync("kubectl delete deployment foo")`` -- is invisible to
-# the verb scanner because the quotes make the whole command a single token.
-# The inline path caught the sink CALL via ``_UNIVERSAL_DANGEROUS_PATTERNS``,
-# but the script-file lane never ran those patterns, so ``node deploy.js`` with
-# an ``execSync(...)`` mutation slipped through as READ_ONLY.
+# A command handed to a subprocess sink as a STRING LITERAL --
+# ``execSync("kubectl delete deployment foo")`` -- is invisible to the verb
+# scanner because the quotes make the whole command a single token.
 #
-# False-positive mitigation (required): this is the PROCESS_EXECUTION subset of
-# the universal patterns -- ONLY the call forms that take a command string --
-# NOT the full pattern set (which would flag every legitimate fs.writeFile /
-# fetch / URL literal in a real source file).  Escalation is gated on the
-# EXTRACTED INNER command itself classifying mutative/blocked, so a benign
+# Only the PROCESS_EXECUTION call forms that take a command string are matched,
+# not the full universal pattern set (which would flag every legitimate
+# fs.writeFile / fetch / URL literal).  Escalation is gated on the EXTRACTED
+# INNER command itself classifying mutative/blocked, so a benign
 # ``execSync("ls")`` is not escalated.
 #
 # ``exec``/``system`` are intentionally generic (they match ruby/perl/php
@@ -2424,9 +2307,9 @@ def _scan_exec_sink_string_args(
 ) -> "Optional[MutativeResult]":
     """Extract shell commands handed to exec sinks and re-classify them.
 
-    Shared by ``_check_inline_code`` (inline ``-c``/``-e`` payloads) and
-    ``_classify_script_content_by_regex`` (``node deploy.js`` script files) so
-    exec-sink detection cannot diverge between the two lanes.
+    Shared by ``_check_inline_code`` (inline ``-c``/``-e`` payloads),
+    ``_classify_source_with_lexer`` and ``_classify_script_content_by_regex``
+    (script files) so exec-sink detection cannot diverge between the lanes.
 
     For each exec-sink call whose first argument is a string literal
     (``execSync("...")``, ``system("...")``, ``spawn("...")``, ...) and for each
@@ -2439,17 +2322,14 @@ def _scan_exec_sink_string_args(
     ``shell_backticks`` records whether a backtick delimits SHELL EXECUTION
     (ruby/perl/php, and shell inline payloads -- the default) or a STRING /
     TEMPLATE LITERAL (JavaScript).  When False, the backtick and ``%x{}``
-    bodies are NOT treated as commands -- a JS template literal such as
-    ```// ... npm install ...``` is not a shell invocation and must
-    not be re-classified, which was a false-positive source.
+    bodies are NOT treated as commands.
 
-    ``cwd`` is forwarded to the inner ``detect_mutative_command`` re-
-    classification: an exec-sink string extracted from a script/npm-run body
+    ``cwd`` is forwarded to the inner ``detect_mutative_command``
+    re-classification: an exec-sink string extracted from a script/npm-run body
     (``execSync('node engine/build-data.mjs')``) may itself be a RELATIVE
-    script invocation, and that relative path resolves against the directory
-    the OUTER script/body was read from, not the hook's own cwd.  ``None``
-    (the default) keeps the previous, hook-cwd-only behavior for the inline
-    ``-c``/``-e`` caller, which has no surrounding script file to anchor to.
+    script invocation, and that path resolves against the directory the OUTER
+    script/body was read from.  ``None`` falls back to the hook's own cwd, for
+    the inline ``-c``/``-e`` caller that has no script file to anchor to.
     """
     argv_result = _scan_exec_sink_argv(code, family, cwd=cwd, _depth=_depth)
     if argv_result is not None:
@@ -2560,7 +2440,7 @@ _PRINT_ONLY_STATEMENT_RE = _re.compile(
 # Command Aliases (single-token commands that map to a category)
 # ============================================================================
 
-# All command aliases are MUTATIVE (approvable via nonce).
+# All command aliases are MUTATIVE (approvable with the user's consent).
 # The truly destructive patterns (rm -rf /, dd of=/dev/sda, mkfs, fdisk) are
 # permanently blocked by blocked_commands.py before the verb detector runs.
 COMMAND_ALIASES: Dict[str, str] = {
@@ -2593,9 +2473,9 @@ COMMAND_ALIASES: Dict[str, str] = {
 # verb scanner already classifies bare `sed` as safe by elimination.
 #
 # These commands are read-only by design at the syscall level: they open files
-# for reading and write to stdout. Any flag combination that would mutate state
-# (e.g., `find -delete`) is caught by the dangerous-flags scanner via the
-# generic CLI families that use those flags, or by `blocked_commands.py`.
+# for reading and write to stdout. The flag that mutates state, `find -delete`,
+# is checked explicitly inside the fast path (_FIND_MUTATIVE_FLAGS), and `find
+# -exec` payloads in Step 1a-exec, ahead of it.
 
 READ_ONLY_BASE_CMDS: FrozenSet[str] = frozenset({
     "grep", "egrep", "fgrep", "rg", "ag", "ack",
@@ -2726,40 +2606,20 @@ def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
 # ============================================================================
 # tee write discriminator (stands aside unless the destination is sensitive)
 # ============================================================================
-# `tee` writes stdin verbatim onto every file argument it is given, and carries
-# no verb in MUTATIVE_VERBS -- it falls through every step of detection and
-# classifies READ_ONLY by elimination regardless of what it targets. So a
-# direct write onto a privileged OS directory or onto Gaia's own live hooks
-# tree needs a decision of its own.
+# `tee` writes stdin verbatim onto every file argument and carries no verb in
+# MUTATIVE_VERBS, so it classifies READ_ONLY by elimination whatever it
+# targets. Its ARGUMENT decides, not its name, so it is not a COMMAND_ALIASES
+# entry: `cmd | tee` with no file copies stdin to stdout and writes nothing.
 #
-# It cannot be that decision's home in COMMAND_ALIASES. That table classifies by
-# TOOL NAME, and `tee` is neither mutative nor harmless by its name -- its
-# ARGUMENT decides. Anchoring the name and subtracting the safe cases back out
-# inverts the default: with no file argument at all, there is nothing to subtract
-# and the command stays gated. But an absent file argument is not a write that
-# could not be analyzed; it is the whole of the READ idiom. `cmd | tee` copies
-# stdin to stdout and writes nothing, and because the validator splits a pipeline
-# on its operators and classifies each component, the bare `tee` component denied
-# the entire pipeline -- charging consent for looking at what flows through it.
+# Like `git tag` and `git config`, this discriminator STANDS ASIDE by default
+# and only ever ADDS a verdict: a form it does not recognize as a sensitive
+# write returns None and keeps its classification. A target is sensitive when
+# it resolves onto:
 #
-# `git tag` and `git config` had the identical shape (one spelling, two modes,
-# separated by arguments rather than by name) and took the identical answer: a
-# discriminator that STANDS ASIDE by default and only ever ADDS a verdict. Every
-# form it does not recognize as a sensitive write returns None and keeps the
-# classification it already had, so a mistake here cannot start charging for a
-# read. A target is sensitive when it resolves onto:
-#
-#   * a privileged OS directory (MKDIR_SENSITIVE_PATH_PREFIXES -- the same
-#     set mkdir already gates, minus scratch space by the same reasoning), or
-#   * Gaia's own live hooks tree (_gaia_hooks_root) -- a direct write onto the
-#     security-enforcement code itself is sensitive on every machine Gaia
-#     runs on, regardless of whether that tree happens to sit under one of
-#     the fixed OS prefixes; docs (``.md``) are exempt because they do not
-#     execute, mirroring the same carve-out in protected_path_guard.py for
-#     the installed ``.claude/hooks`` tree -- this is that guard's
-#     SOURCE-tree sibling, reached through the tier classifier instead of a
-#     categorical block, because a source checkout is not `.claude/`, or
-#
+#   * a privileged OS directory (MKDIR_SENSITIVE_PATH_PREFIXES), or
+#   * Gaia's own live hooks tree (_gaia_hooks_root), resolved live because it
+#     sits at a different path per layout; docs (``.md``) are exempt because
+#     they do not execute, as in protected_path_guard.py, or
 #   * a path under $HOME that is sensitive by its CONTENTS rather than by its
 #     location (is_account_sensitive_path) -- `~/.ssh`, the shell rc files,
 #     the credential stores.
@@ -2844,7 +2704,7 @@ def _check_iam_policy_binding(
     scan cannot deliver that: `add-iam-policy-binding` splits onto `add`, absent
     from MUTATIVE_VERBS so `git add` stays free, while
     `remove-iam-policy-binding` splits onto `remove` and gates. The split also
-    stops at semantic_index <= 2, so a deeper path reaches neither.
+    stops at hyphen_depth (2, or 3 for gcloud/aws/az), so a deeper path reaches neither.
 
     By form rather than one anchor per surface because the surfaces are
     open-ended: every gcloud group owning a resource grows the same pair, so an
@@ -2968,47 +2828,31 @@ def _check_tee_write(
 # permanently blocked by the `rm_critical` floor in blocked_commands.py, which
 # runs BEFORE this detector (bash_validator.py phase 3a).
 #
-# Narrowly-scoped exception (Option A): `rm` is downgraded to T0 (no approval)
-# ONLY when BOTH conditions hold -- EVERY target path resolves strictly inside
-# the Gaia scratch directory (`~/.gaia/scratch`, or the equivalent under a
-# GAIA_DATA_DIR override), AND nothing the command reaches carries the evidence
-# of a durable store.  The floor cooperates via a matching, lenient
-# scratch-confinement check in blocked_commands.py so scratch operations reach
-# this detector instead of being swallowed by the catastrophic `~` patterns.
+# Narrowly-scoped exception: `rm` is downgraded to T0 (no approval) ONLY when
+# BOTH conditions hold -- EVERY target resolves inside a scratch entry the
+# calling agent owns (`_rm_scratch_confined_targets`, under `~/.gaia/scratch` or
+# its GAIA_DATA_DIR equivalent), AND nothing the command reaches carries the
+# evidence of a durable store.  blocked_commands.py cooperates through a
+# lenient `_rm_confined_to_scratch` check so scratch operations reach this
+# detector instead of the catastrophic `~` patterns.
 #
-# The containment half is STRICT and fail-closed (see _rm_targets_only_scratch):
-# globs, `..` traversal, symlinks escaping scratch, or any single out-of-scratch
-# path all keep the command at T3.  `-rf` recursion is allowed only when
-# confined to scratch.
+# The containment half is STRICT and fail-closed: globs, `..` traversal,
+# symlinks escaping scratch, or any single out-of-scratch path keep the command
+# at T3.
 #
-# WHY LOCATION ALONE IS NOT THE JUDGMENT, and what the second half exists for:
-# the exemption used to reason purely from the path, so an object whose value
-# had nothing to do with where it sat became disposable by being moved there.
-# The counterexample was on disk: a 185 MB copy of the user's memory database,
-# 1358 curated rows, deleted at T0.  That mis-judgement did not merely leave the
-# deletion ungated -- it made it IMPOSSIBLE TO CONSENT TO, because the approval
-# registrar (gaia/approvals/command_set.py::_validate_commands) refuses to issue
-# a grant for anything below T3.  Classifier and registrar are the same
-# judgement, so the safer something is judged, the less it can be deliberately
-# approved.  Repairing the judgement closes both.
+# Location alone is not the judgment: an object valuable by its contents stays
+# T3 wherever it sits. COMMAND_SET registration
+# (gaia/approvals/command_set.py::validate_request_set) refuses a set holding no
+# T3 command, so a deletion judged below T3 could not be consented to either.
 #
 # THE EVIDENCE IS INTRINSIC, so nothing has to be declared: an object is treated
 # as valuable when its OWN FIRST BYTES carry a durable-store format signature
 # (_DURABLE_STORE_SIGNATURES) AND it is larger than _DURABLE_STORE_MIN_BYTES.
-# A signature survives renaming, moving and mislabelling, which an extension
-# does not; magnitude separates a store that ACCUMULATED state from one a
-# command just created.  Both axes are required, and the measurement is why:
-# the live scratch tree held 174 SQLite files, of which 172 were <= 917 KB
-# throwaway bootstraps and browser caches and 2 were the ~185 MB memory copies.
-# Signature alone would have put all 174 behind a prompt, training approval
-# without reading -- worse than no gate; magnitude alone would gate any large
-# ephemeral blob.  The SQLite change counter was measured and rejected as a
-# third axis: a copy does not inherit write history (4 vs 2).
-#
-# COST, measured on the live tree: 0.01 ms for one file, 0.03 ms for an
-# ordinary turn directory, 25.6 ms for the whole 2741-entry scratch root.  The
-# walk stats every entry but OPENS only files already big enough to matter (6
-# of 1963), which is what keeps the common case free.
+# A signature survives renaming and moving, which an extension does not;
+# magnitude separates a store that ACCUMULATED state from a small throwaway
+# database a command just created. Signature alone would put every such
+# database behind a prompt; magnitude alone would gate any large ephemeral blob.
+# The walk opens only files already big enough to matter.
 #
 # RESIDUALS, deliberately not covered: a curated store SMALLER than the
 # magnitude floor, a valuable object in a format carrying no signature (a large
@@ -3022,7 +2866,7 @@ def _gaia_scratch_root() -> "str | None":
 
     Reads the location from gaia.paths.resolver.scratch_dir() so a
     GAIA_DATA_DIR override is honoured, then canonicalises it with
-    os.path.realpath so the comparison in _rm_targets_only_scratch is done
+    os.path.realpath so the comparison in _rm_scratch_confined_targets is done
     against a symlink-resolved absolute root.
 
     Fail-closed: any failure to import the resolver or resolve the path
@@ -3447,16 +3291,14 @@ _DURABLE_STORE_HEADER_BYTES: int = max(
     len(signature) for signature, _ in _DURABLE_STORE_SIGNATURES
 )
 
-# Calibrated against the measured scratch population, an order of magnitude
-# above the largest store a command creates incidentally there (a fresh Gaia
-# bootstrap, ~917 KB) and two orders below an accumulated corpus (~185 MB).
+# Set above the size of a fresh Gaia bootstrap database (under 1 MB), which a
+# command creates incidentally in scratch.
 _DURABLE_STORE_MIN_BYTES: int = 8 * 1024 * 1024
 
 # A tree larger than this is not certified: the scan stops and the exemption is
-# declined.  Sized above the whole live scratch root (2741 entries) so ordinary
-# cleanup completes, and deliberately counted in entries rather than elapsed
-# time -- a wall-clock budget would let the same command classify differently on
-# two runs, which a security classifier cannot afford.
+# declined.  Counted in entries rather than elapsed time -- a wall-clock budget
+# would let the same command classify differently on two runs, which a security
+# classifier cannot afford.
 _SCRATCH_SCAN_ENTRY_BUDGET: int = 4096
 
 
@@ -3535,23 +3377,18 @@ def _durable_store_under_scratch_targets(
 # ============================================================================
 # git worktree -- family classifier and managed-root recycling exception
 # ============================================================================
-# The worktree verb family was never modelled here, and the resulting economy
-# was inverted: `git worktree add` carries no verb in MUTATIVE_VERBS ("add" is
-# deliberately absent, see the note in that table) so creating a worktree fell
-# through to Step 4 and classified READ_ONLY by elimination, while
-# `git worktree remove` was gated only because the generic "remove" token
-# happens to sit in MUTATIVE_VERBS.  So the one act that CONTRACTS a cleanup
-# obligation was free, and the act that DISCHARGES it cost an approval -- the
-# mechanism behind the orphaned worktrees accumulating in the user's repos.
-#
-# This lane models the family explicitly and inverts that economy:
+# `git worktree add` carries no verb in MUTATIVE_VERBS ("add" is deliberately
+# absent), and `remove` would be gated only by the generic "remove" token, so
+# the family is modelled explicitly (_check_git_worktree):
 #   add / move  -> MUTATIVE.  Creating a worktree contracts an obligation to
 #                  clean it up later; that is the act worth a signature.
 #   remove      -> MUTATIVE, EXCEPT when every target resolves strictly inside
 #                  a Gaia-managed worktrees root and no force signal is present
 #                  (see _git_worktree_recycles_only_managed_root).
-#   anything else (list, prune, lock, unlock, repair, or a subcommand added by
-#                  a future git) -> not handled here; the lane returns None and
+#   unlock      -> MUTATIVE when a target is, or may be, a worktree Gaia
+#                  retains (_check_git_worktree_unlock).
+#   anything else (list, prune, lock, repair, or a subcommand added by a
+#                  future git) -> not handled here; the lane returns None and
 #                  the pre-existing classification stands untouched.
 #
 # WHY --force is never exempt, and why that is the whole calibration: what needs
@@ -3562,11 +3399,10 @@ def _durable_store_under_scratch_targets(
 # git itself would have protected -- git's own check does the load-bearing work
 # and the tier gate sits exactly on top of the bypass.
 #
-# This is a NEW predicate over the worktree verb family, deliberately NOT a
-# reuse of _rm_targets_only_scratch: that one is specific to the `rm` verb and
-# to the scratch root, parses `rm`'s own flag grammar, and permits the root
-# itself as a target.  Sharing it would couple two unrelated exemptions and let
-# a change to either silently widen the other.
+# This predicate is deliberately NOT a reuse of _rm_scratch_confined_targets:
+# that one is specific to the `rm` verb and the scratch root and parses `rm`'s
+# own flag grammar. Sharing it would couple two unrelated exemptions and let a
+# change to either silently widen the other.
 
 _WORKTREE_GLOB_CHARS: FrozenSet[str] = frozenset("*?[]{}")
 
@@ -4387,39 +4223,21 @@ DANGEROUS_FLAGS: Dict[str, str] = {
 # An ALWAYS flag escalates a read-only verb regardless of CLI (see
 # ``_scan_always_dangerous_flags``): that is the right default for a flag that
 # destroys real state on every CLI it appears on (``--force``, ``--cascade``,
-# ``--grace-period=0``, ``--now``). ``--prune`` is not that kind of flag — its
-# effect depends entirely on WHAT is being pruned. ``git fetch --prune``
-# deletes only LOCAL remote-tracking refs whose branch no longer exists on the
-# remote: bookkeeping that mirrors reality the user has already lost, not a
-# destruction of anything they own. The same literal flag on a cluster or
-# infrastructure CLI reaches live state instead (measured: ``kubectl apply
-# --prune`` deletes resources not present in the applied set; a bare
-# read-only verb carrying ``--prune`` on ``terraform``/``terragrunt`` stays
-# gated by the unmodified ALWAYS default). Making the flag universally safe
-# would free the one case that only cleans up local bookkeeping and the ones
-# that destroy live state in the same stroke — the exact overcorrection this
-# table exists to prevent.
+# ``--grace-period=0``, ``--now``). ``--prune`` depends on WHAT is pruned:
+# ``git fetch --prune`` deletes only LOCAL remote-tracking refs, while
+# ``kubectl apply --prune`` deletes live resources, so the flag stays ALWAYS
+# in DANGEROUS_FLAGS and is narrowed here per exact (CLI, path) anchor.
 #
-# This table narrows an ALWAYS flag's reach to an exact (CLI, path) anchor,
-# reusing the SAME ``MutativeAnchor`` shape and ``_validated_anchor_table``
-# guard as ``COMMAND_PATH_MUTATIVE_UPGRADES`` — the family-scoped-by-flag
-# capability that table already expresses (built for the M2 IAM/run/init
-# anchors), applied here in the opposite direction: subtracting one flag from
-# the escalation set for one exact path, rather than adding a verdict. An
-# anchor here can only ever narrow an ALWAYS flag's reach; it never touches a
-# verb already decided MUTATIVE by an earlier step (that verdict is returned
-# long before this table is consulted), and it never exempts any OTHER
-# ALWAYS flag on the same command — ``git fetch --prune --force`` still
-# escalates on ``--force``, because the exemption is keyed to the exact flag
-# token, not to the command as a whole.
+# Same ``MutativeAnchor`` shape and ``_validated_anchor_table`` guard as
+# ``COMMAND_PATH_MUTATIVE_UPGRADES``, used in the opposite direction: an anchor
+# subtracts one flag from the escalation set. It never touches a verb already
+# decided MUTATIVE by an earlier step, and never exempts another ALWAYS flag:
+# ``git fetch --prune --force`` still escalates on ``--force``.
 COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS: Dict[str, Tuple[MutativeAnchor, ...]] = _validated_anchor_table({
     "git": (
-        # Scoped to `fetch` alone, not to `git` as a whole: `git push --prune`
-        # (deletes REMOTE branches) stays gated -- unaffected by this table
-        # anyway, since `push` is already a MUTATIVE_VERBS verb decided before
-        # Step 5 ever runs -- and `git gc --prune=<date>` carries a different
-        # token entirely (`--prune=<date>` is not the exact string `--prune`),
-        # so it was never matched by the ALWAYS scan in the first place.
+        # Scoped to `fetch`: `git push --prune` (deletes REMOTE branches) stays
+        # gated because `push` is a MUTATIVE_VERBS verb decided first, and
+        # `git gc --prune=<date>` is a different token than `--prune`.
         MutativeAnchor(path=("fetch",), flags=frozenset({"--prune"})),
     ),
     # `--force` only makes gcloud fetch a credential it already stores again.
@@ -4451,24 +4269,17 @@ def _always_flag_exemptions(base_cmd: str, semantics: "CommandSemantics") -> Fro
     return frozenset(exempted)
 
 
-# Git-specific flags that promote a normally local-safe subcommand to T3.
-# ``git reset`` and ``git reset --soft`` only adjust the index and HEAD
-# without touching the working tree, but ``git reset --hard`` discards
-# uncommitted changes and is approvable rather than blocked.  Keeping the
-# flag set centralized makes the policy auditable and lets test_blocked_*
-# pin the contract.
+# ``git reset --hard`` discards uncommitted changes and is approvable rather
+# than blocked. Nothing reads this constant: ``--hard`` is gated through
+# HARD_FLAG_IS_DESTRUCTIVE in _scan_dangerous_flags.
 GIT_HARD_RESET_FLAGS: FrozenSet[str] = frozenset({"--hard"})
 
 # CLIs where -f means --force (not --file or --format)
 #
-# `git` is included so the short-form force flag escalates the same way the
-# long-form `--force` (an ALWAYS flag in DANGEROUS_FLAGS) already does. Without
-# it, `git mv -f src existing_dst` (force-overwrite of the destination) and
-# `git checkout -f` (discard uncommitted changes) silently classified as
-# non-mutative because their subcommands live in GIT_LOCAL_SAFE_SUBCOMMANDS and
-# `git` was absent here -- the `-f` was never collected by _scan_dangerous_flags.
-# This mirrors D_FLAG_MEANS_FORCE_DELETE / M_FLAG_MEANS_FORCE_MOVE, which already
-# list `git` for `-D` / `-M`.
+# `git` is listed so `-f` escalates like the long-form `--force` (an ALWAYS flag
+# in DANGEROUS_FLAGS): `git mv -f` and `git checkout -f` live in
+# GIT_LOCAL_SAFE_SUBCOMMANDS and need `-f` collected by _scan_dangerous_flags.
+# D_FLAG_MEANS_FORCE_DELETE / M_FLAG_MEANS_FORCE_MOVE list `git` likewise.
 F_FLAG_MEANS_FORCE: FrozenSet[str] = frozenset({
     "rm", "cp", "mv", "ln", "docker", "podman",
     "kubectl", "helm", "apt-get", "brew", "git",
@@ -4562,8 +4373,8 @@ CLI_FAMILY_LOOKUP: Dict[str, str] = {
 # where the question is even meaningful (k8s/iac/cloud infra CLIs). Every
 # name CLI_FAMILY_LOOKUP tags with one of these families MUST appear in
 # either NATIVE_OUTPUT_FLAG_CLIS (opted in) or PIPE_POLICY_EXCLUDED_CLIS
-# (opted out, with a reason). test_pipe_policy_registry_completeness in
-# tests/hooks/modules/security/test_mutative_verbs.py enforces this as a
+# (opted out, with a reason). The completeness checks in
+# tests/hooks/modules/security/test_mutative_verbs.py enforce this as a
 # COMPLETENESS property, not a set-equality property: an EXCLUDED entry is a
 # deliberate, reasoned decision and must never fail the test (stern is
 # excluded on purpose -- it is designed to be piped/tailed, so including it
@@ -4643,7 +4454,7 @@ def _is_posix_short_flag_cluster(flag_chars: str) -> bool:
     is deliberate -- excluding the ubiquitous ``-NoProfile`` false positive on
     every PowerShell command is worth far more than catching the rare
     uppercase-packed ``-Rf`` form, and the ``-R``/``-r``/``-f`` single flags are
-    still caught by their exact-match handling above.
+    still caught by their exact-match handling in ``_scan_dangerous_flags``.
     """
     if not flag_chars or len(flag_chars) > _MAX_POSIX_SHORT_FLAG_CLUSTER:
         return False
@@ -4729,35 +4540,12 @@ def _scan_dangerous_flags(
         # Check for compound short flags containing dangerous combos
         # e.g., "-rfi" contains both -r and -f.
         #
-        # This heuristic MUST fire only on genuine packed POSIX short-flag
-        # bundles ("-rf", "-rfi", "-fv"), never on a long single-dash *word*
-        # flag from the .NET/PowerShell/Java family ("-NoProfile", "-Force",
-        # "-Recurse", "-Xmx").  The old rule tested only ``"r" in chars and "f"
-        # in chars`` on any >2-char single-dash token, so "-NoProfile"
-        # (P**rof**ile carries both r and f) was mis-read as "-rf" -- turning
-        # EVERY PowerShell invocation (Claude Code prepends ``-NoProfile``) into
-        # a spurious T3.  ``_is_posix_short_flag_cluster`` gates the branch so a
-        # word-flag no longer matches, while real packed bundles still do.
-        #
-        # The r+f branch used to fire unconditionally once the bundle shape
-        # matched, regardless of *cli* -- a bare-string match ("does the
-        # token contain both letters") agnostic to what those letters mean on
-        # THIS command.  ``pytest``'s own ``-r`` is its report-selection flag
-        # (``-rf`` = show extra summary for Failed tests), not "recursive",
-        # and pytest carries no "-f" force meaning either, so `pytest -rf`
-        # read exactly like `rm -rf` and paid the same T3 toll -- on the one
-        # command the project's own testing discipline requires running to
-        # verify the classifier itself (see ``security-tiers``: ad-hoc inline
-        # probes are explicitly disallowed, so pytest is the ONLY sanctioned
-        # way to check a fix here).  Scoped the same way the two single-flag
-        # branches below already are: the combo only means "recursive force"
-        # when the CLI is independently known to give BOTH letters that
-        # meaning (``rm``, ``cp``) -- membership in both context sets, not
-        # one.  A CLI known dangerous on only one of the two letters (e.g.
-        # ``kubectl``/``docker``/``git`` for ``-f``, ``chmod``/``find`` for
-        # ``-r``) is unaffected: it still escalates via the two ``elif``
-        # branches below, which each check their own single-letter context
-        # set independently of this one.
+        # Fires only on genuine packed POSIX short-flag bundles ("-rf", "-rfi",
+        # "-fv"), never on a single-dash word flag ("-NoProfile", "-Force",
+        # "-Recurse"); `_is_posix_short_flag_cluster` decides. "recursive force"
+        # needs the CLI in BOTH R_FLAG_MEANS_RECURSIVE_DELETE and
+        # F_FLAG_MEANS_FORCE, since `pytest -rf` is a report flag, not `rm -rf`;
+        # a CLI dangerous on one letter escalates through that letter's branch.
         elif len(token) > 2 and token[0] == "-" and token[1] != "-":
             flag_chars = token[1:]
             if _is_posix_short_flag_cluster(flag_chars):
@@ -4782,7 +4570,7 @@ def _scan_always_dangerous_flags(
     """Return only the ALWAYS-type dangerous flags present in ``tokens``.
 
     ALWAYS flags (``--prune``, ``--force``, ``--force-with-lease``,
-    ``--cascade``, ``--now``, ``-rf`` ...) are dangerous regardless of the CLI
+    ``--cascade``, ``--now`` ...) are dangerous regardless of the CLI
     family -- that is what distinguishes them from CONTEXT flags (``-f``,
     ``-r``, ``--delete`` ...), which are only dangerous for specific CLIs.
 
@@ -5514,22 +5302,13 @@ def _check_executor_payload(
 ) -> "Optional[MutativeResult]":
     """Classify the command an executor is handed as a string.
 
-    The validator has always unwrapped a shell payload, but it does so in an
-    earlier phase and only on the command AS WRITTEN. Detection itself never
-    unwrapped one, so the same payload reached through any re-dispatch -- a
-    command substitution body, a line inside a script file, an assignment
-    value -- was classified by its carrier and came back free by elimination.
-    Measured both ways: the bare form reported ``is_mutative=False`` with an
-    empty verb while still being gated by that earlier phase, and a script file
-    whose only mutation sat behind ``sh -c`` classified non-mutative outright.
-
-    That measurement is what decided WHERE this belongs. Unwrapping inside the
-    substitution lane would have closed only the route that was reported, and
-    the script-file reading shows the blindness is the detector's, not that
-    lane's. Reusing the validator's own unwrapper was not available: this
-    package is imported BY the validator, so the dependency only runs one way,
-    and that unwrapper produces a confirm-dialog verdict rather than a
-    classification.
+    The validator unwraps a shell payload in an earlier phase, only on the
+    command AS WRITTEN. The same payload reached through a re-dispatch (a
+    command substitution body, a line of a script file, an assignment value)
+    would be classified by its carrier, so detection unwraps it itself. The
+    validator's unwrapper cannot be reused: this package is imported BY the
+    validator, and that unwrapper produces a confirm-dialog verdict rather than
+    a classification.
 
     ESCALATE-ONLY, which is what keeps a payload lane from taxing every
     ``sh -c`` in existence: the payload's verdict is adopted only when it comes
@@ -5588,35 +5367,26 @@ def _check_command_substitutions(
 ) -> "Optional[MutativeResult]":
     """Classify what a substitution ANYWHERE in *command* would execute.
 
-    ``_classify_leading_shell_assignments`` already applies this exact standard
-    to a substitution in the value of a leading assignment: the body is a real
-    command, so it is judged by its own effect rather than by the word that
-    happens to be at position 0.  One token further right the same body was
-    judged by nothing at all -- every layer keys on the base command, and the
-    base command of ``ls $(<a cluster deletion>)`` is ``ls``, which is
-    read-only by elimination.  The permanent-deny floor and the ``.claude``
-    boundary were closed through a substitution earlier; the APPROVABLE tier,
-    which is where ordinary destruction lives, was not.  This extends the
-    assignment policy to argument position, unchanged in standard: the same
-    classifier, on the same body, reaching the same verdict.
+    A substitution body is a real command, judged by its own effect rather than
+    by the word at position 0: the base command of ``ls $(<a cluster
+    deletion>)`` is ``ls``, read-only by elimination.
+    ``_classify_leading_shell_assignments`` applies the same standard to a
+    leading assignment's value; this lane applies it to argument position.
 
     The verdict is deliberately the INNER one, so a mutation does not change
-    category by being written inside a substitution.  A body that needs consent
-    still needs exactly consent; a body on the permanent floor is not this
-    lane's to escalate -- ``blocked_commands`` and ``protected_path_guard``
-    already read the same bodies and answer categorically before this runs.
+    category by being written inside a substitution.  A body on the permanent
+    floor is not this lane's to escalate: ``blocked_commands`` and
+    ``protected_path_guard`` read the same bodies and answer categorically
+    before this runs.
 
     Args:
         command: The command as it reaches classification, AFTER the ``cd`` /
             env / release-track peels, so *cwd* is the directory the body would
-            really run in.  A body resolved against the wrong directory is not
-            a harmless imprecision: a relative script path that does not exist
-            THERE reads as unreadable and takes the conservative T3 default,
-            which is a false approval prompt on a legitimate command.
+            really run in; a relative script path resolved elsewhere reads as
+            unreadable and takes the conservative T3 default.
         cwd: The effective working directory of *command*, inherited by every
-            body -- which is what the shell does, since a substitution runs in
-            a subshell of the current directory.  A body that starts with its
-            own ``cd`` overrides it on re-entry, exactly as it would alone.
+            body as a subshell inherits it.  A body that starts with its own
+            ``cd`` overrides it on re-entry.
         _depth: Descent already spent by every lane, shared budget.
 
     Returns:
@@ -5903,10 +5673,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             confidence="high",
         )
 
-    # A variable assignment changes only the current shell's transient
-    # environment, but command substitutions in its value still execute.
-    # Inspect those before env-prefix peeling; otherwise
-    # ``TOKEN=$(mutative-command) read-only-command`` loses the mutation.
+    # Git pointed at code via config, and a program run under a code-injecting
+    # variable, are judged before any peel discards the assignment.
     git_config_result = _check_git_code_config(command)
     if git_config_result is not None:
         return git_config_result
@@ -5916,6 +5684,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if environment_result is not None:
         return environment_result
 
+    # A substitution in an assignment's value executes: judge it before the
+    # env-prefix peel, or ``TOKEN=$(mutative) read-only-command`` loses it.
     assignment_result = _classify_leading_shell_assignments(
         command, cwd=cwd, _depth=_depth,
     )
@@ -6120,10 +5890,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             # No path arguments or sensitive path detected -> fall through to T3.
 
         # rm scratch-directory override: classify as T0 only when every target
-        # is confined to scratch AND nothing it reaches carries durable-store
-        # evidence.  Location alone is not the judgement -- an object valuable
-        # by its contents stays T3 wherever it sits, which is also what makes
-        # its deletion consentable at all.  The catastrophic floor (rm -rf /,
+        # is confined to a scratch entry the caller owns AND nothing it reaches
+        # carries durable-store evidence.  The catastrophic floor (rm -rf /,
         # /*, ~) still runs first in blocked_commands.py, which defers to this
         # detector only for scratch-confined rm commands.
         if base_cmd in ("rm", "rmdir"):
@@ -6282,18 +6050,13 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     reason=cap.reason,
                 )
 
-    # --- Step 1c-py: Python ``-m <pkg-mgr>`` re-dispatch (Brief 91, AC-7) ---
-    # ``python3 -m pip install x`` is the same operation as ``pip install x``.
-    # Recognize the ``<python> -m <package-manager> <args...>`` shape and re-run
-    # detection on the rewritten ``<package-manager> <args...>`` command so it
-    # classifies IDENTICALLY to the direct CLI form (install/uninstall -> T3,
-    # list/download -> read-only).  Returns None when the command is not a
-    # package-manager module invocation, so detection continues unchanged --
-    # ``python3 -m pytest`` and ``python3 -m http.server`` are NOT rerouted.
+    # --- Step 1c-load: code the interpreter's own flags and config load ---
     load_result = _check_interpreter_loads(base_cmd, semantics, cwd, _depth)
     if load_result is not None:
         return load_result
 
+    # --- Step 1c-py: ``python -m <module>`` re-dispatched as that module's CLI ---
+    # Only a mutative verdict is adopted for a non-package-manager module.
     py_module_result = _check_python_module_runner(base_cmd, semantics)
     if py_module_result is not None:
         return py_module_result
@@ -6365,20 +6128,12 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         )
 
     # --- Step 3: Simulation flag override ---
-    # Deliberately AFTER the content-inspection lanes (Step 1d/1e), not before
-    # them.  A simulation-shaped flag is a claim made by the invocation line;
-    # it is not evidence about what the invoked payload does.  Running it first
-    # made ANY script invocation carrying such a token non-mutative
-    # unconditionally, without reading the script and without checking that the
-    # script honors the flag -- measured on this repository's own
-    # ``scripts/release-prepare.mjs`` (an unconditional ``fs.writeFileSync``
-    # that never reads ``process.argv``): it classified MUTATIVE bare, and free
-    # with ``--dry-run`` appended, and free again with a simulation-set flag
-    # belonging to an unrelated CLI.  The legitimate case it was moved for -- a
-    # script whose mutation sits behind its own ``--dry-run`` guard -- is served
-    # instead inside the script-file lane by ``_script_honored_simulation_flag``,
-    # which frees the invocation only when the script's own executable text
-    # references the flag that was passed.
+    # AFTER the content-inspection lanes (Step 1d/1e) on purpose: a
+    # simulation-shaped flag is a claim made by the invocation line, not
+    # evidence about what the payload does. A script whose mutation sits behind
+    # its own ``--dry-run`` guard is freed inside the script-file lane by
+    # ``_script_honored_simulation_flag``, only when the script's executable
+    # text references the flag that was passed.
     if _simulation_flag_holds(tokens):
         # Find the first non-flag token after base_cmd for the verb
         verb, _ = _find_first_non_flag(semantics.semantic_head_tokens)
@@ -6393,18 +6148,14 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
     # --- Step 3.5: --help exemption (whitelist + positional boundary) ---
     # A --help / -h invocation on a well-known CLI only prints usage text.
-    # Three simultaneous conditions are required so the exemption does not
-    # degrade safety on command-aliases or unknown tools:
+    # Required together, so the exemption does not reach command aliases or
+    # unknown tools:
     #   (a) CLI is in the whitelist (family OR base_cmd explicitly trusted)
-    #   (b) a help flag is present in the PARSED flags (ignores strings
-    #       that happen to contain "--help" inside a path or argument value)
-    #   (c) the command invocation is simple (<=2 non-flag positional tokens):
-    #       "gaia update --help" (1), "gaia approvals clean --help" (2) OK;
-    #       "kubectl delete pod mypod --help" (3) stays T3 because the CLI
-    #       may process the mutative args before honoring --help.
-    # Root cause: ghost pendings P-738355ab and P-0b06738b were created by
-    # `gaia update --help` and `gaia approvals clean --help` being
-    # classified as MUTATIVE; this exemption prevents recurrence.
+    #   (b) the program's own argv carries a help flag (_program_asked_for_help)
+    #   (c) not on a CLI_MUTATIVE_PATH_PREFIXES path, and either <=2 non-flag
+    #       positionals ("gaia approvals clean --help" is free, "kubectl delete
+    #       pod mypod --help" stays T3: the CLI may process the mutative args
+    #       first) or base_cmd in HELP_ANY_POSITION_BASE_CMDS.
     if (
         base_cmd in HELP_IDEMPOTENT_BASE_CMDS
         or family in HELP_IDEMPOTENT_FAMILIES
@@ -6616,7 +6367,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         return iam_binding_result
 
     # --- Step 3e.5: Command-path mutative UPGRADE (anchored) ---
-    # The symmetric opposite of the downgrade exception in Step 3e: anchor an
+    # The symmetric opposite of the downgrade exception in Step 3e.6: anchor an
     # exact command path to MUTATIVE when it carries no verb in MUTATIVE_VERBS
     # and would otherwise reach Step 4 and be READ_ONLY "by elimination".
     # Position is load-bearing in both directions: AFTER the simulation-flag
@@ -6651,7 +6402,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if shape_result is not None:
         return shape_result
 
-    # --- Step 3e: Command+subcommand tier exception (anchored) ---
+    # --- Step 3e.6: Command+subcommand tier exception (anchored) ---
     # Some project-CLI subcommand groups (e.g., `gaia brief`, `gaia ac`) are
     # local-only planning bookkeeping: edit/set-status/add/remove only touch a
     # row in the local store and have no external side effects.  Treated like
@@ -7324,11 +7075,9 @@ def _check_python_module_runner(
 ) -> "Optional[MutativeResult]":
     """Re-dispatch ``python -m <pkg-mgr> ...`` as the package-manager command.
 
-    Closes the AC-7 evasion (Brief 91): ``python3 -m pip install x`` is the same
-    operation as ``pip install x``, but the verb scanner sees ``python3`` as the
-    base command and the module name (``pip``) gets absorbed into flag_tokens as
-    the value of ``-m`` -- so the command was classified only by whatever generic
-    verb happened to follow, missing cases like ``python3 -m poetry add x``.
+    ``python3 -m pip install x`` is the same operation as ``pip install x``,
+    but the verb scanner sees ``python3`` as the base command and the module
+    name gets absorbed into flag_tokens as the value of ``-m``.
 
     This helper recognizes ``<python> [interp-flags] -m <pkg-mgr> <args...>``,
     rewrites it to ``<pkg-mgr> <args...>``, and re-runs ``detect_mutative_command``
@@ -7338,9 +7087,10 @@ def _check_python_module_runner(
     ``flag_tokens[i+1]``; here we read the module directly from the raw token
     stream so the re-dispatch is robust to interpreter switches before ``-m``.
 
-    Returns ``None`` when the command is not a recognized package-manager module
-    invocation, so ordinary detection continues unchanged (``python3 -m pytest``,
-    ``python3 -m http.server``, ``python3 -m pip`` with no args).
+    Returns ``None`` when the command is not ``-m <module>``, or the module is
+    not a package manager (``_PY_MODULE_PACKAGE_MANAGERS``) and its rewrite is
+    not mutative, so ordinary detection continues unchanged
+    (``python3 -m pytest``, ``python3 -m http.server``).
     """
     if base_cmd not in _PYTHON_INTERPRETERS:
         return None
@@ -7656,24 +7406,15 @@ def _check_prefix_runner(
     signed whenever a package it needs is not a path.  A spec that pins a
     version cannot be shown to be the local copy, so it counts as fetched.
 
-    Fallback choice, stated explicitly because the reachable behavior and the
-    documented one disagree: an UNRECOGNIZED runner still falls to T0, and this
-    change narrows that class rather than closing it.  The conservative-T3
-    default documented for "an unrecognized interpreter" is real only INSIDE
-    ``_check_script_file`` -- once a token is known to be an interpreter, an
-    un-inspectable payload cannot be proven safe and the population of such
-    commands is small.  Inverting the DEFAULT instead (unknown base command, or
-    any command carrying a script-shaped positional, -> T3) would put the entire
-    long tail of ordinary tooling (``make``, ``cargo``, ``go``, ``just``,
-    ``task``, every project-local wrapper) behind a consent prompt on every
-    read-only invocation.  That trades a narrow false negative for a broad false
-    positive that breaks legitimate work on every surface and trains blind
-    approval, and it contradicts the module's stated model -- safe by
-    elimination, never by an allow-list.  So T0 remains the fallback for an
-    unrecognized runner, and the honest scope of this lane is: the named
-    shapes are inspected; an unlisted runner, a project-local wrapper script, or an
-    interpreter reached by a path whose basename is not a known interpreter name
-    still passes as T0.
+    An UNRECOGNIZED runner still falls to T0. The conservative-T3 default for
+    an un-inspectable payload is real only INSIDE ``_check_script_file``, once
+    a token is known to be an interpreter. Making every unknown base command
+    T3 would put ordinary tooling (``make``, ``cargo``, ``go``, ``just``, every
+    project-local wrapper) behind a consent prompt on read-only calls, and the
+    module's model is safe by elimination, never by an allow-list. So only the
+    named shapes are inspected; an unlisted runner, a project-local wrapper
+    script, or an interpreter reached by a path whose basename is not a known
+    interpreter name still passes as T0.
 
     Returns ``None`` when the command is not a resolvable runner invocation.
     """
@@ -7830,7 +7571,7 @@ def _check_gaia_cli_dispatcher(
     body (the ``lane == "python"`` branch in ``_check_script_file``) flags the
     subprocess call as mutative, so EVERY ``python3 <path>/bin/gaia <subcmd>``
     invocation would classify T3 -- including read-only subcommands (``doctor``,
-    ``release check``, ``--dry-run`` flows). The real effect is determined
+    ``--dry-run`` flows). The real effect is determined
     entirely by the SUBCOMMAND, exactly as the installed launcher form
     ``gaia <subcmd>`` is classified. So when the script is recognized as the gaia
     dispatcher (basename ``gaia`` + parent dir ``bin`` + a body signature, to
@@ -7839,7 +7580,7 @@ def _check_gaia_cli_dispatcher(
     re-run ``detect_mutative_command`` on it. The result is IDENTICAL to the
     launcher form: ``dev`` stays T3 via ``COMMAND_PATH_MUTATIVE_UPGRADES``,
     ``install`` stays T3 via ``MUTATIVE_VERBS``, ``--dry-run`` / ``--help`` stay
-    non-mutative, and read-only subcommands (``doctor``, ``release check``) stay T0.
+    non-mutative, and read-only subcommands such as ``doctor`` stay T0.
 
     This mirrors the ``_check_python_module_runner`` re-dispatch precedent and is
     narrowly scoped to the gaia dispatcher; it is NOT a general bypass of
@@ -7924,8 +7665,9 @@ def _parse_cd_target(segment: str) -> "Optional[str]":
     """Return the single directory argument of a bare ``cd <dir>`` clause.
 
     Returns ``None`` when *segment* is not a plain ``cd`` to exactly one
-    positional directory (``cd`` with no arg, ``cd -``, or ``cd`` with flags /
-    multiple args are not peeled).  The returned token preserves ORIGINAL case
+    positional directory (``cd`` with no arg, or with flags / multiple args, is
+    not peeled).  ``cd -`` and a bare ``popd`` return ``"-"``, which
+    ``_resolve_dir_against_cwd`` turns into UNKNOWN_CWD.  The returned token preserves ORIGINAL case
     -- ``analyze_command`` lowercases ``non_flag_tokens``, so the raw
     ``semantics.tokens`` slice is used instead, which matters on case-sensitive
     filesystems.
@@ -8046,7 +7788,7 @@ class _WrapperGrammar:
 
 # Wrappers that run the command after them with the same effect it has alone.
 # ONE table feeds both the permanent-block floor and the T3 detector (through
-# _peel_leading_command_wrappers), so a wrapper recognised by one and not the
+# _peel_wrapper_readings), so a wrapper recognised by one and not the
 # other cannot reopen a floor command the other still blocks.
 _COMMAND_WRAPPERS: Dict[str, _WrapperGrammar] = {
     "env": _WrapperGrammar(
@@ -8285,9 +8027,10 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
     Returns ``(remainder, peeled)``, the remainder's head respelled by
     ``_name_program_head``. The wrapped command runs with the effect
     it has alone, but the token-0 scans land on the wrapper or the assignment
-    and never see its verb. The block floor and the T3 detector both call this
-    one function (DP1), so ``sudo``/``timeout``/``nice`` in front of a floor
-    command cannot leave it at consent, nor a T3 command free.
+    and never see its verb. This is the first reading of ``_peel_wrapper_readings``,
+    which the block floor and the T3 detector both use, so ``sudo``/``timeout``/
+    ``nice`` in front of a floor command cannot leave it at consent, nor a T3
+    command free.
 
     The assignment regex is anchored at the scan cursor, which only ever sits
     at the command start or just past a consumed wrapper or assignment, so a
@@ -8579,58 +8322,39 @@ def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
 
     * the anchored upgrade (Step 3e.5) matches an anchor path as a PREFIX of
       ``non_flag_tokens``, so every declared path misses by one; and
-    * the Step 4 verb scan hyphen-splits a compound subcommand only while
-      ``semantic_index <= 2``, so the shift carries
+    * the Step 4 verb scan hyphen-splits a compound subcommand only within
+      ``hyphen_depth`` (2, or ``GROUP_PATH_HYPHEN_DEPTH`` for group-path CLIs
+      such as gcloud), so the shift carries
       ``remove-iam-policy-binding`` past the window where it would reach
       ``remove``.
 
-    Normalizing here -- once, above both -- is what makes one edit serve them.
-    Declaring the tracked forms twice in the anchor table would double that
-    table today and double the omissions in it tomorrow, and would still leave
-    the verb scan shifted, since the verb scan reads no table at all.
+    Normalizing here, once, serves both without declaring the tracked forms
+    twice in the anchor table.
 
-    Scoped by CLI, and to ONE position within it. ``alpha`` and ``beta`` are
-    ordinary words -- a bucket, a branch, a make target -- so this must not
-    reach a command where they are an argument or a resource name. Two
-    conditions together keep it to the track slot:
+    Scoped by CLI and to ONE position: ``alpha`` and ``beta`` are ordinary words
+    elsewhere (a bucket, a branch, a make target).
 
-    * ``base_cmd`` declares a track set in ``RELEASE_TRACK_PREFIXES``. Every
-      other CLI is returned untouched, so ``make alpha`` and ``git checkout
-      beta`` never enter this path at all; and
-    * the word is the FIRST non-flag token, agreed on by two views -- the raw
-      token walk here and ``analyze_command``'s own ``non_flag_tokens``. The
-      agreement matters where the two can disagree: ``analyze_command`` absorbs
-      the token after a single-letter short flag as that flag's value, so the
-      raw walk can see a word at the head that the semantic view has already
-      spent on a flag. Peeling on the raw view alone would then shift a
-      DIFFERENT token into the flag's mouth and could break an anchor that was
-      matching. Requiring both views to name the same word confines this to the
-      case where removing it is a pure shift.
+    * ``base_cmd`` must declare a track set in ``RELEASE_TRACK_PREFIXES``; every
+      other CLI is returned untouched; and
+    * the word must be the FIRST non-flag token in both the raw token walk and
+      ``analyze_command``'s ``non_flag_tokens``. ``analyze_command`` absorbs the
+      token after an undeclared single-letter short flag as its value, so the
+      raw walk could otherwise see a word the semantic view spent on a flag and
+      shift a different token into that flag's slot. ``gcloud``'s ``-q`` is
+      declared valueless in ``BOOLEAN_SHORT_FLAGS``, so ``gcloud -q alpha ...``
+      peels.
 
-      ``gcloud -q alpha ...`` used to be that disagreement and no longer is:
-      ``BOOLEAN_SHORT_FLAGS`` declares gcloud's ``-q`` valueless, so ``alpha``
-      stays at the head in both views and the form peels -- which is what makes
-      it classify T3, where stacking the two tricks had put it at T0. The guard
-      still stands for every single-letter flag NOT declared valueless, which is
-      every flag that really does take a value.
+    Leading flags are stepped over because the track can follow a global flag
+    (``gcloud --project=x alpha ...``).
 
-    Leading flags are stepped over rather than treated as a stop, because the
-    track can legally follow a global flag (``gcloud --project=x alpha ...``);
-    stopping at the first flag would leave the same bypass one word longer.
+    The rebuilt string is a CLASSIFICATION artifact only: it never reaches an
+    approval signature (``approval_scopes.build_approval_signature`` reads the
+    command as written), so ``gcloud alpha X`` and ``gcloud X`` stay distinct
+    grants.
 
-    The rebuilt string is a CLASSIFICATION artifact only. Nothing executes it,
-    and it never reaches an approval signature -- those are built by
-    ``approval_scopes.build_approval_signature`` from the command as the user
-    wrote it, so ``gcloud alpha X`` and ``gcloud X`` stay two distinct grants.
-    Normalizing inside ``analyze_command`` instead would have collapsed them
-    into one, letting a grant minted for the plain form authorize the tracked
-    one.
-
-    Direction of error, when the guards above still let an argument through:
-    removing a token can only move later tokens TOWARD the head, and neither
-    track word appears in any verb table or at the head of any anchor path, so
-    no match can be lost -- only gained. A misfire costs a spurious approval
-    prompt; it cannot open a gate.
+    Neither track word appears in any verb table or at the head of an anchor
+    path, so removing a token can only gain a match; a misfire costs a spurious
+    prompt and cannot open a gate.
     """
     semantics = analyze_command(command)
     tracks = RELEASE_TRACK_PREFIXES.get(semantics.base_cmd)
@@ -8989,9 +8713,9 @@ def _check_windows_native_command(
 ) -> "Optional[MutativeResult]":
     """Classify a BARE Windows command that has no powershell/pwsh wrapper.
 
-    Closes the rc.3 hole where a peeled ``Remove-Item -Recurse -Force``, a
-    cmd.exe ``del``/``rd``, or a PowerShell alias fell to safe-by-elimination
-    (T0) under the POSIX verb scanner.  SCOPED default-deny: fires ONLY for
+    A peeled ``Remove-Item -Recurse -Force``, a cmd.exe ``del``/``rd``, or a
+    PowerShell alias would fall to safe-by-elimination (T0) under the POSIX
+    verb scanner.  SCOPED default-deny: fires ONLY for
     recognized Windows tokens and returns ``None`` for everything else, so bash
     / POSIX classification is untouched.  Recognition order:
 
@@ -9151,12 +8875,9 @@ def _check_stdin_script_payload(
 
     The stdin sentinel makes the interpreter execute a program that has no path
     to open, so its content cannot be inspected the way a script file's is.
-    That is the same epistemic position as the ``script-file-unreadable``
-    default -- an executable payload we cannot verify -- and it gets the same
-    answer: mutative, requiring consent.  It also removes a spelling asymmetry,
-    since ``cat payload.py | python3`` is already T3 via the composition layer's
-    ``file_to_exec`` rule while ``python3 - < payload.py`` passed the full
-    validator as T0.
+    Like ``script-file-unreadable`` it is mutative, requiring consent, which
+    also matches ``cat payload.py | python3`` (T3 via the composition layer's
+    ``file_to_exec`` rule).
 
     Three guards keep it off the inspectable paths: a HEREDOC payload is left to
     Step 3c (the body is in the command string and IS analyzed), an inline-code
@@ -9764,12 +9485,11 @@ def _check_script_file(
 ) -> "Optional[MutativeResult]":
     """Classify ``<interpreter> <file>`` / ``./script`` by the file's content.
 
-    Closes the file-argument evasion: the verb scanner only sees the filename,
-    so a script that deletes files or calls the network would otherwise pass as
-    safe by elimination.  Classification is by REAL invocation, mirroring the
-    inline ``-c`` path -- an analytic Python script with no mutative calls and a
-    read-only shell script both stay non-mutative, so the existing
-    overbroad-classification complaint is not reintroduced.
+    The verb scanner only sees the filename, so a script that deletes files or
+    calls the network would otherwise pass as safe by elimination.
+    Classification is by REAL invocation, as in the inline ``-c`` path: a
+    Python script with no mutative calls and a read-only shell script stay
+    non-mutative.
 
     ``_depth`` is the current body-descent depth.  At ``_MAX_SCRIPT_RECURSION_
     DEPTH`` the script body is NOT opened and the invocation is retained rather
@@ -9936,14 +9656,12 @@ def _check_script_file(
             reason=f"Python script '{script_path}' has no mutative invocation (AST analysis)",
         )
 
-    # JavaScript family (node / .js / .mjs / .cjs): lex the source so comments
-    # (``//``, ``/* */``) and string / template-literal CONTENTS are removed
-    # before any verb scan -- a verb that lives only inside a comment or a
-    # string can no longer collide (the false-positive class this closes).
-    # A REAL mutation reaches the shell through an exec sink whose argument is
-    # a string literal (``execSync("kubectl delete ...")``); that string is
-    # preserved in the exec view and still re-classified, so detection is not
-    # weakened.  Other languages keep the existing regex lane below.
+    # Languages with a lexer spec (JS family, ruby, perl, php): lex the source
+    # so comments and string / template-literal CONTENTS are removed before any
+    # verb scan -- a verb that lives only inside a comment or a string cannot
+    # collide. A shell mutation reaches an exec sink whose string argument is
+    # preserved in the exec view and re-classified. Languages with no spec
+    # (lua, R) take the regex lane below.
     if lane == "code" and _spec_for_script is not None:
         spec = _spec_for_script(base_cmd, script_path)
         if spec is not None:
@@ -10025,7 +9743,7 @@ def _classify_source_with_lexer(
     cwd: "Optional[str]" = None, _depth: int = 0,
     stripped=None, screen_blocked: bool = True,
 ) -> MutativeResult:
-    """Classify lexed non-shell source (currently the JS family) by real effect.
+    """Classify lexed non-shell source (the JS family, ruby, perl, php) by real effect.
 
     Chain of detectors, each run on the projection of the source that makes it
     sound (see ``source_lexer``):
@@ -10037,36 +9755,21 @@ def _classify_source_with_lexer(
        matches only survives blanking if it is executable code, which JS is not.
     2. ``_scan_direct_mutation`` on the ``verb_view``: the filesystem API mutates
        WITHOUT reaching the shell (``fs.rmSync(p, {recursive: true})`` spawns
-       nothing), so an exec-sink-only lane classified it T0 while the identical
-       call under ``node -e`` classified T3.  Running these patterns on the
-       projection with comments and string contents blanked is what keeps them
-       from re-introducing the false positives that lane was protecting against.
+       nothing); comments and string contents are blanked in that view.
     3. ``_scan_exec_sink_string_args`` on the ``exec_view`` (string contents
        KEPT), with ``shell_backticks=spec.backticks_are_exec`` so a JS template
-       literal is not mistaken for a shell command -- this extracts the command
-       handed to a subprocess sink as a string literal and escalates ONLY when
-       that inner command is itself mutative/blocked.  This is the mutation
-       vector for effects that DO go through the shell, whose command is a
-       string the exec view preserves.  ``cwd`` is
-       forwarded to this call so a relative script/npm-run command embedded in
-       an exec-sink string (``execSync('node engine/build.mjs')``) resolves
-       against the directory THIS script was read from, not the hook's own
-       cwd -- otherwise a genuinely-mutative-by-real-effect inner command
-       falls through to the conservative ``script-file-unreadable`` /
-       ``npm-run-unresolved`` default instead of being classified by what it
-       actually does.
+       literal is not mistaken for a shell command; it escalates ONLY when the
+       command handed to a subprocess sink is itself mutative/blocked.  ``cwd``
+       is forwarded so a relative script embedded in an exec-sink string
+       (``execSync('node engine/build.mjs')``) resolves against the directory
+       THIS script was read from.
 
     Deliberately NOT run: the whole-token mutative-VERB scan
-    (``detect_mutative_command``) that the shell/regex lane uses.  In a non-shell
-    source language a bare word at "subcommand position" is a language
-    identifier, not a CLI subcommand -- ``const label = ...``, ``const set =
-    ...``, ``let close = ...`` are variable declarations, not the collaboration
-    verbs ``label``/``set``/``close``.  The scan caught NO real JS mutation
-    (those go through the fs API or an exec sink, steps 2 and 3) and produced only these
-    identifier collisions, so removing it strictly reduces false positives
-    without opening a hole.  This extends to whole tokens the same "source
-    identifier is not a verb" discipline the ``from_source_code`` camelCase
-    guard already applied to camelCase tokens.
+    (``detect_mutative_command``) of the shell/regex lane.  In source, a bare
+    word at "subcommand position" is an identifier (``const label = ...``,
+    ``let close = ...``), not a CLI verb; real mutations go through the fs API
+    or an exec sink (steps 2 and 3).  This is the whole-token counterpart of the
+    ``from_source_code`` camelCase guard.
 
     The two views share newline positions, so their line lists stay aligned.
 
@@ -10413,11 +10116,11 @@ def _classify_script_content_by_regex(
     from_source_code: bool = False, cwd: "Optional[str]" = None,
     _depth: int = 0,
 ) -> MutativeResult:
-    """Classify shell / non-Python script content via the existing regex layer.
+    """Classify shell script content, and source with no lexer spec, by regex.
 
-    No AST parser is vendored for bash, node, ruby, perl, or php (see
-    ``inline_ast_analyzer`` docstring), so content is scanned line-by-line with
-    the same two engines the inline path uses:
+    Shell scripts, ``package.json`` script bodies and lua/R files have no AST
+    parser here, so content is scanned line-by-line with the same two engines
+    the inline path uses:
 
     * ``is_blocked_command`` -- catches permanently-blocked destructive lines
       (``rm -rf /``, ``dd of=/dev/sda``, ...).
@@ -10430,17 +10133,10 @@ def _classify_script_content_by_regex(
     subcommand splitting -- a source identifier like ``execPath`` must not be
     read as the CLI verb ``exec``.  Shell-script content leaves it False.
 
-    ``cwd`` is also forwarded to the per-line ``detect_mutative_command`` call
-    below.  Without this, a line inside a script/npm-run body that itself
-    invokes a relative script (``node other.mjs``) or another ``npm run``
-    resolved against ``os.getcwd()`` instead of the directory the OUTER script
-    was actually read from -- the same false-``script-file-unreadable`` /
-    ``npm-run-unresolved`` bug the outer cwd threading fixed, just one level
-    deeper. Losing ``cwd`` here silently re-opens that bug for any nested
-    invocation.
-
-    This reuses the existing layers rather than introducing a new parser, per
-    the design constraint.
+    ``cwd`` is also forwarded to the per-line ``detect_mutative_command`` call,
+    so a line that itself invokes a relative script (``node other.mjs``) or
+    another ``npm run`` resolves against the directory the OUTER script was read
+    from, not ``os.getcwd()``.
     """
     for raw_line in content.splitlines():
         line = raw_line.strip()
@@ -10579,12 +10275,9 @@ def _extract_dir_override(
 
     npm's ``--prefix <dir>`` (or ``-C <dir>``), pnpm's ``--dir``/``-C`` and
     bun's and yarn's ``--cwd`` make the manager read ``package.json`` from
-    *dir* instead of the invoking cwd -- exactly how a wrapped dev loop runs a
-    workspace's scripts from an arbitrary launch directory (``npm run build
-    --prefix /path/to/repo``).  Without this, the option is invisible to the
-    classifier: package.json resolution silently falls back to ``os.getcwd()``
-    (the hook's own cwd, typically the monorepo root), so the script body is
-    read from the WRONG package.json (or none at all).
+    *dir* instead of the invoking cwd (``npm run build --prefix /path/to/repo``);
+    otherwise resolution would fall back to ``os.getcwd()`` and read the wrong
+    package.json.
 
     Recognizes both the space form (``--prefix /dir``) and the inline
     ``--prefix=/dir`` form, and either flag position -- before or after the
@@ -10957,7 +10650,8 @@ def _check_inline_code(
     Layer 2b: Universal regex scan for dangerous API keywords (non-Python
              interpreters).
 
-    Layer 3: Heuristic safety classification (length, sensitive paths, encoding).
+    Layer 3: Heuristic safety classification (encoding, IP addresses, length);
+             a Python payload that parses takes the length check only.
 
     Args:
         command: Full raw command string.
@@ -11072,7 +10766,7 @@ def _layer3_full_check(
     Used as the tail for non-Python interpreters -- the regex layer needs the
     suspicious-pattern fallback to keep network/encoding heuristics live.
     """
-    # 3a: Check for suspicious indicators (sensitive paths, encoding, IPs)
+    # 3a: Check for suspicious indicators (encoding, IPs)
     for pattern, label in _SUSPICIOUS_HEURISTICS:
         if pattern.search(command):
             return MutativeResult(
