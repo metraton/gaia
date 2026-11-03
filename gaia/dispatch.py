@@ -25,7 +25,7 @@ class WritingDispatchResult:
     stderr: str
 
     def as_contract(self) -> dict[str, object]:
-        """Return the literal AC-2 identity fields for a handoff or event."""
+        """Return the literal identity fields (path, branch, commit, contract_id, agent_id) for a handoff or event."""
         return {
             "path": self.path,
             "branch": self.branch,

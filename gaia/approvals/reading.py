@@ -3,7 +3,7 @@
 Every reader (the approvals CLI, the contract persister, the OpenCode plugin
 reads) names an approval's state through :func:`read`, so a row reads the same
 wherever it is shown. The states are derived from the stored rows; none of them
-is a stored value (PD1):
+is a stored value:
 
 * ``pending`` / ``orphaned`` / ``expired`` -- an undecided request. It is
   orphaned when its requesting session shows no sign of life, and expired once

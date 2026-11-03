@@ -1,101 +1,34 @@
 """
 gaia.retention.worktree_reclaim -- capture-before-recycle for Gaia's
-agentic worktrees (AC-9 of this brief: no worktree carrying work is ever
-recycled in silence).
+agentic worktrees: no worktree carrying work is ever recycled in silence.
 
-THE HARD PROPERTY: if a worktree carries uncommitted changes or commits no
-remote holds, its full diff is deposited through the producer lane opened in
-task 3 (``gaia.evidence.store.insert_evidence`` / ``gaia.evidence.fs.
-write_blob``) BEFORE the worktree is touched at all. If that deposit fails
-for any reason, ``reclaim_worktree`` returns without having mutated the
-worktree in any way -- no reset, no file removed, no ``git worktree
-remove``. A rejected capture leaves the directory and its contents exactly
-as found, which is what turns "we tried to be careful" into an actual
-guarantee rather than a promise a bug in the deposit path could silently
-break.
+If a worktree carries uncommitted changes or commits no other ref holds, its
+full diff is deposited BEFORE the worktree is touched at all, through the
+evidence lane (``gaia.evidence.store.insert_evidence`` / ``gaia.evidence.fs.
+write_blob``) or, for a turn with no brief, onto its contract row
+(``gaia.evidence.fs.write_contract_blob``). If that deposit fails for any
+reason, ``reclaim_worktree`` returns without having mutated the worktree --
+no reset, no file removed, no ``git worktree remove``.
 
-THE DESIGN TENSION, AND WHY THE FIRST ANSWER TO IT WAS WRONG: git refuses,
-on its own, to ``worktree remove`` a dirty OR locked worktree without
-``--force`` (a locked worktree needs ``--force`` regardless of cleanliness --
-every worktree ``gaia.worktree.create_agentic_worktree`` makes is born
-locked). Task 11's economy deliberately never exempts the forced form:
-destroying uncaptured work stays behind human approval, on purpose (see
-``_git_worktree_recycles_only_managed_root`` in ``hooks/modules/security/
-mutative_verbs.py``). An earlier version of this module tried to route
-around that by cleaning the worktree itself first -- ``git reset --hard``
-plus a direct filesystem removal of untracked entries -- reasoning that
-both operations were "local-safe" and so an UNFORCED ``git worktree
-remove`` would then suffice with `--force`` never invoked at all.
+Git refuses to ``worktree remove`` a dirty or locked worktree without
+``--force``, and every worktree ``gaia.worktree.create_agentic_worktree``
+makes is born locked. Destroying uncaptured work stays behind human approval
+(see ``_git_worktree_recycles_only_managed_root`` in ``hooks/modules/security/
+mutative_verbs.py``, which never exempts the forced form), and cleaning the
+worktree first does not avoid that: ``git reset --hard`` is T3 by the
+``--hard`` override in ``hooks/modules/security/flag_classifiers.py``, and
+``rm`` is free only for scratch entries (``_rm_scratch_confined_targets``).
+So this module never cleans a worktree itself.
 
-**That reasoning was checked against the actual classification suite and
-was FALSE.** ``git reset --hard`` is not local-safe by elimination: a
-dedicated flag override in ``hooks/modules/security/flag_classifiers.py``
-(``"--hard" in args`` -> MUTATIVE, "git reset --hard permanently discards
-uncommitted changes") escalates it to T3 specifically BECAUSE it discards
-uncommitted work -- the same class of destruction this module exists to
-prevent. And deleting the untracked files directly has no exemption either:
-the existing ``rm``-is-free carve-out (``_rm_targets_only_scratch``) covers
-only Gaia's scratch root, by a different verb, for a different reason; a
-worktree living under the worktrees root gets no such pass. So "capture,
-then clean" did not remove the approval demand -- it MOVED it one step
-earlier, onto the cleanup commands, while still claiming the recycle needed
-no signature. Verified directly by classifying the exact commands through
-``modules.tools.bash_validator.BashValidator`` (not by reading the tables):
-``git -C <worktree> reset --hard HEAD`` -> T3; ``rm <untracked-file-under-
-worktrees-root>`` -> T3; only the final ``git worktree remove`` (already
-clean, unforced) was ever actually free.
-
-THE REAL CHOICE, ONCE THAT WAS KNOWN: extend the FORCE-remove exemption
-itself, but ONLY when the work about to be destroyed is already captured
-AND that fact is independently verifiable -- not merely claimed. The
-obstacle: since task 3, ANY declared specialist (not just a curator) may
-insert an evidence row for its own AC. If the exemption's condition were
-"an evidence row exists for this worktree," a producer could deposit a
-trivial or empty row and buy itself a signature-free path to force-delete
-ANY worktree, live or not -- a privilege escalation strictly worse than the
-friction this module exists to remove. Binding the exemption to "a row
-exists" is therefore unsound; binding it to "the row's CONTENT matches what
-is actually about to be destroyed, independently RECOMPUTED at the moment of
-removal from the live worktree" is the only version that is not forgeable
-by construction -- an attacker can only satisfy it by having genuinely
-captured the real content, which is exactly the property wanted. That
-binding is real (a fresh ``capture_worktree_diff``-equivalent recomputation,
-hashed and compared against the durably stored blob's bytes, scoped only to
-``git worktree remove --force`` inside the managed root, fail-closed on any
-mismatch, timeout, or ambiguity).
-
-**That predicate is NOT implemented here.** Building it safely needs three
-things this task does not have the budget to do responsibly in one pass: a
-schema change to the ``evidence`` table (to carry a content fingerprint and
-the worktree's stable identity, since neither exists on the row today), a
-new predicate added to the system-wide classification hot path that every
-Bash command in Gaia passes through (a change that must be bounded against
-DoS -- an adversarial worktree could otherwise make its own force-remove
-classification arbitrarily slow), and the adversarial test coverage every
-other predicate in that file already carries before it can be trusted.
-Shipping a version of it without that hardening is exactly the outcome the
-decision below exists to avoid: an exemption that LOOKS conditional and
-is not.
-
-**THE DECISION THIS MODULE ACTS ON:** a dirty worktree is always captured.
-It is auto-recycled (unlocked and removed) ONLY when it is already clean --
-by AGENT content -- by the time this function inspects it: the existing,
-unconditionally safe task-11 exemption, which needs nothing new, EXTENDED
-by one later addition (see ``_exempt_metadata_filename``) to also ignore
-the untracked in-tree ``.gaia-worktree.json`` of an older worktree when its
-content independently re-parses as this exact worktree's own metadata.
-That extension is what makes the removal call FORCED in exactly that one
-case -- overriding only the sidecar git itself would otherwise refuse to
-see past, never an agent's own untracked work, which this function has
-already recomputed and confirmed absent before reaching that call. A
-worktree that DID carry uncommitted changes or unpushed commits is captured and then
-LEFT IN PLACE, deliberately: ``reclaim_worktree`` returns ``status:
-"captured_pending_removal"`` rather than removing it, because forcing that
-removal today would either (a) silently re-demand a signature per recycle
-(the original hole) or (b) require the not-yet-built, not-yet-hardened
-exemption above. This is the user's own fallback, chosen with eyes open: do
-not auto-discard what has work, and leave that call to a human or curator
-until a genuinely unforgeable exemption exists.
+A worktree already clean of agent content is unlocked and removed. Gaia's own
+untracked ``.gaia-worktree.json`` sidecar of an older worktree is ignored when
+its content re-parses as this worktree's own metadata
+(``_exempt_metadata_filename``), and only in that case is the removal forced.
+A worktree that carried uncommitted changes or unpushed commits is captured
+and then LEFT IN PLACE: ``reclaim_worktree`` returns ``status:
+"captured_pending_removal"``. A force-removal exempt only when the captured
+content is recomputed and matches is not implemented, so that call stays with
+a human or curator.
 
 Public API::
 
@@ -374,8 +307,7 @@ def _deposit_diff_evidence(
 ) -> dict:
     """Write *diff_text* as a blob, then insert its evidence row.
 
-    Row and blob confirm together or neither exists, exactly like the
-    producer lane opened in task 3: the blob is written first because
+    Row and blob confirm together or neither exists: the blob is written first because
     ``insert_evidence`` is where permission and row-level validation can
     still reject the write, and a rejection here deletes the just-written
     blob instead of leaving it orphaned.
@@ -423,8 +355,8 @@ def _remove_worktree(repo_path: Path, worktree_path: Path, *, exempt: Optional[s
 
     Only ever called on a worktree ``capture_worktree_diff`` has already
     found clean (see ``reclaim_worktree``) -- there is nothing of the AGENT's
-    to capture, so this stays exactly the managed-root-scoped exemption task
-    11 already covers. Unlocks first: every worktree
+    to capture, so the removal stays within the managed-root-scoped exemption
+    of ``_git_worktree_recycles_only_managed_root``. Unlocks first: every worktree
     ``gaia.worktree.create_agentic_worktree``/``create_canonical_worktree``
     creates is born locked, and ``remove`` refuses a locked worktree
     regardless of how clean it is. The unlock call's own failure (e.g. it was
@@ -441,8 +373,7 @@ def _remove_worktree(repo_path: Path, worktree_path: Path, *, exempt: Optional[s
     reached this call precisely because it recomputed that the worktree
     carries nothing beyond this one already-validated accounting file, so
     what ``--force`` overrides here is Gaia's own bookkeeping, never
-    uncaptured agent work -- the exact distinction the module docstring's
-    design-tension section requires before ``--force`` is ever safe to use.
+    uncaptured agent work.
     """
     subprocess.run(
         ["git", "-C", str(repo_path), "worktree", "unlock", str(worktree_path)],
@@ -549,31 +480,22 @@ def reclaim_worktree(
 ) -> dict:
     """Recycle a clean worktree; capture and STOP for a dirty one.
 
-    Ordering is the whole point (AC-9): if *worktree_path* carries
+    Ordering is the whole point: if *worktree_path* carries
     uncommitted changes or commits no remote holds, the full diff is
-    deposited through the evidence producer lane BEFORE anything about the
-    worktree changes. If that deposit fails for any reason, this function
-    returns immediately, having made zero changes to the worktree.
+    deposited BEFORE anything about the worktree changes. If that deposit
+    fails for any reason, this function returns immediately, having made
+    zero changes to the worktree.
 
-    What happens next depends on what was found, and this is the corrected
-    half of the design (see the module docstring for why): a worktree that
-    was ALREADY CLEAN of agent content is unlocked and removed -- the
-    existing, unconditionally safe exemption, forced only to override
-    Gaia's own untracked metadata sidecar when present and valid (see
-    ``_exempt_metadata_filename``), never anything else. A worktree that carried
-    real work is captured and then LEFT IN PLACE: destroying it would need
-    either a signature every time (defeating the point) or a not-yet-built,
-    not-yet-hardened content-bound exemption (see the module docstring).
-    Auto-discarding captured work without either is not a choice this
-    function makes silently.
+    A worktree that was ALREADY CLEAN of agent content is unlocked and
+    removed, forced only to override Gaia's own untracked metadata sidecar
+    when present and valid (see ``_exempt_metadata_filename``). A worktree
+    that carried real work is captured and then LEFT IN PLACE (see the
+    module docstring).
 
     ``workspace``/``brief_slug``/``ac_id``/``contract_id`` are all OPTIONAL
-    and are never even inspected for an ALREADY-CLEAN worktree: a worktree
-    nobody touched has nothing to attribute anything to, so demanding
-    attribution unconditionally (as the CLI used to) forced a real brief and
-    AC onto a release that never needed one. On the path that actually
-    deposits a diff, exactly one attribution is required, and either
-    satisfies it: the full ``workspace``/``brief_slug``/``ac_id`` triple
+    and are never inspected for an ALREADY-CLEAN worktree, which has nothing
+    to attribute. On the path that actually deposits a diff, exactly one
+    attribution is required, and either satisfies it: the full ``workspace``/``brief_slug``/``ac_id`` triple
     deposits through the brief/AC evidence lane exactly as before (a PLANNED
     turn, attributed to its brief); ``contract_id`` alone deposits directly
     onto that contract row instead (an AD-HOC turn -- every turn has one, no

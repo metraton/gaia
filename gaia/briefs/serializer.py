@@ -40,9 +40,9 @@ The brief markdown format (used by the interactive --editor flow) is:
     ## Out of Scope
     <body>
 
-We support a strict round-trip: parse(serialize(x)) == x for all fields
-the schema captures. We do NOT preserve verbatim YAML/markdown formatting
-because the DB is the single source of truth.
+parse(serialize(x)) == x holds for the fields parse_brief_markdown returns;
+AC and milestone states, below, are display-only. Verbatim YAML/markdown
+formatting is not preserved because the DB is the single source of truth.
 
 The parser is tolerant: it accepts known variants seen across the existing
 briefs (lists with or without trailing colon, evidence blocks with nested
@@ -269,9 +269,8 @@ def _parse_yaml_list(lines: list[str], list_indent: int) -> tuple[list[Any], int
                 block_lines.append(nxt)
                 j += 1
 
-            # If there were continuation lines, parse them at the indent of the
-            # first key continuation. Use the indent of the first non-blank
-            # block line for the inner block.
+            # The continuation block is parsed at the indent of its first
+            # non-blank, non-comment line.
             first_inner_indent = None
             for bl in block_lines:
                 if bl.strip() and not bl.lstrip().startswith("#"):
@@ -279,34 +278,15 @@ def _parse_yaml_list(lines: list[str], list_indent: int) -> tuple[list[Any], int
                     break
 
             if value == "" and first_inner_indent is not None:
-                # The first key was bare; its value lives in the indented block.
-                # Need to also accept that subsequent keys at first_inner_indent
-                # belong to the item dict.
-                # Strategy: rebuild the item by treating "key:" as bare key and
-                # parsing the block starting from there.
-                # Simpler: treat the whole item as a YAML block parsed at
-                # first_inner_indent, but we need to inject a synthetic key.
-                # Instead, parse block_lines as a YAML block and merge.
+                # A bare first key takes the whole indented block as its value.
                 inner = _parse_yaml_block("\n".join(block_lines), first_inner_indent)
-                # Decide how to merge: the bare key in item_dict needs the value
-                # from the inner block keyed under this same name? No -- the
-                # convention used in our briefs is that subsequent indented
-                # keys belong to the dict, e.g.:
-                #   - id: AC-1
-                #     description: "..."
-                #     evidence:
-                #       type: command
-                # The first `id` is always inline; the rest at the inner indent
-                # are siblings. So if `value == ""` is rare; treat it as nested.
                 if item_dict[key] is None:
-                    # Bare first key with nested value
                     item_dict[key] = inner
                 else:
                     item_dict.update(inner)
             elif first_inner_indent is not None:
                 # Subsequent keys belong to the item dict (siblings of the first)
                 inner = _parse_yaml_block("\n".join(block_lines), first_inner_indent)
-                # Merge as siblings
                 for k, v in inner.items():
                     item_dict[k] = v
 
@@ -436,13 +416,8 @@ def _split_body_sections(body: str) -> tuple[str, dict[str, str]]:
     return title, sections
 
 
-# A trailing "[status: X]" marker is display-only (see
-# `_serialize_milestones_section`): the DB is the source of truth for
-# `milestones.status` (preserved by `ac_id`/`name` match in
-# `gaia.briefs.store.upsert_brief`, changed only via `gaia milestone
-# set-status`), so a marker found while parsing is discarded here rather
-# than folded into `description` -- keeping it would corrupt the description
-# with an ever-growing bracket on every edit round-trip.
+# A trailing "[status: X]" is display-only: it is dropped on parse because
+# folding it into `description` would grow a bracket on every round-trip.
 _TRAILING_STATUS_MARKER_RE = re.compile(
     r"\s*\[status:\s*[a-zA-Z_-]+\]\s*$", re.IGNORECASE
 )
@@ -476,20 +451,10 @@ def _parse_milestones_section(text: str) -> list[dict[str, str]]:
     items = [p.strip() for p in parts if p.strip()]
 
     for idx, item in enumerate(items, start=1):
-        # Try to match **M<N>: <Name>** -- <desc>
-        #
-        # The separator group matches a RUN of one or more dash-like
-        # characters (`-`, em dash, en dash) rather than at most one: the
-        # serializer always emits a literal two-character "--" (see
-        # `_serialize_milestones_section`), and a single optional dash char
-        # left the second hyphen of that pair sitting at the front of the
-        # captured description -- corrupting it with a stray "- " on every
-        # serialize/parse cycle, compounding without bound across repeated
-        # edits. Because the run only matches CONSECUTIVE dash characters and
-        # the serializer always separates it from `desc` with a space, this
-        # cannot eat into a description that legitimately starts with its own
-        # dash(es): that leading dash sits after the separating space, not
-        # adjacent to the run.
+        # The separator is a run of dashes (`-`, em, en): the serializer emits
+        # "--", and a single optional dash left the second hyphen at the front
+        # of the description on every round-trip. A description's own leading
+        # dash follows the separating space, so the run does not reach it.
         m = re.match(r"\*\*([^*:]+)(?::\s*([^*]+))?\*\*\s*(?:[-—–]+)?\s*(.*)", item, re.DOTALL)
         if m:
             tag = m.group(1).strip() or f"M{idx}"

@@ -2,7 +2,7 @@
 
 This module is the canonical API for writing to the approvals and approval_events
 tables. All writes to approval_events MUST go through chain.insert_event() to
-preserve the hash-chain invariant (D16 deviation: hash in app layer).
+preserve the hash-chain invariant (the hash is computed in the application layer).
 
 Direct SQL inserts to approval_events from outside this module are a contract
 violation: validate_chain() will detect any row that was not written through
@@ -10,8 +10,9 @@ chain.insert_event() because its this_hash will not link correctly to the chain.
 
 Public API::
 
-    insert_requested(sealed_payload, *, agent_id, session_id, con=None)
-        -> approval_id (str, P-{uuid4} prefixed)
+    insert_requested(sealed_payload, *, agent_id, session_id, approval_id=None,
+                     con=None)
+        -> approval_id (str, P- prefixed)
 
     record_event(approval_id, event_type, *, agent_id, session_id,
                  fingerprint, payload_json, metadata_json, con=None)
@@ -19,7 +20,7 @@ Public API::
 
     record_execution_denial(approval_id, reason_code, *, host, session_id,
                             call_id, index, command_fingerprint, agent_id,
-                            detail=None)
+                            detail=None, db_path=None)
         -> None  -- append-only NOOP record of one refused execution; never
                     raises and never changes approval or grant state
 
@@ -36,7 +37,8 @@ Public API::
         -> ApprovalActivationResult -- validates the sealed request and commits
                                       approval plus executable grant together
 
-    reject(approval_id, approver_session, *, agent_id=None, con=None)
+    reject(approval_id, approver_session, *, agent_id=None, metadata_json=None,
+           con=None)
         -> None  -- convenience wrapper: pending -> rejected
 
     revoke(approval_id, revoker_session, *, agent_id=None, event_payload=None,
@@ -58,12 +60,6 @@ Public API::
         -> dict[str, str]  -- bulk decision-status lookup (id -> status), one
                               query; ids absent from the approvals table are
                               simply absent from the returned dict.
-
-TODO (Cut Point 1 — T2.2 or similar): The bash_validator classifier does not
-intercept `npm run <script>` commands whose postinstall is mutative. A hook
-that calls store.insert_requested() should detect this pattern and classify it
-as T3 before it executes. Until that gap is closed, scripts that invoke
-postinstall-mutative npm commands bypass the approval gate.
 """
 
 from __future__ import annotations
@@ -98,33 +94,19 @@ _APPROVAL_ID_PREFIX = "P-"
 # Pending-reuse window
 # ---------------------------------------------------------------------------
 #
-# PENDING_REUSE_WINDOW_MINUTES bounds how long a pending approval stays the
-# CANONICAL target for a NEW request carrying the same fingerprint. It is a
-# separate question from every other window in the system, and conflating it
-# with any of them is what produced the defect it closes:
+# PENDING_REUSE_WINDOW_MINUTES bounds how long a pending approval stays the row
+# a new request with the same fingerprint folds into (insert_requested). It is
+# neither the grant window (writer.APPROVAL_WINDOW_MINUTES, which starts at the
+# user's decision) nor DEFAULT_PENDING_TTL_MINUTES (1440, how long the sweep
+# lets an unanswered approval wait).
 #
-#   * APPROVAL_GRANT_TTL_MINUTES (5) and FILE_PATH_GRANT_TTL_MINUTES (30) bound
-#     what an APPROVED operation may still do. They start at the user's
-#     decision; this one ends there.
-#   * DEFAULT_PENDING_TTL_MINUTES (1440) is how long an UNANSWERED approval
-#     waits for a human before the sweep retires it. Reusing that bound here
-#     was the bug: "still listed for the user" and "still the row a new request
-#     folds into" are different properties. Presentation is session-owned and
-#     no code path re-homes approvals.session_id, so once the requesting
-#     session dies its pending is undecidable -- and a session-agnostic,
-#     age-blind dedup let that undecidable row capture every later request for
-#     the same effect for a full day.
+# Presentation is session-owned and nothing re-homes approvals.session_id, so a
+# pending whose session died can never be decided; an age-blind dedup let it
+# capture every later request for the same effect until the sweep.
 #
-# 30 minutes is the decision episode: the span in which a second request can
-# still plausibly be the same one the user is looking at. Shorter was rejected
-# for the reason FILE_PATH_GRANT_TTL_MINUTES records -- the retry this dedup
-# protects (Brief 71) is not the live subagent's next tool call but a
-# re-dispatch after the orchestrator closes its turn to present, and 5 minutes
-# measured too short for exactly that round trip. It deliberately matches
-# FILE_PATH_GRANT_TTL_MINUTES in magnitude without importing it: the two are
-# the same sitting seen from either side of the user's click, but one is a
-# capability window (shorter is safer) and this one is a de-duplication window
-# (shorter floods the user), so tightening one must not silently move the other.
+# Its value equals APPROVAL_WINDOW_MINUTES without importing it: that one is a
+# capability window (shorter is safer), this one a de-duplication window
+# (shorter floods the user), so tightening one must not move the other.
 PENDING_REUSE_WINDOW_MINUTES = 30
 
 
@@ -215,11 +197,8 @@ def _generate_approval_id() -> str:
     Format: P-{uuid4_hex}
     Example: P-3f2504e04f8911d39a0c0305e82c3301
 
-    Used for SINGULAR T3 approvals (the hook-block path), where the id only
-    needs to be unique and is relayed verbatim by the subagent. For the
-    plan-first COMMAND_SET path -- where the orchestrator must reproduce the id
-    from the command_set it reads in the contract, with no DB lookup -- use
-    ``derive_command_set_id()`` instead.
+    Used when ``insert_requested`` is given no id. The bash validator passes
+    ``derive_command_set_id()`` instead for a command chain's COMMAND_SET.
     """
     return f"{_APPROVAL_ID_PREFIX}{uuid.uuid4().hex}"
 
@@ -227,43 +206,29 @@ def _generate_approval_id() -> str:
 def derive_command_set_id(commands: List[str]) -> str:
     """Deterministically derive a COMMAND_SET approval_id from its command list.
 
-    The plan-first COMMAND_SET id is content-derived rather than random so that
-    BOTH the hook (at SubagentStop intake) and the orchestrator (from the
-    command_set it reads in the contract) compute the SAME id without any DB
-    lookup. This closes the cross-session miss where the orchestrator could not
-    reproduce a uuid4 minted at SubagentStop (Claude Code issue #5812: the
-    SubagentStop output never reaches the parent).
+    The id is content-derived rather than random, so anything holding the
+    command list computes the same id without a DB lookup. The bash validator
+    derives it for a command chain's COMMAND_SET before ``insert_requested``.
 
-    Format: ``P-<first 32 hex of sha256(canonical([{"command": c}, ...]))>``
+    Format: ``P-<first 32 hex of sha256(canonical({"command_set_commands": [c, ...]}))>``
 
-    Canonicalization reuses ``chain.canonical_payload`` -- the SAME machinery
-    that produces the fingerprint -- so there is exactly one canonicalization in
-    the system, not a second one. The hash is taken over the ordered list of
-    ``{"command": <str>}`` items, so the id is:
+    Canonicalization reuses ``chain.canonical_payload``, the machinery that
+    produces the fingerprint. The hash is taken over the ordered command
+    strings, so the id is:
 
       * **order-sensitive** -- a different command order yields a different id
         (the consume side matches commands positionally, so order is load-bearing);
       * **content-only** -- it depends solely on the command strings, not on
-        rationale, session, agent, or timestamp, so the two sides need only the
-        command list (which both have) to agree.
+        rationale, session, agent, or timestamp.
 
-    Idempotency consequence (acceptable, and consistent with the existing
-    fingerprint dedup in ``insert_requested``): two identical command lists map
-    to the same id. No per-attempt salt is added -- both sides could not derive
-    a salt they do not share.
+    Two identical command lists map to the same id, with no per-attempt salt.
 
     Args:
-        commands: Ordered list of command strings (the mutative/T3 commands the
-            COMMAND_SET grant will cover). Both the intake and the orchestrator
-            MUST pass the SAME post-filter list for the ids to match.
+        commands: Ordered list of command strings the COMMAND_SET grant covers.
 
     Returns:
         A ``P-{32 hex}`` approval_id deterministically derived from ``commands``.
     """
-    # Build a minimal, stable structure over the command strings ONLY. We do not
-    # fold in rationale/operation/scope because the orchestrator must reproduce
-    # the id from the command_set alone and those fields may differ between the
-    # subagent's emission and the intake's neutral defaults.
     canon = canonical_payload({"command_set_commands": list(commands)})
     digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()
     return f"{_APPROVAL_ID_PREFIX}{digest[:_COMMAND_SET_ID_HEX_LEN]}"
@@ -353,25 +318,23 @@ def insert_requested(
         session_id: Optional session identifier (CLAUDE_SESSION_ID).
         approval_id: Optional caller-supplied approval_id. When provided, it is
             used as the pending row id instead of minting a fresh P-{uuid4}.
-            This is the plan-first COMMAND_SET path: the intake derives a
-            CONTENT-derived id via ``derive_command_set_id()`` so the
-            orchestrator can reproduce it from the command_set without a DB
-            lookup. The singular T3 hook-block path leaves this None and keeps
-            the uuid4 id. The fingerprint idempotency check below runs FIRST in
-            either case, so a supplied id only takes effect when no pending row
-            with the same fingerprint already exists.
+            The bash validator passes ``derive_command_set_id()`` for a command
+            chain's COMMAND_SET; other callers leave this None. The reuse check
+            below runs first in either case, so a supplied id only takes effect
+            when no reusable pending row exists.
         con: Optional open sqlite3.Connection. When provided, the caller owns
             connection lifecycle (no commit or close). When None, a fresh
-            connection to ~/.gaia/gaia.db is opened, committed, and closed.
+            connection to the resolved gaia database is opened, committed, and
+            closed.
 
     Returns:
-        The approval_id string used for the pending row. When an existing
-        pending approval already carries the same fingerprint, that existing id
-        is returned unchanged (fingerprint idempotency -- see below).
+        The approval_id string used for the pending row. When a pending
+        approval created within PENDING_REUSE_WINDOW_MINUTES already carries
+        the same fingerprint, that id is returned unchanged and nothing is
+        written. Otherwise pendings with that fingerprint past the window are
+        expired and a new row is inserted.
     """
-    # Compute the fingerprint FIRST so we can check for an existing pending with
-    # the same byte-binding before minting anything. This is pure (no DB) so it
-    # is safe to run once outside the retry loop.
+    # Pure (no DB), so it runs once outside the retry loop.
     fp = fingerprint_payload(sealed_payload)
     canon_json = canonical_payload(sealed_payload)
 
@@ -387,32 +350,16 @@ def insert_requested(
         retry-on-locked re-runs this ENTIRE unit from scratch after a full
         rollback rather than resuming a half-written pending/event pair.
         """
-        # Fingerprint idempotency (Brief 71 byte-binding, session-agnostic):
-        # if a pending approval with this exact fingerprint already exists, reuse
-        # it instead of minting a new P-. The fingerprint is SHA-256 of the
-        # canonical sealed_payload, so an identical payload -- regardless of which
-        # session requests it -- maps to one approval. Without this, a
-        # cross-session retry of the same blocked command would mint a fresh P-
-        # on every pass, and the user would face an endless stream of duplicate
-        # approvals for the same operation. We deliberately do NOT emit a second
-        # REQUESTED event for the reused id: the append-only hash chain (D15)
-        # records each approval's REQUESTED exactly once, and a duplicate
-        # REQUESTED would break the one-REQUESTED-per-approval invariant.
+        # A pending row with this fingerprint is reused whatever session asks (the
+        # SELECT never filters on session), so a retry of a blocked command does
+        # not mint a new P- each pass. No second REQUESTED event is written for
+        # the reused id: the chain records exactly one per approval.
         #
-        # The match is bounded by PENDING_REUSE_WINDOW_MINUTES because the
-        # session-agnostic half is only half a rule: presentation is strictly
-        # session-owned and nothing re-homes approvals.session_id, so a pending
-        # whose session has died can never be decided. Unbounded, that
-        # undecidable row answered every later request for the same effect and
-        # deadlocked the operation until the 24h sweep -- observed on two hosts
-        # against a protected-path FILE_WRITE, whose sealed_payload derives
-        # entirely from the path and therefore collides on one fingerprint.
+        # The match is bounded by PENDING_REUSE_WINDOW_MINUTES (see its comment).
         #
-        # Re-checking this INSIDE the unit is also what makes _retry_on_locked
-        # safe: if a prior attempt lost the lock race it rolled back (committing
-        # nothing), so the retry's SELECT still finds no pending row and mints
-        # cleanly; and it never runs after a successful commit (success returns
-        # without retrying), so a committed row is never duplicated.
+        # Running this SELECT inside the unit keeps _retry_on_locked safe: a lost
+        # lock race rolled back, so the retry finds no row and mints cleanly, and
+        # a committed unit is never retried.
         candidates = _con.execute(
             "SELECT id, created_at FROM approvals "
             "WHERE status = 'pending' AND fingerprint = ? "
@@ -464,10 +411,7 @@ def insert_requested(
                 con=_con,
             )
 
-        # Use the caller-supplied id (plan-first COMMAND_SET: content-derived,
-        # reproducible by the orchestrator) when given, else mint a uuid4 id
-        # (singular T3 hook-block path). Minted INSIDE the unit so a retry that
-        # re-runs after rollback re-checks idempotency before minting.
+        # Minted inside the unit so a retry after rollback re-checks reuse first.
         aid = approval_id if approval_id is not None else _generate_approval_id()
 
         # Insert the parent approval row.
@@ -479,10 +423,9 @@ def insert_requested(
         )
 
         # Emit REQUESTED event via chain.insert_event() -- the ONLY
-        # authorized path to write to approval_events (D16). Holding the write
-        # lock (BEGIN IMMEDIATE) around this SELECT-then-INSERT also serializes
-        # concurrent chain writers, so prev_hash cannot be read stale by a racing
-        # writer -- the hash chain stays linear under contention.
+        # authorized path to write to approval_events. On the owned path the
+        # write lock (BEGIN IMMEDIATE) held here also keeps a racing writer from
+        # reading a stale prev_hash.
         insert_event(
             _con,
             aid,
@@ -494,24 +437,17 @@ def insert_requested(
         )
         return aid
 
-    # Caller-supplied connection: the caller owns the transaction lifecycle
-    # (no BEGIN IMMEDIATE, no commit, no close, no retry). Issuing our own
-    # BEGIN IMMEDIATE here would collide with the caller's open transaction, and
-    # a retry would re-run inside a transaction we do not control -- so the
-    # caller-owned path is left exactly as-is.
+    # Caller-supplied connection: the caller owns the transaction (no BEGIN
+    # IMMEDIATE, commit, close or retry); a BEGIN IMMEDIATE here would collide
+    # with its open transaction.
     if con is not None:
         return _unit(con)
 
-    # Owned path (con is None) -- this is the concurrent-multi-subagent failure
-    # mode from the diagnostic. Mirror gaia.store.writer.insert_agent_contract_
-    # handoff: open a fresh connection, acquire the write lock UP FRONT with
-    # BEGIN IMMEDIATE (so the SELECT-then-INSERT body cannot deadlock against a
-    # writer upgrading SHARED->RESERVED mid-unit), commit on success, roll back
-    # on any failure, and wrap the whole self-contained unit in _retry_on_locked
-    # so a transient "database is locked" retries with bounded backoff instead of
-    # failing the record. The busy_timeout on the connection handles the common
-    # contention; this covers the residual >busy_timeout stall that surfaced the
-    # "failed to persist the pending approval record" bug.
+    # Owned path: take the write lock up front with BEGIN IMMEDIATE (so the
+    # SELECT-then-INSERT cannot deadlock against a writer upgrading
+    # SHARED->RESERVED mid-unit), commit on success, roll back on any failure,
+    # and wrap the unit in _retry_on_locked so a lock stall beyond the
+    # connection's busy_timeout retries with bounded backoff.
     from gaia.store.writer import _retry_on_locked
 
     def _work() -> str:
@@ -679,7 +615,7 @@ def get_pending(
         session_id: When provided and all_sessions=False, filter by this
             session_id (current-session view).
         all_sessions: When True, return pending approvals from all sessions
-            (cross-session recovery, D9 — local machine only).
+            (cross-session recovery, local machine only).
         con: Optional open connection.
 
     Returns:
@@ -725,7 +661,7 @@ def list_pending(
     session_id: Optional[str] = None,
     con: Optional[sqlite3.Connection] = None,
 ) -> List[Dict[str, Any]]:
-    """Query pending approvals with age enrichment -- CLI-facing API for T3.1.
+    """Query pending approvals with age enrichment -- CLI-facing API.
 
     This is the primary query surface consumed by ``gaia approvals list`` and
     ``gaia approvals pending --all-sessions``. It delegates to get_pending()
@@ -733,14 +669,12 @@ def list_pending(
     can display human-readable ages without needing to recompute them.
 
     Staleness threshold: approvals older than 3600 seconds (1 hour) are marked
-    with ``stale=True`` in the returned dict. This is a cosmetic display hint for
-    the CLI -- it is deliberately NOT tied to either TTL constant (the 24h pending
-    window or the 60-min grant window); it only flags "this has been waiting a
-    while" so the list can surface aging approvals.
+    with ``stale=True`` in the returned dict. It is a display hint, tied to
+    neither DEFAULT_PENDING_TTL_MINUTES nor the grant window.
 
     Args:
         all_sessions: When True, return pending approvals from all sessions
-            (cross-session recovery, D9 -- local machine only).
+            (cross-session recovery, local machine only).
             When False (default), filter by session_id when provided.
         session_id: The current session identifier. Ignored when
             all_sessions=True.
@@ -922,7 +856,7 @@ def activate_command_set_atomically(
             "UPDATE approvals SET status='approved', decided_at=? WHERE id=?",
             (_now_iso(), approval_id),
         )
-        # The grant belongs to whoever REQUESTED it (D6), never to the session
+        # The grant belongs to whoever REQUESTED it, never to the session
         # that answered; a row sealed before requesters were recorded has none.
         result = insert_plan_command_set(
             approval_id, normalized, request_fingerprint=request_fingerprint,
@@ -1409,7 +1343,7 @@ def transition(
             auto-retirement from a user/admin revoke.
         event_payload: Optional dict for the event's payload_json and fingerprint.
         agent_id: Optional agent identifier for the event -- restores provenance
-            on auto-transitions (cleanup/expiry) that previously wrote null.
+            on auto-transitions (cleanup/expiry).
         session_id: Optional session identifier for the event.
         metadata_json: Optional free-form JSON forwarded to the event's
             metadata_json column (e.g. {"reason": "expired_ttl", ...}). Mirrors
@@ -1420,10 +1354,6 @@ def transition(
         ValueError: If the stored status does not match from_status.
         ValueError: If the approval_id does not exist.
     """
-    # Derive the event_type from the to_status transition. 'expired' has no
-    # event_type of its own (the approval_events CHECK has no EXPIRED value and
-    # the status-has-event trigger does not gate it), so its audit trail is a
-    # REVOKED event distinguished by metadata_json reason="expired_ttl".
     _STATUS_TO_EVENT: dict[str, str] = {
         "approved": "APPROVED",
         "rejected": "REJECTED",
@@ -1451,10 +1381,8 @@ def transition(
                 f"Cannot transition approval {approval_id!r}: "
                 f"expected status={from_status!r} but found {actual_status!r}"
             )
-        # Insert the event FIRST so the DB trigger bu_approvals_status_has_event
-        # (schema.sql) can verify the event exists before the status UPDATE fires.
-        # The trigger fires BEFORE UPDATE, reading the transaction-visible
-        # approval_events rows; inserting the event first satisfies the guard.
+        # The event goes first: bu_approvals_status_has_event (schema.sql) fires
+        # BEFORE the status UPDATE and looks for it among the transaction's rows.
         insert_event(
             _con,
             approval_id,
@@ -1722,8 +1650,9 @@ def get_executed_payload(
         con: Optional open connection.
 
     Returns:
-        Parsed payload dict from the most recent EXECUTED event, or None if
-        no EXECUTED event exists (i.e., approval was never executed).
+        Parsed payload dict from the most recent EXECUTED event; when there is
+        none, or it carries no payload, the approval row's sealed payload. None
+        when the chosen JSON does not parse or the approval row has no payload.
     """
     _con, owned = _get_con(con)
     try:
@@ -1735,8 +1664,7 @@ def get_executed_payload(
         )
         row = cur.fetchone()
         if row is None:
-            # Fall back to the REQUESTED event payload -- the command set
-            # is captured there and may not be re-stored at EXECUTED time.
+            # The approval row holds the sealed payload REQUESTED recorded.
             approval_row = get_by_id(approval_id, con=_con)
             if approval_row and approval_row.get("payload_json"):
                 try:
@@ -1746,7 +1674,6 @@ def get_executed_payload(
             return None
         payload_json = row[0]
         if not payload_json:
-            # No payload in EXECUTED event -- fall back to approval row.
             approval_row = get_by_id(approval_id, con=_con)
             if approval_row and approval_row.get("payload_json"):
                 try:
@@ -1787,8 +1714,7 @@ def replay_for_approval(
 ) -> List[Dict[str, Any]]:
     """Return all approval_events rows for an approval in insertion order.
 
-    Useful for replaying what happened for a given approval (audit view)
-    and for verify_fingerprint before inserting a SHOWN event.
+    The audit view of what happened to a given approval.
 
     Args:
         approval_id: The P-{uuid4} approval identifier.

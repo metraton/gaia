@@ -1,19 +1,15 @@
 """
-gaia.state.transitions -- Legal transition tables for the four state machines.
+gaia.state.transitions -- Legal transition tables for the plan, task, acceptance
+criteria and milestone lifecycles.
 
 Each table maps ``current_status -> set(allowed_next_statuses)``. Functions
 in this module raise ``ValueError`` on illegal transitions; callers are
 responsible for catching and surfacing the message.
 
-The Contract workflow transitions live in
-``hooks.modules.agents.state_tracker._LEGAL_TRANSITIONS`` and are imported
-here for symmetry; the brief lifecycle transitions live in
-``gaia.briefs.store._LEGAL_TRANSITIONS`` and are likewise imported.
-
-The plan and task lifecycle transitions are defined here directly. The
-``gaia plan`` and ``gaia task`` commands (``bin/cli/plan.py`` and
-``bin/cli/task.py``) consume these helpers when driving the ``plans`` and
-``tasks`` lifecycle.
+The contract workflow transitions live in
+``hooks.modules.agents.state_tracker`` and the brief lifecycle transitions in
+``gaia.briefs.store``; neither is imported here. ``gaia.store.writer`` calls
+the ``assert_legal_*`` helpers when it changes a plan, task, AC or milestone status.
 """
 
 from __future__ import annotations

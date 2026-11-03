@@ -7,7 +7,7 @@ text only.
 Public API:
     format_age(seconds) -> str
     print_approvals_table(rows) -> None
-    print_approval_detail(approval, events, grant=None) -> None
+    print_approval_detail(approval, events, grant=None, reading=None) -> None
     print_events_table(events) -> None
     print_history_table(rows) -> None
 """
@@ -34,7 +34,7 @@ def format_age(seconds: float) -> str:
 
 
 def _short_id(approval_id: str) -> str:
-    """Return the first 8 chars after the P- prefix for compact display."""
+    """Return the P- prefix and the first 8 chars after it, for compact display."""
     if approval_id.startswith("P-"):
         tail = approval_id[2:]
         return f"P-{tail[:8]}"
@@ -96,11 +96,7 @@ def print_approvals_table(rows: List[Dict[str, Any]]) -> None:
 
 
 def _window_note(expires_at: str) -> str:
-    """Say whether a grant's window is still open, in words a reader can act on.
-
-    A bare timestamp asks the reader to subtract; the whole reason this plane was
-    invisible is that "approved" was read as "usable".
-    """
+    """Say whether a grant's window is still open, in words a reader can act on."""
     try:
         expiry = datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
@@ -127,11 +123,8 @@ def print_approval_detail(
         grant: The approval_grants row for the same id, when one exists. It is a
             different fact from ``approval['status']``: the decision says the
             user signed, the grant says whether that signature is still usable.
-            Omitting it printed ``approved`` for a capability that had already
-            expired.
         reading: The approval's reading (gaia.approvals.reading.read); its
-            state replaces the stored status, which calls a replaced or an
-            expired request revoked.
+            state replaces the stored status.
     """
     approval_id = approval.get("id", "?")
     reading = reading or {}

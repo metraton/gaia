@@ -1,8 +1,9 @@
 """
 gaia.paths.snapshot -- gzip snapshots of gaia.db with per-prefix retention.
 
-Shared by ``gaia uninstall`` (prefix ``uninstall``) and the SessionStart
-auto-backup (prefix ``sessionstart``) so both keep the same guarantees:
+Used by ``gaia uninstall`` (prefix ``uninstall``); the SessionStart backup
+(prefix ``sessionstart``) is written by gaia.paths.backup instead. Unlike that
+one, a snapshot here is not verified. Guarantees:
 
   * The source DB is only ever opened for reading; a snapshot is a new file.
   * Names are ``<prefix>-YYYYmmddTHHMMSSffffff.db.gz``. Within one prefix the
@@ -72,6 +73,7 @@ def create_snapshot(
        "created":   True/False,
        "dry_run":   True/False,
        "pruned":    ["<path>", ...],   # snapshots deleted by retention
+       "details":   "<short description>",  # absent when the copy fails
        "error":     "<message>"}       # only present on failure
     """
     result: dict = {

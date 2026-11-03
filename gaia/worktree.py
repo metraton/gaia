@@ -21,8 +21,7 @@ outside its working tree, so no ``git add`` of any form can version it.
 Worktrees born before that carry it in-tree, where it is still read.
 
 The contract and agent identity also travel in the git lock's *reason*, never
-in the directory name, which is an opaque token -- a confirmed decision, do not
-revisit it. ``lock_reason`` / ``parse_lock_reason`` encode and decode it, and
+in the directory name, which is an opaque token. ``lock_reason`` / ``parse_lock_reason`` encode and decode it, and
 the retention collector reads it to judge whether an abandoned, still-locked
 worktree's owning session is alive.
 

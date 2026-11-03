@@ -79,16 +79,13 @@ exact hole this module was hardened against.
 Threshold: ``GAIA_FS_RETENTION_GRACE_HOURS`` (default 24 hours), resolved by
 ``resolve_grace_hours()`` -- defined in ``gaia.retention.infra`` (the generic
 infrastructure module both retention submodules depend on) and re-exported
-here, the single place this number lives. ``gaia cleanup`` (the only current
-caller) reads it through this function rather than keeping a local constant,
-so a preview and a real sweep can never disagree about the window in effect.
+here, the single place this number lives. ``gaia cleanup`` (``bin/cli/cleanup.py``,
+the only caller) reads it through this function rather than keeping a local
+constant, so a preview and a real sweep never disagree about the window.
 
-Wiring note: as of this module's introduction, ONLY ``gaia cleanup --prune``
-calls into it. There is deliberately no SessionStart (or other automatic)
-hook wired to these rules yet -- unlike ``hooks/modules/session/
-contract_drafts_gc.py``'s automatic sweep of drafts, deletion here stays
-behind an explicit, previewable CLI invocation until the rules have been
-through adversarial hardening.
+No SessionStart (or other automatic) hook calls these rules: unlike
+``hooks/modules/session/contract_drafts_gc.py``'s automatic sweep of drafts,
+deletion here happens only through an explicit, previewable ``gaia cleanup``.
 """
 
 from __future__ import annotations

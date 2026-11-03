@@ -1,10 +1,11 @@
 """
 gaia.paths.backup -- verified, compressed, bounded copies of gaia.db.
 
-Every backup of the live database goes through write_verified_gzip; a copy that
-fails verification is deleted and never replaces or prunes an existing backup.
-Retention reads the timestamp in the file name, never the clock. The last
-session-start outcome is kept in the state dir, not snapshots/, which may be what failed.
+The session-start and workspace-retire backups of the live database go through
+write_verified_gzip; a copy that fails verification is deleted and never replaces
+or prunes an existing backup. GFS retention reads the timestamp in the file name,
+not mtime; the clock only dates abandoned partial files. The last session-start
+outcome is kept in the state dir, not snapshots/, which may be what failed.
 """
 
 from __future__ import annotations

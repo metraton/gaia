@@ -10,11 +10,10 @@ message so the runtime can hand the agent an actionable fix.
 It unifies the shape logic of the two pre-existing validators
 (``hooks/modules/agents/contract_validator.py`` and
 ``hooks/modules/agents/response_contract.py``) into one portable core that the
-CLI (M2), the hook gate (M4), the fence fallback (M6) and the packaging smoke
-test (M6) all import. Downstream tasks (T2-T17) treat the public surface below
-as a stable interface -- the four error codes, the ``validate_form`` signature,
-the ``FormValidationResult`` shape, and ``CANONICAL_REPAIR_MESSAGE`` -- so it
-must not change without a plan-level decision.
+CLI, the hook gate, the fence fallback and the packaging smoke test all import.
+The public surface below is a stable interface -- the error codes, the
+``validate_form`` signature, the ``FormValidationResult`` shape, and
+``CANONICAL_REPAIR_MESSAGE``.
 
 PORTABILITY CONTRACT (enforced by tests/contract/test_validator_portable.py):
     - Imports ONLY the Python standard library plus ``gaia.state`` (itself
@@ -24,10 +23,7 @@ PORTABILITY CONTRACT (enforced by tests/contract/test_validator_portable.py):
       package is not on the path, so the module remains importable in a bare
       stdlib subprocess.
 
-The named codes (AC-1; VERIFICATION_SHAPE added additively in R3 per a
-plan-level decision -- brief contract-type-conditional-validation-harness-r3;
-APPROVAL_REQUEST_SHAPE and COMPLETE_SHAPE added additively in R4, closing the
-two pure-shape cross-field conditionals the form layer previously missed):
+The named codes:
     AGENT_ID_FORMAT     -- agent_id is present but does not match
                            ``AGENT_ID_PATTERN_TEXT`` (^a[0-9a-f]{16,}$)
     PLAN_STATUS         -- agent_state is present but outside the canonical enum
@@ -79,8 +75,7 @@ Design notes:
     - ONE CODE PER INVALIDITY: an out-of-enum agent_state yields exactly
       PLAN_STATUS and suppresses the downstream evidence requirement (an invalid
       status cannot be classified as evidence-requiring), so a single defect
-      does not fan out into multiple codes. This matches AC-9's "one anomaly per
-      invalidity".
+      does not fan out into multiple codes.
     - ORDER-AWARE DETAIL, not relaxed validation: the CLI (``bin/cli/contract.py``)
       lets a caller build the envelope incrementally across several small
       ``gaia contract set``/``add``/``fill`` calls, and validates the FULL
@@ -113,7 +108,7 @@ from typing import Any, List, Tuple
 # Canonical plan_status enum -- SSOT is gaia.state.VALID_PLAN_STATUSES.
 #
 # Imported with a stdlib-only fallback so the module stays importable in a bare
-# stdlib subprocess (AC-2). gaia.state is itself stdlib-pure (only
+# stdlib subprocess. gaia.state is itself stdlib-pure (only
 # ``from __future__ import annotations``), so importing it never violates the
 # portability contract; the fallback exists solely for a path on which the gaia
 # package root is absent. The fallback is kept byte-identical to the canonical
@@ -156,7 +151,7 @@ except ImportError:  # pragma: no cover -- exercised only on a bare stdlib path
     )
 
 # ---------------------------------------------------------------------------
-# Envelope-only verification.type enum (plan 34 task 7).
+# Envelope-only verification.type enum.
 #
 # The CONTRACT ENVELOPE additionally accepts ``verification.type == "none"`` for
 # a turn that performed NO plan-task-bound verification -- an investigation or
@@ -180,52 +175,30 @@ ENVELOPE_VERIFICATION_TYPES: Tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 # verification.type -- an OPEN vocabulary that grants no discount.
 #
-# The shape check below used to fire only when the declared type was a MEMBER
-# of ENVELOPE_VERIFICATION_TYPES, so a word outside the list switched the
-# requirement off. That is backwards: naming a type the enum happens to know
-# cost the agent its companion field, and naming one it did not cost nothing.
-# Measured on the live population, 127 of 522 typed rows (24.3%) sat outside
-# the enum, and 123 of those carried no companion evidence at all -- not by
-# malice but by economics, because inventing a plausible word was simply
-# cheaper than producing the evidence. The values are ordinary and often
-# accurate: test, self-review, dry_run, command_execution, manual,
-# observation, oracle, and a tail of some thirty more.
+# A declared type outside ENVELOPE_VERIFICATION_TYPES gets no discount: the
+# companion evidence is required for every declared type, known or not. Two
+# rules, applied in order:
 #
-# The fix removes the DISCOUNT rather than the VOCABULARY. Two rules, applied
-# in order, and they answer two different problems:
+#   1. CANONICALIZATION (_canonical_verification_type) folds pure orthography:
+#      a hyphen and an underscore spell one concept (self-review/self_review),
+#      so separators are folded to one token before anything is decided. It
+#      rewrites separators, never words, and does NOT map a type outside the
+#      enum onto a known one: choosing a known type on the agent's behalf would
+#      invent a claim it never made.
 #
-#   1. CANONICALIZATION (_canonical_verification_type) folds pure orthography.
-#      A hyphen and an underscore spell one concept -- self-review/self_review,
-#      dry-run/dry_run, command-execution/command_execution all occur in both
-#      forms -- so they are folded to one token before anything is decided.
-#      This is lossless by construction: it rewrites separators, never words.
-#      It deliberately does NOT map a semantic type onto a known one. "manual",
-#      "observation" and "oracle" survive verbatim, because choosing a known
-#      type on their behalf would be inventing a claim the agent never made.
+#   2. THE COMPANION FIELD IS REQUIRED FOR EVERY TYPE
+#      (_verification_type_shape_error). For a known type the enum says WHICH
+#      field (command / requires_human / reviewed). For a type the enum does not
+#      know, at least ONE of the three is required; the envelope recognizes no
+#      other kind of evidence.
 #
-#   2. THE COMPANION FIELD IS REQUIRED FOR EVERY TYPE, known or not
-#      (_verification_type_shape_error). Declaring a type is a claim that a
-#      verification happened; the price of the claim is naming the evidence.
-#      For a known type the enum says WHICH field (command / requires_human /
-#      reviewed). For a word the enum does not know, no such mapping exists, so
-#      the demand is stated at the only altitude available: at least ONE of the
-#      three. That is not a weaker rule -- there is no fourth kind of evidence
-#      the envelope recognizes, and no branch of the disjunction is free.
+# "none" stays exempt: it is the one spelling that says "no oracle was
+# required", so an invented word lands in rule 2 instead.
 #
-# "none" stays exempt, and that exemption is what proves the discount is gone
-# rather than relocated: it is reachable at exactly ONE spelling, a word that
-# says out loud "no oracle was required" and can be audited as such. An
-# invented word no longer lands there -- it lands in rule 2.
-#
-# The rejection is NOT a cell (see the sanitization note further down for what
-# a cell is and why this file is careful about them). The remedy for it is an
-# ADDITION -- write the command, the reviewed statement, or requires_human --
-# and addition is exactly what every mutating verb does: `fill --json` and
-# `set` deep-merge into the existing verification object, so the corrective
-# write produces a merged envelope that validates and lands. That is the
-# structural difference from the traps this file has hit before, where the
-# offending state was an undeclared key or a malformed value and NO write
-# could remove it.
+# The remedy for a rejection is an ADDITION -- write the command, the reviewed
+# statement, or requires_human -- and `fill --json` and `set` deep-merge into
+# the existing verification object, so the corrective write produces a merged
+# envelope that validates.
 # ---------------------------------------------------------------------------
 _VERIFICATION_TYPE_SEPARATOR_RE = re.compile(r"[\s_-]+")
 
@@ -307,8 +280,7 @@ REQUIRED_EVIDENCE_FIELDS: Tuple[str, ...] = (
 # MISSING_FIELD when absent. pending_steps accepts an empty list (presence
 # check); next_action must be a non-empty value.
 #
-# agent_state is the canonical name of the TURN-status field (renamed from the
-# former ``plan_status`` envelope key, plan 34 task 4). It carries a
+# agent_state is the TURN-status field. It carries a
 # VALID_PLAN_STATUSES value and matches the persisted
 # ``agent_contract_handoffs.agent_state`` column. The enum constant and the
 # PLAN_STATUS error code keep their names -- the enum is still the SSOT shared
@@ -321,45 +293,15 @@ REQUIRED_AGENT_STATUS_FIELDS: Tuple[str, ...] = (
     "next_action",
 )
 
-# ---------------------------------------------------------------------------
-# failure_report -- the OPTIONAL advisory failure axis (AC-1).
-#
-# A turn can end in a valid contract and still have suffered a concrete defect
-# along the way: something it attempted broke. The envelope had no place to say
-# so -- open_gaps is free prose about what is UNKNOWN, not a defect -- so those
-# failures were only ever recoverable
-# by reading a transcript. This block is that place, and it is ADVISORY in the
-# strict sense: its ABSENCE is never an error on any agent_state, and its
-# PRESENCE is never a substitute for any other requirement. Thousands of
-# terminal rows persisted before it existed keep the exact verdict they had.
-#
-# The shape is a single object, not an array. One defect per turn is the one
-# worth curating; a list invites a dump, and the incremental CLI build
-# (`gaia contract set failure_report.symptom ...`) only reads naturally on an
-# object. A turn that genuinely hit several failures reports the one that
-# mattered and cites the rest in ``evidence``.
-#
-# The three required sub-fields ARE the axis -- what was attempted, what broke,
-# and the observed proof -- and the shape exists to be consumed by a writer, not
-# only read by a human:
-#
-#     attempted  (str, non-empty)   the operation tried, stated concretely
-#     symptom    (str, non-empty)   what broke, as observed rather than inferred
-#     evidence   (list, non-empty)  verbatim excerpts: the error text, the exit
-#                                   status, the command output that shows it
-#     component  (str, optional)    the file/module/surface involved, when known
+# failure_report is optional: its absence is never an error on any agent_state.
+# It is one object, not a list. When present it must carry all three required
+# sub-fields, so a partial first write (``set failure_report.attempted X``) is
+# rejected; build the block in one write (`gaia contract fill --json`).
+#     attempted  (str, non-empty)   the operation tried
+#     symptom    (str, non-empty)   what broke, as observed
+#     evidence   (list, non-empty)  verbatim excerpts showing it
+#     component  (str, optional)    the file, module or surface involved
 #     severity   (str, optional)    one of VALID_FAILURE_SEVERITIES
-#
-# ``evidence`` being REQUIRED and non-empty is what keeps this from becoming a
-# prose field: a defect report that cannot cite what was observed is an opinion,
-# and an opinion is not worth a row in the defect floor.
-#
-# Because presence triggers the whole shape at once, a partial first write is
-# rejected -- ``set failure_report.attempted X`` alone leaves the block
-# incomplete. That is the same order-aware trap the terminal statuses have, and
-# the detail messages below say the same thing they do: build the block in ONE
-# write (`gaia contract fill --json`), not field by field.
-# ---------------------------------------------------------------------------
 REQUIRED_FAILURE_REPORT_FIELDS: Tuple[str, ...] = (
     "attempted",
     "symptom",
@@ -368,101 +310,22 @@ REQUIRED_FAILURE_REPORT_FIELDS: Tuple[str, ...] = (
 
 VALID_FAILURE_SEVERITIES: Tuple[str, ...] = ("info", "warning", "error")
 
-# ---------------------------------------------------------------------------
-# files_checked -- the commit-qualified file reference.
-#
-# A cited file is evidence, and evidence with no lineage is a photograph: it
-# shows a state without saying which one. When the file IS committed, the
-# commit turns the citation into a door -- to the diff, to the message that
-# says why, to the sibling files of the same move, to the PR discussion. So a
-# files_checked entry may now carry the commit the file was read at, and a
-# read-only investigation that produces nothing and commits nothing can still
-# date every finding it reports.
-#
-# The rule is CONDITIONAL and attaches to the ARTEFACT, never to the turn: a
-# committed file is cited with its commit, an uncommitted one is cited as a
-# bare path and that is not a fault. The condition is a fact the system can
-# check on its own rather than a discipline demanded of the agent, which is
-# what keeps a half-commit from ever being the price of citing something.
-#
-# SHAPE, NOT EXISTENCE -- deliberate and load-bearing. Nothing here consults
-# git. The validator stays pure and cheap (it runs on every incremental write,
-# measured at 0.008 ms inside a 60 ms call), and that margin is exactly what
-# lets it be strict for free. A reference to a commit that does not exist is
-# well-FORMED and passes; resolving it belongs to whoever reads it.
-#
-# WHY AN OBJECT AND NOT A path@sha STRING. The form had to satisfy one hard
-# constraint: a legitimate bare path must NEVER be mistaken for a malformed
-# reference. That was settled by measurement over the 25,967 files_checked
-# entries already persisted (9,680 rows) and on disk (212 drafts), not by
-# taste -- each candidate scored by how many EXISTING entries its trigger
-# would newly reject:
-#
-#     trailing @<token>   26  ("...approval_grants.py (match_command_set_grant @2181)")
-#     any @              429  ("node_modules/@jaguilar87/gaia/tools/memory/episodic.py")
-#     " @ "                7  (".github/workflows/foundation.yml @ century-inc/branchkinect-iac")
-#     trailing #<token>   22  ("/tmp/runtime-plan.log (CI runtime plan log, build #3)")
-#     OBJECT {path,commit} 0
-#
-# Every string separator collides with prose an agent already writes inside a
-# path entry. A JSON object cannot collide with a JSON string at all -- the
-# distinction is carried by the type, so the trigger is exact BY CONSTRUCTION
-# rather than by a regex that has to out-guess free text. The census confirms
-# it from the other side too: zero object elements exist in the whole
-# population, so nothing already written can be caught by the new check.
-#
-# The check therefore fires ONLY on an element that DECLARES itself a
-# reference by being an object. A string element is never inspected -- every
-# bare path stays valid exactly as written, which is what makes this purely
-# additive. A non-string, non-object element (one nested list exists in
-# history) is left alone as well: it was accepted before and rejecting it now
-# would re-open a verdict on a row nobody can rewrite.
+# A files_checked entry is a bare path string or a {path, commit} object. Only
+# an object is checked, and only for shape: nothing here consults git, so a
+# well-formed reference to a commit that does not exist passes. A path@sha
+# string is not used because "@" and "#" already occur in bare-path prose.
 FILE_REFERENCE_KEYS: Tuple[str, ...] = ("path", "commit")
 
-# The commit token: hex only. 7 is git's own default abbreviation length
-# (``core.abbrev``) and the floor below which an abbreviation stops being
-# unambiguous in a real repository; 64 admits a SHA-256 object name as well as
-# SHA-1's 40, so a repository that has migrated does not need a validator
-# change. Matched against the stripped, lower-cased token, and canonicalized to
-# that same form on write (see ``canonicalize_envelope``).
-#
-# A branch name, a tag, or HEAD is deliberately NOT a commit here: those move,
-# and a reference that moves dates nothing -- which is the entire point of
-# carrying one. The rejection says so and names the command that resolves it.
+# Commit token: lower-case hex, 7 (git's default abbreviation) to 64 (a SHA-256
+# name) characters, matched against the stripped, lower-cased token. A branch,
+# tag or HEAD is not a commit here: it moves, so it would date nothing.
 COMMIT_TOKEN_PATTERN_TEXT = r"^[0-9a-f]{7,64}$"
 _COMMIT_TOKEN_PATTERN = re.compile(COMMIT_TOKEN_PATTERN_TEXT)
 
-# ---------------------------------------------------------------------------
-# The declared schema -- what a key IS, not merely that it is there.
-#
-# The form layer used to check PRESENCE only, and the live population shows
-# exactly what that bought: the seven evidence lists accepted a string, a
-# number or an object and answered ok (mistyped rows in six of the seven), and
-# ``pending_steps`` carried a bare string on 166 rows. A required key holding
-# the wrong type is not a filled field -- every reader downstream iterates it
-# expecting a list and gets characters, or a dict and gets nothing.
-#
-# Each entry below is anchored to a MEASURED observation over the persisted
-# population, never to a guess about what the field ought to hold:
-#
-#   dict-valued     agent_status / evidence_report (7201 / 7133 dicts, no
-#                   counterexample), consolidation_report, approval_request,
-#                   failure_report
-#   memory_delta    dict -- anchored to its consumer,
-#                   ``modules.agents.response_contract._extract_memory_delta``,
-#                   which requires an object carrying ``version`` +
-#                   ``proposals``; the population holds only nulls
-#   list-valued     update_contracts, memorialize_suggestions (lists, with a
-#                   single dict counterexample that is itself the defect this
-#                   closes)
-#   str-valued      user_facing_summary
-#
-# A type is enforced only on a value that is PRESENT and not null: an explicit
-# null is the seeded convention for every optional block (see
-# ``gaia.contract.drafts.initial_envelope``), and absence/nullity of a REQUIRED
-# field is already owned by MISSING_FIELD. That split is what keeps one code
-# per invalidity.
-# ---------------------------------------------------------------------------
+# Declared JSON types of the typed fields. A type is enforced only on a value
+# that is present and not null: an explicit null is how drafts seed every
+# optional block (``gaia.contract.drafts.initial_envelope``), and the absence
+# of a required field is MISSING_FIELD's, so one invalidity carries one code.
 TOP_LEVEL_FIELD_TYPES = {
     "agent_status": (dict,),
     "evidence_report": (dict,),
@@ -494,46 +357,20 @@ def conclusion_of(envelope: Any) -> "str | None":
         return None
     return text.strip() or None
 
-# ``report_prose`` is the one entry above with NO persisted population behind
-# it, and that absence is what makes typing it safe rather than unsupported:
-# it is a new key, so no already-written envelope can hold a malformed one,
-# and no turn that closes today starts being rejected. That is the exact
-# inversion ADVISORY_UNTYPED_FIELDS below refuses to perform on
-# ``user_facing_summary``, and the reason the two are separate fields instead
-# of one -- a line the orchestrator relays nearly verbatim (776 characters on
-# average over 294 rows) and a full narrative of thousands of words are not
-# the same object, and only the second can be typed without breaking history.
-#
-# It is OPTIONAL in this delivery, and the mechanism is the table's own: a
-# type is enforced only where the key is PRESENT, requiredness is enumerated
-# by hand in ``validate_form`` (agent_status, its two keys, evidence_report),
-# and a key in this table is not in that enumeration. Adding one here can
-# never make a field mandatory.
+# A key in the table above is not thereby required: a type is enforced only
+# where the key is present, and validate_form enumerates the required fields
+# by hand.
 
-# ``failure_report`` is a declared field whose type IS checked -- by the
-# dedicated code that already owned it, FAILURE_REPORT_SHAPE, which reports a
-# wrong-typed value with a message naming the required sub-fields. Adding it
-# to the table above would rename an existing rejection for no gain and stack
-# two codes on one defect. It is listed here so the schema is complete where
-# it is read.
+# failure_report is type-checked by FAILURE_REPORT_SHAPE, not by the table
+# above, so a wrong type is not reported under two codes.
 _FIELDS_TYPED_BY_A_DEDICATED_CODE: Tuple[str, ...] = (
     "failure_report",
 )
 
-# ---------------------------------------------------------------------------
-# The advisory optional fields -- declared, allowlisted, deliberately UNTYPED.
-#
-# Their parsers degrade to nothing on a malformed value and the turn still
-# closes; typing them would reject turns that close today. Observed types, so
-# flipping one into TOP_LEVEL_FIELD_TYPES needs no re-measurement:
-# user_facing_summary str (236, 1 null), update_contracts list (282, 1 dict,
-# 5 null), memorialize_suggestions list (27, 1 null), memory_delta null only.
-#
-# work_phase, rollback_executed, context_consumption and memory_suggestions
-# are not declared: no code read them. A write carrying one is UNKNOWN_FIELD,
-# the next write strips one a draft inherited, and the read verbs never
-# validate, so old rows holding them still open.
-# ---------------------------------------------------------------------------
+# Declared and allowed but deliberately untyped: their parsers degrade to
+# nothing on a malformed value and the turn still closes. work_phase,
+# rollback_executed, context_consumption and memory_suggestions are not
+# declared, so a write carrying one is UNKNOWN_FIELD.
 ADVISORY_UNTYPED_FIELDS: Tuple[str, ...] = (
     "memorialize_suggestions",
     "memory_delta",
@@ -553,73 +390,25 @@ EVIDENCE_FIELD_TYPES = dict(
     verification=(dict,),
 )
 
-# ---------------------------------------------------------------------------
-# Keys the SYSTEM writes into an envelope -- never an agent.
-#
-# This is the allowlist's delicate half, and it was built by sweeping the 9646
-# persisted envelopes rather than by reading the source: three of these
-# (``_contract_tag`` on 3806 rows, ``fallback`` on 1486, ``salvaged`` on 172)
-# have no grep-visible assignment at the top level and would have been missed
-# by source inspection alone. Rejecting any one of them does not tighten
-# validation -- it breaks the mechanism that writes it:
-#
-#   _contract_tag       stamped onto EVERY fence-parsed envelope by
-#                       ``modules.agents.contract_validator.parse_contract``,
-#                       whose result is handed straight to ``validate_form``.
-#                       Rejecting it fails every fence-path validation there
-#                       is. Two values in history: "agent_contract_handoff"
-#                       and the legacy "json:contract".
-#   continues_contract_id
-#                       the continuation link, written by
-#                       ``bin/cli/contract.py::_continuation_seed``. Rejecting
-#                       it stops a resumed turn from minting its new contract,
-#                       which is the whole resumed-turn mechanism.
-#   born_at_dispatch / agent_name
-#                       birth markers (``gaia.store.writer``), carried across
-#                       into a continuation seed on purpose -- the SubagentStop
-#                       last-resort lane matches the dispatched agent's name
-#                       inside a still-DISPATCHED row's envelope.
-#   agent_state         the BIRTH envelope's own top-level state
-#                       ("DISPATCHED"). Deliberately NOT treated as a misplaced
-#                       agent_status.agent_state: the system writes it here, and
-#                       an agent that puts its state at the root instead of in
-#                       agent_status is already caught by MISSING_FIELD on
-#                       agent_status.agent_state.
-#   degraded / auto_captured / backstop / reaped / salvaged /
-#   dispatch_closed_at_subagent_stop / superseded_by_contract_id /
-#   agent_output_preview / reconstructed_from_finalized_draft / fallback
-#                       the rescue lanes -- what the hook-side capture,
-#                       reaper, salvage and reconstruction paths leave on a row
-#                       whose turn never wrote an envelope of its own.
-#                       ``fallback`` is retired (last written 2026-07-09) and is
-#                       kept because history is still revalidated, not because
-#                       anything writes it today.
-# ---------------------------------------------------------------------------
-#   binding_rejection   written into the BIRTH envelope by
-#                       ``modules.agents.dispatch_binding`` when a dispatch
-#                       names a plan task it may not bind to: the reason and
-#                       the rejected token are recorded on the row instead of
-#                       vanishing with an unborn one.
-#   reconciled          written by ``gaia contract reconcile``
-#                       (``bin/cli/contract.py::cmd_reconcile``) when a
-#                       hook-written residue row has its cut mark cleared.
-#
-# ``reconciled`` and ``binding_rejection`` above are the reason this list is
-# built from a CODE sweep and not only from the persisted population.
-# ``reconciled`` appears in ZERO rows -- it is written by a verb whose output
-# nothing had yet re-read -- so a sweep of the database, however careful, is
-# structurally incapable of finding it. ``binding_rejection`` is written as a
-# key inside a dict LITERAL, which a sweep looking for ``envelope["key"] =
-# ...`` cannot see either. A sweep is only as complete as the shapes it knows
-# to look for.
-#
-#   worktree_scope      "managed" | "shared" | "unknown", stamped by
-#                       ``bin/cli/contract.py::cmd_finalize`` on every close
-#                       (``_finalize_worktree_scope``) -- DETECTION for the
-#                       agent-protocol rule that a turn implementing work
-#                       runs in its own Gaia-managed worktree. Registers the
-#                       fact only; never gates a close. Queryable via
-#                       ``json_extract(raw_handoff_json, '$.worktree_scope')``.
+# Keys the system writes into an envelope, never an agent; rejecting one would
+# break the writer.
+#   _contract_tag         stamped by modules.agents.contract_validator.parse_contract
+#                         on every fence-parsed envelope it hands to validate_form
+#   continues_contract_id continuation link, bin/cli/contract.py::_continuation_seed
+#   born_at_dispatch, agent_name
+#                         birth markers (gaia.store.writer)
+#   agent_state           the birth envelope's own state; not a misplaced
+#                         agent_status.agent_state
+#   degraded, auto_captured, backstop, reaped, salvaged, fallback,
+#   dispatch_closed_at_subagent_stop, superseded_by_contract_id,
+#   agent_output_preview, reconstructed_from_finalized_draft
+#                         left by the hook-side capture, reaper, salvage and
+#                         reconstruction lanes on a row whose turn wrote no envelope
+#   binding_rejection     modules.agents.dispatch_binding records a rejected
+#                         plan-task binding in the birth envelope
+#   reconciled            set by `gaia contract reconcile` (cmd_reconcile)
+#   worktree_scope        "managed" | "shared" | "unknown", stamped by cmd_finalize
+#                         (_finalize_worktree_scope); detection only, never gates a close
 SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "_contract_tag",
     "agent_name",
@@ -644,17 +433,9 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "worktree_scope",
 )
 
-# Agent-authored top-level keys, per the agent-contract-handoff envelope: the
-# two required blocks, the conditional objects, and the documented optional
-# fields -- which is exactly the set carrying a declared type above.
-#
-# Kept SEPARATE from the system keys, and that separation is load-bearing for
-# the error messages rather than decorative. An UNKNOWN_FIELD rejection that
-# offers the caller a list of "declared keys" must offer the keys the CALLER
-# may write: listing `backstop`, `reaped`, `salvaged`, `_contract_tag` or
-# `born_at_dispatch` as available options invites an agent to write a key only
-# the rescue lanes may write, which is worse than the typo the message was
-# answering.
+# Agent-authored top-level keys: the typed fields, the one typed by a dedicated
+# code, and the advisory untyped ones. Kept apart from the system keys so an
+# UNKNOWN_FIELD message never offers an agent a key only the rescue lanes write.
 AGENT_WRITABLE_TOP_LEVEL_KEYS: Tuple[str, ...] = (
     tuple(TOP_LEVEL_FIELD_TYPES)
     + _FIELDS_TYPED_BY_A_DEDICATED_CODE
@@ -693,10 +474,8 @@ def harness_written_changes(before: Any, after: Any) -> List[str]:
         if _path_value(before, path) != _path_value(after, path)
     ]
 
-# evidence_report additionally accepts the UPPER-CASE spelling of each required
-# key, matching the long-standing backward compatibility in
-# ``_evidence_has_key``: 20 rows in history carry the upper form, and the
-# presence check has always honoured it.
+# evidence_report also accepts the UPPER-CASE spelling of each required key,
+# as ``_evidence_has_key`` does.
 EVIDENCE_REPORT_KEYS: Tuple[str, ...] = (
     tuple(EVIDENCE_FIELD_TYPES)
     + tuple(key.upper() for key in REQUIRED_EVIDENCE_FIELDS)
@@ -729,7 +508,7 @@ _DECLARED_PATH_BY_KEY = _declared_paths()
 
 
 class FormErrorCode(str, Enum):
-    """Named, stable error codes emitted by the form layer (AC-1).
+    """Named, stable error codes emitted by the form layer.
 
     ``str`` mixin: members compare equal to and serialize as their string
     value, so a code round-trips cleanly through JSON and CLI output without a
@@ -740,46 +519,28 @@ class FormErrorCode(str, Enum):
     PLAN_STATUS = "PLAN_STATUS"
     VERIFICATION_RESULT = "VERIFICATION_RESULT"
     MISSING_FIELD = "MISSING_FIELD"
-    # Additive (R3): a verification.type was declared but the evidence that type
-    # requires is missing/empty. DISTINCT from VERIFICATION_RESULT (which is the
-    # by-VALUE "COMPLETE but result != pass" check); this is a by-TYPE SHAPE
-    # check, independent of agent_state. Fires on every declared type, in or out
-    # of the enum; absent or blank verification.type == no check.
+    # A verification.type was declared but the evidence it requires is missing
+    # or empty; fires for every declared type, in or out of the enum.
     VERIFICATION_SHAPE = "VERIFICATION_SHAPE"
-    # Additive (R4): APPROVAL_REQUEST without a usable approval_request block
-    # (absent, or present but missing a non-empty exact_content). A pure-shape
-    # cross-field check, independent of the evidence_report/verification
-    # checks above.
+    # APPROVAL_REQUEST without an approval_request block carrying a non-empty
+    # exact_content.
     APPROVAL_REQUEST_SHAPE = "APPROVAL_REQUEST_SHAPE"
-    # Additive (R4): COMPLETE without next_action == "done" or with a
-    # non-empty pending_steps. A pure-shape cross-field coherence check,
-    # independent of VERIFICATION_RESULT.
+    # COMPLETE without next_action == "done", or with a non-empty pending_steps.
     COMPLETE_SHAPE = "COMPLETE_SHAPE"
-    # Additive (AC-1, plan 38): the OPTIONAL failure_report block is present
-    # but malformed. Never fires on an envelope that omits the block, which is
-    # what makes the field additive over already-persisted history.
+    # The failure_report block is present but malformed.
     FAILURE_REPORT_SHAPE = "FAILURE_REPORT_SHAPE"
-    # Additive: a DECLARED field is present with the wrong JSON type -- a
-    # string where a list is declared, an object where a string is. Presence
-    # was all the form layer used to check, which is how the seven evidence
-    # lists came to hold strings and objects in the live population. Fires only
-    # on a present, non-null value; absence stays MISSING_FIELD's.
+    # A declared field is present with the wrong JSON type; absence stays
+    # MISSING_FIELD's.
     FIELD_TYPE = "FIELD_TYPE"
-    # Additive: a declared key written at the WRONG LEVEL -- most often an
-    # evidence key at the root (``commands_run`` instead of
-    # ``evidence_report.commands_run``), which used to create a silent orphan.
-    # Deliberately a rejection naming the correct path, never a silent move:
-    # inferring the intent would hide the very class of error this closes.
+    # A declared key written at the wrong level, e.g. ``commands_run`` at the
+    # root. The rejection names the correct path; the value is never moved.
     MISPLACED_KEY = "MISPLACED_KEY"
-    # Additive: a files_checked entry DECLARED itself a commit-qualified file
-    # reference (it is an object) but is malformed -- no usable path, no
-    # commit, a commit that is not a commit, or a key that is neither. Never
-    # fires on a string entry, so every bare path ever written stays valid.
+    # A files_checked entry that is an object but malformed: no usable path, no
+    # commit, a commit that is not one, or an unknown key. Never fires on a
+    # string entry.
     FILE_REFERENCE_SHAPE = "FILE_REFERENCE_SHAPE"
-    # Additive: a key belonging to no declared path at any level. This is what
-    # catches a mistyped field name (``files_checkd``), which previously
-    # created a brand-new field without a word. The detail names the nearest
-    # declared key when there is one.
+    # A key declared at no level, e.g. a mistyped ``files_checkd``; the detail
+    # names the nearest declared key when there is one.
     UNKNOWN_FIELD = "UNKNOWN_FIELD"
 
 
@@ -813,8 +574,7 @@ class FormValidationResult:
         repair_message: the canonical rich repair message for the envelope's
             ``source`` (see ``validate_form``) -- ``CANONICAL_REPAIR_MESSAGE``
             when the envelope came from the agent's own final declaration (the
-            default, and the only value before the row-first gate existed),
-            ``ROW_ENVELOPE_REPAIR_MESSAGE`` when it came from the turn's
+            default), ``ROW_ENVELOPE_REPAIR_MESSAGE`` when it came from the turn's
             persisted dispatch row. Byte-stable per source regardless of which
             errors fired, so a caller that injects it (hook gate, CLI) keeps a
             cache-stable surface; the specific defects live in ``errors``.
@@ -842,36 +602,15 @@ class FormValidationResult:
         return "; ".join(str(err) for err in self.errors)
 
 
-# ---------------------------------------------------------------------------
-# Canonical rich repair message
+# Repair message returned with every result, a byte-stable module constant.
+# Two variants share one body and differ in the opening sentence, chosen by
+# validate_form's ``source``: the agent's own declaration, or the persisted
+# ``agent_contract_handoffs`` row the SubagentStop gate read
+# (``hooks/adapters/subagent_stop_core.py::resolve_subagent_stop_gate``).
 #
-# Unified from the two prior validators' repair blocks. Always returned (see
-# FormValidationResult.repair_message). Kept as a module constant so it is
-# byte-stable across calls.
-#
-# Two variants share one body (``_REPAIR_MESSAGE_BODY``) and differ only in
-# their opening sentence, because a validated envelope now has one of two
-# distinct sources (the row-first SubagentStop gate,
-# ``hooks/adapters/claude_code.py::resolve_subagent_stop_gate``): the agent's
-# in-memory draft envelope with no row reachable yet, or the persisted
-# ``agent_contract_handoffs`` row it built incrementally via `gaia contract
-# set/add/fill`. Naming the row when no row was read sends the repair to the
-# wrong place; ``validate_form``'s ``source`` argument selects the matching
-# variant. The JSON template and build-order guidance below apply
-# identically either way, so only the opening clause forks.
-#
-# The verification line teaches a CONCRETE type ("command") rather than the
-# ``<a|b|c>`` placeholder the closed-vocabulary fields above use, and the
-# difference is load-bearing rather than stylistic. An unsubstituted
-# placeholder cannot survive in agent_state or next_action -- the enum rejects
-# it -- but verification.type is an OPEN vocabulary, so a literal
-# "<command|code|semantic|self_review|none>" would validate and persist as the
-# stored type, poisoning the one column readers group on. A concrete type also
-# puts the obligation in the reader's eye: the companion "command" sits on the
-# same line, so what declaring a type COSTS is visible in the example itself.
-# The alternatives are named in the prose below, where they cannot be
-# copy-pasted by accident.
-# ---------------------------------------------------------------------------
+# The verification line shows the concrete type "command", not a
+# ``<a|b|c>`` placeholder: verification.type is an open vocabulary, so a
+# literal placeholder would validate and persist as the stored type.
 _REPAIR_MESSAGE_BODY = (
     "\n"
     "\n"
@@ -1006,8 +745,7 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
         it needs human/rubric validation and stays open pending that judgement.
       * "self_review" -- a non-empty ``reviewed`` statement of what was checked
         and observed.
-      * "none" (envelope-only, plan 34 task 7) -- no plan-task-bound verification
-        was performed; demands NO field (falls through to the ``(None, "")``
+      * "none" -- no plan-task-bound verification was performed; demands NO field (falls through to the ``(None, "")``
         return below).
       * anything else -- an agent's own word for what it did, which stays
         sayable. The enum cannot say WHICH field such a type implies, so it
@@ -1459,8 +1197,7 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
             MISSING_FIELD on ``agent_contract_handoff``.
         source: where ``envelope`` was read from, purely for the wording of
             the MISSING_FIELD detail and the choice of repair message --
-            never a validation input. ``"declaration"`` (the default, and the
-            only value that existed before the row-first SubagentStop gate)
+            never a validation input. ``"declaration"`` (the default)
             means the agent's own final fenced text. ``"row"`` means the
             turn's persisted ``agent_contract_handoffs`` row, read because
             that row -- not the fence -- was the gate's authoritative source
@@ -1628,13 +1365,10 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                 )
             )
 
-        # --- COMPLETE cross-field coherence (pure SHAPE, R4) -----------------
-        # A COMPLETE turn must actually be done: next_action == "done" and
-        # pending_steps == [] are pure-shape cross-field checks, independent
-        # of evidence/verification. Each only fires when the field in question
-        # is itself PRESENT -- the MISSING_FIELD checks above already own the
-        # absent case, so this never stacks a second code on the same field
-        # (one code per invalidity).
+        # COMPLETE cross-field coherence.
+        # A COMPLETE turn needs next_action == "done" and pending_steps == [].
+        # Each check fires only when its field is present; an absent field is
+        # MISSING_FIELD's, so one invalidity carries one code.
         if normalized_status == "COMPLETE":
             if raw_next is not None and str(raw_next).strip() != "":
                 if str(raw_next).strip().lower() != "done":
@@ -1700,21 +1434,14 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                     )
 
         # --- verification.type (type-conditional SHAPE, any status) ---------
-        # Mirrors the conditional-by-VALUE pattern below (VERIFICATION_RESULT):
-        # if verification declares a type, require the evidence that type
-        # demands and reject an omission with VERIFICATION_SHAPE. This is a
-        # SHAPE check independent of agent_state; it is DISTINCT from the
-        # by-VALUE COMPLETE/result==pass check and may co-occur with it (two
-        # different invalidities -> two codes).
+        # A declared type must carry the evidence it demands, else
+        # VERIFICATION_SHAPE. Independent of agent_state, and distinct from the
+        # COMPLETE/result == pass check below, so the two codes may co-occur.
         #
-        # The trigger is the PRESENCE of a declared type, not its membership in
-        # any enum. Gating on membership was the escape: a word the enum did not
-        # know switched the requirement off, which priced an invented type below
-        # a real one. _verification_type_shape_error now answers for every type;
-        # membership only decides WHICH evidence is demanded, and "none"
-        # (envelope-only, plan 34 task 7) remains the one type demanding none.
-        # An ABSENT or blank type still fires no requirement, which is what
-        # keeps every contract that never declared one valid.
+        # The trigger is the presence of a declared type, not its membership in
+        # the enum: membership only decides which evidence is demanded, and
+        # "none" is the one type demanding none. An absent or blank type
+        # fires no requirement.
         verification = evidence.get("verification") if isinstance(evidence, dict) else None
         if isinstance(verification, dict):
             vtype = _canonical_verification_type(verification.get("type"))
@@ -1780,16 +1507,11 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                         )
                     )
 
-    # --- approval_request (APPROVAL_REQUEST only, pure SHAPE, R4) -----------
-    # A pure-shape cross-field check: when agent_state is APPROVAL_REQUEST the
-    # top-level approval_request object must itself be present, and its
-    # exact_content -- the verbatim content the user must see to give
-    # informed consent (the orchestrator-present-approval iron law) -- must
-    # be non-empty. approval_id is deliberately NOT required here:
-    # agent-response documents a legitimate approval_request with no
-    # approval_id yet (an agent presenting a T3 plan before the hook has
-    # blocked anything and minted a grant) -- requiring it would reject that
-    # documented, in-use protocol state.
+    # approval_request (APPROVAL_REQUEST only).
+    # The top-level approval_request object must be present and its
+    # exact_content, the verbatim content the user must see to consent, must
+    # be non-empty. approval_id is not required: a plan presented before the
+    # hook has blocked anything has no approval_id yet.
     if normalized_status == "APPROVAL_REQUEST":
         approval_request = envelope.get("approval_request")
         if not isinstance(approval_request, dict) or not approval_request:
@@ -1825,14 +1547,9 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                 )
             )
 
-    # --- failure_report (OPTIONAL advisory axis, pure SHAPE, AC-1) ----------
-    # Checked independently of agent_state: a defect is a defect whether the
-    # turn ended COMPLETE, BLOCKED or IN_PROGRESS, so this is not gated on the
-    # status the way the COMPLETE/APPROVAL_REQUEST checks above are. It is
-    # gated only on PRESENCE -- an envelope that omits the key, or sets it to
-    # null the way consolidation_report/approval_request are habitually
-    # nulled, reaches no check at all. That guard is the whole reason a shape
-    # change can be made here without disturbing already-persisted history.
+    # failure_report (optional).
+    # Checked whatever the agent_state; gated only on presence, so an absent
+    # or null block reaches no check.
     if envelope.get("failure_report") is not None:
         for field, detail in _failure_report_shape_errors(envelope["failure_report"]):
             errors.append(
@@ -1843,14 +1560,10 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                 )
             )
 
-    # --- files_checked commit references (OPTIONAL form, pure SHAPE) --------
-    # Same presence-gating idiom as failure_report above, and
-    # gated one level deeper: only an ENTRY that declares itself a reference by
-    # being an object is checked at all. An envelope whose files_checked holds
-    # nothing but strings -- which is every envelope written before this form
-    # existed -- reaches no check, so no already-persisted contract changes its
-    # verdict. Checked independently of agent_state: a citation is a citation
-    # whatever the turn reports back.
+    # --- files_checked commit references (optional) -------------------------
+    # Gated one level deeper than failure_report: only an entry that is an
+    # object is checked, so a files_checked of strings reaches no check.
+    # Checked whatever the agent_state.
     evidence_block = envelope.get("evidence_report")
     if isinstance(evidence_block, dict):
         for evidence_key in ("files_checked", "FILES_CHECKED"):
@@ -1872,32 +1585,10 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
     )
 
 
-# ---------------------------------------------------------------------------
-# Canonicalization -- persist the value that was VALIDATED, not the raw one.
-#
-# Every enum in this module is compared NORMALIZED and was persisted RAW, so a
-# lower-case agent_state and an upper-case verification result all passed validation and then sat in
-# the database in whatever spelling they arrived with, forever. Two spellings
-# of one value are two values to every reader downstream -- a GROUP BY, a
-# filter, a metric -- and no amount of care at the read end recovers what the
-# write end threw away.
-#
-# The rule this applies is narrow and mechanical: a value is canonicalized
-# EXACTLY where the validator compared a normalized form of it, and nowhere
-# else. Free prose (``details``, ``next_action`` when it is a real next step)
-# is never touched, because nothing normalized it to decide anything.
-#
-# ``verification.type`` is canonicalized only when it names a KNOWN type. An
-# unrecognized type is left verbatim on purpose: it is not validated against
-# anything today (a deliberately open escape, out of scope here), and
-# rewriting a value no check consulted would be a conversion with no
-# validation behind it.
-#
-# Never in place, and never silent: a copy is returned, and every substitution
-# is appended to ``changes`` so the caller can report it. A conversion the
-# writer cannot see is the same defect as a rejection it cannot see.
-# ---------------------------------------------------------------------------
-
+# Canonicalization: persist the value that was validated, not the raw one.
+# A value is rewritten only where validate_form compared a normalized form of
+# it; free prose is never touched. A copy is returned and every substitution is
+# appended to ``changes``.
 def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> Any:
     """Return a copy of ``envelope`` with every validated value canonical.
 
@@ -1936,9 +1627,8 @@ def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> A
                     "agent_status.agent_state",
                 )
         raw_next = agent_status.get("next_action")
-        # Only the one value an enum comparison is made against: COMPLETE
-        # requires next_action to read "done", so " Done " validated and must
-        # persist as "done". Any other next_action is prose and stays verbatim.
+        # COMPLETE requires next_action to read "done", so " Done " persists
+        # as "done"; any other next_action is prose and stays verbatim.
         if isinstance(raw_next, str) and raw_next.strip().lower() == "done":
             _replace(agent_status, "next_action", "done", "agent_status.next_action")
 
@@ -1954,13 +1644,10 @@ def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> A
                 )
             raw_type = verification.get("type")
             if isinstance(raw_type, str):
-                # Folded whether or not the result is a member of the enum --
-                # the SAME helper validate_form decided with, so the stored
-                # value is the value that was judged. Convergence is the point:
-                # 'self-review' and 'self_review', 'dry-run' and 'dry_run' are
-                # one concept each, and leaving both spellings in the column
-                # left every reader that groups on it to reconcile them. Only
-                # separators fold, so an out-of-enum word survives as itself.
+                # Folded for any type, in the enum or not, with the helper
+                # validate_form decided with: 'self-review' and 'self_review'
+                # become one value. Only separators fold, so an out-of-enum
+                # word survives as itself.
                 normalized = _canonical_verification_type(raw_type)
                 if normalized:
                     _replace(
@@ -1968,11 +1655,8 @@ def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> A
                         "evidence_report.verification.type",
                     )
         # A commit token is matched stripped and lower-cased, so it persists
-        # that way -- the same narrow rule the enums above follow. 'A76789A '
-        # and 'a76789a' are one commit to git and would otherwise be two
-        # distinct strings to every reader that groups or joins on them. Only
-        # a token that MATCHED is rewritten; a malformed one is left verbatim
-        # for the rejection to quote back.
+        # that way. Only a token that matched is rewritten; a malformed one is
+        # left verbatim for the rejection to quote back.
         for evidence_key in ("files_checked", "FILES_CHECKED"):
             entries = evidence.get(evidence_key)
             if not isinstance(entries, list):
@@ -2004,47 +1688,17 @@ def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> A
     return result
 
 
-# ---------------------------------------------------------------------------
-# Sanitization -- no draft may be born impossible to close.
-#
-# Closing the envelope's vocabulary created a trap with no handle on the
-# inside. Every write validates the WHOLE envelope, and there is no verb that
-# removes a key; so a draft carrying one invalid key rejects every `set`,
-# `fill` and `finalize` alike, and the agent holding it cannot even write the
-# correction. The draft is stuck forever.
-#
-# That is not a hypothetical inherited from the distant past: 70 of the 238
-# draft files already on disk carry a root orphan or an undeclared key, put
-# there by the CLI itself back when it accepted them silently. An agent that
-# resumes one of those inherits a contract it can never close, for a defect it
-# did not commit.
-#
-# So the vocabulary is enforced on what an agent WRITES and repaired on what
-# it INHERITS. This function is the repair half: it takes an envelope read
-# back from disk or from a row and returns one that validates, recording every
-# change. Nothing is silent -- the caller announces each line, for the same
-# reason the rest of this work exists.
-#
-# Two repair strategies, chosen so the agent's own evidence survives wherever
-# it can:
-#
-#   * an undeclared key is REMOVED. There is nowhere for it to go and no way
-#     to guess what it meant; a misplaced one names where it belonged so the
-#     caller can write it back deliberately.
-#   * a DECLARED key holding the wrong type is repaired in place rather than
-#     removed, because removing a REQUIRED key just trades one unclosable
-#     draft for another (MISSING_FIELD blocks writes exactly as FIELD_TYPE
-#     does). A scalar where a list belongs is wrapped -- ``"ran pytest"``
-#     becomes ``["ran pytest"]``, which is lossless. A required string holding
-#     a non-string falls back to the same placeholder a fresh draft is seeded
-#     with, since no lossless reading exists.
-#
-# ``agent_id`` is deliberately NOT repaired: it must match AGENT_ID_PATTERN
-# and this layer cannot invent a conforming handle. It has zero non-string
-# observations across the persisted population, so the case is theoretical;
-# were it to occur, the residual MISSING_FIELD is reported honestly rather
-# than papered over with a fabricated identity.
-# ---------------------------------------------------------------------------
+# Sanitization: the vocabulary is enforced on what an agent writes and
+# repaired on what it inherits, because every write validates the whole
+# envelope and no verb removes a key, so an inherited invalid key would reject
+# every later write. Each change is recorded in ``removals``.
+#   * an undeclared key is removed; a misplaced one names where it belonged.
+#   * a declared key of the wrong type is repaired in place when that is
+#     lossless: a value where a list is declared is wrapped in one, and
+#     agent_state / next_action fall back to the draft seed. Any other
+#     wrong-typed key is removed.
+# agent_id is not repaired: this layer cannot invent a conforming handle, so
+# the residual MISSING_FIELD is reported.
 
 _REQUIRED_STR_PLACEHOLDERS = {
     "agent_state": "IN_PROGRESS",
@@ -2145,19 +1799,11 @@ def sanitize_envelope(envelope: Any, *, removals: Optional[list] = None) -> Any:
 def _sanitize_file_references(evidence: dict, log: list) -> None:
     """Flatten every malformed commit reference in files_checked, in place.
 
-    This is the handle on the inside of the door FILE_REFERENCE_SHAPE closes.
-    A rejected write persists nothing, so an agent cannot trap ITSELF with a
-    malformed reference -- the entry never lands. What it does not cover is an
-    envelope INHERITED from elsewhere (a row read back, a resumed draft, a
-    hook-captured envelope): a malformed reference already sitting in one
-    would reject every subsequent write, including the write that would fix
-    it. Repairing on the way in is what keeps the new rejection from being a
-    cell rather than a validation.
-
-    Repair is by FLATTENING, not removal, for the reason ``_sanitize_level``
-    wraps a scalar instead of deleting it: the entry is evidence the agent
-    gathered, and a bare string keeps all of it while being unconditionally
-    valid.
+    A rejected write persists nothing, so an agent cannot trap itself with a
+    malformed reference; an inherited envelope (a row read back, a resumed
+    draft, a hook-captured envelope) can carry one that rejects every later
+    write. Repair flattens instead of removing: a bare string keeps all the
+    entry's content and is always valid.
     """
     for key in ("files_checked", "FILES_CHECKED"):
         entries = evidence.get(key)

@@ -71,7 +71,7 @@ RETRY_REFUSED_PROOF_REJECTED = "proof_rejected"
 # holds the decision itself (opencode-decide writes it); this record holds what
 # the plugin did next -- which session it told to resume the specialist, or
 # that it could tell none -- because an armed grant nobody resumes is the state
-# that used to read as a command never attempted.
+# that reads as a command never attempted.
 DECISION_APPLIED_EVENT = "consent.decision.applied"
 
 # A decision that grants nothing is not automatically a fault -- a plain

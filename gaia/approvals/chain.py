@@ -1,6 +1,6 @@
 """gaia.approvals.chain -- Hash-chain walk validator and fingerprint verifier.
 
-Hash formula (from plan D15 / D13):
+Hash formula:
     this_hash = SHA-256(COALESCE(prev_hash, '') || COALESCE(fingerprint, ''))
 
 Genesis row (row 0 in any approval's chain):
@@ -116,7 +116,7 @@ def verify_fingerprint(
     Computes the canonical fingerprint of the given payload_json and compares
     it against the fingerprint stored in the REQUESTED event for this approval.
 
-    Canonical fingerprint computation (from plan D13):
+    Canonical fingerprint computation:
         json.dumps(payload, sort_keys=True, separators=(',', ':'))
         Then SHA-256 of the UTF-8 bytes of that canonical string.
 
@@ -243,7 +243,7 @@ def insert_event(
 def canonical_payload(payload: dict) -> str:
     """Serialize a dict to canonical JSON for fingerprinting.
 
-    Uses the canonical form from plan D13:
+    Uses the canonical form:
         json.dumps(payload, sort_keys=True, separators=(',', ':'))
 
     Args:

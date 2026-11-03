@@ -13,6 +13,7 @@ Public API::
         state_dir,
         workspaces_dir,
         logs_dir,
+        session_dir,
         events_dir,
         cache_dir,
         scratch_dir,
@@ -30,6 +31,7 @@ Public API::
 
 Environment variables:
     GAIA_DATA_DIR: Override the root data directory (default: ~/.gaia).
+    GAIA_DB: Relocate the database file alone; it outranks GAIA_DATA_DIR for db_path.
 """
 
 from gaia.paths.layout import ensure_layout
@@ -83,8 +85,8 @@ __all__ = [
 def workspace_id(cwd=None):
     """Return the current workspace identity (alias for gaia.project.current).
 
-    Derives workspace identity from the git remote URL (canonical form:
-    ``host/owner/repo``), with fallback to directory name, then ``'global'``.
+    That is the declared workspace whose root is nearest above ``cwd``, else
+    ``'global'``.
 
     Args:
         cwd: Directory to resolve identity for. Defaults to Path.cwd().

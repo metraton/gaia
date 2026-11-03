@@ -1,7 +1,7 @@
 """
 gaia.state.permissions -- Permission matrix for state-machine transitions.
 
-Implements D1 (permission matrix) from the state-machine-completion brief:
+Who may transition each state-machine table:
 
 * Subagents (developer, platform-architect, gitops-operator, gaia-system,
   and any agent outside the orchestrator/operator group) may transition
@@ -17,9 +17,8 @@ in ``gaia.store.writer``:
 * Set to any other value on a curator-only table -> raises
   ``StateTransitionForbidden``.
 
-Note: ``_assert_dispatch_can_advance_state`` is intentionally generic enough
-to serve both status transitions (T2.1/T2.2) and CRUD mutations on
-curator-only tables (T5.2 milestones). The table name is the discriminator.
+``_assert_dispatch_can_advance_state`` decides by table name alone, so it
+serves status transitions and CRUD mutations on curator-only tables alike.
 """
 
 from __future__ import annotations
@@ -111,15 +110,15 @@ def _assert_dispatch_can_advance_state(table: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Content-authorship permissions (M2 -- brief/plan content gating)
+# Content-authorship permissions (brief/plan content gating)
 # ---------------------------------------------------------------------------
 #
 # DISTINCT axis from DISPATCH_PERMISSIONS above. That matrix gates state
 # TRANSITIONS on curator-only tables; this one gates who may author the CONTENT
-# of a brief or plan via ``upsert_brief`` / ``upsert_plan``. Under the (now
-# live) planner protocol authorship is split: the ORCHESTRATOR authors brief
-# content (the brief-spec flow), the PLANNER authors plan content. A dispatched
-# agent that is neither may not mutate brief/plan content.
+# of a brief or plan via ``upsert_brief`` / ``upsert_plan``. Authorship is
+# split: the curators author brief content, the curators and the planner author
+# plan content (CONTENT_AUTHOR_PERMISSIONS). A dispatched agent outside those
+# sets may not mutate brief/plan content.
 #
 # Why this cannot reuse DISPATCH_PERMISSIONS: the planner is a NON-curator that
 # MUST be allowed to author PLAN content, yet must remain FORBIDDEN from
@@ -195,35 +194,23 @@ def _assert_dispatch_can_write_content(table: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Handoff-writer fleet seed (T8 -- brief contract-as-managed-data)
+# Handoff-writer fleet seed
 # ---------------------------------------------------------------------------
 #
-# INVERSION of the handoff write-guard.
+# Every agent in the fleet may finalize its own handoff row
+# (``_assert_dispatch_can_write_handoff`` in gaia.store.writer).
 #
-# The original ``_assert_dispatch_can_write_handoff`` (gaia.store.writer) was
-# curator-only: every subagent dispatch was FORBIDDEN and only the SubagentStop
-# hook (running with GAIA_DISPATCH_AGENT unset) or a curator identity could
-# write a handoff row. Under the contract-as-managed-data model the terminal
-# row is finalized BY the agent itself (``gaia contract finalize`` builds the
-# contract by-value and promotes it via ``finalize_agent_contract_handoff``),
-# so the gate inverts: EVERY agent in the fleet may finalize its own handoff.
+# The fleet is seeded by the agent definitions themselves: the loader below
+# enumerates ``agents/*.md`` (skipping README) and collects the ``name:`` of
+# every agent whose frontmatter carries ``contract_handoff_writer: true``, so a
+# new agent with the marker is enrolled with no code change here, and
+# ``tests/contract/test_finalize_store.py`` asserts that every agent under
+# ``agents/`` is present in the loaded fleet.
 #
-# The fleet is SEEDED by the agent definitions themselves. Each agent under
-# ``agents/`` carries a frontmatter marker ``contract_handoff_writer: true``;
-# the loader below enumerates ``agents/*.md`` (skipping README) and collects
-# the ``name:`` of every agent that opts in. The seed is therefore
-# self-describing -- adding a new agent with the marker enrolls it in the
-# fleet with no code change here, and ``tests/contract/test_finalize_store.py``
-# asserts that every agent under ``agents/`` is present in the loaded fleet
-# (drift detection, the POSITIVE arm of AC-7).
-#
-# A hardcoded fallback fleet is the floor: when the ``agents/`` directory
-# cannot be located (some installed layouts, minimal sandboxes) the loader
-# returns the known shipped identities rather than an empty set, so a
-# legitimate finalize is never blocked by an unreadable source tree. Note the
-# guard NEVER fails open to "allow everyone" -- an identity absent from the
-# resolved fleet is always rejected; the fallback only substitutes a known
-# non-empty fleet for an unresolvable one.
+# When the ``agents/`` directory cannot be located (some installed layouts,
+# minimal sandboxes) the loader returns the hardcoded fallback fleet rather
+# than an empty set. The guard never fails open to "allow everyone": an
+# identity absent from the resolved fleet is always rejected.
 # ---------------------------------------------------------------------------
 
 # Frontmatter marker that opts an agent .md into the handoff-writer fleet.
@@ -235,7 +222,7 @@ _HANDOFF_WRITER_MARKER = "contract_handoff_writer"
 # other agent, but are also listed here so the fallback fleet is complete.
 _HANDOFF_CURATOR_ALIASES: frozenset[str] = frozenset({"orchestrator", "operator"})
 
-# Known agents shipped under agents/ -- the fallback fleet floor (see above).
+# Fallback fleet floor (see above). It omits gaia-verifier, which agents/ enrolls.
 _FALLBACK_HANDOFF_WRITER_FLEET: frozenset[str] = frozenset({
     "cloud-troubleshooter",
     "developer",

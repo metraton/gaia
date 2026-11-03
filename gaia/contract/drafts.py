@@ -1,39 +1,33 @@
 """
 gaia.contract.drafts -- per-agent, resume-aware contract-draft storage.
 
-Brief: contract-as-managed-data-agent-contract-handoff-agnostico-por-cli
-(M2, task T5). This module owns the ADDRESSING and PERSISTENCE of the
-by-value ``agent_contract_handoff`` drafts that ``bin/cli/contract.py``
-builds up across several small CLI calls. It replaces T4's single-slot
-``.current``-pointer scaffold with real per-agent keying that supports
-multiple concurrent drafts.
+This module owns the ADDRESSING and PERSISTENCE of the by-value
+``agent_contract_handoff`` drafts that ``bin/cli/contract.py`` builds up across
+several small CLI calls, keyed per agent so several drafts can be live at once.
 
-Harness-agnostic by construction (decisions #1 and #3):
+Harness-agnostic by construction:
     The CLI mints its OWN contract id. NOTHING in this module reads
     ``CLAUDE_SESSION_ID`` or any other Claude-Code-specific environment
-    variable, and it imports nothing under ``hooks/``. The only external
-    dependency is ``gaia.paths`` (Gaia's OWN storage substrate) -- exactly
-    the same harness-free dependency the layer-2 cross-check already relies
-    on. The mapping "harness session -> contract id" is NOT this module's
-    concern; it lives in the hook adapter (T6).
+    variable, and it imports nothing under ``hooks/``. Its gaia imports are
+    ``gaia.paths``, ``gaia.atomic_replace`` and ``gaia.state``. The mapping
+    "harness session -> contract id" is NOT this module's concern.
 
 Contract id (draft id) minting -- ``mint_draft_id(agent_id)``:
     ``f"{agent_id}.{token}"`` where ``token`` is a fresh random hex string
     from ``secrets`` (never time-, pid-, or session-derived). Encoding the
     agent id makes a draft locatable per agent (glob ``{agent_id}.*.json``)
     while the random token guarantees two concurrent cycles of the SAME
-    agent never collide on a filename -- the per-agent multi-draft property
-    T13's concurrency AC (AC-14) depends on.
+    agent never collide on a filename.
 
 Storage layout:
     ``gaia.paths.data_dir()/contract_drafts/<draft_id>.json`` -- under
-    Gaia's own data substrate, OUTSIDE the harness's ``.claude/`` tree
-    (AC-5). One file per draft; each draft is fully self-contained (the
+    Gaia's own data substrate, OUTSIDE the harness's ``.claude/`` tree.
+    One file per draft; each draft is fully self-contained (the
     agent_id lives inside the envelope AND is encoded in the id), so there
     is NO shared mutable index or ``.current`` pointer that concurrent
     writers could clobber.
 
-Concurrency / atomicity guarantees (for T13 / AC-14):
+Concurrency / atomicity guarantees:
     * ``save_draft`` writes to a unique temp file in the same directory
       (``os.replace`` requires same-filesystem) and atomically renames it
       over the target. A reader therefore observes either the previous
@@ -48,8 +42,7 @@ Concurrency / atomicity guarantees (for T13 / AC-14):
 
 Resolution / addressing -- ``resolve_draft_id(explicit, agent_id)``:
     * ``explicit`` (an explicit ``--draft-id``) always wins -- this is the
-      concurrency-safe primary key each concurrent cycle carries, and the
-      seam the hook adapter (T6) uses to re-address a resumed agent's draft.
+      concurrency-safe primary key each concurrent cycle carries.
     * ``agent_id`` (an explicit ``--agent-id``), when ``explicit`` is absent,
       scopes resolution to that agent's own drafts. It resolves ONLY when that
       scope names exactly ONE live draft. Returns ``None`` when the agent has
@@ -66,36 +59,23 @@ Resolution / addressing -- ``resolve_draft_id(explicit, agent_id)``:
       happen silently: ``resolve_draft_id`` raises ``AmbiguousDraftError``.
 
 Liveness, and why it is the axis resolution turns on:
-    Agent handles collide heavily in practice -- ``a7f3c1`` was observed on 64
-    distinct drafts -- because the handle is minted per turn from a small hex
-    space and agents reuse the same shapes. So "the most recent draft for this
-    handle" was frequently a FINISHED draft from an unrelated turn, and every
-    spent draft that was never swept counted as a rival candidate forever,
-    which made bare resolution ambiguous permanently once a second agent had
-    ever run. Both symptoms have one cause: history was being treated as
-    candidacy. A draft whose contract id carries an ``agent_contract_handoffs``
-    row whose turn DECLARED A CLOSE is SPENT -- its outcome is already durable
-    in the DB -- and is therefore excluded from candidacy (``_prefer_live``).
-    Identity minting is untouched; only what resolution considers changed.
+    A draft whose contract id carries an ``agent_contract_handoffs`` row whose
+    turn DECLARED A CLOSE is SPENT -- its outcome is already durable in the DB --
+    and is excluded from candidacy (``_prefer_live``), so a finished draft from
+    an unrelated turn that reused the same agent handle is never a rival
+    candidate. Minting is untouched; only what resolution considers differs.
 
 Why ``--agent-id`` REFUSES rather than picks:
     Excluding spent drafts narrows candidacy but does not make an agent handle
-    unique, and it never was: at the time, every agent minted its own id
-    with no uniqueness mechanism anywhere, so collisions are structural rather
-    than accidental (one handle observed on 44 files; ~147 agents against ~244
-    live drafts). Two consecutive ``gaia contract fill --agent-id <handle>``
-    calls therefore resolved to two DIFFERENT drafts -- the recency winner moved
-    between the calls -- and the second wrote a COMPLETE plus a verification
-    block onto a draft belonging to another agent's turn. Before liveness
-    filtering ``--agent-id`` failed outright; after it, it succeeded by
-    guessing. Making an unsafe operation usable is not an improvement, so
-    resolution now refuses the guess: 2+ LIVE candidates under one handle raise
-    ``AmbiguousDraftError`` naming ``--draft-id``, the only stable handle today.
-    The refusal lives HERE, at the single resolution seam, so every caller that
-    resolves by agent_id inherits it instead of each command re-deriving the
-    rule. Deliberately NOT covered: minting (a separate surface), and the bare
-    no-flags fallback, which still picks by recency among several live drafts
-    of one agent.
+    unique: each agent mints its own id with no uniqueness mechanism, so one
+    handle can span unrelated turns and the recency winner moves between calls.
+    Picking one would let a ``gaia contract fill --agent-id <handle>`` write
+    onto another agent's draft. Resolution therefore raises
+    ``AmbiguousDraftError`` naming ``--draft-id`` when 2+ LIVE candidates share
+    a handle. The refusal lives HERE, at the single resolution seam, so every
+    caller that resolves by agent_id inherits it. Not covered: minting, and the
+    bare no-flags fallback, which still picks by recency among several live
+    drafts of one agent.
 
 Retention -- ``collectable_drafts(max_age_days, grace_hours)``:
     The single retention POLICY, returning a decision (with a per-draft
@@ -112,8 +92,7 @@ Retention -- ``collectable_drafts(max_age_days, grace_hours)``:
     draft past ``max_age_days``. See ``collectable_drafts`` for why that bound
     is deliberate.
 
-Public surface (stable for T6 resume-read, T7 finalize store-writer, T13
-concurrency-isolation):
+Public surface:
     drafts_dir() -> Path
     mint_agent_id() -> str                       # "a" + 16 hex, SSOT
     mint_draft_id(agent_id) -> str
@@ -134,7 +113,7 @@ concurrency-isolation):
         # .agent_id -- the handle asked for (agent-scoped case) or None;
         # .code -- "ambiguous_agent_draft" vs "ambiguous_draft".
         # str() is BOUNDED (a short, copy-pasteable preview), never the full
-        # enumeration: naming all 481 candidates produced a ~13 KB message.
+        # enumeration (_AMBIGUITY_PREVIEW_LIMIT candidates).
 """
 
 from __future__ import annotations
@@ -167,18 +146,10 @@ _AGENT_HEX_BYTES = 8
 # the agent's next write is diverted into a NEW contract (see
 # gaia.store.writer.open_contract_continuation), which brings its own draft.
 #
-# THIS IS THE SAME FRONTIER AS THE CONTINUATION TRIGGER, deliberately, and it
-# used to be a third, hand-drawn one. It listed COMPLETE / BLOCKED /
-# NEEDS_INPUT -- neither the set that freezes a row (TERMINAL_PLAN_STATUSES,
-# COMPLETE alone) nor the set that ends a turn -- with nothing recorded anywhere
-# about why the three cuts differed. A draft is spent exactly when its turn
-# declared a close, so it is now defined as that, once, in gaia.state.
-#
-# The remaining distinction from TERMINAL_PLAN_STATUSES is a real one and is
-# documented once, at both definitions in gaia.state: that tuple answers whether
-# a VERDICT may still be replaced by a later, truer one, which is a question
-# about the ROW. Spentness is a question about the FILE and about the TURN that
-# wrote it -- and that turn has ended either way.
+# This is the same set as the continuation trigger: a draft is spent exactly
+# when its turn declared a close (gaia.state.CLOSED_TURN_PLAN_STATUSES). It is
+# not TERMINAL_PLAN_STATUSES, which answers whether a verdict on the ROW may
+# still be replaced; spentness is about the FILE and the turn that wrote it.
 #
 # Excluded: IN_PROGRESS (the state the backstop reaps a CUT turn to, whose draft
 # is exactly what a resume or an orchestrator recovery reads) and the DISPATCHED
@@ -206,8 +177,7 @@ GRACE_HOURS_ENV = "GAIA_CONTRACT_DRAFTS_GRACE_HOURS"
 
 # How many candidates an AmbiguousDraftError names in its human-readable
 # message. The full list always remains on ``.candidates`` for programmatic
-# callers; only the rendered text is bounded. Naming every candidate produced a
-# ~13 KB error at 481 drafts, which no reader could act on.
+# callers; only the rendered text is bounded.
 _AMBIGUITY_PREVIEW_LIMIT = 5
 
 
@@ -615,8 +585,8 @@ def resolve_draft_id(
         # No live candidate left: every draft under this handle is spent, so
         # its outcome is already a terminal row and the DB writer refuses to
         # amend it. Preserving the latest-spent fallback keeps the read paths
-        # that address a FINISHED draft (the M4 reconstruction of a lost fence)
-        # working, and is the pool ``_prefer_live`` already ordered.
+        # that address a FINISHED draft working, and is the pool
+        # ``_prefer_live`` already ordered.
         return (live or ids)[0]
 
     ids = list_draft_ids(None)

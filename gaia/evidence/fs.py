@@ -46,10 +46,7 @@ def _evidence_root() -> Path:
     Resolves through ``gaia.paths.resolver.evidence_dir()`` (``data_dir() /
     "evidence"``) rather than hardcoding ``Path.home() / ".gaia"`` directly,
     so a ``GAIA_DATA_DIR`` override relocates this root exactly like every
-    other Gaia-owned directory. Before this fix the two diverged: a test (or
-    any caller) that isolated itself by setting ``GAIA_DATA_DIR`` still wrote
-    evidence blobs into the real per-user store, because this function never
-    consulted the override.
+    other Gaia-owned directory.
     """
     from gaia.paths.resolver import evidence_dir
 
@@ -109,7 +106,7 @@ def blob_path_for(
         ext:         File extension including the leading dot (e.g. ".txt").
 
     Returns:
-        Absolute Path to ~/.gaia/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid}{ext}.
+        Absolute Path to <evidence root>/{workspace}/{brief_slug}/{ac_id}/{uuid}{ext}.
     """
     # Normalize ext
     if ext and not ext.startswith("."):

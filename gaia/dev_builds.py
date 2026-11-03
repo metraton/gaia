@@ -29,7 +29,7 @@ lives under ``gaia.paths.state_dir()`` rather than under a workspace key.
 Every reader degrades to silence rather than failing: an absent, corrupt, or
 unreadable sidecar makes ``describe_version`` return the bare base version, so
 the SessionStart manifest keeps rendering ``Gaia: 5.3.0`` exactly as it did
-before this module existed. The same discipline the memory block follows.
+before this module existed.
 
 Home rationale: this module lives in the ``gaia`` package for the same reason
 ``gaia.hooks_build`` does -- it is the ONE import root reachable from BOTH

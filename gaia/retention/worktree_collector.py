@@ -1,6 +1,6 @@
 """
 gaia.retention.worktree_collector -- distinguishes a LIVE agentic worktree
-from an ABANDONED one and recycles only the second (AC-8 of this brief).
+from an ABANDONED one and recycles only the second.
 
 An agentic worktree (``gaia.worktree.create_agentic_worktree``) carries its
 owner's identity in its git lock's *reason*, never in a filesystem timestamp
@@ -8,7 +8,7 @@ or a name (see that module's docstring). This module reads that identity
 back with ``gaia.worktree.parse_lock_reason``, cross-references the owning
 ``agent_contract_handoffs`` row, and decides collectibility -- then hands any
 collectible worktree to ``gaia.retention.worktree_reclaim.reclaim_worktree``
-(task 13) to actually capture-and-recycle it. This module never touches a
+to actually capture-and-recycle it. This module never touches a
 worktree directly; it only decides WHICH ones ``reclaim_worktree`` may see.
 
 THE TRAP THIS MODULE DOES NOT FALL INTO: ``cut_reason`` is stamped
@@ -32,8 +32,8 @@ proof the session is gone, and the second is the value every live turn
 shares with every abandoned one.
 
 Liveness -- never this module's own arithmetic -- comes from
-``gaia.retention.liveness.session_dead_past_grace`` (task 9's three-valued
-signal composed with the grace window): DEAD is reachable only through a
+``gaia.retention.liveness.session_dead_past_grace`` (a three-valued signal
+composed with the grace window): DEAD is reachable only through a
 stale heartbeat found in a readable registry; every other shape (no
 session id, no row, unreadable registry, no entry, a legacy entry with no
 heartbeat) reads UNKNOWN, and UNKNOWN is treated exactly like ALIVE -- do
@@ -41,7 +41,7 @@ nothing. A caller that branches only on "is this DEAD" gets that asymmetry
 for free, which is why the predicate below never asks "is this alive"
 separately.
 
-Five-way property this module exists to prove (AC-8's five worktrees):
+The five cases it adjudicates:
     (a) contract TERMINAL (COMPLETE) and quiet past the grace window
         -> collect.
     (b) contract not yet closed, session ALIVE (running right now)
@@ -61,8 +61,8 @@ Five-way property this module exists to prove (AC-8's five worktrees):
         it," the same posture ``gaia.retention.fs_rules`` already commits
         to for the whole package.
 
-The decision fires at session start -- driven by ``hooks/session_start.py``'s
-automatic sweep (``sweep_repo_worktrees``) and, on demand, by ``gaia cleanup``
+The decision fires at session start -- driven by the automatic sweep in
+``hooks/modules/session/session_lifecycle.py`` (``sweep_repo_worktrees``) and, on demand, by ``gaia cleanup``
 -- never mid-turn: a worktree that is the ACTIVE subject of the very turn
 evaluating it would otherwise be at risk of judging itself. SessionStart's
 sweep runs only after that hook's own ``register_session`` call has already
@@ -109,17 +109,9 @@ EXPLICIT_DEATH_CUT_REASONS = frozenset(
 )
 
 # A GENERIC sweep -- SessionStart's automatic sweep, or `gaia cleanup
-# --prune` -- never knows which brief owned an abandoned worktree, as
-# opposed to a curator or specialist reclaiming a specific worktree with its
-# own brief/AC already in hand. It used to paper over that with a fixed
-# sentinel workspace/brief/AC identity, which only worked once that sentinel
-# brief actually existed (it did not, in practice: `reclaim_worktree` failed
-# closed with status "deposit_failed" for every DIRTY worktree a sweep ever
-# collected -- CLEAN ones never reach the evidence-deposit path at all, so
-# this never showed up there). `reclaim_worktree`'s `contract_id` attribution
-# is the real fix: every worktree's owning contract row always exists, so
-# `sweep_repo_worktrees` below attributes through that instead of a brief
-# that was never real to begin with.
+# --prune` -- never knows which brief owned an abandoned worktree, so
+# `sweep_repo_worktrees` below attributes a dirty worktree's captured diff
+# through `reclaim_worktree`'s `contract_id` rather than a brief.
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +257,7 @@ def list_managed_worktrees(repo_path: Path) -> List[Dict[str, object]]:
 
 
 # ---------------------------------------------------------------------------
-# Orchestration -- decide, then hand off to task 13's mechanism verbatim.
+# Orchestration -- decide, then hand off to reclaim_worktree.
 # ---------------------------------------------------------------------------
 
 def collect_worktrees(
@@ -299,12 +291,8 @@ def collect_worktrees(
     ``repo_path`` needs only to belong to the repository's worktree
     family, not to be its main working tree -- ``git worktree list`` run
     from ANY member (main or linked) enumerates every worktree the
-    repository has registered, wherever it physically lives. This is what
-    lets task 17's caller (``gaia cleanup``) inventory both Gaia's central
-    worktrees root and the harness-native ``.claude/worktrees`` folder
-    inside a repo with a single call: git's own worktree registry is
-    per-repository, not per-directory, so there is no separate per-root
-    scan to write here.
+    repository has registered, wherever it physically lives: git's own
+    worktree registry is per-repository, not per-directory.
 
     ``dry_run=True`` runs the exact same ``worktree_collect_reason``
     decision per entry but never calls ``reclaim_worktree`` -- no capture,

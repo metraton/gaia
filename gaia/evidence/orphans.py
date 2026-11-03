@@ -3,21 +3,15 @@ gaia.evidence.orphans -- detect on-disk evidence blobs no row references.
 
 A blob under the canonical evidence root (``gaia.paths.resolver.
 evidence_dir()``) is orphaned when no ``evidence.artifact_path`` row points
-at it. Historically this happened because ``bin/cli/evidence.py::_cmd_add``
-wrote the blob to disk BEFORE ``insert_evidence`` validated the deposit --
-every rejected deposit left exactly this shape of file behind (see
-``tests/cli/test_evidence_deposit_reject_no_orphan.py`` for the fix). That
-write-before-validate gap is closed, but closing it does not retroactively
-remove the files it already produced -- they are still sitting under the
-evidence root, and this sweep exists to find them.
+at it, for example a deposit whose blob was written and whose row was then
+rejected. Note that a contract-scoped blob (``gaia.evidence.fs.
+write_contract_blob``) is referenced from its contract row, not from an
+``evidence`` row, so it is reported here too.
 
 Deliberately undifferentiated: ``find_orphan_blobs()`` reports EVERY blob
 file under the evidence root with no referencing row, regardless of how old
-it is or when it was written. An age-based or "only new files" filter was
-considered and rejected: a future regression that reopens the
-write-before-validate gap would produce new orphans indistinguishable from
-the historical ones, and a sweep that only looked at new files would mask
-that regression instead of catching it.
+it is, so a regression that starts leaving orphans is not masked by an
+age filter.
 
 Fail-closed via the shared ``gaia.retention.infra._ro_db_connect`` (the same
 canonical connection ``fs_rules`` and ``liveness`` import instead of each

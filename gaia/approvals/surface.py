@@ -5,8 +5,8 @@ Gaia composes every line a user reads; the requester only seals short phrases
 and a host only shows the result. Claude Code asks one question per signature
 (:func:`render_signatures`), in English: who asks, its commands numbered one per
 line, and what the set does, with real line breaks. OpenCode, whose question shows no line
-break, asks one one-line question per command (:func:`render_batch`, D33) in
-the machine format of D37: bracketed fields under a ``[ GAIA-SECURITY ]`` prefix.
+break, asks one one-line question per command (:func:`render_batch`) in
+the machine format: bracketed fields under a ``[ GAIA-SECURITY ]`` prefix.
 Either way a Details re-ask replaces each question with its Details text. Phrase
 limits are checked when a request is sealed (:func:`check_phrases`, called by
 ``core.seal_request``), so an over-long phrase is returned to its author
@@ -34,7 +34,7 @@ SIGNATURE_HEADER_MAX = 13
 BATCH_MAX = 4
 OPTION_WORDS_MAX = 10
 
-#: Headers of the pre-D33 surface, still recognised on a question a model copied.
+#: The earlier surface's headers, still recognised on a question a model copied, and OpenCode's options.
 HEADER = "Aprobación"
 DETAILS_HEADER = "Detalles"
 DEFAULT_QUESTION = "¿Apruebo esta solicitud?"
@@ -51,7 +51,7 @@ SIGNATURE_OPTIONS = (
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 
-#: Opens every question Gaia asks, so the user reads it as Gaia's security and not the model's (D37).
+#: Opens each OpenCode question and Details re-ask, so the user reads it as Gaia's security and not the model's.
 _PREFIX = "[ GAIA-SECURITY ]"
 #: The prefix however a model spaced it, unspaced included: the user reads any spacing as Gaia's.
 _TYPED_PREFIX = re.compile(r"\[\s*GAIA-SECURITY\s*\]")
@@ -195,7 +195,7 @@ def _lifted_folder(items: Sequence[Mapping[str, Any]]) -> Optional[str]:
 
 
 def _folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str]:
-    """The folder a command runs in, only when it is not the requester's shell folder (D3).
+    """The folder a command runs in, only when it is not the requester's shell folder.
 
     ``requested_from`` is sealed by the request; a payload sealed without it
     (a reactive block, which seals the folder it ran in, or an older row) shows
@@ -231,7 +231,7 @@ def _uses_relative_path(command: str) -> bool:
 
 
 def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str]:
-    """The sealed folder, shown when it differs from the requester's or the command reads relative paths (D37)."""
+    """The sealed folder, shown when it differs from the requester's or the command reads relative paths."""
     folder = _folder(payload, item)
     if folder:
         return folder
@@ -255,7 +255,7 @@ def _allowed_exit(item: Mapping[str, Any]) -> list[str]:
 
 
 def _steps_text(payload: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
-    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37).
+    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP``.
 
     A signed command that declared exits it may end with non-zero shows them
     after its text, so the user signs what the set tolerates as well as what it runs.
@@ -341,7 +341,7 @@ def _captured_work(command: Optional[str]) -> Optional[str]:
 
 
 def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's Details question (D37).
+    """One command's Details question.
 
     The command, what it does, its impact, how the result is verified, whether
     it rewrites shared state, the rollback, its folder when it matters, and
@@ -459,7 +459,7 @@ def _question(
 def batch_header(
     position: int, total: int, *, details: bool = False, signature: Optional[str] = None,
 ) -> str:
-    """The header of an OpenCode question, or of its Details re-ask: ``Firma 1/2``, or ``Firma A 1/2`` inside signature ``A`` (D38).
+    """The header of an OpenCode question, or of its Details re-ask: ``Firma 1/2``, or ``Firma A 1/2`` inside signature ``A``.
 
     ``Detalle A1/2`` drops the space ``Firma A 1/2`` keeps: with it the header
     would run to 13 characters, one past the host's :data:`HEADER_MAX`.
@@ -627,8 +627,8 @@ def render_batch(
 
     A call asking one signature heads each question with its position in the
     call, ``Firma N/M``; a call mixing signatures names each one by a letter
-    and counts inside it, ``Firma A 1/2``, ``Firma A 2/2``, ``Firma B 1/1``
-    (D38). Question texts must differ: the host indexes each answer by its
+    and counts inside it, ``Firma A 1/2``, ``Firma A 2/2``, ``Firma B 1/1``.
+    Question texts must differ: the host indexes each answer by its
     question text.
     """
     counts = [question_count(payload) for payload, _ in requests]

@@ -186,18 +186,14 @@ def resolve_workspace(cwd: Path | str | None = None) -> str:
     order does not drift between call sites.
 
     Resolution order:
-        1. ``GAIA_DISPATCH_WORKSPACE`` environment variable (set by the
-           SubagentStop hook chain when dispatching a subagent).
-        2. ``GAIA_WORKSPACE`` environment variable (set by
-           ``gaia <cmd> --workspace=<name>``).
+        1. ``GAIA_DISPATCH_WORKSPACE`` environment variable.
+        2. ``GAIA_WORKSPACE`` environment variable.
         3. :func:`current` -- the declared workspace containing *cwd*.
         4. Literal ``"global"`` when nothing else resolves.
 
-    The explicit env vars win over the path-derived identity because a
-    dispatch may run from a cwd that is not the target workspace; the env var
-    carries the intended attribution. Falling back to ``"global"`` (never
-    ``None``) keeps attribution consistent with episodic memory and the
-    handoff persister, which use the same final fallback.
+    The env vars win over the path-derived identity because a dispatch may run
+    from a cwd that is not the target workspace. Nothing in this tree sets
+    them; they are read only.
 
     Args:
         cwd: Directory to resolve the declared workspace for (step 3).
@@ -330,9 +326,11 @@ def cli_workspace(
     Resolution order: ``explicit`` > ``GAIA_DISPATCH_WORKSPACE`` >
     ``GAIA_WORKSPACE`` > :func:`current` of ``cwd`` > ``"global"``. A name
     retired by ``gaia workspace retire`` then resolves to the workspace it was
-    folded into. Every CLI that accepts ``--workspace`` delegates here, and
+    folded into. The CLIs that accept ``--workspace`` (brief, plan, task, ac,
+    evidence, memory and the like) delegate here, and
     :func:`resolve_workspace` ends in the same :func:`current`, so a CLI and a
-    history writer standing in the same folder name the same workspace.
+    history writer standing in the same folder name the same workspace, except
+    that only this function follows a retirement.
     """
     if explicit:
         return _retired_into(explicit)
@@ -384,8 +382,8 @@ def list_known() -> list[str]:
     base = workspaces_dir()
     if not base.is_dir():
         return []
-    # Workspaces are nested: host/owner/repo. Walk three levels deep when present,
-    # but also surface flat names (fallback identities like "my-project").
+    # Walk host/owner/repo three levels deep when present, but also surface
+    # flat names such as a declared workspace name.
     result: set[str] = set()
     for entry in base.iterdir():
         if not entry.is_dir():
@@ -397,8 +395,7 @@ def list_known() -> list[str]:
             for repo in owner.iterdir() if owner.is_dir() else []:
                 if repo.is_dir():
                     result.add(f"{entry.name}/{owner.name}/{repo.name}")
-        # Also include flat names (directory-name fallback identities)
-        # Only add if no nested host/owner/repo was found under this entry
+        # A flat name is added only if no nested host/owner/repo was found under this entry
         if not any((entry / o).is_dir() and any((entry / o / r).is_dir() for r in (entry / o).iterdir() if (entry / o).is_dir()) for o in entry.iterdir() if entry.is_dir()):
             result.add(entry.name)
     return sorted(result)

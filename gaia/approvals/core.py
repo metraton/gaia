@@ -57,7 +57,7 @@ _MAX_EXIT_CODE = 255
 #: The withdrawal reason of a phraseless request its requester's phrased one
 #: replaced; readers tell it from a user's rejection and from an expiry by it.
 REPLACED_REASON = "reemplazada"
-#: The flag a requester owes on every request: how to undo it, or that it cannot be undone (D38).
+#: The flag a requester owes on every request: how to undo it, or that it cannot be undone.
 ROLLBACK_FLAG = "--rollback"
 #: The flags a COMMAND_SET owes besides the rollback: how its result is checked,
 #: and whether it rewrites state other people rely on.
@@ -221,7 +221,7 @@ def seal_request(
     may carry ``does`` and ``impact``. All four are checked against the
     signature surface limits here, when the request is made
     (``surface.SurfaceLimitError``). ``requested_from`` is the requester's shell
-    folder: the surface names an item's folder only when it differs (D3).
+    folder: the surface names an item's folder only when it differs.
 
     ``operation`` is required for ``command`` (the reactive Bash block): it is
     the ``<CATEGORY> command intercepted: <verb>`` line activation reads to
@@ -298,7 +298,7 @@ def seal_request(
 
 
 # --------------------------------------------------------------------------- #
-# Phrases (PD10)
+# Phrases
 # --------------------------------------------------------------------------- #
 
 def _payload_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -381,7 +381,7 @@ def _require_phrases(
     what: object, question: object, items: list[Mapping[str, Any]], rollback: object,
     owed: Optional[Mapping[str, object]] = None,
 ) -> None:
-    """Refuse a new request lacking a phrase, its rollback sentence included (D38).
+    """Refuse a new request lacking a phrase, its rollback sentence included.
 
     ``owed`` maps each further flag the request kind owes to its value. The
     rollback and these are owed only when a request is made, not when one is
@@ -607,8 +607,7 @@ def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -
     session and agent; otherwise the requester's pending request is named
     (minted on first sight). A block on a request without phrases carries the
     ``request_line`` that replaces it; a phrased one carries ``None``. Raises
-    when the request cannot be persisted, so the host can fall back to its own
-    consent dialog.
+    when the request cannot be persisted; the caller then denies the write.
     """
     _ensure_hooks_importable()
     from modules.security.protected_paths import is_protected_hook_path, resolved_write_target
@@ -712,7 +711,7 @@ def question_batch(
 
 
 #: ``metadata_json.kind`` of the NOOP event recording that ``gaia approvals
-#: question`` handed a signature out at a slot (D31). NOOP because a hand-out
+#: question`` handed a signature out at a slot. NOOP because a hand-out
 #: changes no status and the ``approval_events`` CHECK stays closed.
 HANDOUT_KIND = "question_handed_out"
 
@@ -778,7 +777,7 @@ def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
     Each signature is one question. The newest hand-out of ``gaia approvals
     question`` (:func:`hand_out_question`) whose signatures render exactly
     these objects, as questions or as Details re-asks, decides which signature
-    each slot asks (D31). Without such a hand-out each slot is matched to the
+    each slot asks. Without such a hand-out each slot is matched to the
     pending request that renders there; a question no pending request renders,
     or one two render alike, raises :class:`SealError` naming the position.
     """
@@ -905,7 +904,7 @@ def decide(
 
 
 def signature_decision(option_keys: list[Optional[str]]) -> Optional[str]:
-    """The one decision a signature takes from the answers to its questions (D33).
+    """The one decision a signature takes from the answers to its questions.
 
     A Reject on any question rejects the whole signature; it is approved only
     when every question got Approve; otherwise a Details asks again, and
@@ -967,7 +966,7 @@ def match_command(
 
 
 def sealed_invocation(cwd: str, command: str) -> str:
-    """The only compound accepted (D24): the one that runs an item sealed in another directory."""
+    """The only compound accepted: the one that runs an item sealed in another directory."""
     return f"cd {shlex.quote(cwd)} && {command}"
 
 
