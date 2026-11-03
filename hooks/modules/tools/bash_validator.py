@@ -96,7 +96,7 @@ from ..security.program_heredoc import heredoc_program
 from ..security.shell_substitution import (
     _read_heredoc_opener, extract_substitutions, extract_substitutions_truncated,
 )
-from ..security.gaia_db_write_guard import check as check_gaia_db_write
+from ..security.gaia_db_write_guard import check as check_gaia_db_write, sqlite_unproven_effect
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
 from ..security.memory_skill_guard import check as check_memory_skill_loaded
@@ -1123,6 +1123,16 @@ class BashValidator:
             return decide_t3_outcome(
                 command,
                 verb="unprovable-write-target",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+            )
+
+        if sqlite_unproven_effect(write_guard_scope, cwd):
+            return decide_t3_outcome(
+                command,
+                verb="sqlite-reach",
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
                 session_id=session_id,

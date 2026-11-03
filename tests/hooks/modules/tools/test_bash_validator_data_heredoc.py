@@ -225,7 +225,7 @@ class TestRedirectOnTheCommandLineIsStillAWrite:
         command = "sqlite3 ~/.gaia/gaia.db <<'SQL'\nUPDATE plans SET status='done';\nSQL"
         result = _validate(command)
         assert result.allowed is False
-        assert "Direct SQL writes to gaia.db" in (result.reason or ""), result.reason
+        assert "sqlite3 CLI is refused on gaia.db" in (result.reason or ""), result.reason
 
 
 class TestWriteGuardsReadOnlyTheDataHeredocCommandLine:
