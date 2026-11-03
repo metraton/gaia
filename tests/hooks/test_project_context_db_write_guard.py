@@ -219,6 +219,143 @@ def test_read_against_another_database_is_not_judged():
     assert check('sqlite3 /tmp/other.db ".read /nonexistent/script.sql"') == (True, None)
 
 
+@pytest.mark.parametrize("body", [
+    "UPDATE apps SET status = 'x';",
+    "SELECT 1;\nPRAGMA user_version = 3;",
+    "SELECT 1;\n.restore /tmp/x.db",
+    "SELECT 1;\n.shell kubectl apply -f x.yaml",
+])
+@pytest.mark.parametrize("template", [
+    "sqlite3 {store} < {path}",
+    "sqlite3 {store} <{path}",
+    "sqlite3 < {path} {store}",
+    "sqlite3 {store} < '{path}'",
+    "sqlite3 {store} 0< {path}",
+])
+def test_redirected_script_that_writes_rejected(tmp_path, body, template):
+    path = _script(tmp_path, body)
+    assert check(template.format(store=STORE, path=path)) == (False, REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("body", ["SELECT * FROM apps;", ".tables\nPRAGMA table_info(apps);", ""])
+def test_redirected_script_that_only_reads_allowed(tmp_path, body):
+    path = _script(tmp_path, body)
+    assert check(f"sqlite3 {STORE} < {path}") == (True, None)
+    assert check(f"sqlite3 {STORE} < {path} | head") == (True, None)
+
+
+def test_redirected_script_follows_a_read_of_another(tmp_path):
+    inner = _script(tmp_path, "DELETE FROM apps;")
+    outer = tmp_path / "outer.sql"
+    outer.write_text(f".read {inner}\n")
+    assert check(f"sqlite3 {STORE} < {outer}") == (False, REJECTION_MESSAGE)
+
+
+def test_redirected_relative_script_resolves_against_the_given_directory(tmp_path):
+    _script(tmp_path, "SELECT 1;")
+    assert check(f"sqlite3 {STORE} < script.sql", cwd=str(tmp_path)) == (True, None)
+    _script(tmp_path, "DELETE FROM apps;")
+    assert check(f"sqlite3 {STORE} < script.sql", cwd=str(tmp_path)) == (False, REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("command", [
+    f"sqlite3 {STORE} < /nonexistent/script.sql",
+    f"sqlite3 {STORE} < script.sql",
+    f"sqlite3 {STORE} < $SCRIPT",
+    f"sqlite3 {STORE} < /dev/stdin",
+    f"sqlite3 {STORE} < /tmp",
+    f"sqlite3 {STORE} < <(cat /tmp/script.sql)",
+])
+def test_redirected_script_that_cannot_be_read_rejected(command):
+    allowed, reason = check(command)
+    assert allowed is False
+    assert "could not prove" in reason
+
+
+def test_redirected_relative_script_after_a_cd_cannot_be_proven(tmp_path):
+    _script(tmp_path, "SELECT 1;")
+    allowed, reason = check(f"cd /tmp && sqlite3 {STORE} < script.sql", cwd=str(tmp_path))
+    assert allowed is False
+    assert "could not prove" in reason
+
+
+def test_redirect_against_another_database_is_not_judged():
+    assert check("sqlite3 /tmp/other.db < /nonexistent/script.sql") == (True, None)
+
+
+def test_comparison_inside_a_quoted_statement_is_not_a_redirect():
+    assert check(f"sqlite3 {STORE} \"SELECT * FROM apps WHERE id < 5\"") == (True, None)
+    assert check(f"sqlite3 {STORE} 'SELECT 1 < 2'") == (True, None)
+
+
+def test_here_string_and_heredoc_are_not_redirected_files():
+    assert check(f"sqlite3 {STORE} <<< 'SELECT 1;'") == (True, None)
+    assert check(f"sqlite3 {STORE} <<EOF\nSELECT 1;\nEOF") == (True, None)
+
+
+def test_validator_hands_the_shell_directory_to_a_redirected_script(tmp_path):
+    from hooks.modules.tools.bash_validator import BashValidator
+
+    _script(tmp_path, "DELETE FROM apps;")
+    result = BashValidator().validate(
+        f"sqlite3 {STORE} < script.sql",
+        is_subagent=True, session_id="ses-db-guard", agent_type="gaia-system", cwd=str(tmp_path),
+    )
+    assert result.rule == "floor.gaia-db-write"
+    assert result.reason.startswith(REJECTION_MESSAGE)
+
+
+@pytest.mark.parametrize("dot_command", [
+    ".shell kubectl apply -f x.yaml",
+    ".system kubectl apply -f x.yaml",
+    ".sys git push --force origin main",
+    ".shell rm -rf /",
+    ".shell echo hi; kubectl apply -f x.yaml",
+    ".shell ls | kubectl apply -f -",
+    f".shell cp /tmp/x {STORE}",
+    f".shell sqlite3 {STORE} 'DELETE FROM apps'",
+    ".shell cat ~/.ssh/id_rsa",
+])
+def test_shell_dot_command_running_a_non_read_rejected(dot_command):
+    allowed, _ = check(f'sqlite3 {STORE} "{dot_command}"')
+    assert allowed is False
+    allowed, _ = check(f"sqlite3 {STORE} <<EOF\n{dot_command}\nEOF")
+    assert allowed is False
+
+
+@pytest.mark.parametrize("dot_command", [
+    ".shell $CMD",
+    ".system echo `id`",
+    ".shell echo $(id)",
+    ".shell echo \\",
+    ".shell cat <(ls)",
+])
+def test_shell_dot_command_that_cannot_be_judged_rejected(dot_command):
+    allowed, reason = check(f'sqlite3 {STORE} "{dot_command}"')
+    assert allowed is False
+    assert "could not prove" in reason
+
+
+@pytest.mark.parametrize("dot_command", [
+    ".shell ls /tmp",
+    ".system echo hi",
+    ".shell pwd",
+    ".shell git status",
+])
+def test_shell_dot_command_running_a_read_allowed(dot_command):
+    assert check(f'sqlite3 {STORE} "{dot_command}"') == (True, None)
+
+
+def test_shell_dot_command_inside_a_read_script_is_judged(tmp_path):
+    path = _script(tmp_path, ".shell kubectl apply -f x.yaml")
+    allowed, _ = check(f'sqlite3 {STORE} ".read {path}"')
+    assert allowed is False
+
+
+def test_shell_dot_command_against_another_database_is_not_judged():
+    assert check('sqlite3 /tmp/other.db ".shell kubectl apply -f x.yaml"') == (True, None)
+
+
 def test_bash_wrapped_write_rejected():
     """bash -c wrapping must still be detected."""
     cmd = "bash -c 'sqlite3 ~/.gaia/gaia.db \"INSERT INTO apps (name) VALUES (\\\"x\\\")\"'"

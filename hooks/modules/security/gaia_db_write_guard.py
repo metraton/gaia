@@ -7,8 +7,9 @@ Patterns detected:
     a sqlite3 invocation naming gaia.db (or a .gaia/*.db) with a _WRITE_VERBS
     word or a PRAGMA that sets a value or rewrites the file anywhere in the
     command, case-insensitive, inside quotes / heredocs; a dot-command that
-    rewrites the open store (.restore, .import), a .read of a script that writes
-    or cannot be read, or one that writes the gaia.db file (.backup, .clone,
+    rewrites the open store (.restore, .import), a .read or `<` script that
+    writes or cannot be read, a .shell / .system command that is not provably
+    a read, or one that writes the gaia.db file (.backup, .clone,
     .save, .output, .once, .log, .trace); and any shell writer whose
     DESTINATION is the gaia.db file or a side file -- cp/mv/install/ln/rsync,
     redirect, tee, dd of=, truncate, or a mutative inline interpreter naming it
@@ -56,6 +57,13 @@ _DOT_COMMAND = re.compile(
 )
 _DOT_STORE_REWRITERS = ("restore", "import")
 _DOT_FILE_WRITERS = ("backup", "clone", "save", "output", "once", "log", "trace")
+_DOT_SHELLS = ("shell", "system")
+_SQLITE_SEGMENT = re.compile(r"sqlite3\b[^&;|\n]*", re.IGNORECASE)
+_QUOTED_OR_STDIN_REDIRECT = re.compile(
+    r"\"[^\"]*\"|'[^']*'"
+    r"|(?<![<\d])0?<(?![<&])\s*(?P<path>\"[^\"]*\"|'[^']*'|\S+)"
+)
+_COMPUTED_WORDS = re.compile(r"[$`]|[<>]\(")
 _MAX_READ_DEPTH = 3
 _MAX_SCRIPT_BYTES = 1 << 20
 _SHELL_CD = re.compile(r"(?:^|[;&|(\s])(?:cd|pushd|popd)\b")
@@ -74,9 +82,15 @@ REJECTION_MESSAGE = (
 )
 
 UNREADABLE_SCRIPT_MESSAGE = (
-    "A `.read` against gaia.db names a script this guard could not read, so it "
-    "could not prove the script does not write the store. Use the `gaia` CLI, "
-    "or run the statements directly."
+    "A `.read` or `<` redirect against gaia.db names a script this guard could "
+    "not read, so it could not prove the script does not write the store. Use "
+    "the `gaia` CLI, or run the statements directly."
+)
+
+UNJUDGEABLE_SHELL_MESSAGE = (
+    "A `.shell` or `.system` against gaia.db runs a command this guard could "
+    "not prove is a read, so it could not prove the store stays untouched. Run "
+    "the command directly, outside the SQL shell."
 )
 
 FILE_WRITE_REJECTION_MESSAGE = (
@@ -118,10 +132,10 @@ def _is_abbreviation_of(typed: str, full: str) -> bool:
     return full.startswith(typed)
 
 
-def _dot_commands(text: str) -> Iterator[Tuple[str, List[str]]]:
+def _dot_commands(text: str) -> Iterator[Tuple[str, List[str], str]]:
     for match in _DOT_COMMAND.finditer(text):
         operands = [word.strip("'\"\\") for word in match["rest"].split()]
-        yield match["name"].lower(), [w for w in operands if w and not w.startswith("-")]
+        yield match["name"].lower(), [w for w in operands if w and not w.startswith("-")], match["rest"]
 
 
 def _script_text(path: str, cwd: Optional[str]) -> Optional[str]:
@@ -147,8 +161,43 @@ def _script_rejection(script: str, cwd: Optional[str], depth: int) -> Optional[s
     return _dot_rejection(script, cwd, depth, store_open=True)
 
 
+def _shell_rejection(command: str, cwd: Optional[str]) -> Optional[str]:
+    """Judge a `.shell` / `.system` command as the shell would judge it run directly."""
+    from .blocked_commands import is_blocked_command
+    from . import protected_path_guard, sensitive_read_guard, shell_write_guard
+
+    if command.endswith("\\") or _COMPUTED_WORDS.search(command):
+        return UNJUDGEABLE_SHELL_MESSAGE
+    for component in _split_components(command):
+        component = component.strip()
+        if not component:
+            continue
+        if is_blocked_command(component).is_blocked or detect_mutative_command(component, cwd=cwd).is_mutative:
+            return REJECTION_MESSAGE
+        for guard in (check, protected_path_guard.check, shell_write_guard.check, sensitive_read_guard.check):
+            if not guard(component, cwd)[0]:
+                return REJECTION_MESSAGE
+    return None
+
+
+def _redirected_script_rejection(command: str, cwd: Optional[str]) -> Optional[str]:
+    for segment in _SQLITE_SEGMENT.finditer(command):
+        if not _SQLITE_INVOCATION.search(segment[0]):
+            continue
+        for match in _QUOTED_OR_STDIN_REDIRECT.finditer(segment[0]):
+            if match["path"] is None:
+                continue
+            script = _script_text(match["path"].strip("'\""), cwd)
+            if script is None:
+                return UNREADABLE_SCRIPT_MESSAGE
+            rejection = _script_rejection(script, cwd, 1)
+            if rejection:
+                return rejection
+    return None
+
+
 def _dot_rejection(text: str, cwd: Optional[str], depth: int, store_open: bool) -> Optional[str]:
-    for typed, operands in _dot_commands(text):
+    for typed, operands, rest in _dot_commands(text):
         if operands and _is_gaia_db_file(operands[-1]) and any(
             _is_abbreviation_of(typed, name) for name in _DOT_FILE_WRITERS
         ):
@@ -157,6 +206,10 @@ def _dot_rejection(text: str, cwd: Optional[str], depth: int, store_open: bool) 
             continue
         if any(_is_abbreviation_of(typed, name) for name in _DOT_STORE_REWRITERS):
             return REJECTION_MESSAGE
+        if rest.strip() and any(_is_abbreviation_of(typed, name) for name in _DOT_SHELLS):
+            rejection = _shell_rejection(rest.strip(), cwd)
+            if rejection:
+                return rejection
         if operands and _is_abbreviation_of(typed, "read"):
             script = _script_text(operands[0], cwd) if depth < _MAX_READ_DEPTH else None
             if script is None:
@@ -175,6 +228,10 @@ def _sql_rejection(command: str, cwd: Optional[str] = None) -> Optional[str]:
     if not re.search(r"sqlite3\b", command, re.IGNORECASE):
         return None
     shell_cwd = None if _SHELL_CD.search(command) else cwd
+    if invoked:
+        rejection = _redirected_script_rejection(command, shell_cwd)
+        if rejection:
+            return rejection
     return _dot_rejection(command, shell_cwd, 0, store_open=invoked)
 
 
