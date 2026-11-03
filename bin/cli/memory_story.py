@@ -16,8 +16,7 @@ CLI surface (argument wiring + narration render); the queries, the BFS, and the
 timeline fusion live in ``gaia.store.reader`` so they are unit-testable without
 the CLI.
 
-Kept in its own module (imported by ``bin/cli/memory.py``) so ``memory.py``
-stays legible.
+Imported by ``bin/cli/memory.py``.
 """
 
 from __future__ import annotations
@@ -42,10 +41,6 @@ def _err(msg: str, as_json: bool) -> int:
     return 1
 
 
-# ---------------------------------------------------------------------------
-# Narration render (episode-show style: two-space indented, ASCII-only)
-# ---------------------------------------------------------------------------
-
 def _render_story(story: dict, workspace: str) -> str:
     seed = story["seed"]
     lines: list[str] = []
@@ -57,7 +52,6 @@ def _render_story(story: dict, workspace: str) -> str:
     )
     lines.append("")
 
-    # Lineage nodes
     lines.append("  Lineage")
     for n in story["nodes"]:
         role = n.get("role") or "-"
@@ -66,7 +60,6 @@ def _render_story(story: dict, workspace: str) -> str:
         lines.append(f"    - {n['name']}  [{role}, {depth_s}]")
     lines.append("")
 
-    # Timeline
     lines.append("  Timeline")
     if not story["timeline"]:
         lines.append("    (no recorded history or links)")
@@ -78,7 +71,6 @@ def _render_story(story: dict, workspace: str) -> str:
             lines.append(f"    {ts}{approx}  {node}: {ev.get('detail', '')}")
     lines.append("")
 
-    # Final states
     lines.append("  Final state")
     name_w = max(4, max((len(f["name"]) for f in story["final_states"]),
                         default=4))
@@ -100,10 +92,6 @@ def _render_story(story: dict, workspace: str) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Subcommand handler
-# ---------------------------------------------------------------------------
-
 def _cmd_story(args) -> int:
     """Handle ``gaia memory story <slug>``."""
     as_json = getattr(args, "json", False)
@@ -118,10 +106,8 @@ def _cmd_story(args) -> int:
     except ImportError as exc:
         return _err(f"gaia.store not importable: {exc}", as_json)
 
-    # Existence gate: a slug with neither a live row NOR any lineage trace is a
-    # genuine miss. A slug whose row was hard-deleted but still appears as a
-    # link endpoint remains reachable through the lineage, so we do not require
-    # a live row -- we require SOME trace.
+    # A hard-deleted row that is still a link endpoint stays reachable through
+    # its lineage, so a miss means no live row and no trace at all.
     story = build_memory_story(workspace, slug, max_depth=max_depth)
     live = get_memory(workspace, slug)
     has_trace = (
@@ -149,10 +135,6 @@ def _cmd_story(args) -> int:
     print(_render_story(story, workspace))
     return 0
 
-
-# ---------------------------------------------------------------------------
-# Registration (called by cli.memory.register)
-# ---------------------------------------------------------------------------
 
 def add_story_subparser(actions, raw_formatter) -> None:
     """Register the ``story`` sub-action on the ``gaia memory`` subparsers."""

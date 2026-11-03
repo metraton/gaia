@@ -41,10 +41,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _resolve_workspace(explicit: str | None) -> str:
     from gaia.project import cli_workspace
     return cli_workspace(explicit)
@@ -133,10 +129,6 @@ def _json_row(row: dict, now) -> dict:
 
     return {**row, **_due_payload(row.get("due_at")), "now_local": clock.format_local(now)}
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 def _cmd_add(args) -> int:
     from gaia import notifications_time as clock
@@ -338,10 +330,6 @@ def _cmd_cancel(args) -> int:
         print(f"Notification #{args.id} cancelled; it will not come back.")
     return 0
 
-
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
 
 def register(subparsers) -> None:
     """Register the `notifications` subcommand with the root parser."""

@@ -36,10 +36,6 @@ if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
-
 def _emit_error(args: argparse.Namespace, msg: str) -> int:
     """Emit an error in the active output format and return exit code 1."""
     if getattr(args, "json", False):
@@ -68,7 +64,6 @@ def _render_human(report, *, dry_run: bool) -> None:
                 f"  - workspace={p['workspace']} group={p['container'] or '-'} "
                 f"project={p['project']} path={p['path']} [{applied}]"
             )
-            # M3/T8 (AC-6): the stack fingerprint (facet rows) for this repo.
             facets = p.get("facets") or []
             if facets:
                 summary = ", ".join(
@@ -86,8 +81,6 @@ def _render_human(report, *, dry_run: bool) -> None:
         for w in moves:
             print(f"  ! {w['message']}")
     if collisions:
-        # M2-T6 (AC-5): would-be collisions are surfaced explicitly, never
-        # silently merged/renamed.
         print(f"{prefix}WARNING -- repo collisions (would-be silent data loss):")
         for w in collisions:
             print(
@@ -113,7 +106,6 @@ def _render_human(report, *, dry_run: bool) -> None:
         for f in report.foreign_repos:
             print(f"  - repo={f['repo']} workspace={f['workspace']} path={f['path']}")
 
-    # SV2: cross-DB detection blocks (alerts only -- the human adjudicates).
     if report.move_candidates:
         print(f"{prefix}MOVE CANDIDATES (remote match, human adjudicates):")
         for m in report.move_candidates:
@@ -153,16 +145,13 @@ def _render_human(report, *, dry_run: bool) -> None:
     if report.diff:
         print(f"{prefix}diff               : {report.diff}")
 
-    # Stage 3: contract promotion summary (validate gate -> merge scan-owned).
     promo = report.promotion or {}
     if promo:
         if promo.get("error"):
             print(f"{prefix}promotion          : ERROR {promo['error']}")
         else:
-            # The verb reports the OUTCOME, not just the applied flag: three
-            # different situations leave applied=False, and calling all of them
-            # "would-promote" reads, in apply mode, as a promotion that was due
-            # and silently skipped.
+            # The verb follows the outcome: three situations leave applied=False,
+            # and "would-promote" in apply mode would read as a skipped promotion.
             verb = {
                 "applied": "promoted",
                 "dry-run": "would-promote",
@@ -182,10 +171,8 @@ def _render_human(report, *, dry_run: bool) -> None:
                     f"  ! promotion-rejected project={rej.get('name')} "
                     f"reasons={rej.get('reasons')}"
                 )
-            # AC-2: two promotable repos resolved by remote to the same
-            # contract entry in this run -- detected and DIVERTED (each kept
-            # its own entry), not a completed merge. Mirrors the repo-collision
-            # block above, one layer up (contract entries, not projects rows).
+            # Two promotable repos resolved by remote to the same contract entry
+            # are diverted (each kept its own entry), not merged.
             if promo.get("collisions"):
                 print(
                     f"{prefix}WARNING -- promotion collisions "
@@ -234,10 +221,6 @@ def _render_summary(report, *, dry_run: bool) -> None:
     print("One project: gaia context project NAME. "
           "Memory for a group: gaia memory get-relevant --group NAME.")
 
-
-# ---------------------------------------------------------------------------
-# Plugin registration (discovered by bin/gaia)
-# ---------------------------------------------------------------------------
 
 def register(subparsers) -> argparse.ArgumentParser:
     """Register the `scan` subcommand with the root parser."""
@@ -325,13 +308,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         logging.exception("gaia scan failed")
         return _emit_error(args, str(exc))
 
-    # Stage 3 (decoupled): promote scan-owned facts from the `projects` index
-    # into the `project_identity` project-context contract, merging without
-    # clobbering agent-owned enrichment. classify_scan above stays a pure
-    # indexer -- promotion is a separate, independently-invocable stage
-    # (tools/scan/promote.promote_workspace). Non-fatal: a promotion failure is
-    # recorded in the report and never fails the scan (the raw index is already
-    # persisted). Skipped when the scan itself errored or matched no workspace.
+    # Promote scan-owned facts into the `project_identity` contract
+    # (tools/scan/promote.promote_workspace) without clobbering agent-owned
+    # enrichment. A promotion failure is recorded in the report and does not
+    # fail the scan, whose index is already persisted.
     if not report.error and report.resolved_workspace:
         try:
             from tools.scan.promote import promote_workspace

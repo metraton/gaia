@@ -30,10 +30,6 @@ from cli import _install_helpers  # type: ignore  # noqa: E402
 from cli import install  # type: ignore  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Project root detection
-# ---------------------------------------------------------------------------
-
 def _find_project_root() -> Path:
     start = Path(os.environ.get("INIT_CWD", "")) if os.environ.get("INIT_CWD") else None
     if start and (start / ".claude").exists():
@@ -55,10 +51,6 @@ def _find_package_root() -> Path:
     """The gaia package root (where package.json lives)."""
     return _PACKAGE_ROOT
 
-
-# ---------------------------------------------------------------------------
-# Version detection
-# ---------------------------------------------------------------------------
 
 def _read_package_version(pkg_path: Path) -> str:
     try:
@@ -87,10 +79,6 @@ def _detect_versions(cwd: Path, pkg_root: Path) -> dict:
 
     return {"current": current, "previous": previous}
 
-
-# ---------------------------------------------------------------------------
-# Backward-compat shims for existing tests (test_gaia_update.py imports these)
-# ---------------------------------------------------------------------------
 
 def _legacy_settings_shape(helper_res: dict, dry_run: bool) -> dict:
     """Convert a configure_settings_json helper result to legacy status shape."""
@@ -141,17 +129,10 @@ def _check_symlinks(claude_dir: Path, pkg_root: Path, dry_run: bool) -> dict:
     return _legacy_symlinks_shape(res, dry_run)
 
 
-# ---------------------------------------------------------------------------
-# Verification -- legacy 6-check report
-# ---------------------------------------------------------------------------
-
 def _run_verification(claude_dir: Path) -> dict:
-    """Run the legacy 6-check health report.
+    """Run the six health checks of the dry-run preview.
 
-    Note: `gaia doctor` performs a richer set of checks (12 total). This
-    function is preserved for backward compatibility with the existing
-    `--verify` output shape and test_gaia_update.py expectations. New code
-    should call `gaia doctor --json` for the canonical health snapshot.
+    `gaia doctor --json` is the fuller health snapshot.
     """
     checks = []
     issues = []
@@ -186,9 +167,7 @@ def _run_verification(claude_dir: Path) -> dict:
         checks.append({"name": "python3", "ok": False})
         issues.append("Python 3 not found (required for hooks)")
 
-    # 3. project-context contracts (T1.3: DB-backed read).
-    # Reads from project_context_contracts table in gaia.db instead of
-    # the legacy project-context.json file.
+    # 3. project-context contracts, counted in project_context_contracts
     try:
         from gaia.project import current as _project_current
         from gaia.store.writer import _connect as _store_connect
@@ -210,10 +189,8 @@ def _run_verification(claude_dir: Path) -> dict:
         checks.append({"name": "project-context", "ok": False})
         issues.append(f"project-context DB read error: {exc}")
 
-    # 4. Surface routing (DB-backed). Routing moved from
-    # config/surface-routing.json to the surface_routing table, seeded from
-    # each agent's `routing:` frontmatter block at install time. Verify the
-    # table carries at least the core surfaces rather than a config file.
+    # 4. Surface routing: the surface_routing table, seeded from each agent's
+    # `routing:` frontmatter at install time, holds at least 6 surfaces.
     try:
         from gaia.store.writer import _connect as _store_connect
         con = _store_connect()
@@ -264,10 +241,6 @@ def _run_verification(claude_dir: Path) -> dict:
     passed = sum(1 for c in checks if c["ok"])
     return {"checks": checks, "issues": issues, "passed": passed, "total": len(checks)}
 
-
-# ---------------------------------------------------------------------------
-# Plugin interface
-# ---------------------------------------------------------------------------
 
 def register(subparsers):
     """Register the 'update' subcommand."""

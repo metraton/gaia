@@ -11,14 +11,14 @@ User runs: gaia <subcommand> [args]
         |
 bin/gaia (Python entry point) loads the dispatcher
         |
-bin/gaia imports every module in bin/cli/ and keeps those that define register()
+bin/gaia imports the bin/cli/<name>.py named by the first argument (every module for --help, no argument or an unknown name) and keeps those that define register()
         |
 Each module's register(subparsers) attaches its argparse + cmd_<name>() handler
         |
 Dispatcher routes to the matched handler, which exits with a status code
 ```
 
-There is **no npm `postinstall` hook** — install is non-invasive and bootstrap is lazy. The DB is created on the first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped for `install`, `uninstall`, `migrate`, `now` and `lint`, `_LAZY_BOOTSTRAP_SKIP`), and the install folder's `.claude/` config is written by `gaia install`. Every SessionStart also writes there (`run_first_time_setup` in `hooks/modules/core/plugin_setup.py`): it creates `plugin-registry.json` if missing (plugin data dir, else `.claude/`), merges Gaia's permissions and attribution into `.claude/settings.local.json`, and syncs the npm channel's hook entries into it; `.claude/hooks` is the only link it creates or repairs:
+There is **no npm `postinstall` hook** — install is non-invasive and bootstrap is lazy. The DB is created on the first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped for `install`, `uninstall`, `migrate`, `now` and `lint`, `_LAZY_BOOTSTRAP_SKIP`), and the install folder's `.claude/` config is written by `gaia install`. Every SessionStart also writes there (`run_first_time_setup` in `hooks/modules/core/plugin_setup.py`): it creates `plugin-registry.json` if missing (plugin data dir, else `.claude/`), merges Gaia's permissions and attribution into `.claude/settings.local.json`, and syncs the npm channel's hook entries into it; the `.claude/hooks` link is the only link SessionStart creates or repairs (`ensure_workspace_hooks_link` in `hooks/modules/core/workspace_bootstrap.py`):
 
 ```
 npm|pnpm install @jaguilar87/gaia
@@ -52,6 +52,7 @@ No Claude Code session is involved in either case. The subcommands run in a norm
 ```
 bin/
 ├── gaia                       # Python entry point — dispatches to bin/cli/<name>; its --help epilog is the lane map the orchestrator guard enforces
+├── plugin-dryrun.sh           # Plugin dry-run harness used by the release gate
 ├── pre-publish-validate.js    # Pre-publish gate for the release pipeline
 ├── python-detect.js           # Python runtime detection helper for npm lifecycles
 ├── validate-sandbox.sh        # End-to-end consumer-install verification harness
@@ -67,7 +68,7 @@ bin/
     ├── _converge.py           # Shared drift-free convergence primitives for dev/release (private, no register())
     ├── _pack_helpers.py       # shared `npm pack` primitive for dev/release (private, no register())
     ├── ac.py                  # gaia ac         — acceptance criteria for briefs (DB-canonical)
-    ├── approvals.py           # gaia approvals  — list/pending/show/question/request-set/approve/revoke/reject/reject-all/history/replay/clean/stats T3 grants
+    ├── approvals.py           # gaia approvals  — list/pending/show/question/request-set/request-file-write/approve/revoke/reject/reject-all/history/replay/clean/stats/audit-secrets T3 grants
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle, set-project, history (brief_events)
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
     ├── context.py             # gaia context    — show / scan / get / query / wipe / prune-workspaces project context from gaia.db
@@ -117,8 +118,7 @@ bin/
 
 ```python
 def register(subparsers) -> None:
-    """Attach this subcommand's argparse parser. Called once at startup
-    by bin/cli/__init__.py."""
+    """Attach this subcommand's argparse parser. Called by bin/gaia."""
     p = subparsers.add_parser("<name>", help="...")
     p.add_argument(...)
     p.set_defaults(func=cmd_<name>)

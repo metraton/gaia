@@ -1,8 +1,8 @@
 """
 gaia evidence -- Record and inspect per-AC evidence.
 
-Uses the three-tier storage model: small payloads (<= 4096 bytes) are stored
-inline in gaia.db; larger artifacts are written to the filesystem at
+Small payloads (<= 4096 bytes, EVIDENCE_INLINE_MAX_BYTES) are stored inline in
+gaia.db; larger ones, and binary files, are written to the filesystem at
 ~/.gaia/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid}.{ext}.
 
 Subcommands:
@@ -117,7 +117,6 @@ def _cmd_add(args) -> int:
     created_by = getattr(args, "created_by", None)
     as_json = getattr(args, "json", False)
 
-    # Validate mutual exclusion before any I/O
     if text_val is not None and artifact_file is not None:
         return _err(
             "--text and --artifact-file are mutually exclusive; supply at most one.",
@@ -134,7 +133,6 @@ def _cmd_add(args) -> int:
     except ValueError as exc:
         return _err(str(exc), as_json)
 
-    # Decide inline vs blob
     final_text: str | None = None
     final_artifact_path: str | None = None
     final_size_bytes: int | None = None
@@ -145,7 +143,6 @@ def _cmd_add(args) -> int:
         if final_size_bytes <= EVIDENCE_INLINE_MAX_BYTES:
             final_text = text_val
         else:
-            # Large text: write to FS as .txt blob
             try:
                 brief_slug = brief_name
                 from gaia.evidence.fs import write_blob
@@ -158,7 +155,6 @@ def _cmd_add(args) -> int:
             except Exception as exc:
                 return _err(f"blob write failed: {exc}", as_json)
     else:
-        # Artifact file path supplied
         src = Path(artifact_file)
         if not src.exists():
             return _err(f"artifact-file not found: {artifact_file}", as_json)
@@ -171,11 +167,9 @@ def _cmd_add(args) -> int:
         ext = src.suffix or ".bin"
 
         if final_size_bytes <= EVIDENCE_INLINE_MAX_BYTES:
-            # Small binary/text: store inline as text if decodable, else blob
             try:
                 final_text = data.decode("utf-8")
             except UnicodeDecodeError:
-                # Binary content -- must go to FS even if small
                 try:
                     from gaia.evidence.fs import write_blob
                     blob_path, size = write_blob(
@@ -186,7 +180,6 @@ def _cmd_add(args) -> int:
                 except Exception as exc:
                     return _err(f"blob write failed: {exc}", as_json)
         else:
-            # Large file: always write to FS
             try:
                 from gaia.evidence.fs import write_blob
                 blob_path, size = write_blob(
@@ -301,7 +294,6 @@ def _cmd_list(args) -> int:
     if ac_id_filter:
         rows = list_evidence_for_ac(brief_id, ac_id_filter)
     else:
-        # List all evidence for the brief (all ac_ids)
         con = _connect()
         try:
             raw = con.execute(

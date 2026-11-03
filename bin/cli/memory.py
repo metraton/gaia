@@ -1,14 +1,15 @@
 """
 gaia memory -- Inspect, query, and curate Gaia memory.
 
-Read-only subcommands operate on the episodic log (the activity history
+Read subcommands operate on the episodic log (the activity history
 mirrored into ``episodes`` / ``episodes_fts`` in ``~/.gaia/gaia.db``) and
-on curated memory rows:
+on curated memory rows; ``show`` and ``get-relevant`` also bump read
+telemetry on the rows they return:
 
   search <query> [--scope=memory|episodes|both] [--limit N] [--json]
                                           FTS5 search with hybrid scoring
-  stats [--json]                         Episode count, index count, conflicts
-  show <name> [--json]                  Curated memory row by (project, name)
+  stats [--json]                         Episode count, index count, curated rows per type
+  show <name> [--json]                  Curated memory row by (workspace, name)
   episode-show <episode_id> [--json]    Full episode with metadata
   list [--type=...] [--kind=...] [--workspace=<ws>]
                                           Enumerate curated memory rows
@@ -40,12 +41,10 @@ this order:
                                           (name_exists); --replace rewrites it
                                           in place to correct an error (T3), and
                                           a type=user name is never rewritten.
-                                          DB-only writer; no filesystem side
-                                          effects (no .md under
-                                          ~/.claude/projects/.../memory/).
-                                          Requires >=1 explicit scope flag
-                                          (--project preferred, or --workspace);
-                                          refuses to write with both empty.
+                                          DB-only writer. Requires >=1 explicit scope flag
+                                          (--project preferred, or --workspace;
+                                          --type=user needs none); refuses to
+                                          write with both empty.
                                           --project anchors memory.project_ref
                                           (forward-only) by resolving a
                                           project name within --workspace to
@@ -106,14 +105,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def _find_project_root() -> Path:
-    """Return the Gaia instance root: the highest ancestor with a .claude/ dir.
+    """Return the Gaia instance root: the highest ancestor of cwd, up to Path.home(), holding a Gaia .claude/.
 
-    Walks upward from cwd to Path.home(), collects every directory that
-    contains a .claude/ subdirectory, and returns the one closest to HOME
-    (the top-most one).  This prevents a nested .claude/ in a sub-repository
-    or dev checkout from shadowing the real Gaia instance.
-
-    Falls back to INIT_CWD if set and no .claude/ ancestor is found.
+    ``find_highest_claude_root`` prefers the top-most ancestor whose .claude/
+    holds hooks/, agents/ or skills/, so a nested .claude/ in a sub-repository
+    or dev checkout does not shadow the real instance, else the top-most plain
+    .claude/. When it finds none: INIT_CWD if it holds a .claude/, else cwd.
     """
     import sys as _sys
     import os
@@ -251,7 +248,7 @@ def _is_rich_body(body: str) -> bool:
     Detects any of:
       - Fenced code blocks (``` or ~~~)
       - Markdown headers (lines starting with ``#``)
-      - 3+ consecutive blank lines (multi-paragraph / complex structure)
+      - two or more consecutive blank lines (3+ newlines in a row)
     """
     import re as _re
     if _re.search(r"^```|^~~~", body, _re.MULTILINE):
@@ -270,7 +267,6 @@ def _is_rich_body(body: str) -> bool:
 def _query_episodes_from_db(workspace: str | None = None) -> list[dict]:
     """Query episodes from gaia.db. Returns list of episode dicts.
 
-    Used by _cmd_stats, _cmd_episode_show, and _cmd_search_scoped (episodes scope).
     Falls back to empty list on any import/DB error (non-blocking).
     """
     try:
@@ -400,13 +396,11 @@ def _cmd_stats(args) -> int:
 
     Reads episode count from episodes table in gaia.db (primary).
     Reads FTS5 indexed count from episodes_fts table in gaia.db.
-    Legacy index.json is no longer consulted.
     """
     as_json = getattr(args, "json", False)
 
     warnings: list[str] = []
 
-    # Episode count from DB (primary source -- T6 migration)
     total_episodes = _count_episodes_from_db()
 
     # FTS5 indexed count from episodes_fts in gaia.db
@@ -478,13 +472,11 @@ def _get_episode_from_db(episode_id: str) -> dict | None:
 def _cmd_episode_show(args) -> int:
     """Handle `gaia memory episode-show <episode_id>`.
 
-    Renamed from the legacy ``gaia memory show`` so that ``show`` can route
-    to curated memory (``gaia memory show <name>``). The legacy episode
-    inspector remains available under the explicit ``episode-show`` verb;
-    pre-existing callers that import ``_cmd_show`` see an alias defined
-    below for backward compatibility.
+    ``gaia memory show <name>`` is the curated-memory lookup; this is the
+    episode lookup. ``_cmd_show`` is an alias of this function (defined below).
 
-    T6 migration: reads from episodes table in gaia.db (no filesystem reads).
+    Reads the episodes table in gaia.db; an id that is not there is looked up
+    through ``EpisodicMemory.get_episode``.
     """
     as_json = getattr(args, "json", False)
     episode_id = args.episode_id
@@ -492,8 +484,6 @@ def _cmd_episode_show(args) -> int:
     episode = _get_episode_from_db(episode_id)
 
     if episode is None:
-        # Fallback to legacy EpisodicMemory for backward compatibility
-        # (supports any episode_id that may not yet be in the DB)
         EpisodicMemory = _import_episodic()
         if EpisodicMemory is not None:
             try:
@@ -507,7 +497,6 @@ def _cmd_episode_show(args) -> int:
 
     days = _days_old(episode.get("timestamp", ""))
 
-    # Parse tags from JSON string if stored as JSON
     raw_tags = episode.get("tags") or []
     if isinstance(raw_tags, str):
         try:
@@ -691,7 +680,7 @@ def _warning(code: str, message: str) -> dict:
 
 
 def _emit_write_warnings(warnings: list[dict], as_json: bool) -> None:
-    """Print each warning to stderr and close with the pointer to the skill; JSON carries them in its payload instead."""
+    """Print each warning to stderr, then the pointer to the skill on stdout; JSON carries the warnings in its payload and no pointer."""
     if as_json:
         return
     for w in warnings:
@@ -796,8 +785,7 @@ def _cmd_add(args) -> int:
     """Handle ``gaia memory add --name=... --type=... --body=...``.
 
     DB-only: writes a row to the ``memory`` table in ``~/.gaia/gaia.db``.
-    Does NOT create any file under ``~/.claude/projects/.../memory/`` -- the
-    legacy filesystem layout is being retired and is read-only-for-humans.
+    Creates no file.
     """
     as_json = getattr(args, "json", False)
 
@@ -876,9 +864,7 @@ def _cmd_add(args) -> int:
     # At least ONE explicit scope flag must be given: --project (preferred),
     # --project-ref, or --workspace. Writing with none of them provided would
     # silently leave project_ref NULL purely for lack of input -- exactly the
-    # "silent NULL by absence" this contract forbids. Scope inference from
-    # natural language ("the century project") lives in the ORCHESTRATOR, not
-    # in this function; the function only accepts explicit, resolvable scope.
+    # "silent NULL by absence" this contract forbids.
     # type=user is the exception: it has no workspace (USER_WORKSPACE), so
     # there is no scope to be missing.
     if (mem_type != "user" and project_flag is None
@@ -1079,17 +1065,10 @@ def _cmd_add(args) -> int:
 # Subcommand handler: checkpoint (transactional session-close)
 # ---------------------------------------------------------------------------
 #
-# `checkpoint` persists a whole session-reflection in ONE call and ONE DB
-# transaction: the record anchor + N carry-forward threads + N derived_from
-# links, all-or-nothing. It replaces the fragile `add`(anchor) + N x
-# (`add`(thread) + `link`) sequence that session-reflection Step 6 used to
-# prescribe (each of those was a separate connection/commit, so a mid-sequence
-# failure left a half-written checkpoint). This handler is a THIN wrapper: it
-# reads/parses the payload, applies the shared scope contract, then hands off
-# to `writer.close_session_memory`, which owns the atomic transaction and the
-# per-row validation. The verb is naturally non-mutative in NAME
-# ("checkpoint"), so it never trips the mutative-verb classifier -- no entry in
-# mutative_verbs.py, no approval prompt (T0), matching `add`/`append`/`reclassify`.
+# `checkpoint` parses the payload, applies the scope contract and hands off to
+# `writer.close_session_memory`, which writes the record anchor, the
+# carry-forward threads and their derived_from links in one transaction.
+# `gaia memory` is a read-only group in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS, so the classifier reads checkpoint as free.
 # ---------------------------------------------------------------------------
 
 
@@ -1105,7 +1084,8 @@ def _resolve_scope_contract(
 
     Same contract and structured error codes as ``_cmd_add`` -- at least one
     explicit scope flag is required, ``--project`` resolves a name to its
-    stable ``project_identity``, ``--workspace``-only is the degraded lane.
+    stable ``project_identity``, ``--workspace``-only is the degraded lane --
+    except that a type=user record is not exempt from the scope requirement.
 
     Returns ``(project_ref, err)``:
       * ``err`` is ``None`` on success -- ``project_ref`` is the resolved
@@ -1335,7 +1315,7 @@ def _print_telemetry_caveats() -> None:
 
 
 def _cmd_list(args) -> int:
-    """List curated memory rows (project / user / feedback)."""
+    """List curated memory rows."""
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     type_filter = getattr(args, "type", None)
@@ -1415,9 +1395,8 @@ def _cmd_list(args) -> int:
     return 0
 
 
-# Backward-compat alias: existing tests / older callers reference
-# ``memory_mod._cmd_show`` expecting the episode lookup behaviour. Newer
-# CLI registration routes ``show`` to ``_cmd_curated_show`` instead.
+# tests/cli/test_gaia_memory.py dispatches ``memory_mod._cmd_show`` as the
+# episode lookup; ``show`` itself is registered to ``_cmd_curated_show``.
 _cmd_show = _cmd_episode_show
 
 
@@ -1425,14 +1404,8 @@ _cmd_show = _cmd_episode_show
 # Subcommand handler: get-relevant (curated memory for SessionStart injection)
 # ---------------------------------------------------------------------------
 
-# Default mix for the injected SessionStart block:
-#   3 atoms + 3 decisions + 2 negatives = 8 items, bounded to ~800 chars.
-# Tuned for orchestrator attention budget: each item is one short line, so
-# eight lines is enough to anchor the session without dominating the prompt.
-#
-# Legacy (pre-v4) quota: kept for the `--types=...` opt-in mode where a caller
-# explicitly asks for atom/decision/negative slicing. The default (v4) flow
-# below selects by class/status instead.
+# Quotas of the `--types=...` flow (3 atoms + 3 decisions + 2 negatives, 800
+# chars). Without `--types` the selection goes by class/status instead.
 _RELEVANT_DEFAULT_LIMIT = 8
 _RELEVANT_DEFAULT_MAX_CHARS = 800
 _RELEVANT_DEFAULT_TYPES = ("atom", "decision", "negative")
@@ -1442,23 +1415,15 @@ _RELEVANT_PER_TYPE_QUOTA = {
     "negative": 2,
 }
 
-# v4 class/status driven selection. carry_forward threads are injected first
-# (user-explicit "carry me into the next session") but are now bounded by a
-# recency sub-cap AND participate in char-budget trimming as the LAST resort,
-# so max_chars is a genuinely HARD cap (see the char-budget block below).
-# anchors and thread/open rows get bounded quotas; class=log never injects.
+# Class/status selection: open threads are capped here, carry_forward threads
+# by _RELEVANT_CARRY_FORWARD_CAP and user anchors by their row limit below;
+# class=log never injects.
 _RELEVANT_PER_CLASS_QUOTA = {
-    # Raised from 2 -> 4 now that each item is length-capped (below): stale
-    # open threads are the rows that need attention, so we can afford to show
-    # more of them without blowing the budget (they trim first under pressure).
     "thread_open": 4,
 }
 
-# The anchor section is INSTRUCTION, not an index, and a recency quota of 4 was
-# measured selecting against it: on 2026-08-15 editing two unrelated anchors
-# pushed user_intent_over_literal_request and user_registro_llano_ademas_del_
-# tecnico -- the rows governing how the user is read and addressed -- out of the
-# orchestrator's block, while the subagent kernel kept receiving them. So this
+# The anchor section is INSTRUCTION, not an index: a recency quota would drop
+# the rows governing how the user is read and addressed. So this
 # section selects type='user' AND class='anchor' (never a project's anchors),
 # whole bodies rather than a capped description, and a row bound high enough
 # that it never adjudicates between two instructions. A body past the ceiling is
@@ -1466,24 +1431,18 @@ _RELEVANT_PER_CLASS_QUOTA = {
 _RELEVANT_USER_ANCHOR_ROW_LIMIT = 20
 _RELEVANT_USER_ANCHOR_BODY_CEILING = 20_000
 
-# Recency sub-cap for the carry_forward section. Before this cap, carry_forward
-# was unbounded and never trimmed, so a workspace with many carried threads blew
-# the char budget by multiples (the "5.8x" audit finding). Rows beyond the cap
-# are surfaced via the always-visible overflow footer (below), never dropped
-# silently.
+# Recency cap for the carry_forward section; rows beyond it are counted in
+# the overflow footer.
 _RELEVANT_CARRY_FORWARD_CAP = 8
 
-# Per-item description cap. Real descriptions run 140-700 chars; rendered
-# verbatim they turn one section into the whole block. Truncate the rendered
-# line to this many chars + an ellipsis; the full body stays recoverable via
-# the pointer footer (`gaia memory show <slug>`).
+# A rendered description is cut to this many chars plus an ellipsis; the full
+# body stays one `gaia memory show <slug>` away.
 _RELEVANT_ITEM_DESC_MAX = 150
 
-# Overflow footer: emitted whenever any item was left out of the rendered block
-# (dropped by the carry_forward sub-cap OR by char-budget trimming). Like the
-# recoverable-pointer footer, its worst-case length is RESERVED from the budget
-# before trimming so the footer is NEVER itself the line that gets dropped --
-# overflow is never silent.
+
+# Appended whenever an item was left out of the block, by the carry_forward cap
+# or by char-budget trimming. Its worst-case width is reserved from the budget
+# before trimming, so the footer is never the line trimmed away.
 def _overflow_footer(n: int) -> str:
     return (
         f"\n... ({n} more item(s) not shown, use "
@@ -1507,28 +1466,9 @@ def _project_tag(project_ref) -> str:
 
     return project_ref_name(project_ref)
 
-# P2a recoverable-pointer footer, extended (T8) into a read/write-axis CLI
-# guide. The audience is the orchestrator, which -- unlike a dispatched
-# subagent -- CURATES memory rather than only proposing it, so this footer
-# both recovers detail AND fences invention: read verbs are enumerated
-# verbatim from `gaia memory --help` (measured gap: the orchestrator once
-# called the non-existent `gaia memory get`, a natural blend of the two
-# verbs it HAD seen -- `show` via this pointer, `search` via the overflow
-# footer -- against the CLI's real fifteen subcommands).
-#
-# It routes by SUBJECT, not by class of operation. Routing by operation --
-# reads get a verb list, writes get the skill -- was measured wrong on
-# 2026-08-15: a turn asked for an executive summary read the anchor with
-# `show`, complied with the published mechanism exactly, and still produced a
-# complete and coherent analysis missing the row that OWNED the work, because
-# what skills/memory holds is the reading TECHNIQUE (sweep the initiative's
-# whole live-pending set before saying what it owes) and not the verb list.
-# The expensive error available in memory is a bad READ: reading a slice and
-# believing it was the corpus produces an answer nothing downstream catches.
-#
-# Its length is RESERVED from the char budget before trimming, so
-# block + pointer always respects max_chars -- this guide must never be the
-# line dropped by trim.
+# Footer that sends the reader to Skill('memory') before the first verb and
+# lists the real read verbs so none is invented. Its length is reserved from
+# the char budget before trimming, so trimming never drops it.
 _MEMORY_POINTER = (
     "> Memory is this turn's subject — reading it to decide something, "
     "curating it, or triaging what a session injected: load `Skill('memory')` "
@@ -1538,51 +1478,42 @@ _MEMORY_POINTER = (
     "`list --type <t>`, `get-relevant`, `story <slug>`, `conflicts`, "
     "`stats`, `episode-show`."
 )
-_MEMORY_POINTER_RESERVE = len(_MEMORY_POINTER) + 2  # +2 for the "\n\n" join
+# +2 for the "\n\n" join.
+_MEMORY_POINTER_RESERVE = len(_MEMORY_POINTER) + 2
 
 
 def _print_memory_pointer(as_json: bool) -> None:
     """Emit the pointer under a human-readable listing.
 
     `list` and `search` are how a turn reaches memory when it does not already
-    know a slug, so they are the two surfaces where the guidance is most likely
-    to be the caller's only one -- until this, the pointer travelled with
-    `get-relevant` alone. Suppressed for JSON and for the bare-count format,
-    whose readers are programs.
+    know a slug, so the guidance is most likely the caller's only one there.
+    Suppressed for JSON and for the bare-count format, whose readers are
+    programs.
     """
     if as_json:
         return
     print()
     print(_MEMORY_POINTER)
 
-# Section headers (T7). Coordinated with T6 (skills/memory/SKILL.md):
-# the legacy "## Workspace Memory (<ws>)" block is retired in favor of
-# three explicit user-facing sections. Empty sections drop their header;
-# if all three are empty the whole block is empty.
+# Empty sections drop their header; if all three are empty the block is empty.
 _SECTION_HEADERS = {
     "carry_forward": "## Memory — For this session",
     "anchor":        "## The user",
     "thread_open":   "## Memory — Open threads",
 }
 
-# Live pending is deliberately narrow: class='thread' AND status IN
-# ('carry_forward','open'). The digest is a worklist, not a knowledge dump.
 _DIGEST_HEADER = "## Memory — Live pending across every project"
 # Initiatives past the top K roll up into one "+N more projects" line.
 _DIGEST_TOP_K = 10
-# Per-item description cap inside the digest. Much tighter than the section
-# renderer's 150: one short line per initiative keeps ~10 initiatives visible
-# without any single project monopolising the block (the "5.8x monopoly" the
-# old cwd-anchored, single-project block produced under the 800 cap).
+# Description cap inside the digest, tighter than the section renderer's 150:
+# one short line per initiative keeps ~10 initiatives visible.
 _DIGEST_DESC_MAX = 60
-# Budget for the digest. The old 800 cap truncated to a SINGLE project once a
-# project carried several pending threads. With one short line per initiative
-# (~90-110 chars) plus header + pointer, ~10 initiatives need ~1500 chars.
-# This is the budget when --max-chars is omitted.
+# Digest budget when --max-chars is omitted: ~10 initiative lines of ~90-110
+# chars plus header and pointer.
 _DIGEST_DEFAULT_MAX_CHARS = 1500
 # Project mode ("--initiative=X") is deliberately UNBOUNDED -- no top-N cap, no
 # char budget, no per-item description cap -- unlike the digest and section
-# renderers above. Those render an unrequested SessionStart block competing for
+# renderers. Those render an unrequested SessionStart block competing for
 # the orchestrator's attention, so they must stay small. Project mode is a
 # RETRIEVAL surface: the caller named one initiative and asked for its corpus.
 # A promoted defect carries its detail as `## `-headed fields in the body, so a
@@ -1624,28 +1555,29 @@ def _cmd_get_relevant(args) -> int:
     The cwd does not filter or prioritise anything; which renderer runs is
     decided purely by the flags:
 
-      * ``--types=...``  -> legacy per-type flow (unchanged, back-compat).
-      * ``--initiative=X`` or ``--project=X`` -> PROJECT MODE: the WHOLE
-        live-pending corpus of the ONE requested project, from every
+      * ``--types=...``  -> per-type flow (``_cmd_get_relevant_by_type``).
+      * ``--initiative=X``, ``--project=X`` or ``--group=X`` -> PROJECT MODE:
+        the WHOLE live-pending corpus of the ONE requested project (for
+        ``--group``, the group key plus its active members' keys), from every
         workspace, uncapped and body-bearing; ``--sections`` picks among its
         live anchors and its pending threads.
       * ``--sections=...`` -> SECTION renderer: the class/status sections
         (carry_forward / anchor / thread_open). This is the subagent-dispatch
         path (``--sections=anchor`` gives a dispatched subagent the durable
-        "The user" anchors). cwd anchoring is gone here too.
+        "The user" anchors).
       * (no flag) -> TRANSVERSAL DIGEST: a cross-project worklist grouped by
         the canonical ``memory.initiative`` key. This is the orchestrator's
         SessionStart view -- "what is open, everywhere", independent of the
         launch directory.
 
-    Output is NEVER raised: a database error returns an empty payload.
+    The section and digest renderers answer a database error with an empty
+    payload instead of raising.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     types_arg = getattr(args, "types", None)
 
     if types_arg:
-        # Legacy type-based selection -- keep verbatim for back-compat.
         max_chars = int(
             getattr(args, "max_chars", None) or _RELEVANT_DEFAULT_MAX_CHARS
         )
@@ -1670,12 +1602,13 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     """Class/status section renderer (carry_forward / anchor / thread_open).
 
     Reached only via an explicit ``--sections`` filter (the subagent-dispatch
-    path). cwd anchoring has been removed: rows are workspace-scoped, never
-    filtered or prioritised by the launch directory.
+    path). Rows are workspace-scoped; the launch directory neither filters
+    nor prioritises them.
 
     Selection model:
       * carry_forward: class=thread, status=carry_forward, recency sub-cap.
-      * anchor: class=anchor, identity anchors (type=user) pinned, quota 4.
+      * anchor: type=user, class=anchor, whole bodies, up to
+        ``_RELEVANT_USER_ANCHOR_ROW_LIMIT`` rows, never trimmed.
       * thread_open: class=thread, status=open, STALEST first, quota 4.
       * class=log NEVER injects; supersedes-destination rows are excluded.
     """
@@ -1707,8 +1640,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    # Pull class/status-aware rows via raw SQL: list_memory has no
-    # supersedes-NOT-IN subquery, which this selection needs.
+    # Raw SQL, one query per section, so each carries its own ordering and limit.
     rows_by_section: dict[str, list[dict]] = {
         "carry_forward": [],
         "anchor": [],
@@ -1794,10 +1726,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    # carry_forward recency sub-cap: keep the newest N (rows arrive ordered by
-    # updated_at DESC), remember how many were dropped so the overflow footer
-    # can surface them. This is the first of two bounds on carry_forward (the
-    # second is char-budget trimming, below).
+    # Rows arrive newest first; the count dropped here feeds the overflow footer.
     cf_dropped = 0
     _cf_rows = rows_by_section.get("carry_forward", [])
     if len(_cf_rows) > _RELEVANT_CARRY_FORWARD_CAP:
@@ -1806,15 +1735,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
     items_flat: list[dict] = []
 
-    # Injection telemetry bookkeeping, kept OUT of items_flat/block on
-    # purpose: this renderer SELECTS more rows than it ultimately EMITS (the
-    # char-budget trim below removes lines from `lines` after items_flat is
-    # already built), and injection must count only what a reader actually
-    # saw. One name per rendered "- " line, appended in the exact same
-    # top-to-bottom order as that section's bullet lines -- so popping this
-    # list's tail in lockstep with _trim_one's line pop (below) always
-    # removes the matching entry, never items_flat itself (which stays the
-    # existing, unmodified JSON surface).
+    # One entry per rendered "- " line, in render order, popped in step with
+    # _trim_one so injection telemetry counts only the rows a reader saw;
+    # items_flat still lists every selected row.
     telemetry_names_by_section: dict[str, list[str]] = {
         "carry_forward": [], "anchor": [], "thread_open": [],
     }
@@ -1910,7 +1833,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
             telemetry_names_by_section[section_key].append(
                 (r.get("workspace") or workspace, name)
             )
-        out.append("")  # blank line between sections
+        out.append("")
         return out
 
     # Order is fixed: carry_forward, anchor, thread_open. Empty sections
@@ -1934,12 +1857,8 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
     block = "\n".join(lines)
 
-    # Char budget: max_chars is a HARD cap. Trim order thread_open -> anchor ->
-    # carry_forward (carry_forward last, so under normal loads it survives
-    # whole). Whenever ANY item is left out -- the carry_forward sub-cap above
-    # OR trimming here -- an overflow footer is appended. Its width is RESERVED
-    # from the trim budget so it is never itself the dropped line: overflow is
-    # never silent, and the cap is genuinely hard.
+    # thread_open lines are trimmed first, then carry_forward; anchors are never trimmed, so max_chars does
+    # not bound them. The overflow footer's width is reserved from the trim budget below.
     def _trim_one(target_section: str) -> bool:
         """Remove one '- ' line from the named section. Return True on success."""
         in_section = False
@@ -1960,19 +1879,14 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
         for j in range(section_end - 1, section_start, -1):
             if lines[j].startswith("- "):
                 lines.pop(j)
-                # Mirror the pop into the telemetry name list -- see the
-                # comment on telemetry_names_by_section's declaration above.
                 if telemetry_names_by_section.get(target_section):
                     telemetry_names_by_section[target_section].pop()
-                # If section is now empty (only header + blank), drop
-                # header + blank line too.
                 body_remains = any(
                     lines[k].startswith("- ")
                     for k in range(section_start, min(section_end - 1, len(lines)))
                 )
                 if not body_remains:
                     # Remove header and (possible) following blank.
-                    # Defensive bounds checking.
                     nxt = section_start + 1
                     if nxt < len(lines) and lines[nxt] == "":
                         lines.pop(nxt)
@@ -2007,24 +1921,14 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
         # Space was reserved above, so this always fits under max_chars.
         block = block + _overflow_footer(total_dropped)
 
-    # Injection telemetry: bump only rows that survived every cap above
-    # (the carry_forward sub-cap already excluded, the char-budget trim
-    # mirrored into telemetry_names_by_section) -- one bump per row a reader
-    # actually saw, never per row merely selected. Fired after the block/
-    # payload are fully computed, so a telemetry failure can never affect
-    # what this command returns.
+    # One bump per row that survived the caps, run after the block is built.
     for row_workspace, row_name in (
         pair for sec in ("carry_forward", "anchor", "thread_open")
         for pair in telemetry_names_by_section[sec]
     ):
         _bump_injection_telemetry(row_workspace, [row_name])
 
-    # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
-    # pointer is never the line that gets dropped; its length was reserved from
-    # max_chars above, so block + pointer still respects the caller's budget.
-    # Suppressed for the SessionStart assembler's anchor-only call, which
-    # passes --no-pointer -- "The user" is not where
-    # write/curate verbs (close a thread, graduate, reclassify) belong.
+    # Appended after trimming; its length was reserved from max_chars above.
     if not no_pointer:
         block = block + "\n\n" + _MEMORY_POINTER
 
@@ -2047,13 +1951,13 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 # ---------------------------------------------------------------------------
 
 # Live pending query: LIVE pending threads only. class='thread' AND status IN
-# ('carry_forward','open) -- anchors, logs, and resolved/snapshot threads are
+# ('carry_forward','open') -- anchors, logs, and resolved/snapshot threads are
 # excluded BY DESIGN (a worklist, not a knowledge dump). Soft-deleted and
 # supersedes-destination rows are excluded exactly as the section renderer does.
 # Workspace filters as ``workspace IN ({ws})`` rather than ``= ?`` so
-# ``_fetch_pending_vivo`` can union in the host sentinel (see
+# ``_fetch_pending_vivo`` can union in the host and user sentinels (see
 # ``_reader_workspaces``) with the SAME query shape used for a single
-# workspace -- ``{ws}`` is filled in with 1 or 2 placeholders at call time.
+# workspace -- ``{ws}`` is filled in with one placeholder per workspace.
 _PENDING_VIVO_SELECT = (
     "SELECT workspace, name, type, description, body, updated_at, initiative, "
     "       class, status "
@@ -2343,7 +2247,9 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     key (``canonical_project_key``: an initiative, a bare name, a git path or a
     remote identity), and the rows are every live-pending thread of that
     project in ANY workspace -- the project, not the caller's workspace,
-    decides the corpus. The special value "otros" targets the NULL-initiative
+    decides the corpus. ``--group=X`` reads the group key plus the keys of
+    its active members (``_group_memory_keys``) the same way. The special
+    value "otros" targets the NULL-initiative
     bucket, which has no project and so stays scoped to ``workspace``.
 
     Every matching row is returned -- no top-N cap, no overflow footer, no
@@ -2351,7 +2257,7 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     alongside ``class`` and ``status``. ``--max-chars`` is accepted and
     ignored here: it governs the attention-budgeted SessionStart renderers,
     and applying it to an explicitly requested corpus would silently withhold
-    part of the answer. See the note above ``_DIGEST_HEADER``.
+    part of the answer. See the note under ``_DIGEST_HEADER``.
 
     ``--sections`` chooses which of the project's rows come back: ``anchor``
     its live anchors, whose bodies the text block prints in full because a
@@ -2439,10 +2345,10 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
 
 
 def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
-    """Legacy --types=... pathway (pre-v4 quota by atom/decision/negative).
+    """The ``--types=...`` pathway: per-type quotas of atom/decision/negative.
 
-    Kept verbatim from the original implementation so the existing test
-    surface keeps passing. The v4 default path lives in _cmd_get_relevant.
+    Other type lists split ``--limit`` evenly. Without ``--types``,
+    ``_cmd_get_relevant`` selects by class/status instead.
     """
     as_json = getattr(args, "json", False)
     limit = int(getattr(args, "limit", None) or _RELEVANT_DEFAULT_LIMIT)
@@ -2627,16 +2533,9 @@ def _history_view(h: dict) -> dict:
     return view
 
 
-# P2 show-verb pointer (decision_gaia_el_cli_ensena_en_el_instante_del_verbo):
-# show is the deep-read verb where the technique gap actually bit (8x show
-# with no Skill('memory') load, measured 2026-08-17) yet it was the one verb
-# _MEMORY_POINTER never reached -- a residue of the discovery-only frame that
-# chose list/search/get-relevant. Kept to a short constant line plus one
-# computed conditional line, deliberately NOT the five-line _MEMORY_POINTER:
-# that one's cost is reserved against a char budget because list/search/
-# get-relevant are the most-called verbs, and paying that per show call would
-# scale with the wrong volume. Suppressed for --json: its readers are
-# programs, matching every other pointer suppression in this file.
+# Pointer printed under `show`: one constant line plus the computed line
+# below, kept short because `show` is not covered by _MEMORY_POINTER and does
+# not reserve a char budget. Suppressed for --json.
 _SHOW_POINTER_LINE1 = (
     "> Reading technique lives in Skill('memory') -- a row is not the "
     "corpus; this read counted toward deliberate_count."
@@ -2647,11 +2546,8 @@ def _show_pointer_line2(row: dict) -> str | None:
     """Second pointer line: computed, and only present when it fires.
 
     Fires only when the shown row belongs to a project (its canonical project
-    key) that itself has live-pending rows in any workspace -- the technique
-    the 2026-08-17 case measured missing (sweep the project's whole
-    live-pending set before writing about it). A row with no project, or a
-    project with zero live-pending rows, returns ``None``: a condition that
-    always fires is not a condition.
+    key) that itself has live-pending rows in any workspace. A row with no
+    project, or a project with zero live-pending rows, returns ``None``.
     """
     from gaia.store.reader import pending_threads_by_project
     from gaia.store.writer import canonical_project_key
@@ -2671,21 +2567,19 @@ def _show_pointer_line2(row: dict) -> str | None:
 def _cmd_curated_show(args) -> int:
     """Print a single curated memory row.
 
-    Distinguishes from the legacy ``episode-show`` flow by looking up the
-    ``memory`` table directly (PK = ``(project, name)``).
+    Looks the row up in the ``memory`` table by workspace and name; the
+    episode lookup is ``episode-show``.
 
-    Primitives (read-only, T0):
-      * default        -- the row, now including ``class`` and ``status``
-                          (previously omitted; the writer's get_memory does not
-                          project them, so we enrich here).
+    Modes:
+      * default        -- the row, with ``class`` and ``status`` added
+                          (``get_memory`` does not project them).
       * ``--links``    -- in/out ``memory_links`` edges (kind + created_at).
       * ``--history``  -- ``memory_history`` versions (changed_at, fields
                           changed, body size delta -- NOT full bodies).
     ``--links`` / ``--history`` are additive: either or both can be combined
     with ``--json`` to enrich the emitted payload; in text mode either one
-    replaces the body. Every mode bumps the row's deliberate-read counter: the
-    caller named the slug, so which projection came back does not change that
-    it went looking for this row.
+    replaces the body. Every mode bumps the row's deliberate-read counter
+    unless ``--no-count`` is given.
     """
     as_json = getattr(args, "json", False)
     name = args.name
@@ -2710,8 +2604,7 @@ def _cmd_curated_show(args) -> int:
     counted = not getattr(args, "no_count", False)
     if counted:
         record_memory_access(workspace, name, "deliberate")
-        # This call is itself one of the reads it is about to report, so the
-        # counters are re-read rather than the held row's incremented by hand.
+        # Re-read so the printed counters include this read.
         row = get_memory(workspace, name) or row
 
     # Fill the class/status gap: get_memory projects neither column.
@@ -2753,8 +2646,6 @@ def _cmd_curated_show(args) -> int:
     if row.get("measured_at") or row.get("method"):
         print(f"# measured_at: {row.get('measured_at') or '(unknown)'}  "
               f"method: {row.get('method') or '(unknown)'}")
-    # Kept on separate lines rather than summed: one combined number would let
-    # a row's automatic injections pass for deliberate reads.
     print(f"# injection_count: {row.get('injection_count', 0)}  "
           f"last_injected_at: {row.get('last_injected_at') or '(never)'}")
     print(f"# deliberate_count: {row.get('deliberate_count', 0)}  "
@@ -2800,10 +2691,9 @@ def _cmd_curated_show(args) -> int:
 
 
 def _cmd_delete(args) -> int:
-    """Soft-delete (tombstone) a curated memory row -- scan-v2 SV3.
+    """Soft-delete (tombstone) a curated memory row.
 
-    DISCOURAGED BY CONVENTION: memory is meant to be AGGREGATED and
-    RECLASSIFIED, not deleted. Prefer ``reclassify --status=graduated|closed``
+    Discouraged: memory is reclassified, not deleted. Prefer ``reclassify --status=graduated|closed``
     to retire a note without losing it, or ``append`` to correct-forward.
 
     By default this is a SOFT delete: the row's ``deleted_at`` is stamped so the
@@ -2818,8 +2708,7 @@ def _cmd_delete(args) -> int:
     skip_confirm = getattr(args, "yes", False)
     hard = getattr(args, "hard", False)
     requested = _resolve_workspace(getattr(args, "workspace", None))
-    # The signed command is the consent, so a delete never follows a slug into
-    # another workspace's project row; one found there is refused and named.
+    # A delete never follows a slug into another workspace; a holder there is refused and named.
     workspace = _workspace_holding(requested, name, explicit=True,
                                    include_deleted=hard)
     holder = _workspace_holding(requested, name, explicit=False,
@@ -2904,26 +2793,7 @@ def _cmd_edit_retired(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommand handler: append (curated memory body growth -- the verb for a
-# log or a live thread; changed knowledge is a new row that supersedes)
-# ---------------------------------------------------------------------------
-#
-# Vocabulary decision (Option C): memory is AGGREGATED and RECLASSIFIED, not
-# mutated. ``append`` is the primary verb for "add text to an existing note"
-# (a carry-forward thread, a running log): it concatenates the new text onto
-# the existing body (separator ``\n\n``) and NEVER overwrites. The prior body
-# is preserved in ``memory_history`` by the ``trg_memory_history`` AFTER UPDATE
-# trigger (fires ``WHEN OLD.body IS NOT NEW.body``), so no history is lost.
-#
-# SECURITY CLASSIFICATION -- append is NON-mutative (T0), by design:
-#   ``append`` is deliberately ABSENT from ``MUTATIVE_VERBS`` in
-#   hooks/modules/security/mutative_verbs.py, so ``gaia memory append`` is
-#   classified READ_ONLY "by elimination" (the same mechanism that makes
-#   ``gaia memory add`` and ``gaia memory reclassify`` non-T3). Growing a
-#   record only ADDS capability/recoverability; per the security-tiers
-#   direction principle, that never needs consent. No change to the classifier
-#   was required -- the property falls out of the verb taxonomy. Contrast with
-#   ``delete`` and ``add --replace``, which stay T3.
+# Subcommand handler: append (grows the body of a log or a live thread)
 # ---------------------------------------------------------------------------
 
 def _cmd_append(args) -> int:
@@ -2931,12 +2801,11 @@ def _cmd_append(args) -> int:
 
     Additive and non-destructive: the new text is concatenated to the current
     body (separator ``\\n\\n``); the prior body survives in ``memory_history``
-    via the ``trg_memory_history`` trigger. This is the primary verb for
-    "sum something" to a carry-forward note or running thread, written by
-    ``update_memory_field``, which refuses a deleted row.
+    via the ``trg_memory_history`` trigger. Written by ``update_memory_field``,
+    which refuses a deleted row.
 
-    Classified NON-mutative (T0): ``append`` is not in MUTATIVE_VERBS, so it
-    needs no T3 approval -- appending only grows the record.
+    ``gaia memory`` is a read-only group in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS,
+    so the classifier reads ``append`` as free.
     """
     as_json = getattr(args, "json", False)
     name = args.name
@@ -2995,6 +2864,8 @@ def _cmd_reclassify(args) -> int:
     """Handle ``gaia memory reclassify <slug> --class=... --status=...``.
 
     UX notes:
+      * ``--from-file`` batches ``slug<TAB>class=<c>[,status=<s>][<TAB>note]``
+        lines and takes no slug, ``--class`` or ``--status``.
       * At least one of ``--class`` / ``--status`` must be supplied.
       * ``--status=null`` is the explicit-clear sentinel: it NULLs the
         status column. The writer auto-clears status when class moves from
@@ -3047,7 +2918,7 @@ def _cmd_reclassify(args) -> int:
     except ValueError as exc:
         return _err(str(exc), as_json)
     except PermissionError as exc:
-        # MemoryWriteForbidden -- T3 enforcement layer.
+        # MemoryWriteForbidden: GAIA_DISPATCH_AGENT names a non-curator.
         return _err(str(exc), as_json)
 
     warnings = []
@@ -3125,7 +2996,7 @@ def _reclassify_line(r: dict) -> str:
             f"in workspace {r['workspace']}{note}")
 
 
-_OWNER_SPEC_FORMS ="user | gaia | workspace:<ws> | group:<ws>/<key> | project:<ws>/<name>"
+_OWNER_SPEC_FORMS = "user | gaia | workspace:<ws> | group:<ws>/<key> | project:<ws>/<name>"
 
 
 def _parse_owner_spec(spec: str) -> dict:
@@ -3313,13 +3184,8 @@ def _cmd_move(args) -> int:
 # Subcommand handler: link (memory_links graph primitives)
 # ---------------------------------------------------------------------------
 #
-# Brief: memory-model-refactor-class-status-links-structural-enforcement (T4).
-#
-# Duplicate-edge behavior: idempotent by default. Re-running
-# ``gaia memory link a b --kind=relates_to`` does not error; it returns an
-# action=noop so scripts can declaratively wire links without bookkeeping.
-# Strict mode is reachable via the writer (`if_exists="error"`) but is not
-# exposed on the CLI -- the CLI is the declarative surface.
+# Re-running a link that exists returns action=noop instead of an error; the
+# writer's `if_exists="error"` strict mode is not exposed on the CLI.
 # ---------------------------------------------------------------------------
 
 def _cmd_link(args) -> int:
@@ -3377,7 +3243,7 @@ def _cmd_link(args) -> int:
         try:
             results.append(_link_pair(args, workspace, src_name, dst_name))
         except (ValueError, PermissionError) as exc:
-            # PermissionError is MemoryWriteForbidden, the structural T3 layer.
+            # PermissionError is MemoryWriteForbidden: GAIA_DISPATCH_AGENT names a non-curator.
             return _err(f"{exc} ({done} earlier link(s) of this call applied)", as_json)
     if as_json:
         print(json.dumps(results[0] if len(results) == 1 else {"links": results},
@@ -3404,7 +3270,6 @@ def _link_pair(args, workspace: str, src_name: str, dst_name: str) -> dict:
 
     warnings = [] if do_delete else _supersedes_reversed(kind, res, src_name, dst_name)
     if not as_json:
-        # Arrow uses ASCII-friendly form; no unicode dependence.
         action_label = (
             "link" if res["action"] in ("inserted", "deleted") else "link (no-op)"
         )
@@ -3496,9 +3361,6 @@ def _cmd_search_scoped(args) -> int:
     query = args.query
     limit = getattr(args, "limit", 10)
 
-    # Backward-compat: 'curated' was the original name for the curated-memory
-    # scope. Accept it but warn -- the canonical name is 'memory' (mirrors the
-    # surface / table name and aligns with the rest of the CLI).
     if scope == "curated":
         print(
             "Warning: --scope=curated is deprecated; use --scope=memory. "
@@ -3510,7 +3372,6 @@ def _cmd_search_scoped(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
     if scope == "episodes":
-        # T6 migration: FTS5 over episodes_fts table in gaia.db
         hits = _search_episodes_fts_from_db(query, workspace=workspace, limit=limit)
         episodes_out = []
         for ep in hits:
@@ -4493,12 +4354,7 @@ def _register_rest(actions) -> None:
     )
     rel_p.add_argument(
         "--no-pointer", dest="no_pointer", action="store_true", default=False,
-        # Internal-only: suppresses the recoverable-pointer footer. Used
-        # exclusively by the SessionStart assembler's SECOND call (the
-        # anchor-sections one) so the footer is not emitted twice in one
-        # manifest -- see hooks/modules/session/session_manifest.py. Hidden
-        # from --help because a direct/agent invocation of this command
-        # (outside SessionStart) must always get the pointer.
+        # Only the --sections renderer honours it; hidden from --help.
         help=_argparse.SUPPRESS,
     )
     rel_p.set_defaults(func=_cmd_get_relevant)

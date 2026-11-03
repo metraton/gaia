@@ -11,10 +11,8 @@ Subcommands:
 All other canonical paths (snapshot, state, workspaces, logs, events, cache,
 scratch, evidence, worktrees, tmp, rejected_turns) are printed by `gaia
 paths` (no subcommand). Every one of them resolves under data_dir(), so a
-`GAIA_DATA_DIR` override relocates all of them together -- including
-`evidence`, whose root previously bypassed the resolver and stayed pinned
-under the real ~/.gaia regardless of the override. Per-workspace metadata is
-available via `gaia workspace info`.
+`GAIA_DATA_DIR` override relocates all of them together. Per-workspace
+metadata is available via `gaia workspace info`.
 
 ensure_layout() is invoked before printing so that ~/.gaia/ (or the
 GAIA_DATA_DIR override) is materialized on first use with mode 0700.

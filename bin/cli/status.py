@@ -1,13 +1,12 @@
 """
-gaia status -- Quick installation snapshot: version, mode, DB path,
-registered workspace, last scan.
+gaia status -- Quick snapshot of the project root that holds a `.claude` directory.
 
 Reports:
 - Last agent session (name, time, status)
 - Pending context updates count
 - Active anomaly signals count
-- project-context.json freshness
-- Episodic memory stats
+- Time of the workspace's last scan
+- Episode counts and the number of indexed episodes
 - Contract validation stats
 """
 
@@ -43,11 +42,7 @@ def _read_json(path: Path):
 
 
 def _read_episodic_index(project_root: Path):
-    """Read episodic memory from gaia.db episodes table.
-
-    T6 migration: primary source is now the episodes table in gaia.db.
-    The legacy episodic-memory/index.json and workflow-episodic-memory/metrics.jsonl
-    files are no longer read here.
+    """Read the episodes of the current workspace from gaia.db.
 
     Returns dict with episodes, last_agent, source.
     """
@@ -119,10 +114,7 @@ def _get_anomaly_count(project_root: Path) -> int:
 
 
 def _get_context_last_updated(project_root: Path):
-    """Get last_scan_at from the DB workspaces row (T1.3: DB-backed read).
-
-    Falls back to None when the workspace row or column is absent.
-    """
+    """Get last_scan_at from the DB workspaces row, or None when it is absent."""
     try:
         import sys as _sys
         _PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -146,12 +138,7 @@ def _get_context_last_updated(project_root: Path):
 
 
 def _get_memory_v2_stats(project_root: Path) -> dict:
-    """Get Memory v2 stats: the FTS5-indexed episode count from gaia.db.
-
-    T6 migration: reads the episodes_fts count from gaia.db.
-    No longer reads from episodic-memory/index.json.
-    Returns {"indexed": 0} on any failure.
-    """
+    """Count the rows of the episodes_fts index; {"indexed": 0} on any failure."""
     import sys as _sys
     _PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
     if str(_PLUGIN_ROOT) not in _sys.path:
@@ -258,7 +245,6 @@ def _print_human(status: dict) -> None:
     print("\n  Gaia System Status")
     print(f"  {sep}")
 
-    # Last agent
     last = status["last_agent"]
     if last:
         time_str = _format_time(last.get("timestamp"))
@@ -268,26 +254,22 @@ def _print_human(status: dict) -> None:
     else:
         print("  Last agent:   no agent sessions recorded yet")
 
-    # Pending
     pc = status["pending_count"]
     suffix = "" if pc == 1 else "s"
     note = "  run: gaia approvals" if pc > 0 else ""
     print(f"  Pending:      {pc} context update{suffix} to review{note}")
 
-    # Anomalies
     ac = status["anomaly_count"]
     suffix = "" if ac == 1 else "s"
     note = "  check workflow-episodic-memory/signals/" if ac > 0 else ""
     print(f"  Anomalies:    {ac} active signal{suffix}{note}")
 
-    # Context
     ctx = status["context_updated"]
     if ctx:
         print(f"  Context:      last scan {_format_time(ctx)}")
     else:
         print("  Context:      never scanned -- run `gaia scan`")
 
-    # Memory
     ep = status["episode_count"]
     ag = status["agent_session_count"]
     ep_str = f"{ep} episodes" if ep else "no episodic-memory"
@@ -295,7 +277,6 @@ def _print_human(status: dict) -> None:
     indexed = status.get("indexed", 0)
     print(f"  Memory:       {ep_str}  |  {ag_str}  |  {indexed} indexed")
 
-    # Contracts
     cs = status["contract_stats"]
     if cs:
         pct = round((cs["valid"] / cs["total"]) * 100) if cs["total"] else 0

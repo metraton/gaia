@@ -43,12 +43,8 @@ done
 # ---------------------------------------------------------------------------
 cd "${REPO_ROOT}"
 echo "[dryrun] packing tarball (prepack regenerates root manifests)..."
-# `npm pack --json` prints the prepack lifecycle script's stdout (clean +
-# generate:plugin-root logging: "Regenerating root manifests...", "Generated:
-# ...") BEFORE the JSON array. `--silent` only suppresses npm's OWN logs, not
-# a lifecycle script's echo output, so capturing raw `npm pack --silent`
-# swallows that noise into the tarball name. Slice from the first '[' and
-# parse JSON instead -- mirrors bin/cli/_pack_helpers.py::pack_tarball.
+# `npm pack --json` prints the prepack script's stdout before the JSON array,
+# so slice from the first '[' and parse JSON (as bin/cli/_pack_helpers.py::pack_tarball does).
 PACK_JSON="$(npm pack --json)"
 PACK_JSON="${PACK_JSON#*[}"
 TARBALL_NAME="$(python3 -c '
@@ -120,7 +116,7 @@ assert_file "${ROOT}/bin/gaia"                   "bin/gaia present"
 assert_dir  "${ROOT}/agents"                     "agents/ present"
 assert_dir  "${ROOT}/skills"                     "skills/ present"
 
-# The tarball MUST NOT ship a dist/ bundle anymore.
+# The package root is the plugin; the tarball ships no dist/ bundle.
 if [[ -d "${ROOT}/dist" ]]; then
   echo "  [FAIL] tarball still ships dist/ (should be excluded from files[])"
   fail=1

@@ -2,12 +2,12 @@
 gaia metrics -- Usage analytics: tier classification, agent invocations,
 anomaly counters.
 
-Dashboard v3: cmd_metrics() computes one MetricsSnapshot (see the
-MetricsSnapshot dataclass below) per invocation and feeds it to both
-render_console() and json.dumps() -- the data is calculated exactly once,
-under one canonical set of keys, versioned via schema_version.
+cmd_metrics() computes one MetricsSnapshot (see the MetricsSnapshot
+dataclass below) per invocation and feeds it to both render_console() and
+json.dumps() -- the data is calculated exactly once, under one canonical set
+of keys, versioned via schema_version.
 
-New in v3: a single TimeWindow governs every data read. --range=today|3d|
+A single TimeWindow governs every data read. --range=today|3d|
 7d|30d|all (default 30d) or an explicit --since/--until (mutually exclusive
 with --range) selects the window; gaia.store.reader.parse_when() does all
 duration/date parsing (no new parser here). Episodes/episode_anomalies are
@@ -68,11 +68,8 @@ from pathlib import Path
 from typing import Optional
 
 
-# Schema version for the JSON contract emitted by MetricsSnapshot.to_dict().
-# Bump this whenever a section's shape changes in a way a machine consumer
-# (future web/API surface) would need to branch on.
-# v2: adds 'window' (label/since_iso/until_iso/capped_by_retention) and
-# 'window_support' (which sections are episodes- vs audit-log-backed).
+# Version of the JSON emitted by MetricsSnapshot.to_dict(); bump it when a
+# section's shape changes in a way a machine consumer would need to branch on.
 SCHEMA_VERSION = "2"
 
 
@@ -117,20 +114,10 @@ def _native_agent_names() -> frozenset:
         return _FALLBACK_NATIVE_AGENTS
 
 
-# NATIVE_AGENT_NAMES used to be computed eagerly at module-import time
-# (``NATIVE_AGENT_NAMES = _native_agent_names()``). That import transitively
-# pulls in hooks/modules/tools/task_validator -> hooks/modules/security/*,
-# which compiles ~1800 regexes at import time (40-65ms). Since
-# ``bin/gaia``'s ``_discover_plugins()`` execs EVERY bin/cli/*.py module on
-# every CLI invocation (to register argparse subparsers), that cost was paid
-# on every single ``gaia <verb>`` call, not just ``gaia metrics``.
-#
-# Deferred via a lazy, memoized module-level ``__getattr__`` (PEP 562): the
-# heavy import now runs only the first time something actually accesses
-# ``NATIVE_AGENT_NAMES`` (i.e. when ``_split_native_agents`` runs, which only
-# happens inside ``gaia metrics`` itself), while ``from cli.metrics import
-# NATIVE_AGENT_NAMES`` (used by tests and by this module) keeps working
-# unchanged -- the attribute just resolves lazily instead of eagerly.
+# NATIVE_AGENT_NAMES resolves lazily through the module ``__getattr__`` below
+# (PEP 562): computing it imports hooks/modules/tools/task_validator and the
+# security modules, and bin/gaia's full discovery execs every bin/cli module, so
+# an eager value would pay that import on every ``gaia`` call.
 _NATIVE_AGENT_NAMES_CACHE: Optional[frozenset] = None
 
 
@@ -148,13 +135,12 @@ def __getattr__(name):  # PEP 562 module-level lazy attribute
 
 
 # ---------------------------------------------------------------------------
-# Time window (dashboard v3) -- one window governs every data read
+# Time window -- one window governs every data read
 # ---------------------------------------------------------------------------
 
 _RANGE_CHOICES = ("today", "3d", "7d", "30d", "all")
 
-# Fallback window used when a caller (or an older test) builds a
-# MetricsSnapshot without specifying one -- equivalent to no filtering.
+# Window of a MetricsSnapshot built without one: no filtering.
 _DEFAULT_WINDOW_LABEL = "all"
 
 
@@ -313,21 +299,14 @@ def _read_audit_logs(root: Path, since_iso: str = None, until_iso: str = None) -
 
 
 # ---------------------------------------------------------------------------
-# DB-backed readers (T6 episodic-workflow-to-db migration)
+# DB-backed readers
 #
-# T4 migrated the workflow episodic writers from JSONL/JSON files to the
-# gaia.db ``episodes`` + ``episode_anomalies`` tables. These readers were the
-# missing half of that migration (T6): they now query gaia.db via
-# gaia.store.reader instead of the dead .claude/project-context/*.jsonl files.
-# The connection setup mirrors bin/cli/history.py's own T6 migration exactly:
-# resolve the workspace via gaia.project.current, open the store connection,
-# and fall back to [] on any import/connection failure. The three audit-log
-# sections (tier usage, command breakdown, top commands) still read
-# .claude/logs/audit-*.jsonl and are untouched.
-#
-# Dashboard v3: all three gain an optional since_iso/until_iso SQL bound
-# (the TimeWindow built once in cmd_metrics), since gaia.db keeps full
-# history and can answer any requested range exactly.
+# These query the gaia.db ``episodes`` + ``episode_anomalies`` tables through
+# gaia.store.reader, each with an optional since_iso/until_iso SQL bound taken
+# from the TimeWindow built in cmd_metrics. They resolve the workspace via
+# gaia.project.current like bin/cli/history.py and return [] on any
+# import/connection failure. The audit-log sections (tier usage, command
+# breakdown, top commands) read .claude/logs/audit-*.jsonl instead.
 # ---------------------------------------------------------------------------
 
 def _open_store(root: Path, workspace_override: str = None):
@@ -428,14 +407,13 @@ def _read_workflow_metrics(
     since_iso: str = None,
     until_iso: str = None,
 ) -> list:
-    """Agent-session rows from the gaia.db ``episodes`` table (T6 migration).
+    """Agent-session rows from the gaia.db ``episodes`` table.
 
     Returns episode dicts carrying agent/timestamp/plan_status/exit_code/
     output_length/output_tokens_approx -- the fields the agent-invocation,
-    agent-outcome, and token-usage calculators consume. Replaces the dead
-    episodic-memory/index.json + workflow-episodic-memory/metrics.jsonl reads.
+    agent-outcome, and token-usage calculators consume.
 
-    ``since_iso`` / ``until_iso`` (dashboard v3) bound the SQL query to the
+    ``since_iso`` / ``until_iso`` bound the SQL query to the
     caller's TimeWindow -- gaia.db has full history, so this filter is exact
     (unlike the audit-log readers, which are additionally capped to ~30d).
 
@@ -483,14 +461,14 @@ def _read_run_snapshots(
 ) -> list:
     """Per-episode workflow-metrics blobs from ``episodes.context_metrics``.
 
-    T4 folded the old run-snapshots.jsonl signals (context_snapshot,
-    context_updated / *_sections, default_skills_snapshot, model, skills) into
-    the ``episodes.context_metrics`` JSON column under the ``metrics`` key.
-    This reader parses that blob per episode so the context-snapshot,
-    context-update, and runtime-skill calculators keep working. Older migrated
-    rows that stored the metrics dict at the top level are handled too.
+    The signals (context_snapshot, context_updated / *_sections,
+    default_skills_snapshot, model, skills) live in the
+    ``episodes.context_metrics`` JSON column under the ``metrics`` key. This
+    reader parses that blob per episode for the context-snapshot,
+    context-update, and runtime-skill calculators; rows that stored the
+    metrics dict at the top level are handled too.
 
-    ``since_iso`` / ``until_iso`` (dashboard v3) bound the query the same way
+    ``since_iso`` / ``until_iso`` bound the query the same way
     as ``_read_workflow_metrics``.
     """
     con, ws = _open_store(root, workspace_override)
@@ -532,11 +510,9 @@ def _read_run_snapshots(
 def _read_agent_skill_snapshots(root: Path) -> list:
     """Explicit per-agent skill snapshots.
 
-    The legacy agent-skills.jsonl (explicit snapshots) has no gaia.db
-    equivalent -- the runtime-skill summary now derives every profile from
-    each episode's ``default_skills_snapshot`` (supplied by
-    _read_run_snapshots). Returns [] so _calculate_runtime_skill_summary falls
-    back to those run-default profiles.
+    Always returns []: gaia.db holds no explicit snapshots, so
+    _calculate_runtime_skill_summary derives every profile from each episode's
+    ``default_skills_snapshot`` (supplied by _read_run_snapshots).
     """
     return []
 
@@ -549,14 +525,13 @@ def _read_anomaly_entries(
 ) -> list:
     """Anomaly entries grouped per episode from the ``episode_anomalies`` table.
 
-    T4 migrated anomalies from workflow-episodic-memory/anomalies.jsonl into
-    the ``episode_anomalies`` child table (one row per anomaly). This reader
-    regroups them into the per-session shape the anomaly-summary calculator
-    expects: ``{timestamp, anomalies: [{type}, ...], metrics: {agent}}``.
+    The ``episode_anomalies`` child table holds one row per anomaly. This
+    reader regroups them into the per-session shape the anomaly-summary
+    calculator expects: ``{timestamp, anomalies: [{type}, ...], metrics: {agent}}``.
 
-    ``since_iso`` / ``until_iso`` (dashboard v3) bound ``ea.timestamp`` --
-    the calculator no longer applies its own age cutoff (see
-    _calculate_anomaly_summary), so this is the sole point of time filtering.
+    ``since_iso`` / ``until_iso`` bound ``ea.timestamp``; the calculator
+    applies no age cutoff (see _calculate_anomaly_summary), so this is the
+    sole point of time filtering.
     """
     con, ws = _open_store(root, workspace_override)
     if con is None:
@@ -721,9 +696,8 @@ def _format_chars(n) -> str:
 def _format_duration_ms(ms) -> str:
     """Human duration from a millisecond value; 'n/a' when unavailable.
 
-    Backs the Top Commands avg-duration column (P1 #5) -- ``duration_ms`` is
-    recorded per audit entry by hooks/modules/audit/logger.py but was unused
-    by metrics.py until now.
+    Backs the Top Commands avg-duration column; ``duration_ms`` is the value
+    hooks/modules/audit/logger.py records per audit entry.
     """
     if ms is None:
         return "n/a"
@@ -735,10 +709,8 @@ def _format_duration_ms(ms) -> str:
 def _make_bar(percentage: float, width: int = 24) -> str:
     """Fixed-width Unicode bar: filled cells (█) + empty cells (░).
 
-    Unlike the old ``#``-only bar (which returned only the filled prefix and
-    relied on the caller's ``:<N`` string format for padding), this returns
-    the full ``width``-length string so callers can drop straight into a
-    fixed-column box row without separate padding.
+    Returns the full ``width``-length string, so callers can drop it straight
+    into a fixed-column box row without separate padding.
     """
     filled = max(0, min(width, round((percentage / 100) * width)))
     return "█" * filled + "░" * (width - filled)
@@ -779,13 +751,11 @@ def _format_skills(skills: list, limit: int = 4) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Human-readable glossaries (dashboard v3, P1/P3 legibility pass)
+# Human-readable glossaries
 # ---------------------------------------------------------------------------
 
-# One-line plain-language meaning per workflow-auditor / subagent_stop
-# anomaly type. Keys are the real ``type`` values emitted by
-# hooks/modules/audit/workflow_auditor.py (audit_workflow) and
-# hooks/subagent_stop.py (response_contract_violation).
+# One-line meaning per anomaly type, keyed by the `type` that workflow_auditor.py (audit_workflow), subagent_stop.py
+# (response_contract_violation) and defect_capture.py (agent_reported_defect) emit; context_ignored is retired, kept for old rows.
 _ANOMALY_TYPE_GLOSSARY = {
     "response_contract_violation": "agent's response envelope was missing or invalid",
     "execution_failure": "agent exited with a non-zero code",
@@ -825,12 +795,11 @@ _PLAN_STATUS_GLOSS = {
     "NEEDS_INPUT": "waiting on a decision from you",
     "APPROVAL_REQUEST": "waiting on your approval",
     "IN_PROGRESS": "still working",
-    "NEEDS_VERIFICATION": "waiting on a verifier to confirm (harness R2)",
+    "NEEDS_VERIFICATION": "waiting on a verifier to confirm",
 }
 
-# window_support (schema v2): which snapshot sections are backed by gaia.db
-# (episodes/episode_anomalies -- full history, exact window) vs. the
-# audit-*.jsonl files (~30d retention, capped_by_retention may apply).
+# Which snapshot sections are backed by gaia.db (full history, exact window)
+# and which by the audit-*.jsonl files (~30d retention, capped_by_retention).
 _WINDOW_SUPPORT = {
     "episodes_backed": [
         "agent_invocations",
@@ -911,10 +880,8 @@ def _calculate_command_type_breakdown(audit_logs: list) -> dict:
 def _calculate_top_commands(audit_logs: list) -> list:
     """Top command labels by frequency, with share-of-total and avg duration.
 
-    Dashboard v3 (P1 #5): the tier/⚠ column is gone (it duplicated Security
-    Tier Usage); a percentage bar and an average ``duration_ms`` (from
-    hooks/modules/audit/logger.py's audit record, previously unused here)
-    replace it.
+    Each label carries a percentage and an average ``duration_ms`` taken from
+    the audit record (hooks/modules/audit/logger.py).
     """
     label_map = {}
     for e in audit_logs:
@@ -955,19 +922,13 @@ def _calculate_error_rate(audit_logs: list) -> dict:
     }
 
 
-# The degraded-T3 sensor was renamed by commit 273e2bb from "t3_degraded_allow"
-# to "t3_degraded_block" (the branch used to let a T3 through non-blocking when
-# approval persistence failed; it now denies instead). Both tags name the SAME
-# sensor firing -- only the outcome changed -- so both are folded into one
-# counter under the CURRENT tag name. Without this, every pre-rename record
-# (the legacy tag, still real audit history on disk) would silently stop being
-# counted the moment the emitter's spelling changed.
+# Both tags name the same degraded-T3 sensor firing; records on disk carrying the
+# legacy tag are counted under the current one.
 _DEGRADED_T3_CURRENT_EVENT = "t3_degraded_block"
 _DEGRADED_T3_LEGACY_EVENT = "t3_degraded_allow"
 
 # Mirrors hooks/modules/security/fail_open.py::FAIL_OPEN_EVENT, kept as a
-# literal rather than imported -- this CLI package does not otherwise depend
-# on the hooks package, and that module is under concurrent edit elsewhere.
+# literal because this CLI package does not otherwise import the hooks package.
 _HOOK_FAIL_OPEN_EVENT = "hook_fail_open"
 
 
@@ -1181,11 +1142,8 @@ def _calculate_anomaly_summary(anomaly_entries: list):
     warning/info noise regardless of how often the noisy type fires.
     ``by_severity`` gives the aggregate breakdown for a one-line read.
 
-    Dashboard v3: no longer applies its own 30-day age cutoff. Time
-    filtering is the caller's TimeWindow, enforced once in SQL by
-    ``_read_anomaly_entries`` -- filtering again here would silently
-    re-impose a fixed 30-day window even when the user asked for
-    ``--range=all`` or ``--range=today``.
+    Applies no age cutoff of its own: time filtering is the caller's
+    TimeWindow, enforced in SQL by ``_read_anomaly_entries``.
     """
     entries = [e for e in anomaly_entries if e]
     if not entries:
@@ -1276,7 +1234,7 @@ def _calculate_runtime_skill_summary(skill_snapshots: list, run_snapshots: list)
                 "source": snap.get("source", "explicit"),
             }
 
-    # P3 #10: busiest profile first (was alphabetical by agent name).
+    # Busiest profile first, ties by agent name.
     profiles = sorted(latest_by_agent.values(), key=lambda x: (-x["skills_count"], x["agent"]))
     all_skills = [s for p in profiles for s in p["skills"]]
     top_skills = _top_counts(all_skills, 6)
@@ -1339,20 +1297,13 @@ def _calculate_context_update_summary(run_snapshots: list):
 
 
 # ---------------------------------------------------------------------------
-# MetricsSnapshot -- unified data model (dashboard v2, extended in v3)
+# MetricsSnapshot -- unified data model
 #
-# Before this model, cmd_metrics() ran the 11 calculators TWICE -- once for
-# --json, once for the console display -- and the two branches carried
-# divergent key names for the same data (the JSON branch's "security_tiers"
-# vs. the display branch's "tiers"). MetricsSnapshot is computed exactly
-# once per invocation and fed to both json.dumps(snapshot.to_dict()) and
-# render_console(snapshot), so there is one source of truth for both data
-# and canonical key names. schema_version makes the JSON shape a contract a
-# future web/API consumer can version against.
-#
-# v3 adds the ``window`` field (the TimeWindow governing this read) and
-# filters native agents out of the runtime-skills input, matching the
-# segregation invocations/outcomes/tokens already had (P0 fix).
+# Computed once per invocation and fed to both json.dumps(snapshot.to_dict())
+# and render_console(snapshot), so the JSON and the console share one set of
+# keys. ``window`` is the TimeWindow governing the read; native agents are
+# filtered out of the runtime-skills input as they are from invocations,
+# outcomes and tokens.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -1375,9 +1326,8 @@ class MetricsSnapshot:
     context_snapshots: Optional[dict]
     context_updates: Optional[dict]
     agent_filter: Optional[str] = None
-    # Q3: always-on security-event counts (t3_degraded_block, folding in the
-    # legacy t3_degraded_allow tag, + approval_persist_failed +
-    # hook_fail_open) discriminated out of the execution aggregates.
+    # t3_degraded_block (folding in the legacy t3_degraded_allow tag),
+    # approval_persist_failed and hook_fail_open counts.
     security_events: Optional[dict] = None
 
     def to_dict(self) -> dict:
@@ -1399,17 +1349,11 @@ class MetricsSnapshot:
         window: Optional[TimeWindow] = None,
     ) -> "MetricsSnapshot":
         win = window or _DEFAULT_WINDOW
-        # Q3: split synthetic security-event records (carrying an ``event`` key:
-        # error / t3_degraded_block / hook_fail_open) out of the execution-oriented
-        # audit logs so tier usage / command breakdown / top commands / error rate
-        # count only real tool executions. The events feed security_events instead.
+        # Records carrying an ``event`` key feed security_events; the other
+        # aggregates count only tool executions.
         exec_logs = [l for l in audit_logs if not l.get("event")]
         event_logs = [l for l in audit_logs if l.get("event")]
         gaia_metrics, native_metrics = _split_native_agents(workflow_metrics)
-        # P0 fix: runtime skills previously computed over run_snapshots
-        # WITHOUT native-agent filtering, unlike invocations/outcomes/tokens
-        # (which already used gaia_metrics). Segregate the same way here so
-        # Explore/Plan/etc. don't show up as "Gaia specialist" skill profiles.
         gaia_run_snapshots, _ = _split_native_agents(run_snapshots)
         gaia_skill_snapshots, _ = _split_native_agents(skill_snapshots)
         return cls(
@@ -1464,7 +1408,8 @@ class MetricsSnapshot:
 # Render -- hand-rolled Unicode box-drawing (zero new dependencies)
 # ---------------------------------------------------------------------------
 
-_BOX_W = 74  # interior width, excluding the two border characters
+# Interior width, excluding the two border characters.
+_BOX_W = 74
 
 _TIER_LABELS = {"T0": "read-only", "T1": "validation", "T2": "dry-run", "T3": "mutating"}
 _SEVERITY_LABELS = {"critical": "CRIT", "error": "ERR ", "warning": "WARN", "info": "INFO", "unknown": "?   "}
@@ -1473,21 +1418,16 @@ _SEVERITY_LABELS = {"critical": "CRIT", "error": "ERR ", "warning": "WARN", "inf
 def _display_width(text: str) -> int:
     """Terminal column width of ``text``, not its character count.
 
-    Dashboard v3 bug: the box renderer used to measure cell width with
-    ``len()``. Full-width glyphs (CJK ideographs, most emoji, and some
-    symbols like the warning sign used in the Security Tier Usage rows)
-    occupy 2 terminal cells but ``len()`` counts them as 1, so any row
-    containing one came out one column "too short" and every ``ljust()``
-    pad based on it under-padded by that amount -- desyncing the right
-    border on that row relative to the rest of the box.
+    ``len()`` would count a full-width glyph (CJK ideographs, wide emoji) as
+    1 cell when it occupies 2, under-padding the row and desyncing the box's
+    right border.
 
-    Uses stdlib ``unicodedata.east_asian_width`` (no new dependency):
-    'W' (Wide) and 'F' (Fullwidth) count as 2 cells, zero-width combining
-    marks count as 0, everything else -- including 'A' (Ambiguous, which
-    renders narrow in a non-CJK locale, e.g. the box-drawing characters
-    this module already prints) -- counts as 1. This matches the
-    convention the ``wcwidth`` library uses and is sufficient for the
-    CJK/emoji/wide-symbol case without pulling in a dependency.
+    Uses stdlib ``unicodedata.east_asian_width``: 'W' (Wide) and 'F'
+    (Fullwidth) count as 2 cells, combining marks count as 0, everything
+    else counts as 1 -- including 'A' (Ambiguous, narrow in a non-CJK
+    locale, e.g. the box-drawing characters) and 'N' (Neutral, e.g. the
+    warning sign the rows print, which a terminal that draws it 2 cells
+    wide misaligns).
     """
     width = 0
     for ch in text:
@@ -1558,23 +1498,20 @@ def _print_box(title: str, rows: list, legend: list = None, right_label: str = "
 def render_console(snapshot: MetricsSnapshot) -> None:
     """Render the dashboard from a single, already-computed MetricsSnapshot.
 
-    Every section is a box: a title bar (with an at-a-glance right-aligned
-    total), the data rows, and an embedded legend with a "WHAT:" line (what
-    the metric IS, in plain language) and one or more "NOTE:" lines
-    (caveats, classification quirks, window scope).
+    Every section is a box: a title bar (with a right-aligned total where the
+    section has one), the data rows, and an embedded legend with a "WHAT:"
+    line (what the metric IS, in plain language) and "NOTE:" lines (caveats,
+    classification quirks, window scope).
 
-    Dashboard v3 order: Security Tier Usage and Runtime Skill Snapshots lead
-    (the two most-referenced boxes); Activity Today is a compact strip under
-    the header rather than its own box, and its T3-today count lives solely
-    in Security Tier Usage (not repeated).
+    Security Tier Usage and Runtime Skill Snapshots lead; the "Today (UTC)"
+    strip sits under the header rather than in its own box, and its T3-today
+    count appears only in Security Tier Usage.
     """
     window = snapshot.window
     print("\nGaia System Metrics  (dashboard v3)")
     ws_label = snapshot.workspace or "unfiltered (all workspaces)"
     print(f"Generated {snapshot.generated_at}  |  workspace: {ws_label}  |  range: {window['label']}")
 
-    # Compact "Today (UTC)" strip -- not a box. T3-today lives in Security
-    # Tier Usage below; this strip does not repeat it.
     tiers = snapshot.security_tiers
     err = snapshot.error_stats
     today_line = f"Today (UTC): {tiers['today_count']} calls"
@@ -1619,7 +1556,7 @@ def render_console(snapshot: MetricsSnapshot) -> None:
     ]
     _print_box("SECURITY TIER USAGE", rows, legend, right_label=f"{tiers['total']} ops")
 
-    # Runtime Skill Snapshots (moved up -- P2 #7)
+    # Runtime Skill Snapshots
     rs = snapshot.runtime_skills
     if rs["agent_count"] > 0:
         rows = []
@@ -1708,8 +1645,7 @@ def render_console(snapshot: MetricsSnapshot) -> None:
         right_label=f"{inv['today_count']} today · {inv['total']} in {window['label']}",
     )
 
-    # Native Agent Activity (segregated -- P1 fix: Explore et al. are harness
-    # noise, not Gaia specialist signal)
+    # Native Agent Activity (Explore et al., kept apart from Gaia specialists)
     native = snapshot.native_agent_activity
     if native["total"] > 0:
         rows = []
@@ -1871,7 +1807,6 @@ def _display_agent_detail(root: Path, agent_name: str, data: dict):
             if len(skills_str) <= 60:
                 print(f"  Skills:      {skills_str}")
             else:
-                # Wrap skills at ~60 chars
                 chunks = []
                 current = []
                 length = 0
@@ -1891,7 +1826,6 @@ def _display_agent_detail(root: Path, agent_name: str, data: dict):
 
     # Runtime Snapshot (latest profile for this agent)
     print("\nRuntime Snapshot")
-    # Find latest snapshot
     explicit = [e for e in skill_snapshots if e.get("agent") == agent_name]
     run_defaults = [e for e in run_snapshots if e.get("agent") == agent_name and e.get("default_skills_snapshot")]
     all_snaps = sorted(
@@ -1988,7 +1922,6 @@ def _display_agent_detail(root: Path, agent_name: str, data: dict):
         label_map = {}
 
         for i, session in enumerate(agent_sessions):
-            # Find this session's position in named_stops
             stop_idx = next(
                 (j for j, r in enumerate(named_stops) if r.get("task_id") == session.get("task_id")),
                 -1,
@@ -2035,7 +1968,7 @@ def _display_agent_detail(root: Path, agent_name: str, data: dict):
 
 
 def _parse_ts(ts_str: str) -> float:
-    """Parse ISO timestamp to Unix seconds."""
+    """Parse ISO timestamp to Unix seconds; 0.0 when it does not parse."""
     try:
         return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
     except (ValueError, AttributeError):
@@ -2137,12 +2070,9 @@ def cmd_metrics(args) -> int:
             print(f"\nError: {msg}\n", file=sys.stderr)
         return 2
 
-    # Audit-log sections (tier usage, command breakdown, top commands) read
-    # rotated .claude/logs/audit-*.jsonl files with ~30d retention. Cap the
-    # audit-facing lower bound at that floor and flag it on the shared
-    # window so those boxes can declare the cap in their own NOTE line.
-    # Episodes/episode_anomalies (SQL-backed, full history) use the
-    # uncapped, as-requested bound below.
+    # The audit-log sections read audit-*.jsonl files kept ~30d: clamp their
+    # lower bound to that floor and flag it on the window. The SQL-backed
+    # readers use the bound as requested.
     retention_floor_iso = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     audit_since = window.since_iso
     if window.since_iso is None or window.since_iso < retention_floor_iso:
@@ -2171,9 +2101,8 @@ def cmd_metrics(args) -> int:
             print("Metrics will be generated as you use the system\n")
         return 0
 
-    # The --agent detail view (non-JSON) stays a single-pass path of its own:
-    # it renders raw episode/audit rows for one agent rather than the
-    # aggregate dashboard, so there is no double-computation to unify here.
+    # The non-JSON --agent view renders the raw rows for one agent and skips
+    # the snapshot.
     if agent_name and not as_json:
         data = {
             "workflow_metrics": workflow_metrics,
@@ -2185,8 +2114,6 @@ def cmd_metrics(args) -> int:
         _display_agent_detail(root, agent_name, data)
         return 0
 
-    # Build the unified snapshot ONCE -- both --json and the console render
-    # read from this single computation (dashboard v2, dim #18).
     snapshot = MetricsSnapshot.build(
         workspace=workspace_override,
         audit_logs=audit_logs,

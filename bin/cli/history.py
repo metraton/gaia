@@ -3,10 +3,8 @@ gaia history -- Recent agent sessions: list, show, search.
 
 Shows recent agent sessions with task descriptions, outcomes, and token usage.
 
-Reads from:
-  ~/.gaia/gaia.db  (substrate SQLite, primary)
-  .claude/project-context/episodic-memory/index.json  (legacy fallback)
-  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (legacy fallback)
+Reads the episodes table of ~/.gaia/gaia.db, for one workspace. Needs a
+`.claude` directory in the project root it finds.
 
 Flags:
   --today / -t         Show only today's sessions
@@ -60,27 +58,15 @@ def _read_workflow_metrics(
     limit: int = None,
 ) -> list:
     """
-    Read agent session history from gaia.db episodes table.
-
-    T6 migration: primary source is now the episodes table in gaia.db.
-    The legacy episodic-memory/index.json and workflow-episodic-memory/metrics.jsonl
-    files are no longer read here.
+    Read agent session history from the gaia.db episodes table.
 
     ``workspace_override`` -- explicit ``--workspace`` value from the CLI.
     When set, it wins over ``gaia.project.current()`` resolution.
 
-    LIMIT pushdown (perf fix): the ``episodes`` table can hold tens of
-    thousands of rows (13.7k / ~13MB in workspace 'me'), and this reader
-    previously did ``SELECT ... ORDER BY timestamp DESC`` with NO LIMIT,
-    pulling every row into Python before ``cmd_history`` sliced ``[:limit]``.
-    We now push ``LIMIT`` to SQL. The critical subtlety (regression guard):
-    ``cmd_history`` applies ``--today`` / ``--blocked`` / ``--agent`` AFTER
-    the fetch, so a naive ``LIMIT`` placed BEFORE those filters would starve a
-    query like ``gaia history --agent developer --limit 20`` (it would fetch
-    the 20 newest rows of ANY agent, then filter, returning almost nothing).
-    So the filters are pushed into the SQL ``WHERE`` alongside the LIMIT. ``cmd_history`` still
-    re-applies the same predicates in Python; on SQL-filtered rows those are
-    idempotent no-ops, preserving byte-for-byte output parity.
+    The filters go into the SQL ``WHERE`` together with the ``LIMIT``: a LIMIT
+    applied before them would fetch the newest rows of any agent and leave
+    ``--agent developer --limit 20`` almost empty. ``cmd_history`` re-applies
+    the same predicates in Python, which are no-ops on the rows returned.
 
     Args:
         today: when True, restrict to rows whose timestamp falls on today (UTC).
@@ -112,8 +98,6 @@ def _read_workflow_metrics(
         except Exception:
             ws = None
 
-    # Build WHERE clauses + params, mirroring cmd_history's post-fetch filters
-    # so the LIMIT is applied to the ALREADY-filtered set (regression guard).
     clauses = ["agent IS NOT NULL"]
     params: list = []
     if ws:
@@ -198,7 +182,7 @@ def _format_tokens(n) -> str:
 
 
 def _status_label(status: str) -> str:
-    """Return padded status string (no ANSI colours in stdlib version)."""
+    """Return the status upper-cased and padded to 8 characters."""
     if not status:
         return "n/a     "
     return status.upper().ljust(8)
@@ -277,10 +261,6 @@ def cmd_history(args) -> int:
             print("  Run: gaia scan\n")
         return 1
 
-    # Push the same filters cmd_history applies below into the SQL WHERE, plus
-    # the LIMIT, so we never pull the full episodes table into Python. The
-    # post-fetch Python filters below remain as idempotent no-ops on the
-    # already-filtered rows, guaranteeing output parity.
     want_today = getattr(args, "today", False)
     want_blocked = getattr(args, "blocked", False)
     want_agent = getattr(args, "agent", None)
@@ -302,7 +282,6 @@ def cmd_history(args) -> int:
             print("  History is recorded after each agent completes\n")
         return 0
 
-    # Apply filters
     today_str = datetime.now(timezone.utc).date().isoformat()
 
     if getattr(args, "today", False):
@@ -317,7 +296,6 @@ def cmd_history(args) -> int:
         needle = agent_filter.lower()
         entries = [e for e in entries if needle in (e.get("agent") or "").lower()]
 
-    # Sort newest-first, apply limit
     limit = getattr(args, "limit", 20)
     entries = sorted(entries, key=lambda e: e.get("timestamp") or "", reverse=True)[:limit]
 
@@ -332,7 +310,6 @@ def cmd_history(args) -> int:
         print(json.dumps(entries, indent=2))
         return 0
 
-    # Table output (mirrors JS column layout)
     TIME_W = 11
     AGENT_W = 22
     TASK_W = 38
@@ -377,7 +354,6 @@ def cmd_history(args) -> int:
 
     print("  " + SEP)
 
-    # Footer
     agent_count = len(agent_set)
     agent_plural = "s" if agent_count != 1 else ""
     footer = f"  Total: {len(entries)} sessions | {agent_count} agent{agent_plural}"
@@ -387,7 +363,6 @@ def cmd_history(args) -> int:
     print(footer)
     print()
 
-    # Tip (only when no active filters)
     if not getattr(args, "today", False) and not getattr(args, "blocked", False) and not agent_filter:
         print("  Flags: --today | --blocked | --agent <name> | --limit <n>\n")
 

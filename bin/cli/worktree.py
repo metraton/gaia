@@ -7,12 +7,11 @@ Wraps ``gaia.worktree.create_canonical_worktree`` (identity-locked creation),
 ``gaia.retention.worktree_reclaim.reclaim_worktree`` (capture-before-recycle
 release) behind one CLI verb, so a specialist can create, inspect, and free
 its own isolated worktree without depending on any host feature (Claude
-Code's ``worktree.bgIsolation`` or equivalent). Before this, the machinery
-existed with no production call site -- see ``gaia/worktree.py``'s module
-docstring for the identity contract this plugin's ``create`` action relies
-on: the git lock's *reason*, not the directory name, carries
-``contract_id``/``agent_id``, which is what lets the collector recognize a
-worktree this verb created as its own.
+Code's ``worktree.bgIsolation`` or equivalent). See ``gaia/worktree.py``'s
+module docstring for the identity contract ``create`` relies on: the git
+lock's *reason*, not the directory name, carries ``contract_id``/``agent_id``,
+which is what lets the collector recognize a worktree this verb created as
+its own.
 
 Subcommands:
     gaia worktree create  --repo <path> --project <name>
@@ -74,10 +73,6 @@ def _print_metadata(metadata, as_json: bool) -> None:
     for key in ("path", "repo", "project", "contract_id", "agent_id", "branch", "commit", "lifecycle"):
         print(f"{key}={d[key]}")
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 def _cmd_create(args) -> int:
     from gaia.worktree import WorktreePathError, create_canonical_worktree
@@ -289,10 +284,6 @@ def _cmd_release(args) -> int:
     )
     return 0 if result.get("status") not in _FAILURE_STATUSES else 1
 
-
-# ---------------------------------------------------------------------------
-# register (auto-discovered by bin/gaia)
-# ---------------------------------------------------------------------------
 
 def register(subparsers) -> None:
     """Register the `worktree` subcommand with the root parser."""
