@@ -43,8 +43,8 @@ Design:
   per SDK, and they are syntactically indistinguishable from reads except by
   their verb.
 - If the payload fails to parse (``SyntaxError``), the function returns a
-  result with ``parse_failed=True`` so the caller can fall back to the
-  legacy regex layer rather than allowing the command unconditionally.
+  result with ``parse_failed=True``; the callers in ``mutative_verbs`` treat
+  that as unparsed code (``_unparsed_code``) rather than allowing the command.
 
 CEILING (read this before trusting a clean result)
 --------------------------------------------------
@@ -77,10 +77,6 @@ from typing import Callable, FrozenSet, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Result type
-# ============================================================================
-
 @dataclass(frozen=True)
 class InlineAstResult:
     """Outcome of inspecting a Python payload via AST.
@@ -95,9 +91,8 @@ class InlineAstResult:
             ``"FILE_DELETION"``, ``"FILE_WRITE"``, ``"FILE_MUTATION"``,
             ``"PERMISSION_MOD"``, ``"NETWORK"``, ``"CLOUD_SDK"``, or ``""``
             when safe.
-        parse_failed: True when ``ast.parse`` raised ``SyntaxError`` and the
-            caller should fall back to its regex layer.  ``is_dangerous`` is
-            ``False`` in that case.
+        parse_failed: True when ``ast.parse`` raised ``SyntaxError``;
+            ``is_dangerous`` is ``False`` in that case.
         detail: Source-level detail (the dotted call name) for diagnostics.
     """
 
@@ -108,17 +103,8 @@ class InlineAstResult:
     detail: str = ""
 
 
-# ============================================================================
-# Call signature catalog
-# ============================================================================
-# Keys are dotted names as they appear *in source* (not aliased imports).
-# We accept both the bare attribute (``subprocess.run``) and a leaf-only
-# match (``run`` after ``from subprocess import run``) by tracking aliases
-# during AST walking.
-
-# (dotted-name, label, category)
+# Entries are (canonical dotted name, label, category); a call's name is resolved through _AliasResolver before the lookup.
 _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
-    # --- Process execution ---
     ("subprocess.run", "subprocess-run", "PROCESS_EXECUTION"),
     ("subprocess.call", "subprocess-call", "PROCESS_EXECUTION"),
     ("subprocess.check_call", "subprocess-check-call", "PROCESS_EXECUTION"),
@@ -142,7 +128,6 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     ("os.spawnl", "os-spawn", "PROCESS_EXECUTION"),
     ("pty.spawn", "pty-spawn", "PROCESS_EXECUTION"),
 
-    # --- File deletion ---
     ("os.remove", "os-remove", "FILE_DELETION"),
     ("os.unlink", "os-unlink", "FILE_DELETION"),
     ("os.rmdir", "os-rmdir", "FILE_DELETION"),
@@ -151,12 +136,9 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     ("pathlib.Path.unlink", "pathlib-unlink", "FILE_DELETION"),
     ("pathlib.Path.rmdir", "pathlib-rmdir", "FILE_DELETION"),
 
-    # --- File mutation ---
-    # ``shutil.copyfile`` sits one character from ``shutil.copy`` and reaches
-    # the same syscalls; it was absent while its four siblings were present,
-    # which is exactly how a copy gets performed after ``cp`` is refused.  The
-    # rule for this block is the EFFECT (bytes or metadata on disk change),
-    # never the spelling.
+    # The rule for the file-mutation entries below is the EFFECT (bytes or metadata on disk change),
+    # never the spelling: ``shutil.copyfile`` reaches the same syscalls as
+    # ``shutil.copy``.
     ("os.rename", "os-rename", "FILE_MUTATION"),
     ("os.renames", "os-renames", "FILE_MUTATION"),
     ("os.replace", "os-replace", "FILE_MUTATION"),
@@ -192,16 +174,13 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     # 3.12); a payload targeting an older interpreter still reaches link(2).
     ("pathlib.Path.link_to", "pathlib-link-to", "FILE_MUTATION"),
 
-    # --- Mode / flag dependent openers (gated in _build_open_aware_result) ---
-    # Listed here so one lookup covers them, but they only escalate when the
-    # mode or flag argument permits writing; a read-only open stays safe.
+    # These openers escalate only when the mode or flags permit writing (_build_open_aware_result); a read-only open stays safe.
     ("open", "open-write", "FILE_WRITE"),
     ("io.open", "io-open-write", "FILE_WRITE"),
     ("codecs.open", "codecs-open-write", "FILE_WRITE"),
     ("pathlib.Path.open", "pathlib-open-write", "FILE_WRITE"),
     ("os.open", "os-open-write", "FILE_WRITE"),
 
-    # --- Permission modification ---
     ("os.chmod", "os-chmod", "PERMISSION_MOD"),
     ("os.chown", "os-chown", "PERMISSION_MOD"),
     ("os.lchmod", "os-lchmod", "PERMISSION_MOD"),
@@ -218,7 +197,6 @@ _DANGEROUS_CALLS: Tuple[Tuple[str, str, str], ...] = (
     ("pathlib.Path.chmod", "pathlib-chmod", "PERMISSION_MOD"),
     ("pathlib.Path.lchmod", "pathlib-lchmod", "PERMISSION_MOD"),
 
-    # --- Network egress (broad: any HTTP write or socket open) ---
     ("urllib.request.urlopen", "urlopen", "NETWORK"),
     ("requests.get", "requests-get", "NETWORK"),
     ("requests.post", "requests-post", "NETWORK"),
@@ -270,21 +248,17 @@ def _imported_module(call: ast.Call, dotted: Optional[str]) -> Optional[str]:
 
 _DANGEROUS_BY_DOTTED = {entry[0]: entry for entry in _DANGEROUS_CALLS}
 
-# Modules whose entire surface we treat as dangerous-when-called.  Used as a
-# safety net for aliased imports (``from subprocess import run as r``) when
-# we cannot statically resolve the underlying attribute.
 _DANGEROUS_LEAVES_BY_MODULE: dict = {}
 for _dotted, _label, _category in _DANGEROUS_CALLS:
     if "." in _dotted:
         _mod, _leaf = _dotted.rsplit(".", 1)
         _DANGEROUS_LEAVES_BY_MODULE.setdefault(_mod, {})[_leaf] = (_label, _category)
 
-# Mode characters that escalate ``open(...)`` to FILE_WRITE.  Lower-cased
-# during inspection.  ``r+``, ``w``, ``a``, ``x`` all permit writing.
+# A mode containing any of these characters (lower-cased) permits writing, ``r+`` included.
 _OPEN_WRITE_MODE_CHARS: FrozenSet[str] = frozenset({"w", "a", "x", "+"})
 
 # Openers whose danger depends on an argument, and WHERE that argument sits.
-# ``open(path, mode)`` and its two aliases take the mode second; the bound
+# ``open(path, mode)``, ``io.open`` and ``codecs.open`` take the mode second; the bound
 # ``Path.open(mode)`` takes it first, because the path is the receiver.  An
 # entry here means the catalog hit is gated, not accepted outright.
 _MODE_ARG_INDEX: dict = {
@@ -306,21 +280,8 @@ _OS_OPEN_WRITE_FLAGS: FrozenSet[str] = frozenset({
 })
 
 
-# ============================================================================
-# Cloud SDK mutation catalog
-# ============================================================================
-# The NETWORK category above matches what egress LOOKS like syntactically
-# (``requests.post``, ``socket.socket``).  A cloud SDK looks like nothing of
-# the sort: the transport is hidden inside a generated client, so
-# ``boto3.client("s3").delete_object(...)`` is, to a name-matching catalog,
-# indistinguishable from any other attribute chain -- and it deletes a real
-# object in a real account.
-#
-# Enumerating method names is not viable (thousands per SDK, generated from
-# discovery documents), so the rule is PREFIX + VERB: the chain must root in a
-# known SDK module AND the invoked method must carry a mutative verb token.
-# The prefix gate is what keeps the verb list from firing on ordinary code --
-# ``s.replace(...)`` on a string is untouched because ``str`` is not an SDK.
+# A cloud SDK call is an ordinary attribute chain (``boto3.client("s3").delete_object``), so it is matched by
+# module prefix plus the invoked method's verb; the prefix keeps the verb list off ordinary code (``str.replace``).
 _CLOUD_SDK_PREFIXES: Tuple[str, ...] = (
     "boto3",
     "google.cloud",
@@ -329,22 +290,15 @@ _CLOUD_SDK_PREFIXES: Tuple[str, ...] = (
     "python_terraform",
 )
 
-# Verb tokens that mean "this call changes the account/cluster/state".
-# ``destroy`` and ``terminate`` are here because they are the most destructive
-# operations in the terraform and EC2 surfaces respectively; ``put``,
-# ``remove`` and ``replace`` because S3 and the Kubernetes API spell their
-# writes that way.  Deliberately EXCLUDED: ``set`` -- ``boto3.set_stream_logger``
-# is local logging configuration and would false-positive.  This list narrows
-# a known set of verbs; it is not a closure over what an SDK can mutate.
+# ``put``, ``remove`` and ``replace`` are how S3 and the Kubernetes API spell writes; ``set`` is left out
+# because ``boto3.set_stream_logger`` is local logging configuration.
 _CLOUD_SDK_MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "delete", "create", "update", "apply", "patch", "insert",
     "destroy", "terminate", "put", "remove", "replace",
 })
 
-# Split an identifier into lowercase word tokens on both ``_`` and camelCase
-# boundaries, so ``delete_object`` and ``deleteObject`` both yield ``delete``
-# while ``get_creation_time`` yields ``creation`` (never ``create``).  Token
-# equality, not substring matching, is what keeps that distinction.
+# Word tokens split on ``_`` and camelCase (``delete_object`` and ``deleteObject`` both yield ``delete``); token
+# equality keeps ``get_creation_time`` from matching ``create``.
 _IDENT_WORD_RE = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
 
 
@@ -381,9 +335,6 @@ def _match_cloud_sdk(dotted: str) -> Optional[Tuple[str, str]]:
     return (f"cloud-sdk-{sorted(verb)[0]}", "CLOUD_SDK")
 
 
-# ============================================================================
-# Provable reads among catalogued calls
-# ============================================================================
 # A process call whose whole argv is literal strings runs exactly that command,
 # so it can be judged as the command it runs.  Every keyword outside this set is
 # refused because it can change what runs or what it reads: ``shell`` turns the
@@ -517,10 +468,6 @@ def _urlopen_is_read(call: ast.Call, provenance: _RequestProvenance) -> bool:
     return data_known and data is None and provenance.is_read(call.args[0])
 
 
-# ============================================================================
-# Public entry point
-# ============================================================================
-
 def analyze_python_inline(
     code: str,
     argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]] = None,
@@ -547,11 +494,8 @@ def analyze_python_inline(
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError:
-        # Fall through with parse_failed=True so the caller can decide.
         return InlineAstResult(parse_failed=True)
 
-    # Build alias maps from imports so ``from subprocess import run as r`` and
-    # ``import subprocess as sp`` both resolve correctly during call walk.
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     provenance = _RequestProvenance(tree, alias_map)
@@ -588,9 +532,6 @@ def analyze_python_inline(
                 return result
             continue
 
-        # Module-level fallback: ``mod.leaf(...)`` where leaf is in the
-        # dangerous catalog for that module (handles cases the explicit
-        # _DANGEROUS_BY_DOTTED entries cover, plus any aliased re-exports).
         if "." in dotted:
             mod, leaf = dotted.rsplit(".", 1)
             mod_leaves = _DANGEROUS_LEAVES_BY_MODULE.get(mod)
@@ -601,8 +542,6 @@ def analyze_python_inline(
                     return result
                 continue
 
-        # Cloud SDK mutation: matched by module prefix + invoked verb, since
-        # the method surface is generated and cannot be enumerated.
         cloud = _match_cloud_sdk(dotted)
         if cloud is not None:
             label, category = cloud
@@ -682,7 +621,7 @@ _UNCATALOGUED_EFFECT_MODULES: FrozenSet[str] = frozenset({
     "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "xmlrpc", "ctypes",
     "asyncio", "multiprocessing", "pty", "shelve", "dbm", "tempfile", "webbrowser",
 })
-# Effect-module members that touch nothing outside the process (gettempdir removes its probe file).
+# Effect-module members that leave no effect outside the process (gettempdir creates and removes its probe file).
 _EFFECT_MODULE_READS: Dict[str, FrozenSet[str]] = {
     "tempfile": frozenset({"gettempdir", "gettempdirb", "gettempprefix", "gettempprefixb"}),
     "socket": frozenset({"gethostname"}),
@@ -982,30 +921,8 @@ def _effect_module_read(dotted: str) -> bool:
     return member in _EFFECT_MODULE_READS.get(root, ()) and not any(part.startswith("_") for part in tail)
 
 
-# ============================================================================
-# Provable read-only classification (positive allowlist)
-# ============================================================================
-# Rationale: ``analyze_python_inline`` uses a *blocklist* — a clean result
-# means "no KNOWN dangerous call was found", which is NOT the same as
-# "read-only".  Bound-method mutations the catalog cannot see statically —
-# ``cur.execute("INSERT ...")``, ``con.commit()``, ``f.write(...)`` on a
-# handle whose write-mode was set elsewhere — parse cleanly yet mutate.
-#
-# This second classifier exists ONLY to safely exempt long-but-harmless
-# inline code from the length heuristic (``heuristic-long-code``).  It is the
-# inverse discipline: it returns True ONLY when EVERY statement and EVERY call
-# in the payload is on a positive read-only allowlist.  Anything unrecognized
-# — any node type, call target, assignment target, or SQL verb it cannot
-# prove safe — makes it return False, leaving the length heuristic in force.
-# No-false-negative is the contract: a mutation must never be classified
-# read-only, even at the cost of leaving some genuinely-read-only payloads
-# subject to the length flag (those remain T3-approvable, never silently run).
-
-# Builtins that never mutate external state.  Deliberately conservative:
-# ``open`` is excluded (write modes), ``exec``/``eval``/``compile``/
-# ``__import__``/``input``/``getattr``/``setattr``/``delattr`` are excluded
-# (dynamic dispatch defeats static analysis), ``print`` is allowed (stdout
-# only).
+# ``open`` (write modes) and the dynamic-dispatch builtins (``exec``, ``eval``, ``compile``, ``__import__``,
+# ``input``, ``getattr``, ``setattr``, ``delattr``) are absent: static analysis cannot prove them.
 _READ_ONLY_BUILTINS: FrozenSet[str] = frozenset({
     "print", "len", "str", "repr", "int", "float", "bool", "list", "tuple",
     "dict", "set", "frozenset", "sorted", "reversed", "enumerate", "zip",
@@ -1034,13 +951,6 @@ _READ_ONLY_METHODS: FrozenSet[str] = frozenset({
     "readline", "readlines",
 })
 
-# SQL statement prefixes that are read-only.  Matched case-insensitively
-# against the leading token of a literal SQL string.  ``WITH`` (CTE) is
-# allowed only when it ultimately SELECTs — but a CTE can wrap an
-# INSERT/UPDATE/DELETE (``WITH x AS (...) DELETE ...``), so to stay airtight
-# we require the literal to ALSO contain no mutating keyword.  Simpler and
-# safer: allow the prefix, then reject if any mutating keyword appears
-# anywhere in the literal.
 _READ_ONLY_SQL_PREFIXES: Tuple[str, ...] = (
     "select", "pragma", "explain", "with", "values", "show",
 )
@@ -1058,9 +968,7 @@ def is_provably_read_only_python(code: str) -> bool:
     """Return True ONLY if every construct in ``code`` is provably read-only.
 
     Positive allowlist over the AST.  Any node type, call, assignment target,
-    or SQL verb that cannot be proven safe returns False.  Used to exempt
-    long-but-harmless inline code from the length heuristic; never used to
-    grant execution by itself.
+    or SQL verb that cannot be proven safe returns False.
 
     Args:
         code: Python source extracted from ``python3 -c "..."`` (unquoted).
@@ -1085,10 +993,7 @@ def is_provably_read_only_python(code: str) -> bool:
 class _ReadOnlyChecker:
     """Walks an AST and proves it contains only read-only constructs."""
 
-    # Statement node types that are structurally inert (control flow,
-    # definitions, expression evaluation).  Mutation can only happen via a
-    # Call, an attribute/subscript assignment, del, or import side effects —
-    # all handled explicitly below.
+    # A statement type not listed (Delete, Try, ClassDef, Raise, ...) fails the proof; imports are accepted unexamined.
     _ALLOWED_STMT_TYPES = (
         ast.Import, ast.ImportFrom, ast.Expr, ast.Assign, ast.AnnAssign,
         ast.AugAssign, ast.For, ast.While, ast.If, ast.With, ast.FunctionDef,
@@ -1162,8 +1067,7 @@ class _ReadOnlyChecker:
         return False
 
     def _dotted_call_is_read_only(self, func: ast.Attribute) -> bool:
-        # Build dotted source name (best-effort).  Only a tiny set of
-        # module-level read-only constructors are permitted.
+        # Matched as spelled in the source; an import alias is not resolved.
         parts = []
         cur: ast.AST = func
         while isinstance(cur, ast.Attribute):
@@ -1177,11 +1081,6 @@ class _ReadOnlyChecker:
         return False
 
     def _sql_arg_is_read_only(self, node: ast.Call) -> bool:
-        # ``execute``/``executemany`` are read-only ONLY when the first
-        # positional argument is a string LITERAL whose leading token is a
-        # read-only SQL verb AND which contains no mutating keyword.  A
-        # non-literal SQL argument (variable, f-string, concatenation) cannot
-        # be proven safe and is rejected.
         if not node.args:
             return False
         first = node.args[0]
@@ -1190,22 +1089,18 @@ class _ReadOnlyChecker:
         sql = first.value.strip().lower()
         if not sql:
             return False
-        # Strip a leading comment / whitespace already done; take first word.
         leading = sql.split(None, 1)[0] if sql.split() else ""
         if leading not in _READ_ONLY_SQL_PREFIXES:
             return False
-        # Reject if ANY mutating keyword appears anywhere (defeats CTE-wrapped
-        # writes like ``WITH x AS (...) DELETE ...`` and stacked statements).
+        # A CTE can wrap a write (``WITH x AS (...) DELETE ...``) and statements can be stacked, so a
+        # mutating keyword anywhere in the literal rejects it.
         for kw in _MUTATING_SQL_KEYWORDS:
             if re.search(r"\b" + re.escape(kw) + r"\b", sql):
                 return False
         return True
 
 
-# Module-level read-only constructors permitted in a provable-read-only
-# payload (dotted source names).  ``sqlite3.connect`` opens a handle;
-# mutation would require a subsequent write call, which is independently
-# checked.  Kept deliberately small.
+# ``sqlite3.connect`` only opens a handle; a write needs a later call, which is checked on its own.
 _READ_ONLY_DOTTED_CALLS: FrozenSet[str] = frozenset({
     "sqlite3.connect",
     "json.dumps", "json.loads", "json.load",
@@ -1217,10 +1112,6 @@ _READ_ONLY_DOTTED_CALLS: FrozenSet[str] = frozenset({
     "pathlib.Path", "Path",
 })
 
-
-# ============================================================================
-# Internal helpers
-# ============================================================================
 
 def _build_open_aware_result(
     node: ast.Call, dotted: str, label: str, category: str,
@@ -1318,10 +1209,6 @@ def _extract_os_open_write_flags(node: ast.Call) -> Set[str]:
     return found
 
 
-# ----------------------------------------------------------------------------
-# Alias resolution
-# ----------------------------------------------------------------------------
-
 class _AliasResolver:
     """Track import aliases and local bindings to resolve call names statically.
 
@@ -1335,10 +1222,8 @@ class _AliasResolver:
         c = boto3.client("s3"); c.delete_object()   -> boto3.client.delete_object
 
     The last three are the reason chain traversal exists.  A chain that passes
-    through a Call is the IDIOMATIC form of every constructor-based API --
-    ``pathlib`` and every cloud SDK -- so a resolver that stopped at the first
-    Call reported ``None`` for all of them, silently making the entire
-    ``pathlib.Path.*`` block unmatchable.
+    through a Call is the idiomatic form of every constructor-based API --
+    ``pathlib`` and every cloud SDK.
     """
 
     def __init__(self) -> None:

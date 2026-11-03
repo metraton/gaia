@@ -1,5 +1,5 @@
 """
-Flag-dependent command classifiers for 15 command families.
+Flag-dependent command classifiers (git, sed, awk, tar, find, curl, wget, httpie).
 
 This module runs in the classify phase BEFORE detect_mutative_command().  When a
 classifier returns a FlagClassifierResult, it overrides verb-based classification.
@@ -7,32 +7,17 @@ When it returns None, the caller falls through to the existing mutative_verbs pi
 
 Classification outcomes:
   READ_ONLY  -- safe by elimination, no approval required
-  MUTATIVE   -- state-modifying, requires user approval (T3 nonce)
-  BLOCKED    -- permanently blocked (exit 2), maps to the same path as blocked_commands
+  MUTATIVE   -- state-modifying, requires user approval (T3)
+  BLOCKED    -- permanently blocked (exit 2), as a categorical flag-classifier denial
 
-Note on BLOCKED overlap with blocked_commands.py:
-  blocked_commands.py permanently blocks git push --force / -f, and
-  blocked_commands.py catches it first in the pipeline. The classifier for
-  git push here is retained for consistency (it returns BLOCKED with the
-  same reason) but is redundant with that permanent block for this verb.
-
-  git reset --hard is a DIFFERENT case: blocked_commands.py deliberately
-  does NOT block it -- it is T3-approvable there (see the "git_destructive"
-  note in blocked_commands.py and test_git_reset_hard_is_t3_approvable),
-  because it is destructive but recoverable via `git reflog`, unlike a
-  force push. _classify_git_reset's BLOCKED outcome below still exists for
-  this module's own unit-test contract, but it never actually decides a
-  live `git reset --hard`'s tier: bash_validator.py runs
-  detect_mutative_command() (mutative_verbs.py) before classify_by_flags()
-  and excludes git from the flag-classifier's MUTATIVE path precisely
-  because mutative_verbs already has deliberate git handling -- and
-  mutative_verbs classifies every `git reset` form, including --hard, as
-  MUTATIVE (T3-approvable), so this module's git-reset classifier is never
-  reached for a real Bash invocation. The two files therefore state the
-  SAME live policy for git reset --hard (T3-approvable, not permanently
-  blocked); only this module's isolated unit tests still exercise its own
-  BLOCKED verdict for --hard as a classifier-level contract, not as the
-  pipeline's actual behavior.
+Note on BLOCKED git verdicts:
+  blocked_commands.py has no git floor entry: a force push signs as
+  sign.destroys, and git reset --hard is T3-approvable (see
+  test_git_reset_hard_is_t3_approvable). bash_validator.py runs
+  detect_mutative_command() before classify_by_flags() and leaves git out of
+  the flag classifier's MUTATIVE path, so the BLOCKED verdicts of the git
+  classifiers below decide a live tier only for a git form mutative_verbs
+  does not already sign.
 
 Dependencies: Python stdlib only.
 """
@@ -48,18 +33,10 @@ if TYPE_CHECKING:
     from .mutative_verbs import LocalWorkCaller
 
 
-# ---------------------------------------------------------------------------
-# Outcome constants
-# ---------------------------------------------------------------------------
-
 OUTCOME_READ_ONLY = "READ_ONLY"
 OUTCOME_MUTATIVE = "MUTATIVE"
 OUTCOME_BLOCKED = "BLOCKED"
 
-
-# ---------------------------------------------------------------------------
-# Result dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class FlagClassifierResult:
@@ -91,10 +68,6 @@ class FlagClassifierResult:
         return self.outcome == OUTCOME_READ_ONLY
 
 
-# ---------------------------------------------------------------------------
-# Token helpers
-# ---------------------------------------------------------------------------
-
 def _tokenize(command: str) -> List[str]:
     """Tokenize a shell command using shlex, fallback to split on error."""
     if not command or not command.strip():
@@ -123,33 +96,17 @@ def _has_short_flag(args: List[str], letter: str) -> bool:
     for a in args:
         if a == needle:
             return True
-        # Bundled short flags: -xvf contains 'f'
         if len(a) >= 2 and a[0] == "-" and a[1] != "-":
             if letter in a[1:]:
                 return True
     return False
 
 
-# ---------------------------------------------------------------------------
-# Individual classifiers (one per command family)
-# ---------------------------------------------------------------------------
-# Each classifier receives (tokens: List[str]) and returns
-# Optional[FlagClassifierResult].  tokens[0] is the base command (or
-# "git" for git sub-commands).
-#
-# Convention:
-#   - The function is named _classify_<family>
-#   - It is registered in _CLASSIFIER_REGISTRY below
-# ---------------------------------------------------------------------------
-
-
-# 1. git push
 def _classify_git_push(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "push":
         return None
     args = tokens[2:]
 
-    # Force push / history rewrite forms (also caught by blocked_commands.py)
     force_flag = _has_flag(args, "--force", "--mirror", "--prune", "--delete", "-d")
     if force_flag:
         return FlagClassifierResult(
@@ -165,7 +122,6 @@ def _classify_git_push(tokens: List[str]) -> Optional[FlagClassifierResult]:
             matched_pattern="-f",
             command_family="git_push",
         )
-    # +refspec or :refspec
     for a in args:
         if (a.startswith("+") or a.startswith(":")) and len(a) > 1:
             return FlagClassifierResult(
@@ -175,7 +131,6 @@ def _classify_git_push(tokens: List[str]) -> Optional[FlagClassifierResult]:
                 command_family="git_push",
             )
 
-    # Plain push: mutative (needs T3 approval)
     return FlagClassifierResult(
         outcome=OUTCOME_MUTATIVE,
         reason="git push modifies the remote repository",
@@ -184,7 +139,6 @@ def _classify_git_push(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 2. git reset
 def _classify_git_reset(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "reset":
         return None
@@ -197,7 +151,6 @@ def _classify_git_reset(tokens: List[str]) -> Optional[FlagClassifierResult]:
             matched_pattern="--hard",
             command_family="git_reset",
         )
-    # --soft and --mixed are recoverable rewrites
     return FlagClassifierResult(
         outcome=OUTCOME_MUTATIVE,
         reason="git reset modifies HEAD or the index",
@@ -206,7 +159,6 @@ def _classify_git_reset(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 3. git checkout
 def _classify_git_checkout(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "checkout":
         return None
@@ -237,11 +189,9 @@ def _classify_git_checkout(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 4. git stash
 def _classify_git_stash(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "stash":
         return None
-    # No sub-command = implicit "push"
     args = tokens[2:]
     sub = args[0].lower() if args else "push"
 
@@ -259,7 +209,6 @@ def _classify_git_stash(tokens: List[str]) -> Optional[FlagClassifierResult]:
             matched_pattern=sub,
             command_family="git_stash",
         )
-    # push, pop, apply, branch, save
     return FlagClassifierResult(
         outcome=OUTCOME_MUTATIVE,
         reason=f"git stash {sub} modifies the stash or working tree",
@@ -268,7 +217,6 @@ def _classify_git_stash(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 5. git rebase
 def _classify_git_rebase(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "rebase":
         return None
@@ -295,7 +243,6 @@ def _classify_git_rebase(tokens: List[str]) -> Optional[FlagClassifierResult]:
             matched_pattern="-i" if "-i" in args else "--interactive",
             command_family="git_rebase",
         )
-    # Plain rebase
     return FlagClassifierResult(
         outcome=OUTCOME_MUTATIVE,
         reason="git rebase rewrites commit history",
@@ -304,7 +251,6 @@ def _classify_git_rebase(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 6. git tag
 def _classify_git_tag(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "tag":
         return None
@@ -318,7 +264,6 @@ def _classify_git_tag(tokens: List[str]) -> Optional[FlagClassifierResult]:
             command_family="git_tag",
         )
 
-    # Delete or force -- blocked
     has_force = "--force" in args or _has_short_flag(args, "f")
     has_delete = "--delete" in args or _has_short_flag(args, "d")
     if has_force:
@@ -336,7 +281,6 @@ def _classify_git_tag(tokens: List[str]) -> Optional[FlagClassifierResult]:
             command_family="git_tag",
         )
 
-    # Listing / verification flags
     _LIST_FLAGS = {"-l", "--list", "-v", "--verify", "--contains", "--no-contains",
                    "--merged", "--no-merged", "--points-at"}
     if any(a in _LIST_FLAGS or a.startswith("-n") for a in args):
@@ -349,7 +293,6 @@ def _classify_git_tag(tokens: List[str]) -> Optional[FlagClassifierResult]:
             command_family="git_tag",
         )
 
-    # Creating a tag
     return FlagClassifierResult(
         outcome=OUTCOME_MUTATIVE,
         reason="git tag creates a new tag",
@@ -358,7 +301,6 @@ def _classify_git_tag(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 7. git clean
 def _classify_git_clean(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "clean":
         return None
@@ -372,7 +314,6 @@ def _classify_git_clean(tokens: List[str]) -> Optional[FlagClassifierResult]:
             command_family="git_clean",
         )
 
-    # All other forms are destructive (removes untracked files)
     return FlagClassifierResult(
         outcome=OUTCOME_BLOCKED,
         reason="git clean permanently deletes untracked files; use --dry-run first",
@@ -381,7 +322,6 @@ def _classify_git_clean(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 8. git remote
 def _classify_git_remote(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "remote":
         return None
@@ -402,7 +342,6 @@ def _classify_git_remote(tokens: List[str]) -> Optional[FlagClassifierResult]:
             matched_pattern=sub or "git remote",
             command_family="git_remote",
         )
-    # "add" is mutative
     if sub == "add":
         return FlagClassifierResult(
             outcome=OUTCOME_MUTATIVE,
@@ -418,17 +357,14 @@ def _classify_git_remote(tokens: List[str]) -> Optional[FlagClassifierResult]:
             command_family="git_remote",
         )
 
-    # Unknown sub-command -- fall through
     return None
 
 
-# 9. sed
 def _classify_sed(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] != "sed":
         return None
     args = tokens[1:]
 
-    # -i / -I / --in-place mean in-place file editing
     flag = _has_flag(args, "-i", "-I", "--in-place")
     if flag:
         return FlagClassifierResult(
@@ -437,11 +373,8 @@ def _classify_sed(tokens: List[str]) -> Optional[FlagClassifierResult]:
             matched_pattern=flag,
             command_family="sed",
         )
-    # Bundled short flags: -ni (where i is in-place), -in, etc.
-    # Also handle -i.bak form (flag with inline backup suffix)
     for a in args:
         if a.startswith("-i") and a != "-i" and not a.startswith("--"):
-            # -i.bak, -ibak, etc. -- sed in-place with backup suffix
             return FlagClassifierResult(
                 outcome=OUTCOME_MUTATIVE,
                 reason=f"sed {a} edits files in-place (with backup suffix)",
@@ -464,8 +397,6 @@ def _classify_sed(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 10. awk
-# Pattern matching for awk programs that perform side-effecting operations.
 _AWK_MUTATIVE_PATTERNS = re.compile(
     r"""
     system\s*\(        # system("cmd")
@@ -483,12 +414,10 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] not in ("awk", "gawk", "mawk", "nawk"):
         return None
 
-    # Scan all tokens for the awk program text (first non-flag non-value argument)
     args = tokens[1:]
     i = 0
     while i < len(args):
         a = args[i]
-        # Flags that take a value argument: -F, -v, -f, etc.
         if a in ("-F", "-v", "-f", "-i", "-l", "-M", "-m", "-o"):
             i += 2
             continue
@@ -498,7 +427,6 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
         if a == "--":
             i += 1
             break
-        # First non-flag argument is the program
         program = a
         m = _AWK_MUTATIVE_PATTERNS.search(program)
         if m:
@@ -509,7 +437,6 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
                 matched_pattern=matched,
                 command_family="awk",
             )
-        # Found the program text but no mutative pattern
         return FlagClassifierResult(
             outcome=OUTCOME_READ_ONLY,
             reason="awk program does not contain file/system side-effects",
@@ -517,7 +444,6 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
             command_family="awk",
         )
 
-    # Could not identify program text -- treat as read-only (conservative)
     return FlagClassifierResult(
         outcome=OUTCOME_READ_ONLY,
         reason="awk with no identifiable program text is read-only",
@@ -526,7 +452,6 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 11. tar
 _TAR_LOCAL_WORK_LETTERS = frozenset("xvzjJfCkpmoO")
 _TAR_LOCAL_WORK_SWITCHES = frozenset({
     "--extract", "--get", "--verbose", "--gzip", "--bzip2", "--xz", "--keep-old-files",
@@ -651,7 +576,6 @@ def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None)
             command_family="tar",
         )
 
-    # Long-form operation flags
     long_mutative = _has_flag(args, "--create", "--extract", "--append", "--update",
                                "--concatenate", "--delete")
     if long_mutative:
@@ -669,7 +593,6 @@ def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None)
             command_family="tar",
         )
 
-    # Short-form operation letters in bundled flags (e.g. -czvf, -tf, -xvf)
     for a in args:
         if len(a) >= 2 and a[0] == "-" and a[1] != "-":
             letters = a[1:]
@@ -687,8 +610,7 @@ def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None)
                     matched_pattern=a,
                     command_family="tar",
                 )
-        # GNU tar also accepts bare operation letters without leading dash
-        # as the first non-flag argument (e.g. "tar czf out.tar dir")
+        # tar also takes its operation letters without a dash: tar czf out.tar dir
         if not a.startswith("-") and len(a) >= 1 and a[0] in "cxtrua":
             if any(c in a for c in "cxrua"):
                 return FlagClassifierResult(
@@ -706,7 +628,6 @@ def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None)
                 )
             break
 
-    # Could not determine operation -- conservative: treat as mutative
     return FlagClassifierResult(
         outcome=OUTCOME_MUTATIVE,
         reason="tar with unrecognized operation flags",
@@ -715,7 +636,6 @@ def _classify_tar(tokens: List[str], caller: "Optional[LocalWorkCaller]" = None)
     )
 
 
-# 12. find
 def _classify_find(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] != "find":
         return None
@@ -740,8 +660,6 @@ def _classify_find(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 13. curl
-# HTTP methods that write data to a remote server
 _CURL_WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 _CURL_QUERY_DATA_FLAGS = frozenset({"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode"})
 
@@ -844,7 +762,6 @@ def _classify_curl(tokens: List[str], wrapped: bool = False) -> Optional[FlagCla
                 matched_pattern=a,
                 command_family="curl",
             )
-        # -X / --request METHOD
         if a in ("-X", "--request"):
             if i + 1 < len(args) and args[i + 1].upper() in _CURL_WRITE_METHODS:
                 method = args[i + 1].upper()
@@ -856,7 +773,6 @@ def _classify_curl(tokens: List[str], wrapped: bool = False) -> Optional[FlagCla
                 )
             i += 2
             continue
-        # --request=METHOD
         if a.startswith("--request="):
             method = a.split("=", 1)[1].upper()
             if method in _CURL_WRITE_METHODS:
@@ -868,7 +784,6 @@ def _classify_curl(tokens: List[str], wrapped: bool = False) -> Optional[FlagCla
                 )
             i += 1
             continue
-        # Data flags (imply POST)
         if a in ("-d", "--data", "--data-binary", "--data-raw", "--data-urlencode",
                  "-F", "--form", "--form-string",
                  "-T", "--upload-file", "--json"):
@@ -880,7 +795,6 @@ def _classify_curl(tokens: List[str], wrapped: bool = False) -> Optional[FlagCla
             )
         i += 1
 
-    # No write indicators found -- network read
     return FlagClassifierResult(
         outcome=OUTCOME_READ_ONLY,
         reason="curl without write flags performs a network read (GET)",
@@ -889,7 +803,6 @@ def _classify_curl(tokens: List[str], wrapped: bool = False) -> Optional[FlagCla
     )
 
 
-# 14. wget
 _WGET_WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
 def _classify_wget(tokens: List[str]) -> Optional[FlagClassifierResult]:
@@ -899,7 +812,6 @@ def _classify_wget(tokens: List[str]) -> Optional[FlagClassifierResult]:
     i = 0
     while i < len(args):
         a = args[i]
-        # --post-data or --post-file
         if a in ("--post-data", "--post-file"):
             return FlagClassifierResult(
                 outcome=OUTCOME_MUTATIVE,
@@ -914,7 +826,6 @@ def _classify_wget(tokens: List[str]) -> Optional[FlagClassifierResult]:
                 matched_pattern=a.split("=")[0],
                 command_family="wget",
             )
-        # --method=POST/PUT/DELETE/PATCH
         if a == "--method":
             if i + 1 < len(args) and args[i + 1].upper() in _WGET_WRITE_METHODS:
                 method = args[i + 1].upper()
@@ -937,7 +848,6 @@ def _classify_wget(tokens: List[str]) -> Optional[FlagClassifierResult]:
                 )
             i += 1
             continue
-        # --body-data / --body-file (wget2)
         if a in ("--body-data", "--body-file"):
             return FlagClassifierResult(
                 outcome=OUTCOME_MUTATIVE,
@@ -962,12 +872,9 @@ def _classify_wget(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-# 15. httpie (http / https commands)
-# httpie uses positional method as the first argument: http POST url ...
-# Data items: key=value (string), key:=json (raw JSON), key@file (file)
+# httpie takes the method as its first positional (http POST url) and sends a body when data items follow (key=value, key:=json, key@file).
 _HTTPIE_WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
-# Regex to detect httpie data items (key=value, key:=json, key@file)
 _HTTPIE_DATA_ITEM = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*(:=|==|=@|:@|@|:=@|=)")
 
 
@@ -976,11 +883,9 @@ def _classify_httpie(tokens: List[str]) -> Optional[FlagClassifierResult]:
         return None
     args = tokens[1:]
 
-    # Skip flags (start with -)
     non_flag_args = [a for a in args if not a.startswith("-")]
 
     if not non_flag_args:
-        # No non-flag arguments at all -- treat as read-only
         return FlagClassifierResult(
             outcome=OUTCOME_READ_ONLY,
             reason="httpie with no positional arguments is read-only",
@@ -989,7 +894,6 @@ def _classify_httpie(tokens: List[str]) -> Optional[FlagClassifierResult]:
         )
 
     first = non_flag_args[0].upper()
-    # If the first positional arg is an HTTP method
     if first in _HTTPIE_WRITE_METHODS:
         return FlagClassifierResult(
             outcome=OUTCOME_MUTATIVE,
@@ -997,7 +901,6 @@ def _classify_httpie(tokens: List[str]) -> Optional[FlagClassifierResult]:
             matched_pattern=first,
             command_family="httpie",
         )
-    # HEAD, GET are read-only explicit methods
     if first in ("GET", "HEAD", "OPTIONS"):
         return FlagClassifierResult(
             outcome=OUTCOME_READ_ONLY,
@@ -1006,7 +909,6 @@ def _classify_httpie(tokens: List[str]) -> Optional[FlagClassifierResult]:
             command_family="httpie",
         )
 
-    # No explicit method: check for data items (imply POST)
     for a in non_flag_args[1:]:
         if _HTTPIE_DATA_ITEM.match(a):
             return FlagClassifierResult(
@@ -1016,7 +918,6 @@ def _classify_httpie(tokens: List[str]) -> Optional[FlagClassifierResult]:
                 command_family="httpie",
             )
 
-    # GET or first arg is URL with no data
     return FlagClassifierResult(
         outcome=OUTCOME_READ_ONLY,
         reason="httpie GET request (no write method or data items)",
@@ -1024,12 +925,6 @@ def _classify_httpie(tokens: List[str]) -> Optional[FlagClassifierResult]:
         command_family="httpie",
     )
 
-
-# ---------------------------------------------------------------------------
-# Registry: maps (base_cmd, optional_subcommand) -> classifier function
-# ---------------------------------------------------------------------------
-# git sub-commands share the "git" base command; they are dispatched via a
-# single "git" entry that delegates to sub-command classifiers.
 
 _GIT_SUBCOMMAND_CLASSIFIERS: Dict[str, Callable[[List[str]], Optional[FlagClassifierResult]]] = {
     "push": _classify_git_push,
@@ -1054,7 +949,6 @@ def _classify_git_dispatch(tokens: List[str]) -> Optional[FlagClassifierResult]:
     return classifier(tokens)
 
 
-# Top-level registry: base command -> classifier
 _CLASSIFIER_REGISTRY: Dict[str, Callable[[List[str]], Optional[FlagClassifierResult]]] = {
     "git": _classify_git_dispatch,
     "sed": _classify_sed,
@@ -1070,10 +964,6 @@ _CLASSIFIER_REGISTRY: Dict[str, Callable[[List[str]], Optional[FlagClassifierRes
     "https": _classify_httpie,
 }
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def classify_by_flags(
     command: str, caller: "Optional[LocalWorkCaller]" = None, wrapped: bool = False,

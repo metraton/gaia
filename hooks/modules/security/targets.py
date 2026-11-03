@@ -90,7 +90,7 @@ _DOCKER_OPTIONS = {
     "-D": 0, "--debug": 0, "--tls": 0, "--tlsverify": 0,
 }
 # Words each option before the operation word takes; an unlisted option keeps a production verdict from becoming a read.
-# The aws, az and gcloud rows are the facts of mutative_verbs._CLOUD_GLOBAL_OPTIONS (task 1019) and must stay aligned.
+# The aws, az and gcloud rows are the facts of mutative_verbs._CLOUD_GLOBAL_OPTIONS and must stay aligned with it.
 _OPTION_ARITY: Dict[str, Dict[str, int]] = {
     "kubectl": _KUBE_OPTIONS, "oc": _KUBE_OPTIONS, "docker": _DOCKER_OPTIONS, "podman": _DOCKER_OPTIONS,
     "helm": {

@@ -9,9 +9,8 @@ regardless of the specific verb syntax of each tool.
 
 Without this layer the bash validator has to carry a separate rule for every
 binary -- and the verb scanner cannot help, because tools like ``sqlite3``
-accept *the entire mutation language* as a single argument.  The verb scan
-saw ``sqlite3 ~/.gaia/gaia.db < /tmp/migration_all.sql`` as a
-non-mutative command and let 856 INSERTs through.
+accept *the entire mutation language* as a single argument, so
+``sqlite3 ~/.gaia/gaia.db < /tmp/migration_all.sql`` carries no mutative verb.
 
 The model
 =========
@@ -33,8 +32,8 @@ Each entry in :data:`CAPABILITY_CLASSES` is a dict with:
     The pattern is matched conservatively: only literal SELECT / EXPLAIN /
     safe PRAGMA prefixes count.
 
-Resolution rules (Nivel 1)
-==========================
+Resolution rules
+================
 
 When the command's base CLI is in a capability class, classification works
 as follows:
@@ -63,10 +62,8 @@ as follows:
    regex, classify as READ_ONLY.
 7. Otherwise return ``default_intent`` (MUTATIVE).
 
-A future Nivel 2 (`sql_payload_analyzer.py`) will parse external SQL files
-and inline payloads into an AST and downgrade more cases -- e.g., a file
-that contains only SELECT statements.  This dispatch deliberately stays
-out of that work; it returns MUTATIVE whenever the payload is external.
+This dispatch does not parse external SQL files: it returns MUTATIVE whenever
+the payload is external.
 """
 
 from __future__ import annotations
@@ -142,9 +139,9 @@ _PSQL_META_ARG_FORBIDDEN = r"\\;|&`$<>\x00-\x1f\x7f\x85\u2028\u2029"
 #: the load-bearing half of the line-break defense -- not the character class.
 #: Python's ``\s`` matches ``\n``, ``\r``, ``\v``, ``\f``, ``\x85``, U+2028 and
 #: U+2029, so a ``\s+`` separator swallows the break ITSELF, after which the
-#: argument class only has to absorb ordinary text.  Measured: with ``\s+``
-#: retained, excluding the break characters from the class closes NONE of the
-#: break payloads -- ``\s+`` is greedy and eats ``" \n"`` in one bite.
+#: argument class only has to absorb ordinary text.  With ``\s+`` retained,
+#: excluding the break characters from the class closes NONE of the break
+#: payloads -- ``\s+`` is greedy and eats ``" \n"`` in one bite.
 #:
 #: The terminating anchor is ``\Z``, not ``$``: without ``re.MULTILINE`` a
 #: ``$`` still matches BEFORE a trailing newline.  The caller strips the
@@ -206,7 +203,7 @@ _SQLITE_READONLY_DOT_COMMANDS: FrozenSet[str] = frozenset({
 
 #: Tokens shlex emits for unquoted shell redirects.  Their presence in the
 #: positional argument stream means the inline command was fed from an
-#: external source -- the payload is uninspected at Nivel 1.
+#: external source -- the payload is uninspected.
 _REDIRECT_INPUT_TOKENS: FrozenSet[str] = frozenset({"<", "<<", "<<<"})
 
 
@@ -216,12 +213,8 @@ _REDIRECT_INPUT_TOKENS: FrozenSet[str] = frozenset({"<", "<<", "<<<"})
 
 #: Every entry maps a class name to its rule set.  Adding a new class is the
 #: only intended way to extend this layer -- the resolver below is class-
-#: agnostic.
-#:
-#: TODO(Nivel 2): a follow-up ``sql_payload_analyzer.py`` will parse
-#: external ``.sql`` files and inline payloads and downgrade more cases.
-#: This module does not perform that analysis -- when the payload is
-#: external (redirect / pipe / dot-command load), it stays MUTATIVE here.
+#: agnostic.  An external payload (redirect / pipe / dot-command load) stays
+#: MUTATIVE: nothing here parses it.
 CAPABILITY_CLASSES: Dict[str, Dict[str, object]] = {
     "database_cli": {
         "verbs": frozenset({

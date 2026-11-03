@@ -6,22 +6,21 @@ adapters/claude_code.py) only inspects the ``file_path`` parameter of Write and
 Edit tool calls. It never sees a Bash ``command`` string, so a shell command
 that writes into the protected ``.claude/`` tree bypasses it entirely.
 
-That gap became reachable once ``git mv`` was routed through
-GIT_LOCAL_SAFE_SUBCOMMANDS: ``git mv payload.py .claude/hooks/pre_tool_use.py``
-short-circuits to non-mutative (T0) and never reaches the tier gate, so hook
-code could be overwritten through Bash with no consent. Plain ``mv``/``cp`` were
-"only" T3-approvable, and shell redirects into any path are blocked generically
-by the cloud-pipe validator -- but nothing enforced the ``.claude/`` boundary
-for the git working-tree writers.
+``git mv`` is in GIT_LOCAL_SAFE_SUBCOMMANDS, so
+``git mv payload.py .claude/hooks/pre_tool_use.py`` short-circuits to
+non-mutative (T0) and never reaches the tier gate: hook code could be
+overwritten through Bash with no consent. Plain ``mv``/``cp`` are only
+T3-approvable, and shell redirects into any path are blocked generically by the
+cloud-pipe validator -- but nothing else enforces the ``.claude/`` boundary for
+the git working-tree writers.
 
 This guard closes that hole independently of the mutative classifier: it scans
 the raw command string (per operator-split component) and CATEGORICALLY denies
 any WRITE-capable command whose target is a protected Gaia path. The scope is
 not restated here: it is ``protected_paths.is_protected_hook_path``, the same
-predicate the Write/Edit gate calls. Two surfaces, one predicate -- because the
-scope used to be duplicated in prose between them ("mirrors the Write/Edit
-backstop") and the drift that produced was a security control whose reach
-depended on the deployment layout. Widening one surface now widens both, so the
+predicate the Write/Edit gate calls. Two surfaces, one predicate: a scope kept
+in prose per surface drifts, and a security control whose reach depends on the
+deployment layout is the result. Widening the predicate widens both, so the
 shell route cannot stay open against a tree the file-write route protects.
 
 Like gaia_db_write_guard and the subagent memory-write guard, the block is
@@ -95,10 +94,9 @@ _GIT_WRITE_SUBCOMMANDS = frozenset({
     "cherry-pick", "apply", "am", "rebase", "merge", "pull", "clone",
 })
 
-# Non-git base commands that write files. Plain mv/cp were only T3-approvable;
-# scoping them here makes a ``.claude/`` target a categorical block regardless
-# of the tier classifier -- one coherent rule: ".claude/ writes via Bash are
-# blocked".
+# Non-git base commands that write files. Scoping them here makes a
+# ``.claude/`` target a categorical block regardless of the tier classifier --
+# one rule: ".claude/ writes via Bash are blocked".
 _FILESYSTEM_WRITE_COMMANDS = frozenset({
     "mv", "cp", "install", "dd", "tee", "ln", "rsync", "touch", "truncate",
     "mkdir", "sed", "chmod", "chown", "chgrp", "shred", "unlink", "rm", "tar",
@@ -575,8 +573,8 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
 
     # A command substitution runs BEFORE the command that contains it, so
     # ``echo $(cp payload.py .claude/hooks/pre_tool_use.py)`` overwrites the
-    # hook while presenting ``echo`` as tokens[0] -- the categorical boundary
-    # never fired. Scan what would actually execute. The extraction runs on the
+    # hook while presenting ``echo`` as tokens[0]. Scan what would actually
+    # execute. The extraction runs on the
     # FULL command rather than per component, because it is quoting that tells
     # a use from a mention and the operator split above breaks quoting; and it
     # yields nothing at all for a single-quoted or escaped mention, so a

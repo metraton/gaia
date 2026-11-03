@@ -3,9 +3,9 @@
 Only exit 2 or an explicit deny stops an operation; every other exit lets it
 run, so a gate that crashes mid-decision would grant what it never classified.
 The gate therefore fails CLOSED: every failure blocks with exit 2. Failing open
-was the earlier policy, retired because an unclassified tool call is the one
-outcome the gate exists to prevent; a gate broken for every call is visible
-and fixed, while one silently passing calls is not.
+would pass an unclassified tool call, the one outcome the gate exists to
+prevent; a gate broken for every call is visible and fixed, while one silently
+passing calls is not.
 
 Every failure leaves two traces:
 
@@ -125,27 +125,18 @@ def build_fail_open_block_message(reason: str, detail: str, verb: str) -> str:
 # would fail the same way.
 #
 # The state is module-level, so its LIFETIME is the thing that has to be
-# right. It used to rest on "the host runs one hook process per tool call",
-# which is true today and enforced by nothing: under a persistent or batched
-# hook the first mutation would mark the process for good, and every later
-# read would inherit that mark and be denied on the strength of a push it had
-# nothing to do with -- the bounded exception escaping its bound in the
-# direction that stops harmless work.
-#
-# So the lifetime is now bound to the validation instead of to the process:
+# right: it is bound to the validation, not to the process.
 # BashValidator.validate() clears the breadcrumb for every command it is about
-# to gate, which means the mark can only ever describe the command currently
-# being decided. Process isolation is no longer load-bearing.
+# to gate, so the mark only ever describes the command currently being decided
+# and a persistent or batched hook cannot leak it into a later read.
 #
-# Deliberately NOT done: having known_mutative_classification() verify that
-# the mark's command matches the one being gated. The string reaching the T3
-# decision is the NORMALIZED one, not the one validate() was entered with:
-# `nohup terraform apply &` and `terraform apply > out.txt` both mark plain
-# `terraform apply`, because the sanitizer strips the backgrounding and the
-# redirect before classification. A mismatch is therefore ordinary, and a
-# guard that silently returned None on it would disarm the block in the
-# direction that lets a mutation through -- the expensive direction to be
-# wrong in.
+# known_mutative_classification() does NOT verify that the mark's command
+# matches the one being gated. The string reaching the T3 decision is the
+# NORMALIZED one: `nohup terraform apply &` and `terraform apply > out.txt`
+# both mark plain `terraform apply`, because the sanitizer strips the
+# backgrounding and the redirect before classification. A mismatch is
+# therefore ordinary, and a guard that returned None on it would disarm the
+# block in the direction that lets a mutation through.
 
 
 @dataclass(frozen=True)

@@ -1,14 +1,4 @@
-"""Validate and classify resume prompts for security decision-making.
-
-Subsystem 1 of the pre_tool_use Task/Agent path.
-Runs FIRST -- if invalid, nothing else loads.
-
-Responsibilities:
-- Validates prompt is not empty, not malformed
-- Detects deprecated approval phrases
-- Detects nonce patterns
-- Returns: classification (nonce/malformed_nonce/deprecated/standard)
-"""
+"""Classify a resume prompt by the approval indicator it carries."""
 
 from .approval_constants import (
     NONCE_APPROVAL_PREFIX,

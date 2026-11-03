@@ -14,14 +14,16 @@ Categories:
 - GCP project/cluster/database delete operations
 - Kubernetes critical delete operations (cluster, namespace, pv, node, CRD, webhooks)
 - Kubernetes bulk delete operations (--all flag)
-- Terraform/Terragrunt destroy (without -target)
+- Terragrunt multi-module destroy sweeps (run-all destroy, destroy-all)
 - Docker bulk prune operations
 - Flux uninstall (removes all Flux components)
 - GitHub/GitLab repo delete
 - npm unpublish (entire package)
 - SQL destructive operations (drop database, drop table)
-- Disk/filesystem destruction operations (dd, fdisk, mkfs)
+- Disk/filesystem destruction operations (dd, fdisk, mkfs, and the Windows
+  format, diskpart, vssadmin delete/resize, Format-Volume, Clear-Disk)
 - rm -rf / and rm -rf ~
+- Gmail permanent purge (gws, gam)
 """
 
 import re
@@ -38,32 +40,13 @@ from .shell_substitution import extract_substitutions
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# False-positive guards (mirrors the T3 fix in mutative_verbs.py / 77219f0)
-# ============================================================================
-# The deny-list regexes above search anywhere inside the raw command string.
-# That makes them vulnerable to two kinds of false positives:
-#
-#   (1) Read-only commands carry quoted arguments that contain the literal
-#       text of a blocked pattern.  Examples:
-#         grep -rn "rm -rf" /var/log/audit.log
-#         find / -name "*.kubectl-delete-config*"
-#       These are inspection commands -- they cannot execute the substrings
-#       they contain.
-#
-#   (2) `git commit -m "..."` carries a free-form prose message body.  When
-#       the message documents a destructive command (e.g., a regression test
-#       description, a changelog entry, or this very fix's commit body),
-#       the substring match flags the commit itself.  The commit only
-#       creates a local commit object -- it never executes the message.
-#
-# Both classes of false positive are eliminated BEFORE the regex / semantic
-# loops run, mirroring the READ_ONLY_BASE_CMDS fast-path that mutative_verbs
-# adopted in commit 77219f0.
+# The deny-list regexes below search anywhere inside the raw command string,
+# so a command that only carries the text of a blocked pattern would match: a
+# read-only inspection tool with a quoted argument (``grep -rn "rm -rf" log``)
+# or a git commit message that documents a destructive command.
+# _is_false_positive_carrier recognises those before the semantic and regex
+# loops run.
 
-# Imported from mutative_verbs so we keep ONE source of truth for which CLIs
-# are read-only inspection tools.  The lazy import avoids a circular dependency
-# at module load time (mutative_verbs imports is_blocked_command from here).
 def _read_only_base_cmds() -> "frozenset[str]":
     """Return the canonical READ_ONLY_BASE_CMDS set from mutative_verbs.
 
@@ -83,7 +66,7 @@ def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
 
     Returns every reading of the wrapped command, as
     ``mutative_verbs._peel_wrapper_readings`` -- the ONE peel the T3 detector
-    also uses (DP1) -- gives them, so this floor matches the REAL command. Lazy
+    also uses -- gives them, so this floor matches the REAL command. Lazy
     import avoids the declared import cycle with mutative_verbs. On failure the
     command is returned unchanged; the un-peeled form is still fully
     classified by the caller.
@@ -128,19 +111,18 @@ def _rm_confined_to_scratch(command: str) -> bool:
     When True, is_blocked_command skips ONLY the ``rm_critical`` category so the
     command reaches the tier engine (mutative_verbs), which strictly decides
     T0 (all paths inside scratch, no glob) vs T3 (glob, symlink escape, ...).
-    Every other blocked category and every other command is unaffected: the
-    catastrophic floor stays byte-for-byte intact.
+    Every other blocked category and every other command is unaffected.
 
-    LENIENT relative to mutative_verbs._rm_targets_only_scratch: a trailing
-    glob is tolerated here (e.g. ``~/.gaia/scratch/*``) because the floor only
-    needs to confirm the operation cannot escape scratch -- the strict tier
-    check then denies T0 to any glob and routes it to T3.  Fail-closed: any
-    doubt returns False, keeping the floor fully in force.
+    LENIENT relative to mutative_verbs._rm_scratch_confined_targets: each path
+    is cut at its first glob character (e.g. ``~/.gaia/scratch/*``) because the
+    floor only needs to confirm the operation cannot escape scratch -- the
+    strict tier check then denies T0 to any glob and routes it to T3.
+    Fail-closed: any doubt returns False, keeping the floor in force.
 
     Confinement holds only when there is at least one positional path and
-    EVERY positional path, after removing any glob suffix and expanding ``~``,
-    canonicalises (realpath) to the scratch root or a path strictly under it,
-    with no ``..`` component anywhere in the token.
+    EVERY positional path, cut at its first glob character and with ``~``
+    expanded, canonicalises (realpath) to the scratch root or a path under
+    it, with no ``..`` anywhere in the token.
     """
     import os
     try:
@@ -223,8 +205,8 @@ class SemanticBlockedRule:
         flags = set(semantics.flag_tokens)
         if any(flag not in flags for flag in self.required_flags):
             return False
-        # forbidden_flags uses prefix matching to handle -flag=value forms
-        # (e.g., "-target=aws_instance.web" should match forbidden flag "-target")
+        # forbidden_flags matches the flag itself or its -flag=value form
+        # (e.g., "-target=aws_instance.web" matches forbidden flag "-target")
         if self.forbidden_flags:
             for flag_token in semantics.flag_tokens:
                 for forbidden in self.forbidden_flags:
@@ -233,13 +215,10 @@ class SemanticBlockedRule:
         return True
 
 
-# ============================================================================
-# BLOCKED PATTERNS - PERMANENTLY BLOCKED (exit 2, no nonce, never approvable)
-# ============================================================================
-# These commands are PERMANENTLY BLOCKED and cannot be executed even with approval.
-# They represent irreversible, catastrophic operations at scale.
+# PERMANENTLY BLOCKED (exit 2, no approval_id, never approvable): irreversible
+# operations at scale.
 #
-# The following are MUTATIVE (approvable via nonce, handled by mutative_verbs.py):
+# The following are MUTATIVE (T3, approvable through the approval flow, handled by mutative_verbs.py):
 # - aws iam delete-*, detach-*, remove-user-from-group
 # - aws ec2 delete-key-pair, delete-snapshot, delete-volume,
 #   delete-security-group, delete-network-interface
@@ -261,7 +240,6 @@ class SemanticBlockedRule:
 #   only the terragrunt multi-module sweeps stay permanently blocked
 # - helm uninstall (any release)
 # - docker rm, docker rmi (individual containers/images)
-# ============================================================================
 
 BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
     # AWS - Networking and data infrastructure (irreversible)
@@ -380,8 +358,8 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"flux\s+uninstall\b", re.IGNORECASE),
     ],
 
-    # Git has no floor entry: a force push destroys remote history that the
-    # remote's reflog or a re-push can restore, so it signs (mutative_verbs.py).
+    # Git has no floor entry: mutative_verbs.py reads `--force` as a dangerous
+    # flag, so a force push signs and is not refused.
 
     # GitHub/GitLab - Repo deletion
     "repo_delete": [
@@ -406,7 +384,7 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"^dd\s+", re.IGNORECASE),
         re.compile(r"^fdisk\s+", re.IGNORECASE),
         re.compile(r"^mkfs(\.(ext[34]|fat|ntfs))?\s+", re.IGNORECASE),
-        # Windows volume, partition and shadow-copy destruction (D140)
+        # Windows volume, partition and shadow-copy destruction
         # format takes its switches before or after the drive, which may be
         # quoted or have a switch glued to it (C:/q)
         re.compile(r"""^format(\.com)?\s(.*\s)?["']?[a-z]:["']?(\s|/|$)""", re.IGNORECASE),
@@ -498,10 +476,10 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "kubectl drain": "[BLOCKED] Node draining can cause service disruption",
     "kubectl delete --all": "[BLOCKED] Bulk deletion of all resources is irreversible",
 
-    # Terragrunt sweep suggestions.  The single-module destroy keys were
-    # removed with their rules: the regex fallback below matches these keys as
-    # SUBSTRINGS, so a stale key would attach a "this is permanently blocked"
-    # suggestion to a command that is now merely awaiting consent.
+    # Terragrunt sweep suggestions.  The regex fallback below matches these
+    # keys as SUBSTRINGS, so a key for a single-module destroy would attach a
+    # "this is permanently blocked" suggestion to a command that merely awaits
+    # consent.
     "terragrunt run-all destroy": "[BLOCKED] Recursive destruction of all modules - destroy one module at a time",
     "terragrunt destroy-all": "[BLOCKED] Recursive destruction of all modules - destroy one module at a time",
 
@@ -715,9 +693,6 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
     if result.is_blocked:
         return result
 
-    # ------------------------------------------------------------------
-    # Declared-wrapper guard.
-    # ------------------------------------------------------------------
     # Every rule here is keyed on a CLI's real name, so a tool whose row
     # declares it replaces a CLI would reach that CLI's irreversible
     # subcommands with an approval instead of a block. Resolving the wrapper
@@ -735,7 +710,7 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
 
 
 def _classify_all_forms(command: str) -> BlockedCommandResult:
-    """Classify *command* as written, peeled, ungrouped, and per substitution."""
+    """Classify *command* as written and in each reading the shell would run: unquoted, wrapper-peeled, PowerShell positions, executor payloads, ungrouped, and per substitution."""
     result = _classify_stripped_command(command)
     if result.is_blocked:
         return result
@@ -746,9 +721,6 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
         if spelled_result.is_blocked:
             return spelled_result
 
-    # ------------------------------------------------------------------
-    # Wrapper / assignment evasion guard.
-    # ------------------------------------------------------------------
     # A leading wrapper (``env``, ``sudo``, ``timeout 10``, ``nice -n 5``...) or
     # ``NAME=value`` assignment moves the base command off position 0, which
     # defeats the ``^``-anchored regexes such as disk_operations
@@ -785,36 +757,23 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
                 if payload_result.is_blocked:
                     return payload_result
 
-    # ------------------------------------------------------------------
-    # Grouping / substitution wrapper guard.
-    # ------------------------------------------------------------------
-    # Every regex in this table is ``^``-anchored on the base command, and
-    # several are ``$``-anchored on the target (``rm_critical``'s
-    # ``^rm\s+-rf\s+/\s*$``). A grouping character glued to the front moves the
-    # base command off position 0, and the matching closer at the end defeats
-    # the tail anchor -- ``(rm -rf /)`` escaped this permanent-deny floor
-    # entirely, with no approval path to fall back on. Classify the unwrapped
-    # command too. Strictly additive, exactly like the env peel above: the form
-    # as written was already classified, so this can only ADD a block.
+    # Some regexes here are ``^``-anchored on the base command (disk_operations)
+    # and some ``$``-anchored on the target (rm_critical). A grouping character
+    # glued to the front moves the base command off position 0, and the closer
+    # at the end defeats the tail anchor, as in ``(rm -rf /)``. Classify the
+    # unwrapped command too. Strictly additive, like the env peel above.
     ungrouped = strip_grouping_wrappers(command)
     if ungrouped and ungrouped != command:
         ungrouped_result = _classify_stripped_command(ungrouped)
         if ungrouped_result.is_blocked:
             return ungrouped_result
 
-    # ------------------------------------------------------------------
-    # Command-substitution guard.
-    # ------------------------------------------------------------------
-    # The wrapper guard above reaches position 0 only. One token to the right,
-    # ``echo $(rm -rf /)`` put ``echo`` at position 0 and walked past this
-    # permanent-deny floor, even though the shell runs the delete BEFORE echo
-    # ever starts. ``shell_substitution`` returns what would actually execute,
-    # decided by the shell's own quoting rules -- so a quoted MENTION of the
-    # same text yields nothing and is not classified here at all. Strictly
-    # additive, like the two guards above: the command as written was already
-    # classified, so this can only ADD a block. A body gets every reading a
-    # command typed alone gets, wrapper peel included: ``$(sudo dd ...)`` runs
-    # the same ``dd``.
+    # The wrapper guard above reaches position 0 only. In ``echo $(rm -rf /)``
+    # the shell runs the delete before echo starts. ``shell_substitution``
+    # returns what would actually execute, decided by the shell's quoting
+    # rules, so a quoted MENTION of the same text yields nothing. Strictly
+    # additive, like the guards above. A body gets every reading a command
+    # typed alone gets, wrapper peel included: ``$(sudo dd ...)`` runs ``dd``.
     for inner in extract_substitutions(command):
         for candidate in (inner, strip_grouping_wrappers(inner)):
             readings, peeled = _peel_command_wrappers(candidate)
@@ -830,12 +789,9 @@ def _classify_stripped_command(command: str) -> BlockedCommandResult:
     """Classify an already-stripped command against the permanent-deny floor.
 
     Runs the false-positive fast-path, the semantic deny rules, and the raw
-    regex loop.  Called once for the command as written and, when a leading
-    env-prefix is peeled, once for the underlying real command.
+    regex loop.  ``_classify_all_forms`` calls it for the command as written
+    and for each reading derived from it.
     """
-    # ------------------------------------------------------------------
-    # False-positive fast-paths (mirror of mutative_verbs.py / 77219f0)
-    # ------------------------------------------------------------------
     if _is_false_positive_carrier(command):
         return BlockedCommandResult(is_blocked=False)
 
@@ -852,7 +808,7 @@ def _classify_stripped_command(command: str) -> BlockedCommandResult:
     # rm confined strictly to Gaia scratch defers past the catastrophic
     # `rm_critical` floor to the tier engine (which decides T0 vs T3). This
     # skips ONLY that category; every other blocked category still applies,
-    # and every non-scratch rm keeps the floor byte-for-byte intact.
+    # and a non-scratch rm keeps the floor.
     scratch_confined_rm = None  # resolved lazily on first rm_critical check
 
     for category, patterns in BLOCKED_PATTERNS.items():
@@ -928,18 +884,17 @@ def _is_false_positive_carrier(command: str) -> bool:
     """Return True when the command is a known carrier of false-positive
     substrings (read-only inspection tools, git commit message bodies).
 
-    Mirrors the READ_ONLY_BASE_CMDS fast-path that mutative_verbs.py adopted
-    in commit 77219f0.  Four carriers are recognised; (3) `git grep` and
-    (4) the Gaia CLI are described where they are checked below:
+    Four carriers are recognised; (3) `git grep` and (4) the Gaia CLI are
+    described where they are checked below:
 
     1. Read-only base command (grep, find, cat, ls, head, tail, awk, ...).
        These commands cannot execute substrings they print or filter.
        A compound-separator guard outside any quoted region prevents bypass
        via shell chaining (e.g. `grep foo file && kubectl delete ns prod`).
 
-    2. `git commit -m "..."` (and the documented variants:
-       `git -C path commit -m`, `git commit --amend -m`, `git stash push -m`)
-       The body after `-m` is a free-form message, not an executable command.
+    2. `git commit` and `git stash`, with any flags (`git -C path commit -m`,
+       `git commit --amend -m`, `git stash push -m`). The body after `-m` is a
+       free-form message, not an executable command.
     """
     semantics = analyze_command(command)
     base_cmd = semantics.base_cmd
@@ -951,7 +906,7 @@ def _is_false_positive_carrier(command: str) -> bool:
         if not _has_unquoted_separator(command):
             return True
 
-    # Carrier (2): git commit/stash with -m message body.
+    # Carrier (2): git commit/stash.
     # `commit` and `stash` are local-only git subcommands -- the message text
     # passed to -m / --message never reaches the shell.  The block list is
     # there to catch live destructive commands, not prose that mentions them.

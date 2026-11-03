@@ -1,7 +1,7 @@
 """protected_paths.py -- the ONE protected-path predicate, for every write surface.
 
 Gaia's executable hook code is write-protected on two surfaces: the Write/Edit
-gate in ``adapters/claude_code.py`` and the Bash command-string guard in
+gate in ``adapters/tool_policy.py`` and the Bash command-string guard in
 ``protected_path_guard.py``. Both surfaces consume this predicate, so widening
 one cannot leave the other behind.
 
@@ -12,22 +12,15 @@ approval. What stays protected is a LIVE materialization a host actually loads
 and executes: the ``.claude`` harness install, or the scoped npm package store
 (``@jaguilar87/gaia``).
 
-WHY THE PRIOR RULE PROTECTED THE CHECKOUT INSTEAD, AND WHY THAT WAS WRONG. An
-earlier version additionally protected any directory carrying a Gaia root
-marker (``build/gaia.manifest.json`` or a matching ``package.json``) or
-recorded in the workspace registry -- and that is precisely how a checkout got
-swept in: a plain ``git clone`` of this repository carries the identical
-marker, and a scanned workspace project is exactly what the registry records.
-Neither lane can tell a checkout from an install, because nothing distinguishes
-them at that marker. A source edit's durability is already git's job; a
-runtime guard adding a per-file consent step on top of it protects a
-relationship that holds on exactly one machine -- a Gaia developer's, where a
-checkout happens to sit beside that developer's own install -- and nowhere
-else, since every other install of Gaia has no checkout at all. Live installs
-remain protected because they are what actually executes; the six verbs that
-materialize or refresh one (``install``, ``update``, ``uninstall``, ``cleanup``,
-``dev``, ``release``) are T3-gated in code, so replacing a live install still
-requires consent even though editing the checkout beside it no longer does.
+WHY THE GAIA ROOT MARKER AND THE WORKSPACE REGISTRY DECIDE NOTHING. A plain
+``git clone`` of this repository carries the identical marker
+(``build/gaia.manifest.json`` or a matching ``package.json``), and a scanned
+workspace project is exactly what the registry records, so neither can tell a
+checkout from an install. A source edit's durability is git's job. Live
+installs are protected because they are what actually executes; the verbs that
+materialize or refresh one (``install``, ``update``, ``uninstall``,
+``cleanup``, ``dev``, ``release check``) are T3-gated in ``mutative_verbs``, so
+replacing a live install still requires consent.
 
 THE DERIVATION. Two lanes, both install-specific by construction and judged on
 a path's literal, absolute and symlink-resolved forms. ``_shape_hit`` matches a
@@ -36,14 +29,14 @@ an install root -- the ``@jaguilar87/gaia`` package store or a dev-plugin
 cache entry -- because the plain ``gaia`` CLI imports ``bin/`` and ``gaia/``
 from there, so a planted module or ``.pth`` is code the next call runs.
 
-``declared_hook_tree_roots()`` still resolves checkout roots from the
-workspace registry, for a DIFFERENT caller: ``_get_gaia_agent_names`` in
-``adapters/claude_code.py`` uses it to find the agents directory beside a
-checkout for agent-name discovery, not to decide what is write-protected.
+``declared_hook_tree_roots()`` resolves checkout roots from the workspace
+registry for a DIFFERENT caller: ``adapters/subagent_stop_core.py`` uses it to
+find the agents directory beside a checkout, not to decide what is
+write-protected.
 
-The ``.md`` carve-out (documentation does not execute code) and the
-``settings.json`` / ``settings.local.json`` special case keep their existing
-behaviour exactly.
+The ``.md`` carve-out (documentation does not execute code) covers a ``.claude``
+hook tree and ``hooks/`` inside an install root; ``settings.json`` /
+``settings.local.json`` under ``.claude`` stay protected.
 
 Public API:
     is_protected_hook_path(path: str) -> bool
@@ -124,10 +117,9 @@ def _is_gaia_root(directory: Path) -> bool:
 def _read_registry_hook_roots() -> Tuple[str, ...]:
     """Return ``<checkout>/hooks`` for every Gaia checkout in the registry.
 
-    The registry is the declaration recorded OUTSIDE the deployment, which is
-    what makes this lane install-mode invariant. Imports are local because a
-    hook adapter that imports the ``gaia`` package at module scope breaks every
-    entry point when the package is not on the path.
+    Imports are local because a hook adapter that imports the ``gaia`` package
+    at module scope breaks every entry point when the package is not on the
+    path.
     """
     import sqlite3
 
@@ -155,16 +147,14 @@ def _read_registry_hook_roots() -> Tuple[str, ...]:
 
 def declared_hook_tree_roots() -> Tuple[str, ...]:
     """Checkout hook-tree roots declared in the workspace registry, or () if
-    unresolvable. Consumed only for agent-name discovery
-    (``adapters/claude_code.py::_get_gaia_agent_names``); not a protection
-    lane -- see the module docstring."""
+    unresolvable. Consumed only to find the agents directory beside a checkout
+    (``adapters/subagent_stop_core.py``); not a protection lane -- see the
+    module docstring."""
     global _declared_roots_cache
     if _declared_roots_cache is None:
         try:
             _declared_roots_cache = _read_registry_hook_roots()
         except Exception:
-            # Fail CLOSED: an unresolved identity contributes no roots and
-            # never removes any.
             _declared_roots_cache = ()
     return _declared_roots_cache
 

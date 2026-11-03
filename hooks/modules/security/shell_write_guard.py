@@ -13,9 +13,10 @@ WHY THIS KEYS ON THE DESTINATION AND NOT ON A COMMAND LIST. The permitted cases
 have to fall out of the rule rather than be enumerated, or the guard becomes an
 allow-list somebody maintains and every gap in it is a block an agent has to
 work around. Two conditions must BOTH hold to refuse: the author is the shell,
-and the resolved destination is inside a git working tree. ``/dev/null``,
-``/tmp`` and ``~/.gaia/scratch`` are permitted because they are not under a
-working tree -- not because they appear on a list. A tool that writes as its own
+and the resolved destination is inside a git working tree. ``/tmp`` is
+permitted because it is not under a working tree -- not because it appears on
+a list; the only listed exemptions are the ones ``_classify_target`` names:
+``/dev/``, ``/proc/``, Gaia's data directory and ``_EPHEMERAL_SEGMENTS``. A tool that writes as its own
 effect (``pytest --junitxml``, a compiler, ``git``) is never reached, because
 the shell did not author its output.
 
@@ -71,8 +72,7 @@ def _split_components(text: str) -> List[str]:
     cannot precede the quote scan: a newline inside a multi-line quoted argument
     would end a component mid-string, and the fragment left behind carries no
     opening quote -- making a redirect that was only ever QUOTED read as one
-    being used. Measured: this refused a `gaia contract add` whose evidence text
-    mentioned a redirect, and a memory write quoting one in prose.
+    being used.
     """
     components: List[str] = []
     current: List[str] = []

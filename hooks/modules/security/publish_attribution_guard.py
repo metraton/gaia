@@ -57,8 +57,8 @@ _CHANGE_REQUEST_BODY_FILE_FLAGS = {"--body-file", "-F", "--description-file", "-
 _HUB_ACTIONLESS_NOUN = "pull-request"
 _LEADING_VALUE_OPTIONS = {"-C", "-R", "--repo"}
 
-# gh subcommands whose text lands on GitHub. ``api`` is included because
-# ``gh api`` posts comments and releases just as well as the porcelain verbs.
+# gh subcommands whose text lands on GitHub. ``gh api`` posts comments and
+# releases just as well, so ``_reading_body_files`` handles it apart.
 _GH_PUBLISHING = {
     "pr": {"create", "edit", "comment", "review"},
     "issue": {"create", "edit", "comment"},

@@ -7,25 +7,22 @@ SUBAGENT dispatch context, EXCEPT for the sanctioned writer agents.
 
 Why this exists
 ---------------
-The `memory` skill declares the contract explicitly ("Who writes"):
-
-    Only the orchestrator and `gaia-operator` mutate memory directly via
-    the CLI. Subagents dispatched into a task do **not** call
-    `gaia memory add` -- the writer hook rejects mutation from a dispatch
-    context. Subagents propose impact with a versioned `memory_delta` in
-    `agent_contract_handoff`.
-
-That contract was documented but NOT enforced at runtime: `gaia memory add`
-(and `append` / `reclassify` / `link`) carry no verb in MUTATIVE_VERBS, so
-they classified T0 "by elimination" and ran for ANY agent. This guard closes
-the gap by scoping the block to dispatch context.
+Only the orchestrator and ``gaia-operator`` mutate memory directly; a subagent
+proposes impact with a versioned ``memory_delta`` in its contract row. The tier
+classifier files the ``gaia memory`` group as read-only, so without this guard
+the write verbs run for any agent.
 
 Scope of the block (categorical, NOT approvable)
 ------------------------------------------------
-The block fires only when BOTH are true:
+The memory-write block fires only when BOTH are true:
     - the command is a `gaia memory <write-verb>` invocation, AND
     - it runs in a subagent context (``is_subagent``) whose ``agent_type``
       is NOT in ``ALLOWED_AGENTS``.
+
+Three further refusals apply to every subagent, ``ALLOWED_AGENTS`` included:
+a `gaia contract proposals accept|dismiss`, a command that touches
+``GAIA_DISPATCH_AGENT`` or clears the environment around a Gaia CLI call, and
+a Gaia CLI call whose words the shell computes.
 
 The orchestrator (``is_subagent`` False) is never blocked here; ``gaia-operator``
 (the sanctioned memory owner, dispatched as a subagent) is allow-listed. Like
@@ -59,16 +56,10 @@ from .gaia_cli_invocation import (
     clears_dispatch_identity, computes_gaia_words, gaia_cli_argvs, resolve_cat_heredocs,
 )
 
-# Curated-memory MUTATING subcommands under `gaia memory`. Read verbs
-# (search/show/list/stats/get-relevant/conflicts/episode-show) are absent by
-# design -- subagents read memory freely.
 MEMORY_WRITE_VERBS = frozenset(
     {"add", "append", "reclassify", "move", "delete", "link", "checkpoint"}
 )
 
-# Subagents that ARE sanctioned to mutate memory directly. The orchestrator is
-# handled by the ``is_subagent`` gate (it is never a subagent), so it does not
-# appear here.
 ALLOWED_AGENTS = frozenset({"gaia-operator"})
 
 REJECTION_MESSAGE = (
@@ -211,10 +202,12 @@ def check(
 
     Returns:
         (allowed, reason)
-        - (True, None)  when the command is not a subagent memory write,
-          or the subagent is an allow-listed writer (gaia-operator), or the
-          caller is the orchestrator (``is_subagent`` False).
-        - (False, msg)  when a non-sanctioned subagent attempts a memory write.
+        - (True, None)  when none of the refusals in the module docstring
+          applies, or the caller is the orchestrator (``is_subagent`` False),
+          or the only match is a memory write by an allow-listed agent.
+        - (False, msg)  for the identity, computed-words and proposal-decision
+          refusals from any subagent, and for a memory write from a subagent
+          outside ``ALLOWED_AGENTS``.
     """
     if not is_subagent:
         return True, None

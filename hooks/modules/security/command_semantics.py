@@ -29,10 +29,9 @@ SEMANTIC_SCAN_LIMIT = 12
 # A single-letter short flag before the first positional is READ AS TAKING THE
 # NEXT TOKEN AS ITS VALUE (see ``_is_short_value_flag``).  That is the POSIX
 # convention and it is right for ``git -C <path>`` and ``kubectl -n <ns>``.  It
-# is wrong for a flag that takes nothing: ``gcloud -q storage buckets
-# add-iam-policy-binding`` had ``storage`` eaten by ``-q``, so every anchor path
-# declared for that CLI missed at position 0 and a public-IAM grant classified
-# T0 while both the unflagged and the ``--quiet`` spellings classified T3.
+# is wrong for a flag that takes nothing: in ``gcloud -q storage buckets
+# add-iam-policy-binding``, ``-q`` would eat ``storage`` and every anchor path
+# declared for that CLI would miss at position 0.
 #
 # WHY A TABLE AND NOT A HEURISTIC.  The choice is between the shape of the next
 # token and a declaration per CLI, and shape cannot decide it: ``-q storage``
@@ -57,33 +56,17 @@ SEMANTIC_SCAN_LIMIT = 12
 # positional and shifts the head by one, which is the same corruption in the
 # other direction.
 #
-# WHAT HOLDS A WRONG ENTRY DOWN, AND WHAT DOES NOT.  Structurally, the entries
-# are keyed by base command and drawn only from the global set above, so each is
-# a fact about one documented CLI rather than a guess generalized across CLIs.
-# That is an argument, not a check -- nothing here can verify it, because it is
-# a claim about a third-party CLI's documented flag surface.
-#
-# The test suite does NOT catch a wrong entry, and must not be read as if it
-# did.  ``test_boolean_short_flag_equivalence.py`` inserts every flag declared
-# here into every corpus form for that CLI and asserts the verdict does not
-# move; what that measures is that a declared flag is verdict-neutral in the
-# shape a valueless flag is actually written -- with nothing after it to absorb.
-# A wrong entry does its damage in the OTHER shape, the flag written with the
-# value it really takes, and from inside the two are indistinguishable:
-# ``gcloud -q my-project storage buckets add-iam-policy-binding`` (a CORRECT
-# entry followed by a stray positional) and the same command with a wrongly
-# declared ``-x`` produce the identical token stream and the identical verdict.
-# Measured rather than argued: injecting ``-x`` into gcloud's entry here leaves
-# both suites green.
-#
-# So the runtime floor is the ONLY defense of this table, not a redundant second
-# one.  ``mutative_verbs.detect_mutative_command`` re-reads a non-mutative
+# Each entry is a claim about one third-party CLI's documented global flags, and
+# nothing here can verify it. ``test_boolean_short_flag_equivalence.py`` shows
+# only that a declared flag is verdict-neutral written with nothing after it to
+# absorb; a wrong entry does its damage when the flag is written with the value
+# it really takes, and that token stream is identical to a correct entry
+# followed by a stray positional. The runtime floor is therefore the only
+# defense: ``mutative_verbs.detect_mutative_command`` re-reads a non-mutative
 # command under the old absorbing grammar (``mutative_verbs._absorbing_form``)
 # and keeps the higher verdict, so a wrong entry costs a spurious approval
-# prompt and cannot open a gate.  Delete it as redundant because the suites look
-# green, and the table has no defense left at all.  The one test that fails when
-# it goes is ``test_the_floor_gates_a_flag_written_with_a_value`` in
-# ``test_boolean_short_flag_monotonicity.py``.
+# prompt and cannot open a gate. ``test_the_floor_gates_a_flag_written_with_a_value``
+# in ``test_boolean_short_flag_monotonicity.py`` fails when that floor goes.
 #
 # Matching is CASE-SENSITIVE.  ``-D`` and ``-d`` are different flags on the same
 # CLI (``gsutil -D`` is debug output, ``-d`` is a different debug level), and
@@ -184,7 +167,7 @@ def tokenize_command(command: str) -> Tuple[str, ...]:
     approval signature.  A redirect is a side-effect on the command's I/O, not
     part of its identity: ``git push`` and ``git push 2>&1`` are the SAME
     operation and MUST produce the same signature, so a grant minted for one
-    matches the other (double-approval fix, A).  Pipes (``|``), chaining
+    matches the other.  Pipes (``|``), chaining
     (``&&``, ``;``), and command substitution (``$(...)``) are NOT redirects --
     they change the command's identity and are deliberately left intact so a
     decorated form re-triggers T3.
@@ -208,11 +191,9 @@ def _degraded_tokenize(command: str) -> Tuple[str, ...]:
     """Tokenize a command whose quoting ``shlex`` could not resolve.
 
     ``shlex.split`` raises only on unresolvable quoting/escaping ("No closing
-    quotation", "No escaped character").  The historical fallback -- a naive
-    whitespace split of the WHOLE command -- keeps the security layer
-    best-effort instead of crashing, and that property is preserved here; what
-    it must NOT keep doing is promote the contents of a data payload to
-    command syntax.  An apostrophe inside an argument (``it's``) is enough to
+    quotation", "No escaped character").  A naive whitespace split of the WHOLE
+    command would keep the security layer best-effort instead of crashing, but
+    it would promote the contents of a data payload to command syntax.  An apostrophe inside an argument (``it's``) is enough to
     make shlex give up, and the naive split then exposes every word of that
     argument as a standalone token: a ``--force`` merely QUOTED in a report
     registers as a real flag, and any prose word that happens to be in
@@ -235,7 +216,7 @@ def _degraded_tokenize(command: str) -> Tuple[str, ...]:
 
     Accepted narrowing, deliberate: a mutative verb reachable ONLY from inside
     the unresolved region -- a heredoc body fed to an interpreter, or text
-    after an unterminated quote -- is no longer surfaced by the verb scanner.
+    after an unterminated quote -- is not surfaced by the verb scanner.
     Three layers still cover it: ``is_blocked_command`` regexes the raw command
     string (tokenization-independent), the compound splitter classifies each
     ``&&``/``;``/``|`` component on its own, and the inline-code and
@@ -308,11 +289,9 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
     """Build an idempotent semantic representation for security analysis."""
     raw_command = command.strip() if command else ""
     # Tokenize the UNWRAPPED form so ``base_cmd`` is the command and not a
-    # grouping character glued to it: ``(rm -rf /)`` tokenizes to ``("(rm",
-    # "-rf", "/)")`` and every table keyed on ``base_cmd`` -- COMMAND_ALIASES,
-    # the anchor paths, the subcommand keys -- misses on ``(rm``. ``raw_command``
-    # keeps the command as written, because it is the text the approval
-    # signature and the operator reports have to show back.
+    # grouping character glued to it (``(rm``), which every table keyed on
+    # ``base_cmd`` would miss. ``raw_command`` keeps the command as written,
+    # because the approval signature and the reports show it back.
     tokens = tokenize_command(strip_grouping_wrappers(raw_command))
     if not tokens:
         return CommandSemantics(raw_command=raw_command)
@@ -463,7 +442,7 @@ def _normalize_flag_token(token: str, *, fold: bool = True) -> Tuple[str, ...]:
       * the whole ``--data=amount=10`` token -- so the VALUE is bound into the
         flag set and feeds into the approval signature.
 
-    Binding the value is security-critical (Brief 71 over-match fix): the
+    Binding the value is security-critical: the
     approval signature is derived from the full flag set, so without the whole
     token two commands differing only in a ``--flag=value`` value would collapse
     to the same signature and one grant would authorize the other (e.g.

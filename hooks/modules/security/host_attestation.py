@@ -1,11 +1,9 @@
 """Gaia-side issuance and provenance resolution of OpenCode identity claims.
 
-AC-11 requires OpenCode to propagate a *verifiable* control-plane identity. The
-claim it propagated was a string the dispatching agent supplied: the plugin
-interpolated a tool argument into an attestation and marked it verified, so
-every consumer checked presence and none checked provenance. Issuance therefore
-happens here, inside a Gaia-side process, from a nonce this module mints and
-records; a value a caller can put in a tool argument resolves against no record.
+A claim built from a string the dispatching agent supplies proves presence and
+not provenance. Issuance therefore happens here, inside a Gaia-side process,
+from a nonce this module mints and records; a value a caller can put in a tool
+argument resolves against no record.
 
 The ledger is scoped to one host run. Within it a session is attested once,
 and a control-plane claim is only ever parentless: an attested parent cannot
@@ -17,10 +15,9 @@ the host's own session record, checked before it asks for a parentless claim.
 
 That scoping is only worth anything if the run cannot be named by whoever is
 asking, which is what ``host_run_id`` establishes: the namespace identifies the
-process that started this one. Taking it from the request instead -- as this
-module's callers first did -- verified a token against a ledger the claimant
-chose, which establishes that a (run, token) pair is internally consistent and
-says nothing about where the token came from.
+process that started this one. Taking it from the request would verify a token
+against a ledger the claimant chose, which establishes that a (run, token) pair
+is internally consistent and says nothing about where the token came from.
 """
 
 from __future__ import annotations

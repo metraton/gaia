@@ -1,70 +1,34 @@
-"""
-Lightweight source lexer for the script-content classification lane.
+"""Comment and string lexer for the non-shell script lanes of ``mutative_verbs``.
 
-The script-file classifier (``mutative_verbs._check_script_file``) scans a
-non-shell SOURCE file (``.js``/``.mjs``/``.cjs`` ...) for mutative verbs and
-exec-sink calls.  A pure line-by-line regex scan cannot tell CODE from a
-COMMENT or a STRING LITERAL, so it false-positives on lexical collisions --
-the word ``edit`` inside a template literal, or ``npm install`` inside a
-``//`` comment, are read as if they were executable tokens.  (This is the
-classic static-analysis failure mode: a generic regex matches a *mention*,
-not an *invocation* -- see the AST precedent in ``inline_ast_analyzer``.)
+``strip_source`` returns two projections of a source text, each as long as the
+source with every newline in place, so ``splitlines`` gives aligned line lists:
 
-This module removes that collision BEFORE the verb scanner runs, by lexing
-the source with a per-language :class:`LanguageSpec` (Strategy) and producing
-two projections of the file:
+* ``verb_view`` -- comments and string contents blanked, delimiters kept. The
+  script lane runs the blocked-command screen and the direct filesystem-mutation
+  patterns on it, so a word that lives in a comment or a string cannot match.
+* ``exec_view`` -- comments blanked, string contents kept. Exec-sink extraction
+  (``execSync("kubectl delete ...")``) runs on it; tracking strings keeps a ``//``
+  inside one (``"http://..."``) from reading as a comment.
 
-* ``verb_view``  -- comments blanked, STRING/TEMPLATE CONTENTS blanked
-  (delimiters kept).  Used for whole-token verb / blocked-command scanning:
-  a verb that lives only inside a comment or a string can no longer match.
-* ``exec_view``  -- comments blanked, string CONTENTS KEPT verbatim.  Used
-  for exec-sink extraction (``execSync("kubectl delete ...")``): the command
-  handed to a subprocess sink as a string literal is preserved and still
-  re-classified, so a REAL mutation stays T3.  String tracking is required
-  here too, so a ``//`` inside a string (``"http://..."``) is NOT mistaken
-  for a comment and does not blank a following sink call.
+Four families are registered: JavaScript (``node``, ``deno``, ``bun``, ``.js``,
+``.mjs``, ``.cjs``), php, ruby and perl. A backtick is a template-literal quote in
+JS (blanked in ``verb_view``, kept in ``exec_view``, ``backticks_are_exec`` False).
+In php, ruby and perl it is shell execution: not a string quote, left verbatim in
+both views for ``_scan_exec_sink_string_args``, which reads ``backticks_are_exec``.
+Ruby's ``%x{...}`` has no lexer rule and stays plain code for the same scanner.
 
-Both views preserve newline positions exactly, so a caller can ``splitlines``
-either view and the line indices stay aligned with the original.
+Comment grammars beyond JS's ``//`` and ``/* */`` are spec fields, off by default:
+``extra_line_comments`` (php's ``#``), ``line_block_comments`` (ruby's
+``=begin``/``=end``) and ``pod_style`` (perl POD).
 
-Design notes / accepted limitations:
+Not lexed:
 
-* Four language families are registered: the JavaScript family (``node`` /
-  ``.js`` / ``.mjs`` / ``.cjs``) and ruby / perl / php.  Backticks mean
-  DIFFERENT things per language: in JS a backtick is a TEMPLATE LITERAL (a
-  string), while in ruby/perl/php a backtick is SHELL EXECUTION.
-  ``LanguageSpec.backticks_are_exec`` records that distinction so the exec-sink
-  scanner can be told whether to treat backticks as a shell sink.  For JS the
-  backtick is therefore listed in ``string_quotes`` (blanked in ``verb_view``,
-  kept in ``exec_view`` as a template string) and ``backticks_are_exec`` is
-  False; for ruby/perl/php the backtick is NOT a string delimiter -- it is left
-  verbatim in BOTH views as executable text and ``backticks_are_exec`` is True,
-  so ``_scan_exec_sink_string_args`` re-classifies the backtick body as a shell
-  command.  ``%x{...}`` (ruby) is likewise an exec sink, so the lexer leaves it
-  in place for the same scanner rather than blanking it as a comment/string.
-* Comment grammars beyond JS's ``//`` + ``/* */`` are covered by three
-  spec extensions (all defaulting off, so JS is unchanged): ``extra_line_comments``
-  for PHP's second line marker ``#``; ``line_block_comments`` for a
-  column-0-anchored block comment delimited by whole-line markers (ruby's
-  ``=begin`` / ``=end``); and ``pod_style`` for perl POD (a line starting with
-  ``=`` + a letter opens a documentation block that runs until a line starting
-  with ``=cut``).  These blank documentation prose so a mutative verb mentioned
-  only inside a comment can no longer be read as an invocation.
-* Accepted limitations for ruby/perl/php: heredocs (``<<<``/``<<~``) and the
-  ``q{}``/``qq{}`` string forms are NOT lexed as strings, and a paren-less sink
-  call (ruby ``system "cmd"`` without parentheses) is not extracted -- these
-  mirror the pre-existing regex-lane limitations and can only cost a residual
-  false POSITIVE (heredoc body scanned as code) or a pre-existing false
-  NEGATIVE already present before this lane existed, never a NEW false negative.
-* Regex literals in JS (``/foo/``) are not disambiguated from division; an
-  unescaped ``//`` inside a regex literal could be mis-read as a line comment.
-  This is a well-known hard case in JS lexing.  It cannot open a false
-  NEGATIVE for the exec-sink lane: a subprocess sink takes a STRING literal
-  (tracked correctly), not a regex literal, so a real mutation is preserved.
-* Nested template interpolation (``` `${`x`}` ```) may leave some template
-  content un-blanked in ``verb_view``; that can only cost a residual false
-  POSITIVE (never a false negative), because the exec_view is what guards
-  real mutations.
+* php, ruby and perl heredocs and ``q{}``/``qq{}`` strings are read as code, so a
+  quote or comment marker inside one opens a string or comment.
+* JS regex literals are not told from division, so a ``//`` or a quote inside one
+  opens a comment or a string.
+* A JS template nested in ``${...}`` is not tracked: its first backtick closes the
+  outer template and the text up to the next backtick is read as code.
 """
 
 from __future__ import annotations
@@ -75,16 +39,13 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 
-# ============================================================================
-# Language strategy
-# ============================================================================
-
 @dataclass(frozen=True)
 class LanguageSpec:
     """Comment / string syntax for one source language family (Strategy).
 
     Attributes:
-        name: Human-readable language family name (diagnostics only).
+        name: Family name (``javascript``, ``php``, ``ruby``, ``perl``); the
+            script lane keys its per-language rules on it.
         line_comment: The line-comment marker (``"//"``), or ``None``.
         block_comment: ``(open, close)`` markers (``("/*", "*/")``), or ``None``.
         string_quotes: String-literal delimiter characters.  Each is a
@@ -99,13 +60,13 @@ class LanguageSpec:
             ``line_comment`` (PHP supports both ``//`` and ``#``).  Each is
             treated exactly like ``line_comment``: it blanks the remainder of
             the line in both views.  Defaults to empty (JS uses only ``//``).
-        line_block_comments: Column-0-anchored block comments delimited by
-            WHOLE-LINE markers ``(open, close)``.  A line whose start matches
+        line_block_comments: Block comments delimited by markers ``(open, close)``
+            at the start of a line.  A line whose start matches
             ``open`` begins the block; every line through the one whose start
             matches ``close`` is blanked (delimiter lines included).  Ruby's
             ``("=begin", "=end")`` is the case; defaults to empty.
         pod_style: True for perl POD.  A line starting with ``=`` immediately
-            followed by an ASCII letter opens a documentation block that runs
+            followed by a letter opens a documentation block that runs
             (blanked) until a line starting with ``=cut``.  Defaults to False.
     """
 
@@ -132,8 +93,6 @@ class StrippedSource:
     exec_view: str
 
 
-# The JavaScript family: ``//`` and ``/* */`` comments; ``'`` ``"`` and the
-# backtick (template literal) as strings.  Backticks are NOT shell execution.
 JS_SPEC = LanguageSpec(
     name="javascript",
     line_comment="//",
@@ -142,10 +101,6 @@ JS_SPEC = LanguageSpec(
     backticks_are_exec=False,
 )
 
-# PHP: ``//`` AND ``#`` line comments, ``/* */`` block comments, ``'`` ``"``
-# strings.  The backtick is SHELL EXECUTION (``shell_exec`` sugar), NOT a
-# string -- so it is deliberately absent from ``string_quotes`` and left
-# verbatim in both views for the exec-sink scanner (``backticks_are_exec``).
 PHP_SPEC = LanguageSpec(
     name="php",
     line_comment="//",
@@ -155,10 +110,6 @@ PHP_SPEC = LanguageSpec(
     extra_line_comments=("#",),
 )
 
-# Ruby: ``#`` line comments, ``=begin`` / ``=end`` column-0 block comments,
-# ``'`` ``"`` strings.  Backticks (and ``%x{...}``, handled by the exec-sink
-# scanner, not the lexer) are SHELL EXECUTION, so the backtick is not a string
-# delimiter here.
 RUBY_SPEC = LanguageSpec(
     name="ruby",
     line_comment="#",
@@ -168,8 +119,6 @@ RUBY_SPEC = LanguageSpec(
     line_block_comments=(("=begin", "=end"),),
 )
 
-# Perl: ``#`` line comments, POD documentation blocks (``=pod`` / ``=head1`` /
-# ... through ``=cut``), ``'`` ``"`` strings.  Backticks are SHELL EXECUTION.
 PERL_SPEC = LanguageSpec(
     name="perl",
     line_comment="#",
@@ -179,8 +128,6 @@ PERL_SPEC = LanguageSpec(
     pod_style=True,
 )
 
-# Extension / interpreter -> spec.  Registering a new language is adding a
-# spec and its keys here; the lexer and the caller are unchanged (Strategy).
 _SPEC_BY_EXT = {
     ".js": JS_SPEC,
     ".mjs": JS_SPEC,
@@ -205,8 +152,8 @@ def spec_for_script(interpreter: str, script_path: str) -> Optional[LanguageSpec
 
     Prefers the interpreter token (``node foo``) and falls back to the file
     extension (direct ``./foo.mjs`` invocation, where the interpreter token
-    IS the path).  Returns ``None`` for any language not handled by the lexer,
-    so the caller keeps its existing regex lane for those.
+    IS the path).  Returns ``None`` for any language the lexer does not handle;
+    the caller then classifies it with the regex lane.
     """
     spec = _SPEC_BY_INTERPRETER.get(interpreter)
     if spec is not None:
@@ -218,11 +165,6 @@ def spec_for_script(interpreter: str, script_path: str) -> Optional[LanguageSpec
     return None
 
 
-# ============================================================================
-# Lexer
-# ============================================================================
-
-# Lexer states.
 _CODE = 0
 _LINE_COMMENT = 1
 _BLOCK_COMMENT = 2
@@ -374,7 +316,6 @@ def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
                 state = _BLOCK_COMMENT
                 continue
             if c in quotes:
-                # Keep the delimiter in BOTH views (structure preserved).
                 emit(c, c)
                 quote = c
                 state = _STRING
@@ -443,7 +384,6 @@ def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
             quote = ""
             i += 1
             continue
-        # String content: blank in verb_view, keep in exec_view; newline kept.
         emit("\n" if c == "\n" else " ", c)
         i += 1
         continue

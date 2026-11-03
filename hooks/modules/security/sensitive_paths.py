@@ -36,17 +36,16 @@ PRIVATE_KEY_STEMS = frozenset({"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"})
 
 CREDENTIAL_SUFFIXES = (".pem", ".key")
 
-# Project secrets. The two templates stay readable: they are committed on
-# purpose to show the shape without the values (the user's choice, matching
-# OpenCode's own default).
+# Project secrets. The two templates stay readable: they show the shape of the
+# file without the values.
 ENV_FILE_NAME = ".env"
 READABLE_ENV_TEMPLATES = frozenset({".env.example", ".env.sample"})
 
 SYSTEM_SECRET_FILES = frozenset({"/etc/shadow", "/etc/passwd"})
 SYSTEM_SECRET_DIRS = frozenset({"/etc/ssl/private"})
 
-# A process environment holds the tokens the process was started with; its
-# siblings (status, cmdline) hold none and stay readable.
+# A process environment holds the tokens the process was started with; only
+# that file is refused, its siblings (status, cmdline) stay readable.
 PROCESS_ENVIRON = re.compile(r"/proc/(?:self|thread-self|\d+)(?:/task/\d+)?/environ")
 
 READ = "read"
@@ -54,7 +53,7 @@ WRITE = "write"
 _BOTH = frozenset({READ, WRITE})
 _WRITE_ONLY = frozenset({WRITE})
 
-# Under $HOME, each entry marked by use (D22). READ: reading or listing it is
+# Under $HOME, each entry marked by use. READ: reading or listing it is
 # refused, because secrets live there. WRITE: writing it asks a signature,
 # because it decides who may log in, runs on the next shell or git invocation,
 # or names the program that hands out credentials. Shell start-up files and git
@@ -150,7 +149,7 @@ def _canonical(path: str) -> str:
 
 
 def _home_relative(candidate: str) -> str:
-    """The part of a canonical absolute *candidate* under $HOME, or "" when it lands elsewhere."""
+    """The part of a canonical absolute *candidate* under $HOME ("." for $HOME itself), or "" when it is relative or lands elsewhere."""
     if not is_absolute(candidate):
         return ""
     home = posixpath.normpath(canonical_path(os.path.expanduser("~")))
@@ -181,7 +180,7 @@ def _home_entry_marks(path: str) -> frozenset:
 
 
 def holds_credentials(path: str) -> bool:
-    """True when *path* is $HOME or a directory above a read-refused entry, so copying it whole copies secrets."""
+    """True when *path* is $HOME or a directory under it above a read-refused HOME_ENTRIES entry, so copying it whole copies secrets."""
     relative = _home_relative(_canonical(path)) if path else ""
     if relative == ".":
         return True
@@ -191,11 +190,10 @@ def holds_credentials(path: str) -> bool:
 
 
 def is_account_path(path: str) -> bool:
-    """True when writing *path* hands out access to the user's own account.
+    """True when writing *path* decides who may log in, what runs on the next shell or git invocation, or which program hands out credentials.
 
     Sensitive by CONTENTS, not by location: the home directory is otherwise
-    free, which is the reasoning that once left ``~/.ssh/authorized_keys``
-    open. Relative paths are never account paths.
+    free. Relative paths are never account paths.
     """
     return WRITE in _home_entry_marks(path)
 
@@ -309,7 +307,7 @@ def _path_candidates(token: str) -> Iterable[str]:
 
 
 def first_sensitive_token(tokens: Iterable[str], cwd: Optional[str] = None) -> str:
-    """The first token naming a sensitive path, or ""."""
+    """The first path-like piece of *tokens* that is a sensitive path, or ""."""
     for token in tokens:
         for piece in _path_candidates(token):
             if sensitive_path_label(piece, cwd):

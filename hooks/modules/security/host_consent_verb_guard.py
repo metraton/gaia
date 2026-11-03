@@ -344,7 +344,7 @@ def _basename(word: _Word) -> str:
 
 
 def _peel(words: List[_Word]) -> List[_Word]:
-    """Drop leading assignments and wrapper programs, down to the program that runs."""
+    """Drop leading assignments and wrapper programs with their flags, ``NAME=value`` words and durations."""
     i = 0
     while i < len(words) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[i].text):
         i += 1
@@ -565,7 +565,7 @@ def _refused(command: str, cwd: Optional[str], depth: int) -> Optional[str]:
 
 
 def gaia_calls(command: str, depth: int = 0) -> List[List[str]]:
-    """The argument words of each Gaia CLI call ``command`` runs, read the way this guard reads them."""
+    """The argument words of each Gaia CLI call in ``command``, through substitutions, eval, shell ``-c``/heredoc bodies and xargs (not ``find -exec`` or scripts)."""
     if not command or depth > _MAX_DEPTH:
         return []
     parsed = _parse(command)

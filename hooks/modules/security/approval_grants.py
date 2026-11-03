@@ -20,10 +20,8 @@ Grants are:
   APPROVAL_WINDOW_MINUTES (30), counted from the decision and mirrored here as
   DEFAULT_GRANT_TTL_MINUTES
 - Cleaned up after use or expiry
-- Stored AUTHORITATIVELY in the DB (``approval_grants`` in gaia.db) since the
-  Brief 71 cutover. The filesystem plane (.claude/cache/approvals/) is the
-  DEPRECATED fallback retained only for grants minted before the cutover; new
-  grants are created and consumed through the DB plane (gaia.store.writer).
+- Stored in the DB (``approval_grants`` in gaia.db) and created and consumed
+  through gaia.store.writer
 
 Security properties:
 - Grants are created ONLY by the hook (not by agents)
@@ -32,18 +30,15 @@ Security properties:
 - The deny list (blocked_commands.py) is NEVER bypassed -- grants only
   override the dangerous verb detector
 - Nonces are 128-bit random hex (cannot be guessed)
-- A nonce can only be activated ONCE (DB row marked CONSUMED on activation;
-  legacy pending files are deleted on activation)
+- A nonce can only be activated ONCE (DB row marked CONSUMED on activation)
 - DB grants are session-AGNOSTIC by design: the block-approve-retry flow
   legitimately spans sessions, so replay protection comes from the CONSUMED
   status + TTL, not from session scoping (see the DB-backed model note below)
 
 =============================================================================
-Grant lifetime (DB-backed model -- Brief 71 cutover)
+Grant lifetime (DB-backed model)
 =============================================================================
-The authoritative grant plane is the DB (``approval_grants`` in gaia.db), not
-the filesystem files this module also maintains for the legacy fallback path.
-The current model is:
+The grant plane is the DB (``approval_grants`` in gaia.db). The model is:
 
 1.  A SCOPE_SEMANTIC_SIGNATURE grant is created when the user approves a
     pending approval via AskUserQuestion. It carries a semantic signature
@@ -63,19 +58,14 @@ The current model is:
 
 3.  The semantic signature normalizes shell redirects out (``2>&1``, ``> file``)
     so a retry that only appends a redirect REUSES the existing grant rather
-    than minting a new approval_id (the double-approval fix). Identity-bearing
+    than minting a new approval_id. Identity-bearing
     tokens -- including the ``-C <path>`` working directory -- still bind, so a
     genuinely different operation does NOT match the same grant.
 
 Operators who want one consent to cover a batch of related commands should
 use the COMMAND_SET grant mechanism (see ``create_command_set_grant()``).
 Each command in the set is approved explicitly by the user and consumed
-individually.  The legacy verb_family path has been removed.
-
-NOTE: the filesystem helpers below (write_pending_approval, the
-grant-{session}-*.json scanners) are the DEPRECATED fallback plane retained for
-grants created before the DB cutover. The active flow runs through the DB plane
-in gaia.store.writer.
+individually.
 """
 
 from __future__ import annotations
@@ -112,9 +102,8 @@ def _grant_ttl_minutes() -> int:
     """Resolve the active-grant TTL default from gaia.store.writer.
 
     The single source of truth for the GRANT lifetime is
-    gaia.store.writer.APPROVAL_GRANT_TTL_MINUTES (Brief 71, Change 3a) -- the
-    dependency leaf both the DB grant plane and this filesystem plane import
-    without a circular import (writer never imports this module back). We resolve
+    gaia.store.writer.APPROVAL_GRANT_TTL_MINUTES -- writer never imports this
+    module back, so there is no cycle. We resolve
     it lazily here, mirroring every other gaia.store import in this file, because
     the hooks package can be imported before the `gaia` package is on sys.path;
     a module-level import would crash hook load in that window. The 30-minute
@@ -296,18 +285,17 @@ def extract_approval_id_from_label(label: str) -> Optional[str]:
 # ============================================================================
 # The consent surface is the AskUserQuestion text the user reads before
 # deciding: the labeled sealed fields plus EVERY command the approval covers.
-# Two defects lived here and are closed by this section:
+# Two constraints shape this section:
 #
 #   1. A COMMAND_SET payload carries N commands, but ``exact_content`` holds
-#      only command [0]. A presentation built from that single field asks for
-#      consent to one command and activates a grant for N.
+#      only command [0]; a presentation built from that field would ask for
+#      consent to one command and activate a grant for N.
 #      ``render_consent_surface`` renders the whole set, indexed, and
 #      ``verify_consent_surface_completeness`` rejects any surface that shows
 #      fewer commands than the payload covers.
-#   2. The SHOWN event was written with no payload, so after the fact there was
-#      no way to establish what text the user was shown -- neither to prove nor
-#      to disprove that something was hidden. ``build_shown_event_payload``
-#      makes the SHOWN event carry the full question text.
+#   2. The SHOWN event must record what the user was shown, to prove or
+#      disprove that something was hidden: ``build_shown_event_payload`` makes
+#      it carry the full question text.
 #
 # The completeness verdict is RECORDED, never enforced at activation. The user
 # has already consented by the time activation runs; refusing there would leave
@@ -453,10 +441,9 @@ def check_approval_grant(
     If a valid grant exists that matches the command, the command should
     be allowed through.
 
-    DB-only since G2 cutover: check_db_semantic_grant() in gaia.store.writer
-    is the sole source of truth. When a DB row is found it is wrapped as an
-    ApprovalGrant with confirmed=True so downstream consumers see the same
-    interface. The legacy filesystem fallback has been retired.
+    DB-only: check_db_semantic_grant() in gaia.store.writer is the sole source
+    of truth. When a DB row is found it is wrapped as an ApprovalGrant with
+    confirmed=True so downstream consumers see the same interface.
 
     Args:
         command: The shell command to check.
@@ -523,7 +510,7 @@ def check_approval_grant(
 def consume_grant(command: str, session_id: str = None) -> bool:
     """Mark the matching DB semantic grant as CONSUMED (replay protection).
 
-    DB-only since G2 cutover.  Called by bash_validator as a secondary
+    DB-only.  Called by bash_validator as a secondary
     consume step after check_approval_grant() returns a match.  When
     bash_validator already holds a ``_db_approval_id`` it calls
     ``consume_db_semantic_grant`` directly; this function handles any
@@ -564,7 +551,7 @@ def consume_grant(command: str, session_id: str = None) -> bool:
 def confirm_grant(command: str, session_id: str = None) -> bool:
     """Set confirmed=1 on the first PENDING DB grant matching command.
 
-    DB-only since G3 cutover.  Called after the native permission dialog
+    DB-only.  Called after the native permission dialog
     accepts the first T3 execution.  Subsequent T3 commands within the TTL
     window will see confirmed=True and be auto-allowed without a native dialog.
 
@@ -612,9 +599,7 @@ def cleanup_expired_grants(force: bool = False) -> int:
 
     The authoritative grant plane is the DB (``approval_grants`` in gaia.db).
     This function calls ``cleanup_expired_db_grants()`` to mark expired DB rows
-    as EXPIRED.  The legacy filesystem pending/index sweep has been retired:
-    no ``pending-*.json`` or ``pending-index-*.json`` files are written any
-    more, so there is nothing on disk to sweep.
+    as EXPIRED.  Only DB rows are swept; pendings live in the DB, not on disk.
 
     Called periodically (e.g., at hook startup) to prevent accumulation.
     Throttled to run at most once every ``_CLEANUP_INTERVAL_SECONDS`` --
@@ -635,7 +620,7 @@ def cleanup_expired_grants(force: bool = False) -> int:
 
     cleaned = 0
 
-    # DB grant expiry sweep -- the sole grant plane since the DB cutover.
+    # DB grant expiry sweep -- the DB is the sole grant plane.
     try:
         from gaia.store.writer import cleanup_expired_db_grants
         db_cleaned = cleanup_expired_db_grants()
@@ -651,13 +636,12 @@ def cleanup_expired_grants(force: bool = False) -> int:
 
 
 def _db_row_to_pending_dict(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Convert a gaia.approvals.store pending row into the legacy pending dict.
+    """Convert a gaia.approvals.store pending row into a pending dict.
 
-    The legacy filesystem pending dict shape (nonce, command, danger_verb,
-    danger_category, scope_type, scope_signature, timestamp, context, ...) is
-    still what readers like ``bin/cli/approvals.py`` expect. This mapping is the
-    DB-backed equivalent of the legacy filesystem pending-approval payload --
-    mirrors ``_scan_pending_shared`` in ``bin/cli/approvals.py``.
+    The dict shape (nonce, command, danger_verb, danger_category, scope_type,
+    scope_signature, timestamp, context, ...) is what readers like
+    ``bin/cli/approvals.py`` expect. The mapping mirrors ``_scan_pending_shared``
+    in ``bin/cli/approvals.py``; change them together.
 
     Returns None when the row cannot be parsed.
     """
@@ -718,9 +702,8 @@ def get_pending_approvals_for_session(
 ) -> List[Dict[str, Any]]:
     """Return all non-expired pending approvals for a session.
 
-    DB-backed since the pending plane moved fully to gaia.db: delegates to
-    ``gaia.approvals.store.get_pending`` and maps each DB row into the legacy
-    pending dict shape via ``_db_row_to_pending_dict``.
+    DB-backed: delegates to ``gaia.approvals.store.get_pending`` and maps each
+    DB row into the pending dict shape via ``_db_row_to_pending_dict``.
 
     Args:
         session_id: Session ID to filter by (defaults to current session).
@@ -809,11 +792,10 @@ def write_pending_approval_for_file(
     The payload is sealed by gaia.approvals.core.seal_request; ``agent_id``
     names the requester and is recorded as ``unattributed`` when absent.
 
-    DB-primary since Task E of the approval redesign: persists to
-    gaia.approvals.store (gaia.db) first using insert_requested() with
-    approval_id = "P-" + nonce.  The filesystem write is removed entirely --
-    file-path pendings live in the DB exactly like T3 command pendings and are
-    read on demand via `gaia approvals`.
+    Persists to gaia.approvals.store (gaia.db) using insert_requested() with
+    approval_id = "P-" + nonce.  File-path pendings live only in the DB,
+    exactly like T3 command pendings, and are read on demand via
+    `gaia approvals`.
 
     The sealed_payload uses:
       - exact_content  = file_path          (the blocked file path)
@@ -890,7 +872,7 @@ def check_approval_grant_for_file(
 ) -> Optional[dict]:
     """Check if there is an active approval grant for a Write/Edit file path.
 
-    DB-only since Task E full migration: queries approval_grants via
+    DB-only: queries approval_grants via
     check_db_file_path_grant(), whose predicate is three-part and all three
     parts are load-bearing -- scope='SCOPE_FILE_PATH', status='PENDING' (this
     lane never advances a row to ACTIVE; PENDING IS the usable state), and
@@ -945,10 +927,9 @@ def find_pending_for_file(
     it own the path until the 24h sweep. Past the window the caller mints
     instead, and the store supersedes the stale row.
 
-    DB-primary since Task E: queries gaia.approvals.store for SCOPE_FILE_PATH
-    pending rows whose payload.exact_content matches the target path.
-    No filesystem fallback is needed because write_pending_approval_for_file
-    now writes exclusively to the DB.
+    Queries gaia.approvals.store for SCOPE_FILE_PATH pending rows whose
+    payload.exact_content matches the target path; write_pending_approval_for_file
+    writes only to the DB, so there is no filesystem fallback.
 
     Args:
         session_id: Session to search (used when all_sessions query unavailable).
@@ -1031,11 +1012,10 @@ def activate_db_pending_by_id(
 
 
 # ============================================================================
-# Command-Set Grant Creation and Matching (M3 / D4 / D10)
+# Command-Set Grant Creation and Matching
 # ============================================================================
-# Replaces the SCOPE_VERB_FAMILY multi-use grant design.
 # A command_set grant binds an approval_id to an explicit list of commands
-# (each with a rationale). Matching is byte-for-byte (D10): no whitespace
+# (each with a rationale). Matching is byte-for-byte: no whitespace
 # normalization, no quote canonicalization, no shell expansion. Wrapping an
 # approved command (adding cd, redirect, pipe, flag) produces a different
 # string and requires fresh approval. Each item in the set is single-use.
@@ -1203,7 +1183,7 @@ def match_command_set_grant(
             for idx, item in enumerate(command_set):
                 if idx in consumed_indexes:
                     continue
-                # Byte-for-byte match (D10) -- no normalization
+                # Byte-for-byte match -- no normalization
                 if item.get("command") == retried_command:
                     logger.info(
                         "command_set grant matched: approval_id=%s, index=%d, command=%r",

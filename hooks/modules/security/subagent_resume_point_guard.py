@@ -10,14 +10,13 @@ a subagent writing it would speak for the orchestrator. Reads stay free:
 Categorical, not approvable, like `subagent_memory_write_guard`: the subagent's
 path is to report its state in its contract, which the orchestrator reads.
 
-The decision is made on the shell's words (shlex-unquoted per component), never
+The decision is made on the shell's words (``shell_words`` per component), never
 on raw text: `resume-poin\\t`, `'resume'-point` and `resume""-point` are the
 word `resume-point` to the shell. A subagent's session call is free only when
 its verb words are a read declared in SESSION_VERBS; anything else under
 `session` -- a shell-resolved verb (`$S`, a backtick, a glob), an undeclared
 verb -- is refused, as is `gaia <shell-resolved group>`. Whether the command
-word is a Gaia CLI entry point is `gaia_cli_invocation.entry_group`'s answer,
-shared with the memory and proposal guard.
+word is a Gaia CLI entry point is `gaia_cli_invocation.entry_group`'s answer.
 
 Public API:
     SESSION_VERBS: every `gaia session` verb path and how it is classified
