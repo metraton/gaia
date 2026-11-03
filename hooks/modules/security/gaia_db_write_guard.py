@@ -4,15 +4,14 @@ gaia_db_write_guard.py -- PreToolUse Bash hook.
 Rejects commands writing directly to ~/.gaia/gaia.db bypassing the store API.
 
 Patterns detected:
-    a sqlite3 invocation naming gaia.db (or a .gaia/*.db) together with any of
-    INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|VACUUM|ATTACH|REINDEX, or a
-    PRAGMA that sets a value or rewrites the file, anywhere in the command,
-    case-insensitive, inside quotes / heredocs; and any shell writer whose
+    a sqlite3 invocation naming gaia.db (or a .gaia/*.db) with a _WRITE_VERBS
+    word or a PRAGMA that sets a value or rewrites the file anywhere in the
+    command, case-insensitive, inside quotes / heredocs; and any shell writer whose
     DESTINATION is the gaia.db file or a side file -- cp/mv/install/ln/rsync,
     redirect, tee, dd of=, truncate, or a mutative inline interpreter naming it
     -- behind any wrapper the classifier peels.
 
-Read-only SQL (SELECT, a PRAGMA that only reads) is allowed. The write block is categorical and NOT
+Read-only SQL (SELECT, a read PRAGMA) is allowed. The write block is categorical and NOT
 approvable -- like blocked_commands.py, it denies with SecurityTier.T3_BLOCKED
 and no approval_id, so there is no T3 grant that lifts it. Legitimate cases
 go through the sanctioned paths instead:
@@ -48,7 +47,6 @@ _WRITE_VERBS = re.compile(
     re.IGNORECASE,
 )
 _PRAGMA = re.compile(r"\bPRAGMA\s+(?:\w+\s*\.\s*)?(\w+)\s*([=(])?", re.IGNORECASE)
-# The parenthesized argument of these names what to read, not a value to set.
 _PRAGMA_READ_ARGUMENT = frozenset({
     "table_info", "table_xinfo", "table_list", "index_info", "index_xinfo",
     "index_list", "foreign_key_list", "foreign_key_check", "integrity_check",
@@ -106,9 +104,7 @@ def is_db_write_attempt(command: str) -> bool:
 
     Returns:
         True if the command contains a sqlite3 invocation against gaia.db
-        AND a statement that changes the store: a write verb
-        (INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/REPLACE/VACUUM/ATTACH/REINDEX)
-        or a PRAGMA that sets a value or rewrites the file.
+        AND a _WRITE_VERBS word or a PRAGMA that changes the store.
     """
     if not command:
         return False

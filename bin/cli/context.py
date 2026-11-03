@@ -993,9 +993,8 @@ def _cmd_query(args) -> int:
     """Handle `gaia context query "<SQL>"`.
 
     Runs the statement when its first word is select, with, explain or pragma
-    (`_SELECT_VERBS`); any other first word exits 2. The connection is opened
-    read-only, so a write the statement carries past that word (``WITH ...
-    DELETE``, ``PRAGMA x = v``) fails with exit 1 and changes nothing.
+    (`_SELECT_VERBS`); any other first word exits 2. The connection is read-only,
+    so a write past that word (``WITH ... DELETE``) exits 1 and changes nothing.
     """
     sql = (getattr(args, "sql", "") or "").strip()
     if not sql:
