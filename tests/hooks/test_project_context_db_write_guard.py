@@ -23,7 +23,6 @@ if _HOOKS_DIR not in sys.path:
 from hooks.modules.security.gaia_db_write_guard import (  # noqa: E402
     REJECTION_MESSAGE,
     check,
-    is_db_write_attempt,
     rejection_message,
 )
 
