@@ -2,15 +2,9 @@
 """
 Stop hook for Claude Code Agent System.
 
-Fires when Claude finishes responding. Evaluates whether the response has
-adequate evidence quality. For MVP: logs the event and allows stop (exit 0).
-Quality check logic will be wired in a future iteration.
-
-Architecture:
-- Uses adapter layer to parse Stop event
-- Calls adapter.adapt_stop() for quality assessment
-- Returns quality result via adapter format_quality_response()
-- Exit code 0 = allow stop, exit code 2 = continue instead of stop
+Fires when Claude finishes responding. It logs the adapter's quality result
+(adapt_stop reports quality_sufficient=True unconditionally) and always exits 0,
+allowing the stop.
 """
 
 import os
@@ -29,17 +23,12 @@ from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 from modules.core.logging_setup import configure_hook_logging
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("stop_hook")
 logger = logging.getLogger(__name__)
 
 
 def _handle_stop(event) -> None:
-    """Process a Stop event.
-
-    Evaluates response quality and decides whether to allow the stop.
-    For MVP, always allows stop (exit 0).
+    """Log the Stop event's quality result and allow the stop (exit 0).
 
     Args:
         event: Parsed HookEvent from the adapter layer.
@@ -60,10 +49,6 @@ def _handle_stop(event) -> None:
     print(json.dumps(response.output))
     sys.exit(0)
 
-
-# ============================================================================
-# STDIN HANDLER (Claude Code integration)
-# ============================================================================
 
 if __name__ == "__main__":
     run_hook(_handle_stop, hook_name="stop_hook")

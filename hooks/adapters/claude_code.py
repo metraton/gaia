@@ -99,22 +99,20 @@ _HOST_REFUSAL = re.compile(
 # top-level key. The literal shape is OWNED by this adapter layer: business
 # logic must never index it directly. The accessors below let business modules
 # read or augment an already-formatted host response without coupling to the
-# key names (AC-2: hookSpecificOutput lives only in adapters/).
+# key names.
 _HOOK_SPECIFIC_OUTPUT = "hookSpecificOutput"
 
 # PreToolUse also reaches MCP tools and any tool its matcher does not exclude, so that a
 # command-carrying tool nobody named is refused. Only the tools listed here go through the full
-# policy (delegate mode, call ceiling). No hook ran for the others before, so they keep the verdict they had.
+# policy (delegate mode, call ceiling); the others get only ungated_command_verdict.
 _POLICY_TOOLS = frozenset({
     "bash", "powershell", "monitor", "task", "agent", "sendmessage", "askuserquestion",
     "read", "edit", "multiedit", "write", "glob", "grep", "websearch", "webfetch", "notebookedit",
 })
 
 # Claude Code's two distribution channels and the env var that distinguishes
-# them. These host-specific names are OWNED by this adapter (Gap 2 / brief #88):
-# the core carries an opaque HostDistribution and never enumerates these values
-# nor reads CLAUDE_PLUGIN_ROOT. A host with a different distribution model
-# declares its own channels in its own adapter, with no change to the core.
+# them. The core carries an opaque HostDistribution and never enumerates these
+# values nor reads CLAUDE_PLUGIN_ROOT.
 _CHANNEL_NPM = "npm"
 _CHANNEL_PLUGIN = "plugin"
 _PLUGIN_ROOT_ENV_VAR = "CLAUDE_PLUGIN_ROOT"
@@ -156,22 +154,11 @@ def inject_updated_input(
     return host_output
 
 
-# ---------------------------------------------------------------------------
-# stop_reason isolation (brief contract-as-managed-data-agent-contract-handoff
-# -agnostico-por-cli, decision #5 / M5 / AC-11).
-#
-# Claude Code's model-level ``stop_reason`` ("max_tokens", "end_turn", ...) is
-# a host-specific signal. Interpreting what it MEANS for a broken or
-# incomplete agent_contract_handoff envelope -- "max_tokens" implies the turn
-# was cut off by the token budget (not the agent's choice, a salvage
-# candidate for T11's truncation rescue); "end_turn" (or anything else)
-# implies the agent had room to finish and stopped anyway (a genuine
-# violation) -- is host-specific judgment. It lives HERE, in the adapter,
-# ONLY. The portable core (gaia.contract.validator, gaia.contract.crosscheck,
-# M1) never imports this function, never sees stop_reason, and validates an
-# envelope's shape/cross-check IDENTICALLY whether stop_reason is present,
-# absent, or any value at all -- see tests/contract/test_stop_reason_adapter.py.
-# ---------------------------------------------------------------------------
+# What Claude Code's ``stop_reason`` means for a broken or incomplete envelope is
+# host-specific judgment and lives in this adapter only: the portable core
+# (gaia.contract.validator, gaia.contract.crosscheck) never imports
+# classify_stop_reason and validates an envelope identically whatever the stop
+# reason (tests/contract/test_stop_reason_adapter.py).
 _STOP_REASON_MAX_TOKENS = "max_tokens"
 _STOP_REASON_END_TURN = "end_turn"
 _STOP_REASON_TOOL_USE = "tool_use"
@@ -187,38 +174,18 @@ _TRUNCATION_STOP_REASONS = frozenset({_STOP_REASON_MAX_TOKENS, _STOP_REASON_TOOL
 def classify_stop_reason(stop_reason: Optional[str]) -> str:
     """Map a Claude Code ``stop_reason`` to its adapter-owned semantic class.
 
-    ``"max_tokens"`` -> ``STOP_REASON_TRUNCATION``: the turn was cut off by
-        the token budget, not chosen by the agent. A broken/incomplete
-        contract under this reason is a salvage candidate (T11), not a hard
-        violation.
-    ``"tool_use"`` -> ``STOP_REASON_TRUNCATION``: the harness cut. The last
-        assistant message ended requesting a tool, its result landed, and the
-        model never produced another message -- so the turn never reached
-        ``end_turn`` and never emitted its contract. Like the budget cut, this
-        is not the agent's choice and not a violation.
-
-        SCOPE, measured: on the observed cut path this classification changes
-        nothing, because the hook does not run at all -- ``SubagentStop`` never
-        fires, so no code here is reached (no ``harness_event``, no
-        ``episodes`` row). What this mapping fixes is the case where the hook
-        DOES run and the payload carries ``stop_reason="tool_use"``: a resumed
-        or replayed turn, a host that delivers the stop reason on a later
-        lifecycle event, or any future host that fires SubagentStop on a cut.
-        For the cut the harness swallows entirely, the detection lives on the
-        orchestrator side instead -- see
-        ``modules.agents.task_result_observer``.
+    ``"max_tokens"`` and ``"tool_use"`` -> ``STOP_REASON_TRUNCATION``: the turn
+        was cut (by the token budget, or by the harness after a tool result),
+        not finished by the agent, so a broken contract is a salvage candidate
+        rather than a violation. A cut that never fires SubagentStop is
+        detected on the orchestrator side
+        (``modules.agents.task_result_observer``).
     ``"end_turn"`` -> ``STOP_REASON_VIOLATION``: the agent had room to finish
-        and stopped anyway. A broken/incomplete contract under this reason is
-        a genuine violation.
+        and stopped anyway.
     Anything else (``None``, empty, or an unrecognized reason)
-        -> ``STOP_REASON_UNKNOWN``: the conservative default. A caller that
-        gates on this classification should treat "unknown" the same as a
-        violation (fail closed) rather than assume a salvage-worthy
-        truncation it cannot confirm.
-
-    This function is the SOLE owner of the max_tokens/end_turn mapping
-    (decision #5). ``gaia.contract.validator`` and ``gaia.contract.crosscheck``
-    never import it and never branch on stop_reason themselves.
+        -> ``STOP_REASON_UNKNOWN``: a caller that gates on this classification
+        should treat "unknown" as a violation (fail closed) rather than assume
+        a truncation it cannot confirm.
     """
     if stop_reason in _TRUNCATION_STOP_REASONS:
         return STOP_REASON_TRUNCATION
@@ -256,10 +223,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     HOST_NAME = HOST_NAME
     AGENT_ID_NAMES_SCRATCH = True
 
-    # ------------------------------------------------------------------ #
-    # parse_event: stdin JSON -> HookEvent
-    # ------------------------------------------------------------------ #
-
     def parse_event(self, stdin_data: str) -> HookEvent:
         """Parse raw stdin JSON into a normalized HookEvent.
 
@@ -277,7 +240,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         if not isinstance(raw, dict):
             raise ValueError(f"Expected JSON object, got {type(raw).__name__}")
 
-        # Map hook_event_name to HookEventType enum
         event_name = raw.get("hook_event_name", "")
         if not event_name:
             raise ValueError("Missing required field: hook_event_name")
@@ -304,10 +266,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             distribution=self.detect_distribution(),
         )
 
-    # ------------------------------------------------------------------ #
-    # format_validation_response: ValidationResult -> HookResponse
-    # ------------------------------------------------------------------ #
-
     def format_validation_response(self, result: ValidationResult) -> HookResponse:
         """Format a ValidationResult into Claude Code's hookSpecificOutput JSON.
 
@@ -333,7 +291,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             }
         }
 
-        # Include updatedInput when the command was modified (e.g. footer stripping)
         if result.modified_input is not None:
             output["hookSpecificOutput"]["updatedInput"] = result.modified_input
 
@@ -359,10 +316,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         """Attach rewritten input using Claude Code's hook response shape."""
         return inject_updated_input(output, updated_input)
 
-    # ------------------------------------------------------------------ #
-    # format_completion_response: CompletionResult -> HookResponse
-    # ------------------------------------------------------------------ #
-
     def format_completion_response(self, result: CompletionResult) -> HookResponse:
         """Format a CompletionResult for SubagentStop.
 
@@ -386,10 +339,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             output["anomalies"] = result.anomalies
 
         return HookResponse(output=output, exit_code=0)
-
-    # ------------------------------------------------------------------ #
-    # format_context_response: ContextResult -> HookResponse
-    # ------------------------------------------------------------------ #
 
     def format_context_response(self, result: ContextResult) -> HookResponse:
         """Format a ContextResult for SubagentStart context injection.
@@ -415,10 +364,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         return HookResponse(output=output, exit_code=0)
 
-    # ------------------------------------------------------------------ #
-    # P1: adapt_session_start
-    # ------------------------------------------------------------------ #
-
     def adapt_session_start(self, raw: dict) -> BootstrapResult:
         """Parse SessionStart event and return bootstrap actions.
 
@@ -434,10 +379,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             should_refresh=session_type in ("startup", "resume"),
             session_type=session_type,
         )
-
-    # ------------------------------------------------------------------ #
-    # P1: format_bootstrap_response
-    # ------------------------------------------------------------------ #
 
     def format_bootstrap_response(self, result: BootstrapResult) -> HookResponse:
         """Format a BootstrapResult for SessionStart.
@@ -459,23 +400,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         return HookResponse(output=output, exit_code=0)
 
-    # ------------------------------------------------------------------ #
-    # detect_distribution: declare the host's channel + root (NPM vs PLUGIN)
-    # ------------------------------------------------------------------ #
-
-    # ------------------------------------------------------------------ #
-    # capabilities: Claude Code DECLARES what this host can do
-    # ------------------------------------------------------------------ #
-
-    # Frozen, instance-stable declaration. Claude Code v2.1+ offers every
-    # capability the core currently asks about: it gathers consent inline via
-    # AskUserQuestion (INTERACTIVE_CONSENT), runs the orchestrator approval-id
-    # cycle (OUT_OF_BAND_APPROVAL), accepts a structured permissionDecision
-    # (STRUCTURED_PERMISSION_DECISION), applies updatedInput transparently
-    # (UPDATED_INPUT), injects SessionStart/SubagentStart context
-    # (CONTEXT_INJECTION), and exposes the agent transcript (TRANSCRIPT_ACCESS).
-    # A future host that lacks one simply omits it here; the absence drives the
-    # core's declared degradation, with no change to business logic.
+    # INTERACTIVE_CONSENT is the native AskUserQuestion prompt;
+    # OUT_OF_BAND_APPROVAL is the orchestrator's approval-id cycle.
     _CAPABILITIES: FrozenSet[HostCapability] = frozenset(
         {
             HostCapability.INTERACTIVE_CONSENT,
@@ -508,20 +434,12 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             return HostDistribution(channel=_CHANNEL_PLUGIN, root=plugin_root)
         return HostDistribution(channel=_CHANNEL_NPM, root=None)
 
-    # ------------------------------------------------------------------ #
-    # Helper: get_plugin_root
-    # ------------------------------------------------------------------ #
-
     def _get_plugin_root(self) -> Optional[Path]:
         """Resolve plugin root from CLAUDE_PLUGIN_ROOT env var."""
         plugin_root = os.environ.get(_PLUGIN_ROOT_ENV_VAR)
         if plugin_root:
             return Path(plugin_root)
         return None
-
-    # ------------------------------------------------------------------ #
-    # T005: parse_pre_tool_use helper
-    # ------------------------------------------------------------------ #
 
     def parse_pre_tool_use(self, raw: Dict[str, Any]) -> ValidationRequest:
         """Extract a ValidationRequest from a PreToolUse payload.
@@ -542,13 +460,12 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         tool_input = raw.get("tool_input", {})
         session_id = raw.get("session_id", "")
 
-        # Extract the primary command/prompt string based on tool type
         if tool_name.lower() == "bash":
             command = tool_input.get("command", "")
         elif tool_name.lower() in ("task", "agent"):
             command = tool_input.get("prompt", "")
         else:
-            # For other tools, use the first string value or empty
+            # Other tools: their command, else their prompt.
             command = tool_input.get("command", "") or tool_input.get("prompt", "")
 
         return ValidationRequest(
@@ -557,10 +474,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             tool_input=tool_input,
             session_id=session_id,
         )
-
-    # ------------------------------------------------------------------ #
-    # T006: parse_post_tool_use helper
-    # ------------------------------------------------------------------ #
 
     def parse_post_tool_use(self, raw: Dict[str, Any]) -> ToolResult:
         """Extract a ToolResult from a PostToolUse payload.
@@ -585,29 +498,13 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         command = tool_input.get("command", "")
 
-        # --- Harness field reality (verified against ~17.9k real Bash results) ---
-        # Claude Code's Bash PostToolUse tool_response does NOT carry 'exit_code'
-        # and does NOT carry 'output'. Its two observed shapes are:
-        #   SUCCESS: a dict {stdout, stderr, interrupted(bool), isImage(bool),
-        #            noOutputExpected(bool), [returnCodeInterpretation, ...]}.
-        #            NOTE the field is 'stdout' (not 'output'); 'stderr' is
-        #            present but empty (stderr is folded into stdout); a benign
-        #            non-zero exit like grep-no-match stays a dict and carries
-        #            'returnCodeInterpretation' -- the harness does NOT treat it
-        #            as an error, so neither do we.
-        #   FAILURE: a bare STRING (the error text). On a non-zero exit the
-        #            harness replaces the dict with a string and sets the
-        #            message-level tool_result is_error=true (a signal the hook
-        #            never receives).
-        # The previous code read tool_response.get('output')/('exit_code'),
-        # neither of which exists: on success exit_code defaulted to 0 (EXECUTED)
-        # and on failure tool_response is a str, so .get() raised and the whole
-        # post-hook aborted -- so a FAILED event was NEVER recorded (261/0 split).
-        #
-        # Derive `success` defensively from whatever signals are actually
-        # present, then synthesize an exit_code (0 clean / 1 failed) so the
-        # downstream `success = exit_code == 0` check and the EXECUTED/FAILED
-        # discriminator in _record_t3_outcome_event stay intact.
+        # Claude Code's Bash PostToolUse tool_response carries neither 'exit_code'
+        # nor 'output'. A success is a dict {stdout, stderr, interrupted, ...}; a
+        # benign non-zero exit (grep with no match) stays a dict carrying
+        # 'returnCodeInterpretation' and is not an error here. A failure is a
+        # bare string, the error text. So failure is derived from whatever
+        # signals are present and given a synthesized exit_code of 1, which
+        # keeps the downstream `success = exit_code == 0` check meaningful.
         failed = False
         output = ""
         exit_code = 0
@@ -615,7 +512,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         if raw.get("hook_event_name") == HookEventType.POST_TOOL_USE_FAILURE.value:
             # A failed call has no tool_response; its outcome is the top-level
-            # ``error`` ("Exit code 3" for a Bash exit, captured on 2.1.273).
+            # ``error`` ("Exit code 3" for a Bash exit).
             output = str(raw.get("error") or "")
             failed = True
             exit_code = self._extract_exit_code_from_result(output)
@@ -641,11 +538,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                     exit_code = 0
                 if exit_code != 0:
                     failed = True
-        # else: unknown shape -> leave success (preserve prior default behavior).
+        # else: unknown shape leaves success.
 
         if failed and exit_code == 0:
-            # No explicit non-zero code available; synthesize one so the
-            # downstream success check resolves to False.
             exit_code = 1
 
         return ToolResult(
@@ -656,10 +551,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             session_id=session_id,
             ran=ran,
         )
-
-    # ------------------------------------------------------------------ #
-    # T007: parse_agent_completion helper
-    # ------------------------------------------------------------------ #
 
     def parse_agent_completion(self, raw: Dict[str, Any]) -> AgentCompletion:
         """Extract an AgentCompletion from a SubagentStop payload.
@@ -685,17 +576,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             session_id=raw.get("session_id", ""),
         )
 
-    # ------------------------------------------------------------------ #
-    # _get_gaia_agent_names: discover Gaia-managed agents from agents/ dir
-    # ------------------------------------------------------------------ #
-
     def _get_gaia_agent_names(self) -> set:
         """``subagent_stop_core.gaia_agent_roster``."""
         return subagent_stop_core.gaia_agent_roster()
-
-    # ------------------------------------------------------------------ #
-    # format_ask_response: for interactive permission requests
-    # ------------------------------------------------------------------ #
 
     def format_ask_response(
         self, reason: str, updated_input: dict | None = None
@@ -722,15 +605,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             output["hookSpecificOutput"]["updatedInput"] = updated_input
         return HookResponse(output=output, exit_code=0)
 
-    # ------------------------------------------------------------------ #
-    # request_consent: host-specific consent mechanism (AskUserQuestion /
-    # orchestrator approval-id hand-off) -- the ONLY place either lives.
-    # ------------------------------------------------------------------ #
-
     def request_consent(self, request: ConsentRequest) -> HookResponse:
         """Drive Claude Code to obtain the user's consent for ``request``.
 
-        This is where Claude Code's consent mechanics live and nowhere else.
         Two host shapes, selected by whether an out-of-band approval flow owns
         the decision:
 
@@ -747,7 +624,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         Business logic calls this without knowing either shape exists.
         """
         if request.approval_id is not None:
-            # Out-of-band approval flow: deny now, decision keyed to approval_id.
             return HookResponse(
                 output={
                     _HOOK_SPECIFIC_OUTPUT: {
@@ -758,14 +634,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 },
                 exit_code=0,
             )
-        # Inline consent via the native AskUserQuestion permission prompt.
         return self.format_ask_response(
             request.reason, updated_input=request.updated_input
         )
-
-    # ------------------------------------------------------------------ #
-    # adapt_pre_tool_use: full pre-tool-use lifecycle
-    # ------------------------------------------------------------------ #
 
     def adapt_pre_tool_use(
         self, event: HookEvent, *, _dispatch_identity_in_env: bool = False,
@@ -803,8 +674,10 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     def _with_ceiling_notice(event: HookEvent, verdict: PolicyVerdict) -> PolicyVerdict:
         """Count a subagent's call the policy lets run, adding the ceiling notice when it is due.
 
-        Counted here rather than at PostToolUse because PreToolUse's matchers
-        cover Read, Edit, Write, Glob and Grep, which PostToolUse's do not.
+        Counted at PreToolUse because PostToolUse's matchers omit the file
+        tools. A refused call, one held for consent, and one without a harness
+        agent_id (``record_call`` ignores it) are not counted, nor is a
+        SendMessage or AskUserQuestion answered by its own handler above.
         """
         from modules.agents.call_ceiling import record_call
 
@@ -989,24 +862,12 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     def _adapt_send_message(
         self, tool_name: str, parameters: dict, session_id: str = "",
     ) -> HookResponse:
-        """Handle SendMessage tool validation for agent resumption.
+        """Deny a SendMessage whose ``to`` is not an agent id or whose message is blank.
 
-        Validates agent ID format and message content. Does NOT inject
-        project context (it's a resume). Nonce relay is no longer processed
-        here -- approval grants are activated by the UserPromptSubmit hook.
-
-        Contract-as-managed-data (T6, decision #3): this is the ONE place
-        the adapter learns, with certainty, which agent_id a CC session is
-        resuming (SendMessage's own ``to`` parameter). ``agent_id`` is the
-        SAME identifier space ``gaia.contract.drafts`` keys a draft by (see
-        the ``gaia.contract.validator.AGENT_ID_PATTERN_TEXT`` format shared
-        with AC-1's form validator),
-        so recording session_id -> agent_id here is enough for
-        ``adapt_subagent_start``'s resume path to recover the resumed
-        agent's own in-progress draft -- SubagentStart's payload carries
-        only session_id + agent_type, never the resumed agent_id. Core/CLI
-        stay agnostic (decision #1): only this CC-specific bridge, not
-        gaia.contract.*, reads SendMessage's ``to`` field or a session_id.
+        An accepted call records which agent_id this session resumes, the
+        mapping ``adapt_subagent_start`` reads to hand the resumed agent its
+        own draft back. ``agent_id`` is the identifier ``gaia.contract.drafts``
+        keys a draft by.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
         # The agent_id shape is owned by gaia.contract.validator and re-exported
@@ -1016,7 +877,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         agent_id = parameters.get("to", "")
         message = parameters.get("message", "")
 
-        # Validate agentId format
         if not agent_id or not _AGENT_ID_PATTERN.match(agent_id):
             logger.warning("BLOCKED SendMessage: Invalid agentId format '%s'", agent_id)
             msg = (
@@ -1044,8 +904,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         logger.info("SENDMESSAGE: Resuming agent %s", agent_id)
 
-        # Record the session -> agent_id resume mapping (T6). Best-effort:
-        # a failure here must never block a legitimate resume.
+        # A failure to record the mapping must never block a legitimate resume.
         try:
             self._cache_resume_mapping(session_id or "unknown", agent_id)
         except Exception:
@@ -1063,10 +922,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         logger.info("ALLOWED SendMessage: agent %s - message length: %d", agent_id, len(message))
         return HookResponse(output={}, exit_code=0)
-
-    # ------------------------------------------------------------------ #
-    # adapt_post_tool_use: full post-tool-use lifecycle
-    # ------------------------------------------------------------------ #
 
     def adapt_post_tool_use(self, event: HookEvent) -> HookResponse:
         """Record the call through the shared policy, or decide an AskUserQuestion answer.
@@ -1188,10 +1043,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             exit_code=0,
         )
 
-    # ------------------------------------------------------------------ #
-    # adapt_subagent_stop: full subagent-stop lifecycle
-    # ------------------------------------------------------------------ #
-
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
         """Close a subagent turn through the host-neutral core and format its
         outcome as Claude Code's SubagentStop response.
@@ -1199,8 +1050,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         The user-facing text travels on ``systemMessage`` beside a
         ``hookSpecificOutput`` carrying only the event echo: Claude Code hands
         ``additionalContext`` back to the subagent and treats ``decision:
-        block`` as a retry, and either would resume the turn being closed --
-        measured against the live harness on the circuit's cut.
+        block`` as a retry, and either would resume the turn being closed.
         """
         # The lookups go through this adapter's own methods so that replacing
         # one on the adapter (callers and tests address them there) reaches
@@ -1225,10 +1075,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             logger.warning("Returning exit_code=2 due to contract rejection")
             return HookResponse(output=output, exit_code=2)
         return HookResponse(output=output, exit_code=0)
-
-    # ------------------------------------------------------------------ #
-    # T11: truncation salvage (M5 / AC-12)
-    # ------------------------------------------------------------------ #
 
     def _reconstruct_contract_from_finalized_draft(
         self,
@@ -1260,21 +1106,12 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             plan_task_id=plan_task_id,
         )
 
-    # ------------------------------------------------------------------ #
-    # P2: adapt_stop
-    # ------------------------------------------------------------------ #
-
     def adapt_stop(self, raw: dict) -> QualityResult:
-        """Parse Stop event and assess response quality.
+        """Record a SESSION_END event and report the response as sufficient.
 
-        Extracts the response content from the Stop payload and evaluates
-        whether the output meets evidence quality thresholds.
-
-        Returns:
-            QualityResult with quality assessment.
-            Default: quality_sufficient=True (passthrough until business logic wired).
+        No quality is assessed: the result is always ``quality_sufficient=True``.
+        A failed event write is ignored.
         """
-        # Write SESSION_END event (non-blocking)
         try:
             from modules.events.event_writer import EventWriter, SESSION_END
             stop_reason = raw.get("stop_reason", "unknown")
@@ -1283,7 +1120,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 f"session ended: {stop_reason}",
             )
         except Exception:
-            pass  # Events are non-critical
+            pass
 
         return QualityResult(
             quality_sufficient=True,
@@ -1292,19 +1129,10 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             recommendation="continue",
         )
 
-    # ------------------------------------------------------------------ #
-    # P2: adapt_task_completed
-    # ------------------------------------------------------------------ #
-
     def adapt_task_completed(self, raw: dict) -> VerificationResult:
-        """Parse TaskCompleted event and verify completion criteria.
+        """Report every completed task as meeting its criteria, without checking any.
 
-        Extracts task output and metadata from the TaskCompleted payload.
-        Checks if the task's acceptance criteria are met.
-
-        Returns:
-            VerificationResult with criteria assessment.
-            Default: criteria_met=True (passthrough until business logic wired).
+        The result is always ``criteria_met=True`` and never blocks completion.
         """
         return VerificationResult(
             criteria_met=True,
@@ -1313,12 +1141,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             block_completion=False,
         )
 
-    # ------------------------------------------------------------------ #
-    # Context cache: PreToolUse -> SubagentStart bridge
-    # ------------------------------------------------------------------ #
-
     CONTEXT_CACHE_DIR = tmp_dir() / "gaia-context-cache"
-    CONTEXT_CACHE_TTL_SECONDS = 60  # Cache entries older than this are stale
+    CONTEXT_CACHE_TTL_SECONDS = 60
 
     def _cache_context_for_subagent(
         self, session_id: str, agent_type: str, context: str,
@@ -1326,23 +1150,16 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     ) -> Path:
         """Write the session-events digest to a cache file for SubagentStart.
 
-        This bridge survives for ONE cargo: the session-events digest
-        (``build_session_events``), which is computed at PreToolUse:Task from
-        the dispatch parameters and cannot be recomputed at SubagentStart --
-        that event's payload carries neither the Task tool_input nor the
-        project-agent roster the digest is derived from. Everything else that
-        once rode here is gone: the born row's contract identity is recovered
-        at SubagentStart by ``claim_dispatch_row`` (a DB fact needs no cache),
-        and context anchors died with the preloaded-context path. What would
-        kill the bridge entirely: carrying the digest on the born row's
-        kernel payload (so the claim delivers it), or a host that lets
-        SubagentStart see the dispatch parameters.
+        The digest (``build_session_events``) is computed at PreToolUse from the
+        dispatch parameters, which SubagentStart does not see; the cache carries
+        it across. The born row's contract identity needs no cache: the claim
+        reads it from the database.
 
         ``task_description`` is the Task tool's own ``description`` parameter,
-        stored purely as a CORRELATION key: SubagentStart's payload carries a
-        field of the same name, so when the two agree the bridge can pair a
-        start with the dispatch that produced it instead of guessing by recency
-        (see ``_read_cached_context``). It is never injected into the subagent.
+        stored only as a CORRELATION key: SubagentStart's payload carries a
+        field of the same name, so a start can be paired with its dispatch
+        instead of guessed by recency (see ``_read_cached_context``). It is
+        never injected into the subagent.
 
         Returns the path to the cache file.
         """
@@ -1381,17 +1198,14 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
              inferred.
           2. Same ``agent_type``. Eliminates cross-TYPE contamination, which is
              the common shape of a concurrent dispatch.
-          3. Most recent for the session -- the historical behavior, kept as the
-             fallback so a host that supplies neither discriminator, and every
-             existing caller passing only ``session_id``, behave exactly as
-             before.
-        Within each tier the newest entry wins, matching the prior contract.
+          3. Most recent for the session, the fallback when neither
+             discriminator is supplied.
+        Within each tier the newest entry wins.
 
         This narrows the crossing window; it does not close it. Two concurrent
         dispatches of the SAME agent type with the SAME description remain
-        indistinguishable at this seam, because SubagentStart's payload carries
-        no token identifying WHICH dispatch it is starting. Closing that needs a
-        correlation token from the host, not a better heuristic here.
+        indistinguishable here: nothing in the payload identifies WHICH
+        dispatch is starting.
 
         Returns None if no cache is found.
         """
@@ -1418,7 +1232,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 age = now - data.get("created_at", 0)
 
                 if age > self.CONTEXT_CACHE_TTL_SECONDS:
-                    # Stale entry -- clean up
                     cache_file.unlink(missing_ok=True)
                     logger.debug("Cleaned stale context cache: %s (age=%.1fs)", cache_file.name, age)
                     continue
@@ -1439,7 +1252,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             cache_file.unlink(missing_ok=True)
             logger.debug("Consumed context cache: %s (age=%.1fs)", cache_file.name, age)
 
-        # Clean up any remaining stale files (background hygiene)
         self._cleanup_stale_cache(now)
 
         return result
@@ -1472,7 +1284,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         return live[0]
 
     def _cleanup_stale_cache(self, now: float) -> None:
-        """Remove cache files older than TTL."""
+        """Remove cache files older than the TTL, and any that cannot be read."""
         if not self.CONTEXT_CACHE_DIR.exists():
             return
         for f in self.CONTEXT_CACHE_DIR.glob("*.json"):
@@ -1483,34 +1295,16 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             except (json.JSONDecodeError, OSError):
                 f.unlink(missing_ok=True)
 
-    # ------------------------------------------------------------------ #
-    # Contract resume bridge: PreToolUse:SendMessage -> SubagentStart (T6)
-    #
-    # Brief: contract-as-managed-data-agent-contract-handoff-agnostico-por-cli
-    # (M2, decision #3 / #8). ``gaia.contract.drafts`` (T5) keys a draft
-    # purely by agent_id and never reads a harness session id -- that is
-    # what keeps the CLI/core agnostic. But SubagentStart's own payload
-    # (see the ClaudeCodeAdapter docstring's field table) carries only
-    # session_id + agent_type on a resume, NEVER the resumed agent_id. This
-    # section is the one CC-specific bridge that recovers "which agent_id is
-    # this session resuming" so ``adapt_subagent_start`` can hand the
-    # resumed agent its own draft back (AC-18) without it re-emitting
-    # anything. It mirrors ``_cache_context_for_subagent`` /
-    # ``_read_cached_context`` one directory over, with two differences
-    # driven by the resume semantics: one file PER SESSION (overwritten on
-    # every SendMessage, not timestamped) since a session may resume the
-    # SAME agent across many messages (AC-19), and reads are
-    # non-consuming (a mapping is a durable fact about a session's current
-    # target agent, not a one-shot handoff payload).
-    # ------------------------------------------------------------------ #
-
     RESUME_MAP_CACHE_DIR = tmp_dir() / "gaia-contract-resume-map"
-    RESUME_MAP_TTL_SECONDS = 24 * 60 * 60  # generous: spans a long resumed session
+    # 24 hours, so a long resumed session keeps its mapping.
+    RESUME_MAP_TTL_SECONDS = 24 * 60 * 60
 
     def _cache_resume_mapping(self, session_id: str, agent_id: str) -> Path:
         """Record that ``session_id`` just resumed (SendMessage) ``agent_id``.
 
-        Returns the path to the cache file (mainly for tests).
+        One file per session, overwritten on every SendMessage: a session may
+        resume the same agent across many messages. Returns the path to the
+        cache file.
         """
         self.RESUME_MAP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_file = self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
@@ -1526,10 +1320,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     def _read_resume_mapping(self, session_id: str) -> Optional[str]:
         """Return the agent_id last resumed for ``session_id``, or None.
 
-        Non-consuming (unlike the one-shot context cache): the same mapping
-        must still be readable after N resumes of the same session
-        (AC-19's "IN_PROGRESS across resumes"). Only the session's own
-        mapping is read: without one this returns None, never the agent
+        Non-consuming (unlike the one-shot context cache): the mapping stays
+        readable across every resume of the same session. Only the session's
+        own mapping is read: without one this returns None, never the agent
         another session resumed.
         """
         if not self.RESUME_MAP_CACHE_DIR.exists():
@@ -1558,25 +1351,15 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 f.unlink(missing_ok=True)
 
     def _build_resume_draft_context(self, session_id: str) -> Optional[str]:
-        """Build a minimal, cache-safe additionalContext block surfacing a
-        resumed agent's own in-progress contract draft (AC-18/AC-20; AC-16).
+        """Build the additionalContext hint pointing a resumed agent at its own draft.
 
-        Harness-agnostic by construction: this only touches
-        ``gaia.contract.drafts`` (T5's harness-free storage/addressing) and
-        ``gaia.contract.view`` (T14's single renderer) plus the CC-specific
-        resume-mapping cache above -- it never reads ``CLAUDE_SESSION_ID`` and
-        never mutates the draft; this is a read-only hint so the resumed agent
-        continues writing the SAME draft via ``--draft-id`` instead of
-        re-emitting the full ``agent_contract_handoff`` block from memory.
-
-        Cache-safety (AC-16): the hint text is produced by
-        ``gaia.contract.view.render_resume_hint`` -- ONE renderer shared with
-        the token-savings measurement so the injected view and its measurement
-        never diverge. That renderer orders the byte-stable invariant prefix
-        (instructions + draft_id + CLI template) FIRST and the one volatile
-        status line LAST, so the full variable contract is never re-injected
-        atop the prompt and the cache-reusable prefix stays byte-stable across
-        a fixed draft's resumes.
+        Read-only: the draft is looked up through the resume-mapping cache and
+        ``gaia.contract.drafts`` and never mutated, so the resumed agent
+        continues writing the SAME draft via ``--draft-id``. The text comes
+        from ``gaia.contract.view.render_resume_hint``, which puts the
+        byte-stable prefix first and the one volatile status line last so the
+        prefix stays cache-reusable across a draft's resumes. Returns None
+        when the session maps to no agent.
         """
         agent_id = self._read_resume_mapping(session_id)
         if not agent_id:
@@ -1605,8 +1388,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     def _closed_contract_hint(agent_id: str) -> Optional[str]:
         """The hint for a resumed agent whose newest contract already closed, or None.
 
-        A closed contract leaves no live draft, so the resumed turn would
-        otherwise start with no contract and learn of it from a denied ``init``.
+        A closed contract leaves no live draft; the hint tells the resumed turn
+        its contract is closed and that its next write continues it.
         """
         try:
             from gaia.state import CLOSED_TURN_PLAN_STATUSES
@@ -1621,10 +1404,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         except Exception:
             return None
 
-    # ------------------------------------------------------------------ #
-    # v43 dispatch kernel: claim the born row, render the kernel blocks
-    # ------------------------------------------------------------------ #
-
     @staticmethod
     def _maybe_claim_dispatch_kernel(raw: dict) -> Optional[str]:
         """Translate a start event into the host-neutral dispatch-lifecycle
@@ -1637,10 +1416,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         ``task_description`` -> ``dispatch_description``, ``agent_type`` ->
         ``agent_name``, ``agent_id`` -> ``host_agent_id``, ``tool_use_id`` ->
         ``dispatch_tool_use_id``). See the facade's own docstring for why the
-        stamp seam sits at the claim. ``tool_use_id`` is mapped for
-        forward-compatibility only: this host's SubagentStart payload carries
-        no such key today, so the mapping always resolves to ``None`` here and
-        the exact-callID layer 0 never engages on this host's live path.
+        stamp seam sits at the claim. ``tool_use_id`` is mapped for hosts
+        whose start event carries one; it resolves to ``None`` when the payload
+        has no such key.
         """
         try:
             from modules.agents.dispatch_lifecycle import claim_dispatch_kernel
@@ -1657,31 +1435,23 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             dispatch_tool_use_id=raw.get("tool_use_id") or None,
         )
 
-    # ------------------------------------------------------------------ #
-    # P2: adapt_subagent_start
-    # ------------------------------------------------------------------ #
-
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Parse SubagentStart event and inject the dispatch kernel.
 
         What a freshly dispatched subagent receives is the KERNEL
-        rendered from its claimed born row (# Your Contract / # Your CLI /
-        # How the user works) plus, when present, the cached session-events
-        digest. The kernel carries # Project context, the dispatch project's
-        can_read sections; surface routing is neither computed nor injected.
+        rendered from its claimed born row (see ``kernel_builder`` for its
+        blocks, ``# Your Contract`` first) plus, when present, the cached
+        session-events digest. Surface routing is neither computed nor injected.
 
         Contributions, all optional, joined when present:
-        1. Cache hit (normal start via Task/Agent tool): PreToolUse:Agent
-           cached the events digest; this method forwards it, then claims the
-           born row and injects the kernel.
-        2. Cache miss + resume-mapping hit (T6, AC-18/AC-20): the CC session
-           resuming this agent was recorded by
-           ``_adapt_send_message``/``_cache_resume_mapping``; if that
-           same session_id maps to an
-           agent_id with a live ``gaia.contract.drafts`` draft, surface a
-           minimal summary of it so the resumed agent continues its own
-           draft instead of re-emitting the contract block.
-        3. Cache miss on a FRESH dispatch (the cache raced its 60s TTL): the
+        1. Cache hit (normal start via Task/Agent tool): PreToolUse cached the
+           events digest; this method forwards it, then claims the born row
+           and injects the kernel.
+        2. Cache miss + resume-mapping hit: ``_adapt_send_message`` recorded
+           which agent_id this session resumes; if that agent has a live
+           ``gaia.contract.drafts`` draft, a hint pointing at it is injected so
+           the resumed agent continues its own draft.
+        3. Cache miss on a FRESH dispatch (the cache raced its TTL): the
            born row is a DB fact, so the claim still resolves and the kernel
            is still injected.
 
@@ -1697,8 +1467,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         it mints. The born row (if one exists) stays unadopted and is closed
         by the SubagentStop persister -- superseded when the turn finalized
         its own row, reaped otherwise -- so no path leaves the turn without a
-        contract or the row without a closure. The retired legacy identity
-        block is NOT re-rendered as a fallback.
+        contract or the row without a closure.
         """
         session_id = raw.get("session_id", "")
 
@@ -1731,11 +1500,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 sections_provided=[],
             )
 
-        # Cache-miss path (a SendMessage resume, or a fresh start that raced
-        # the cache TTL). No project-context rebuild here -- the resumed turn
-        # pulls context on demand exactly like a fresh one, and the
-        # contributions below (draft hint, kernel claim) carry everything the
-        # start needs.
         agent_type = raw.get("agent_type", "")
         resume_parts: List[str] = []
 
@@ -1754,11 +1518,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             )
             resume_parts.append(draft_context)
 
-        # v43 dispatch kernel, cache-miss lane: the born row is a DB fact that
-        # outlives the 60s context cache, so a start that lost the cache race
-        # can still claim its row and receive its kernel. A resume never
-        # matches (its row is already claimed or was never born), so this is a
-        # no-op there.
+        # The born row outlives the context cache, so a start that lost the
+        # cache race can still claim it. A resume never matches (its row is
+        # already claimed or was never born), so the claim is a no-op there.
         kernel_context = self._maybe_claim_dispatch_kernel(raw)
         if kernel_context:
             resume_parts.append(kernel_context)
@@ -1781,10 +1543,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             sections_provided=[],
         )
 
-    # ------------------------------------------------------------------ #
-    # P2: format_quality_response
-    # ------------------------------------------------------------------ #
-
     def format_quality_response(self, result: QualityResult) -> HookResponse:
         """Format a QualityResult for CLI consumption.
 
@@ -1800,10 +1558,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             output["missing_elements"] = result.missing_elements
 
         return HookResponse(output=output, exit_code=0)
-
-    # ------------------------------------------------------------------ #
-    # P2: format_verification_response
-    # ------------------------------------------------------------------ #
 
     def format_verification_response(self, result: VerificationResult) -> HookResponse:
         """Format a VerificationResult for CLI consumption.

@@ -25,22 +25,18 @@ class HookEventType(enum.Enum):
     points instead of teaching policy modules a second vocabulary.
     """
 
-    # P0 - Currently implemented
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
     SUBAGENT_STOP = "SubagentStop"
 
-    # P1
     SESSION_START = "SessionStart"
     USER_PROMPT_SUBMIT = "UserPromptSubmit"
 
-    # P2
     PERMISSION_REQUEST = "PermissionRequest"
     STOP = "Stop"
     TASK_COMPLETED = "TaskCompleted"
     SUBAGENT_START = "SubagentStart"
 
-    # P3
     PRE_COMPACT = "PreCompact"
     POST_COMPACT = "PostCompact"
     CONFIG_CHANGE = "ConfigChange"
@@ -48,14 +44,12 @@ class HookEventType(enum.Enum):
     INSTRUCTIONS_LOADED = "InstructionsLoaded"
     POST_TOOL_USE_FAILURE = "PostToolUseFailure"
 
-    # P4
     NOTIFICATION = "Notification"
 
-    # P5 - Additional events
     TEAMMATE_IDLE = "TeammateIdle"
     WORKTREE_CREATE = "WorktreeCreate"
     WORKTREE_REMOVE = "WorktreeRemove"
-    PROMPT_SUBMIT = "PromptSubmit"  # Deprecated alias for USER_PROMPT_SUBMIT
+    PROMPT_SUBMIT = "PromptSubmit"
 
 
 class PermissionDecision(enum.Enum):
@@ -77,10 +71,10 @@ def _command_fingerprint(command: str) -> str:
 class RoleCapabilityContext:
     """Attested execution context carried across an adapter boundary.
 
-    ``role`` and ``capabilities`` are runtime claims, not prompt metadata.  The
-    adapter may transport them, but only a trusted runtime/CLI verifier may
-    mark the context verified.  Keeping that distinction in the value object
-    prevents a host from turning a free-form agent message into authority.
+    ``role`` and ``capabilities`` are runtime claims, not prompt metadata.
+    ``verified`` is carried exactly as supplied; this class confers no
+    authority and checks nothing against an issuer (see
+    ``claims_control_plane_shape``).
     """
 
     role: str
@@ -91,7 +85,7 @@ class RoleCapabilityContext:
 
     @classmethod
     def from_mapping(cls, value: object) -> "RoleCapabilityContext":
-        """Parse the structured host claim without accepting prompt text."""
+        """Parse the structured host claim; anything but an object raises."""
         if not isinstance(value, dict):
             raise ValueError("role_context must be an object")
         role = value.get("role")
@@ -159,12 +153,10 @@ class ConsentRequestEnvelope:
     verification: str
     binding: ConsentBinding
     role_context: RoleCapabilityContext
-    # window carries how long the grant this consent creates stays usable. It
-    # sits here and not beside verification, which is where it belongs by
-    # meaning, because a defaulted field cannot precede binding and
-    # role_context. It is not in the required loop below: a producer that seals
-    # no window renders the declared-absence text, and demanding a value would
-    # make every direct construction of this envelope raise.
+    # window is how long the grant this consent creates stays usable. It follows
+    # role_context because a defaulted field cannot precede required ones, and
+    # __post_init__ does not require it: a producer that seals none renders the
+    # declared-absence text.
     window: str = ""
     approval_id: str | None = None
     protocol_version: str = CONSENT_PROTOCOL_VERSION
@@ -237,17 +229,11 @@ class ConsentDecisionReceived:
 class HostDistribution:
     """How a host distributes and invokes gaia -- declared by the adapter.
 
-    The CLI-agnostic value object that replaces a core-owned enumeration of
-    distribution channels. The core never enumerates a host's channels nor
-    names a host-specific "root"; it carries an opaque :class:`HostDistribution`
-    that the concrete adapter PRODUCES from its own distribution model (see
-    :meth:`HookAdapter.detect_distribution`). A host with a distribution model
-    the core has never heard of declares it here without any change to the core
-    vocabulary -- the same seam established for capabilities
-    (:class:`HostCapability`) and consent (:class:`ConsentRequest`).
-
-    The concrete channel names (Claude Code's "npm" / "plugin") and the meaning
-    of ``root`` (Claude Code's plugin root) live ONLY in the host's adapter; the
+    The core never enumerates a host's channels nor names a host-specific
+    "root"; it carries an opaque :class:`HostDistribution` that the concrete
+    adapter PRODUCES from its own distribution model (see
+    :meth:`HookAdapter.detect_distribution`). The concrete channel names (Claude
+    Code's "npm" / "plugin") and the meaning of ``root`` are the adapter's; the
     core treats both as opaque values.
 
     Fields:
@@ -272,8 +258,9 @@ class HostCapability(enum.Enum):
     queries that declaration via :meth:`HookAdapter.supports` and, when a
     capability is absent, degrades in a *declared* way (a
     :class:`CapabilityDegradation`) rather than crashing or branching on the
-    host's identity. Claude Code supports all of these today; a future host
-    (Codex, Antigravity) that lacks one drives the degradation path.
+    host's identity. Claude Code declares all of these; OpenCode declares
+    INTERACTIVE_CONSENT, OUT_OF_BAND_APPROVAL, STRUCTURED_PERMISSION_DECISION
+    and UPDATED_INPUT only.
 
     Members:
         INTERACTIVE_CONSENT: the host can gather the user's consent inline,
@@ -306,10 +293,8 @@ class HookEvent:
     Produced by the adapter's parse_event() method.
 
     ``distribution`` is the host-declared :class:`HostDistribution` (the host's
-    own channel and, when applicable, its distribution root). It replaces the
-    former ``channel`` / ``plugin_root`` pair so the core never enumerates a
-    host's distribution channels. It is ``None`` when the adapter does not
-    declare a distribution model for the event.
+    own channel and, when applicable, its distribution root); ``None`` when the
+    adapter declares none for the event.
     """
 
     event_type: HookEventType
@@ -459,7 +444,6 @@ class ContextResult:
     context_injected: bool = False
     additional_context: Optional[str] = None
     sections_provided: List[str] = field(default_factory=list)
-    # Reserved for future adapter use
     prompt_text: str = ""
 
 
@@ -470,7 +454,6 @@ class BootstrapResult:
     project_scanned: bool = False
     context_path: Optional[Path] = None
     tools_detected: List[str] = field(default_factory=list)
-    # P1 fields: SessionStart adapter populates these
     should_scan: bool = False
     should_refresh: bool = False
     session_type: str = "startup"
@@ -479,7 +462,7 @@ class BootstrapResult:
 
 @dataclass(frozen=True)
 class QualityResult:
-    """Result of a Stop event -- whether evidence quality meets threshold."""
+    """Result of a Stop event: whether the response's evidence quality is sufficient."""
 
     quality_sufficient: bool = True
     score: float = 1.0

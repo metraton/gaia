@@ -8,6 +8,9 @@ translate between these types and CLI-specific JSON protocols.
 Modules:
 - types: Frozen dataclasses and enums for all hook event/response data
 - base: Abstract HookAdapter interface
+- claude_code, opencode: the concrete adapters
+- registry: get_adapter / register_adapter
+- utils: shared entry-point helpers
 """
 
 from .types import (

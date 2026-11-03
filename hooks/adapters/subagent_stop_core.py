@@ -589,8 +589,8 @@ def resolve_dispatch_row(
       1. harness -- ``harness_agent_id`` stamped at the SubagentStart claim,
          the one coordinate the runtime writes for this exact dispatch. It
          comes first because the inexact lanes do not merely miss: they can hit
-         a contention row the backstop stamped with the same value (measured:
-         the gate rejected a correctly recorded turn). Ambiguity is declined.
+         a contention row the backstop stamped with the same value. Ambiguity
+         is declined.
       2. adopted -- the turn's own minted ``agent_id``, looked up regardless of
          state, since its finalize already converged the born row.
       3. legacy -- rows born carrying the agent NAME as ``agent_id``.
@@ -662,8 +662,7 @@ def reconstruct_contract_from_finalized_draft(
     against the drafts directory, then against the rows, then the
     ``harness_agent_id`` bridge for a turn born with its draft open. A row that
     is not finalized is salvage/backstop territory and is left alone. Every
-    miss logs: a silent miss once hid a dropped ``update_contracts`` proposal
-    (handoff row 11304). Never raises.
+    miss logs. Never raises.
     """
     if isinstance(parsed_contract, dict) and isinstance(
         parsed_contract.get("agent_status"), dict
@@ -756,8 +755,7 @@ def salvage_truncated_draft(
     """Finalize a truncated turn's partial draft as a degraded row.
 
     Keys on the same contract id the handoff backstop uses, so the two
-    converge on one row through ``ON CONFLICT(contract_id) DO NOTHING``. The
-    row is ``degraded``, marked ``salvaged="truncation"`` and cut-reasoned,
+    converge on one row. The row is ``degraded``, marked ``salvaged="truncation"`` and cut-reasoned,
     never a clean close. Returns ``{"contract_id", "resume_hint", "created"}``
     or None; never raises.
     """
@@ -1245,8 +1243,7 @@ def run_subagent_stop(
             if _nonce_agent_state == "APPROVAL_REQUEST" and _nonce:
                 preserved_nonces.add(_nonce)
 
-        # Grants are not swept here: they are consumed at the match in
-        # PreToolUse and an unpresented one expires on its own short TTL.
+        # Grants are not swept here: they are consumed at the match in PreToolUse.
         cleanup_approval(
             agent_type,
             session_id=session_id,
@@ -1501,8 +1498,7 @@ def run_subagent_stop(
         )
 
         # Salvage runs before the handoff backstop and keys on the same
-        # contract_id, so the salvaged row wins and the backstop's
-        # ON CONFLICT DO NOTHING leaves one row.
+        # contract_id, so the salvaged row wins and one row remains.
         _salvage = None
         if _stop_reason_classification == STOP_REASON_TRUNCATION:
             _salvage = host.salvage_truncated_draft(

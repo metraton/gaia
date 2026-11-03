@@ -1,7 +1,7 @@
 """Tool-call policy every host adapter runs, answered as a host-neutral verdict.
 
-``ToolPolicy`` decides what Gaia does with a Bash, Task/Agent or Write/Edit call
-before it runs and records what happened after it ran. It never builds a host
+``ToolPolicy`` decides what Gaia does with a shell, Task/Agent, file-write or
+file-read call before it runs and records what happened after it ran. It never builds a host
 response: it returns a ``PolicyVerdict`` and each host adapter translates that
 verdict into its own protocol. Tools only one host has (Claude Code's
 SendMessage and AskUserQuestion) stay in that host's adapter.
@@ -337,7 +337,7 @@ def failure_verdict(error: Exception) -> PolicyVerdict:
 
 
 class ToolPolicy:
-    """Gaia's decisions about Bash, Task/Agent and Write/Edit calls.
+    """Gaia's decisions about shell, Task/Agent and file calls.
 
     ``PRIMARY_AGENT_TYPE`` names the requester of a Bash call whose event
     carries no agent; the approval core never defaults an identity, so a host
@@ -350,10 +350,6 @@ class ToolPolicy:
     PRIMARY_AGENT_TYPE = ""
     HOST_NAME = "unattributed"
     AGENT_ID_NAMES_SCRATCH = False
-
-    # ------------------------------------------------------------------ #
-    # Before the call
-    # ------------------------------------------------------------------ #
 
     def pre_tool_verdict(
         self, event: HookEvent, *, dispatch_identity_in_env: bool = False,
@@ -389,8 +385,8 @@ class ToolPolicy:
         logger.info("Hook invoked: tool=%s, params=%s", tool_name, json.dumps(tool_input)[:200])
 
         try:
-            # The orchestrator (main session) is restricted to dispatch tools
-            # plus Read before any other logic runs; subagents are unaffected.
+            # Delegate mode restricts the orchestrator (main session) before any
+            # other logic runs; subagents are unaffected.
             from modules.orchestrator.delegate_mode import check_delegate_mode
 
             dm_result = check_delegate_mode(tool_name, hook_data)
@@ -475,10 +471,8 @@ class ToolPolicy:
         agent_type = (hook_data or {}).get("agent_type", "") or (
             "" if is_subagent else self.PRIMARY_AGENT_TYPE
         )
-        # The host sends the SAME tool_use_id at PreToolUse and at the call's
-        # terminal event. Keying hook state by (session_id, tool_use_id) is what
-        # ends the concurrent-subagent race that clobbered the old single global
-        # state file and lost EXECUTED terminal events.
+        # The host sends the same tool_use_id at PreToolUse and at the call's
+        # terminal event, so (session_id, tool_use_id) keys the hook state per call.
         tool_use_id = (hook_data or {}).get("tool_use_id", "")
 
         validator = BashValidator(agent_names_scratch=self.AGENT_ID_NAMES_SCRATCH)
@@ -605,11 +599,9 @@ class ToolPolicy:
     ) -> PolicyVerdict:
         """Validate a Task/Agent dispatch and birth the row its turn will claim.
 
-        The subagent's payload is the dispatch KERNEL rendered from the born
-        row, not a preloaded project-context snapshot; the turn pulls project
-        context on demand. What happens here: task validation, the
-        session-events digest handed to the host, and the birth of the nascent
-        row. ``hook_data`` is the raw payload: the birth mines its top-level
+        What happens here: task validation, the session-events digest handed
+        to the host, and the birth of the nascent row the subagent's dispatch
+        kernel is rendered from. ``hook_data`` is the raw payload: the birth mines its top-level
         ``prompt_id`` / ``tool_use_id`` / ``cwd``, which ``parameters`` (the
         tool_input) does not carry.
         """
@@ -681,9 +673,7 @@ class ToolPolicy:
         The explicit overrides (``parameters['workspace']``, GAIA_WORKSPACE)
         keep their priority; otherwise the canonical path-based resolver is
         anchored at the payload's ``cwd``, the same resolver every other
-        workspace consumer uses. Its own last resort is ``"global"``: the Task
-        tool_input never carries a workspace key and the harness does not set
-        GAIA_WORKSPACE, so a literal fallback used to land every birth there.
+        workspace consumer uses. Its own last resort is ``"global"``.
         """
         explicit = (
             parameters.get("workspace")
@@ -906,8 +896,8 @@ class ToolPolicy:
 
         - gaia-verifier: refused outright outside its own scratch entry
           (``verifier_scratch_guard``), before any signature is considered.
-        - Main session: consent is asked inline through the host's own
-          mechanism (``consent`` without an approval id).
+        - Main session: denied with the instruction to dispatch a specialist;
+          no request is sealed.
         - Subagent: the host-neutral ``core.protected_write_verdict`` decides,
           bound to the session and ``agent_type`` of the event; an event
           missing either is denied without sealing a request (``agent_id`` is
@@ -963,11 +953,10 @@ class ToolPolicy:
             tool_name, file_path, is_subagent,
         )
 
-        # Resolved once, so the grant lookup, the pending lookup, the pending
-        # write and the surface the user reads all name the same object. The
-        # protection check above keeps the path AS WRITTEN instead: only the
-        # literal form carries the `.claude` component a symlinked install
-        # destroys on resolution.
+        # The log and the surface the user reads name the resolved target. The
+        # protection check above keeps the path AS WRITTEN: only the literal
+        # form carries the `.claude` component a symlinked install destroys on
+        # resolution.
         consent_path = resolved_write_target(file_path)
         ask_reason = (
             f"[T3_APPROVAL_REQUIRED] This {tool_name} writes '{file_path}', which "
@@ -1019,10 +1008,6 @@ class ToolPolicy:
             ),
             approval_id=verdict["approval_id"],
         )
-
-    # ------------------------------------------------------------------ #
-    # After the call
-    # ------------------------------------------------------------------ #
 
     def post_tool_verdict(self, event: HookEvent, tool_result: ToolResult) -> PolicyVerdict:
         """Record what one tool call did, closing the approval it consumed.

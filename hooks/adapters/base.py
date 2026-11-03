@@ -29,7 +29,7 @@ from .types import (
 class HookAdapter(ABC):
     """Abstract adapter between CLI-specific JSON and normalized types.
 
-    Invariants (from adapter-interface contract):
+    Invariants:
     1. Business logic modules NEVER see HookResponse.
     2. The adapter NEVER modifies business logic results -- only translates format.
     3. Adding a new hook event requires ONLY a new adapter method.
@@ -123,10 +123,6 @@ class HookAdapter(ABC):
         """Attach rewritten input to an existing host response."""
         ...
 
-    # ------------------------------------------------------------------ #
-    # Host capabilities: declaration + agnostic query + declared degradation
-    # ------------------------------------------------------------------ #
-
     @abstractmethod
     def capabilities(self) -> FrozenSet[HostCapability]:
         """DECLARE which host capabilities this adapter supports.
@@ -137,9 +133,9 @@ class HookAdapter(ABC):
         reads this set directly; it asks through :meth:`supports` /
         :meth:`degrade_when_missing`, which are host-agnostic.
 
-        Adding a host (Codex, Antigravity) that lacks a capability is a change
-        to this declaration alone: the core's query and degradation logic stay
-        untouched, and the absence drives the declared degradation path.
+        A host that lacks a capability is declared here alone: the query and
+        degradation logic stay untouched, and the absence drives the declared
+        degradation path.
 
         Postconditions:
             - Returns a frozenset of HostCapability members (possibly empty).
@@ -174,9 +170,8 @@ class HookAdapter(ABC):
         - capability absent  -> ``available=False`` carrying the caller's
           ``fallback`` and a ``reason`` (degrade in the declared, safe way).
 
-        This replaces the two failure modes the brief forbids: a crash when a
-        host lacks a capability, and an implicit ``if host == ...`` branch. The
-        degradation is a value, returned the same way for every host.
+        The degradation is a value, returned the same way for every host, so a
+        missing capability neither raises nor needs an ``if host == ...`` branch.
         """
         if self.supports(capability):
             return CapabilityDegradation(
@@ -229,10 +224,6 @@ class HookAdapter(ABC):
         """
         ...
 
-    # ------------------------------------------------------------------ #
-    # P2 event adapters
-    # ------------------------------------------------------------------ #
-
     @abstractmethod
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Parse SubagentStart event and prepare agent context.
@@ -267,10 +258,6 @@ class HookAdapter(ABC):
               for that channel, or None when the channel has no root.
         """
         ...
-
-    # ------------------------------------------------------------------ #
-    # Full hook lifecycle adapters (thin-gate pattern)
-    # ------------------------------------------------------------------ #
 
     @abstractmethod
     def adapt_pre_tool_use(self, event: HookEvent) -> HookResponse:

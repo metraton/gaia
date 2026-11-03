@@ -22,8 +22,6 @@ from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 from modules.core.logging_setup import configure_hook_logging
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("subagent_start")
 logger = logging.getLogger(__name__)
 
@@ -45,10 +43,6 @@ def _handle_subagent_start(event) -> None:
     print(json.dumps(response.output))
     sys.exit(0)
 
-
-# ============================================================================
-# STDIN HANDLER (Claude Code integration)
-# ============================================================================
 
 if __name__ == "__main__":
     run_hook(_handle_subagent_start, hook_name="subagent_start")

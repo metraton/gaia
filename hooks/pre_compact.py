@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """PreCompact hook — opens the compaction bracket, writes the session ledger, and returns an empty response.
 
-PreCompact can run code and can block compaction (exit code 2, or a top-level
-``decision: "block"``), but Claude Code neither validates nor consumes
-``hookSpecificOutput`` for it (see ``_handle_pre_compact``), so this hook has no
-way to inject model context. It writes the session ledger
-(``gaia.session_ledger``) that SessionStart(source=compact) renders instead.
+Claude Code neither validates nor consumes ``hookSpecificOutput`` for
+PreCompact, so this hook has no way to inject model context (see
+``_handle_pre_compact``). It writes the session ledger (``gaia.session_ledger``)
+that a compact, resume or fork SessionStart renders instead.
 
 All errors are caught and logged — this hook never blocks compaction.
 """
@@ -24,32 +23,17 @@ if _pkg_root not in sys.path:
 from modules.core.hook_entry import run_hook
 from modules.core.logging_setup import configure_hook_logging
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("pre_compact")
 logger = logging.getLogger(__name__)
 
 
 def _handle_pre_compact(event) -> None:
-    """Emit the schema-valid empty response for PreCompact.
+    """Open the compaction bracket, write the session ledger, answer ``{}``.
 
-    PLATFORM LIMITATION: Claude Code's hook-output schema does not accept
-    ``hookSpecificOutput.hookEventName == "PreCompact"`` -- the validated
-    discriminated union only covers PreToolUse, UserPromptSubmit,
-    UserPromptExpansion, PostToolUse, PostToolUseFailure, PostToolBatch,
-    Stop, SubagentStop, SessionStart, Setup, SubagentStart,
-    PermissionDenied, PermissionRequest, Elicitation, ElicitationResult,
-    and MessageDisplay -- and even a passing shape would go nowhere: the
-    runtime's response-consumption switch (which maps
-    ``hookSpecificOutput.hookEventName`` to an applied effect) has no
-    ``"PreCompact"`` case at all, so `additionalContext` is unreachable
-    for this event regardless of schema validity. Emitting the previous
-    shape made every ``/compact`` fail Claude Code's JSON validation with
-    "(root): Invalid input". There is currently no hook event that can inject
-    model context in the narrow window *before* compaction erases it; the
-    post-compaction refresh happens instead at SessionStart with
-    ``source == "compact"``. So this handler stores the session ledger that
-    refresh renders and returns a schema-valid empty response.
+    Claude Code's hook-output schema has no ``hookSpecificOutput`` shape for
+    PreCompact, so a ``hookEventName == "PreCompact"`` payload fails its JSON
+    validation and ``additionalContext`` could not be applied anyway. The
+    post-compaction refresh happens at SessionStart instead.
     """
     logger.info("PreCompact: no deliverable payload for this event, returning {}")
     try:
@@ -65,8 +49,6 @@ def _handle_pre_compact(event) -> None:
     except Exception:
         logger.warning("PreCompact: session ledger not written", exc_info=True)
 
-    # No hookSpecificOutput: PreCompact does not accept one. An empty object
-    # is the schema-valid "nothing to report" response for every hook event.
     print(json.dumps({}))
     sys.exit(0)
 

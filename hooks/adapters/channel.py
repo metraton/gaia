@@ -1,9 +1,9 @@
 """
 Distribution Channel Detection for Gaia.
 
-Utility module that detects whether gaia is running as a Claude Code plugin
-or via npm. Used by entry points to log coexistence warnings and by business
-logic to adapt behavior per channel.
+Detects whether the plugin channel (``CLAUDE_PLUGIN_ROOT`` set) and the npm
+channel (``.claude/hooks`` a symlink) are both active; ``utils.warn_if_dual_channel``
+logs the warning.
 """
 
 import os

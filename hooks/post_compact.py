@@ -2,25 +2,13 @@
 """PostCompact hook — closes the session's compaction bracket; re-injection happens elsewhere.
 
 The event input carries the ``compact_summary`` the compaction produced, which
-this hook does not read. PLATFORM LIMITATION: Claude Code's hook-output schema
-does not accept ``hookSpecificOutput.hookEventName == "PostCompact"`` (same
-discriminated union as PreCompact -- see pre_compact.py's docstring for the
-full list of accepted values), and the runtime's response-consumption switch
-has no ``"PostCompact"`` case either, so ``additionalContext`` is unreachable
-for this event even when the JSON is otherwise well-formed. The previous
-version of this hook built the compact-context refresh and shipped it under
-this unsupported shape, so every ``/compact`` failed Claude Code's JSON
-validation with "(root): Invalid input" and the refresh was silently dropped
--- never delivered.
+this hook does not read. Claude Code does not accept ``hookSpecificOutput`` for
+PostCompact (see pre_compact.py), so ``additionalContext`` cannot reach the
+model from this event and the hook answers ``{}``.
 
-The real, valid delivery mechanism is ``SessionStart`` with
-``source == "compact"``: Claude Code's SessionStart matcherMetadata lists
-``compact`` as one of its accepted `source` values (alongside `startup`,
-`resume`, `clear`, `fork`), and SessionStart's `hookSpecificOutput` DOES
-support `additionalContext`. ``hooks/session_start.py`` is wired for
-``startup|resume|clear|compact|fork`` and delivers the session birth block
-for every one of them. This file stays registered for the ``PostCompact``
-event as a schema-valid no-op, purely for observability.
+The refresh is delivered by ``hooks/session_start.py``, which hooks.json wires
+for ``startup|resume|clear|compact|fork`` and which injects context for every
+one of them.
 """
 
 import sys
@@ -37,14 +25,12 @@ if _pkg_root not in sys.path:
 from modules.core.hook_entry import run_hook
 from modules.core.logging_setup import configure_hook_logging
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("post_compact")
 logger = logging.getLogger(__name__)
 
 
 def _handle_post_compact(event) -> None:
-    """Log that compaction finished; the real refresh fires via SessionStart."""
+    """Log that compaction finished and close the compaction bracket."""
     logger.info(
         "PostCompact fired (event has no additionalContext support in "
         "Claude Code); compact-context refresh is delivered via "
@@ -57,8 +43,6 @@ def _handle_post_compact(event) -> None:
         close_bracket(event.session_id)
     except Exception:
         logger.warning("PostCompact: compaction bracket not closed", exc_info=True)
-    # No hookSpecificOutput: PostCompact does not accept one. An empty
-    # object is the schema-valid "nothing to report" response.
     print(json.dumps({}))
     sys.exit(0)
 

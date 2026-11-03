@@ -1,30 +1,14 @@
 """
 Adapter Registry / Factory for Gaia Hooks.
 
-The single construction point for the host :class:`HookAdapter`. Every entry
-point (``pre_tool_use``, ``post_tool_use``, ``stop_hook``, ``subagent_start``,
-``subagent_stop``, ``task_completed``, ``hook_entry``) and the shared
-``hook_response`` builder obtain their adapter through :func:`get_adapter`
-instead of calling ``ClaudeCodeAdapter()`` directly. Concentrating the
-``ClaudeCodeAdapter`` reference here means the core never names a concrete host
-class at a call site (AC-5): supporting a new host is a one-line
-:func:`register_adapter` call, not an edit to every entry point one by one
-(AC-7 / brief #88 "Desacoplar la lógica de Gaia de Claude Code").
+The single construction point for the host :class:`HookAdapter`. The entry
+points and ``hook_entry`` / ``hook_response`` obtain their adapter through
+:func:`get_adapter` and never name a concrete host class. Supporting a new host
+is a :func:`register_adapter` call plus its ``HookAdapter`` subclass. The
+adapter is stateless, so one instance per host is cached for the process.
 
-Mirrors the ``channel.py`` / ``host_session.py`` / ``host_transcript.py``
-pattern: a small standalone module under ``adapters/`` that owns a single
-host-coupling concern -- here, *which adapter class to build* -- and is imported
-by callers. The adapter is stateless (no ``__init__``, no mutable instance
-attributes), so a single cached instance is shared process-wide; this matches
-the long-standing module-level ``_adapter = ClaudeCodeAdapter()`` singleton in
-``modules/tools/hook_response.py`` that this registry now subsumes.
-
-Host selection
---------------
-The active host is keyed by :data:`DEFAULT_HOST` (``"claude_code"``). A future
-host registers its class and, when more than one is installed, ``get_adapter``
-can be extended to resolve the key from a host-detection signal -- without any
-entry point changing.
+The active host is ``GAIA_HOST`` when set, else :data:`DEFAULT_HOST`
+(``"claude_code"``); see :func:`active_host`.
 """
 
 from __future__ import annotations
@@ -39,8 +23,6 @@ from .base import HookAdapter
 from .claude_code import ClaudeCodeAdapter
 from .opencode import OpenCodeAdapter
 
-# The only host Gaia ships an adapter for today. Confined to this module so the
-# concrete class name appears at exactly one call site in the whole core.
 DEFAULT_HOST = "claude_code"
 HOST_ENV_VAR = "GAIA_HOST"
 
@@ -56,8 +38,6 @@ class HostAdapterMetadata:
 _REGISTRY: Dict[str, Type[HookAdapter]] = {}
 _HOST_METADATA: Dict[str, HostAdapterMetadata] = {}
 
-# Cache of constructed adapters, keyed by host. The adapter is stateless, so a
-# single instance per host is reused for the life of the process.
 _INSTANCES: Dict[str, HookAdapter] = {}
 
 
@@ -144,9 +124,8 @@ def active_host() -> str:
 def get_adapter(host: Optional[str] = None) -> HookAdapter:
     """Return the shared :class:`HookAdapter` instance for ``host``.
 
-    The single construction point for the host adapter. Lazily builds and
-    caches one instance per host (the adapter is stateless, so the instance is
-    safe to share). Defaults to :data:`DEFAULT_HOST` when ``host`` is omitted.
+    Lazily builds and caches one instance per host. When ``host`` is omitted
+    the key is :func:`active_host`.
 
     Raises:
         KeyError: If ``host`` has no registered adapter class.

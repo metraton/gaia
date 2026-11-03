@@ -2,14 +2,11 @@
 """
 Pre-tool use hook - Thin Gate Architecture.
 
-Entry point for Bash and Task/Agent tool validation. The hook is the primary
-security gate: with Bash(*) in the settings.json allow list, all commands
-reach this hook regardless of settings.json permissions.
-
-Architecture:
-- Uses adapter layer to parse and process the full PreToolUse lifecycle
-- All business logic lives in ClaudeCodeAdapter.adapt_pre_tool_use()
-- This file is stdin/stdout glue only
+Entry point for every PreToolUse validation hooks.json routes here (Bash, the
+Task/Agent dispatch, file tools and the rest). With Bash(*) in the settings.json
+allow list, all commands reach this hook regardless of settings.json
+permissions. All business logic lives in
+ClaudeCodeAdapter.adapt_pre_tool_use(); this file is stdin/stdout glue only.
 
 Two obligations belong to the glue itself, because nothing downstream can
 discharge them. First, it WAITS for the payload rather than sampling for it:
@@ -18,11 +15,7 @@ the host's write was a few milliseconds late is the one failure no verdict can
 describe. Second, EVERY exit records -- an exit that delivers no verdict is a
 gate failure and leaves a fail-open trace, so no path out of this file is mute.
 
-The former backward-compatible API (pre_tool_use_hook / _handle_* / main) was
-retired: it diverged from the real path (no delegate-mode gate, no CLI-only
-guard, no identity injection, no born-at-dispatch row) and its module-level
-imports made every hook invocation pay for a lane only tests used. Tests
-drive adapters.claude_code.ClaudeCodeAdapter.adapt_pre_tool_use directly
+Tests drive adapters.claude_code.ClaudeCodeAdapter.adapt_pre_tool_use directly
 (see tests/fixtures/pretool_adapter.py).
 """
 from __future__ import annotations
@@ -83,20 +76,11 @@ USAGE = (
 )
 
 # How long to wait for the host's payload before concluding there is none.
-#
-# The check this replaces was a zero-wait select(): if the write had not
-# physically landed in the pipe at that instant, the gate declared it had no
-# work and exited, and the tool call ran unvalidated. Nothing orders the host's
-# write against this process's first read -- the race was only ever won by
-# accident, because interpreter startup usually costs more than the write.
-#
-# Waiting is the remedy that fits the shape of the problem: the payload is
-# almost always already buffered, so the wait costs nothing in the normal case
-# and is paid only when the gate would otherwise have skipped itself. The
-# deadline is what keeps the remedy from being worse than the defect -- a gate
-# that blocked forever on a pipe nobody writes to would stop the session rather
-# than the command. Overridable so an install on a slow host can widen it and
-# tests can shrink it.
+# Nothing orders the host's write against this process's first read, and a
+# zero-wait check lets the gate skip itself on a late write; the payload is
+# usually already buffered, so the wait costs nothing there. The deadline keeps
+# a pipe nobody writes to from stopping the session. GAIA_HOOK_STDIN_TIMEOUT
+# overrides it.
 _STDIN_WAIT_SECONDS_DEFAULT = 2.0
 _STDIN_WAIT_ENV = "GAIA_HOOK_STDIN_TIMEOUT"
 
@@ -201,10 +185,6 @@ def _exit_without_input() -> NoReturn:
     )
 
 
-# ============================================================================
-# STDIN HANDLER (Claude Code integration)
-# ============================================================================
-
 if __name__ == "__main__":
     if _await_stdin_data(_stdin_wait_seconds()):
         # Bound before the try so a failure AFTER a successful parse can still
@@ -225,11 +205,10 @@ if __name__ == "__main__":
 
             response = adapter.adapt_pre_tool_use(event)
 
-            # Always-on invocation trace. This entry point does not go through
-            # modules.core.hook_entry.run_hook, so it records its own line --
-            # and it is the one hook whose rejection is carried by the
-            # permissionDecision rather than by the exit code, hence the
-            # explicit `blocked` flag instead of the exit-code default.
+            # This entry point bypasses modules.core.hook_entry.run_hook, so it
+            # records its own line; a rejection here is carried by the
+            # permissionDecision, hence the explicit `blocked` flag instead of
+            # the exit-code default.
             _decision = None
             if isinstance(response.output, dict):
                 _decision = response.output.get("hookSpecificOutput", {}).get(

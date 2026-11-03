@@ -17,8 +17,6 @@ from modules.core.logging_setup import configure_hook_logging
 from modules.core.stdin import has_stdin_data
 from modules.session.session_lifecycle import prompt_context
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("user_prompt_submit")
 logger = logging.getLogger(__name__)
 
@@ -67,8 +65,6 @@ if __name__ == "__main__":
         except (json.JSONDecodeError, TypeError):
             event_data = {}
 
-        # The session id comes from the stdin event: CLAUDE_SESSION_ID is not
-        # guaranteed to be exported into the hook subprocess.
         from modules.core.state import resolve_session_id
 
         additional_context = prompt_context(
