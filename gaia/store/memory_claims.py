@@ -4,8 +4,8 @@ The first word of a memory description names the kind of claim the row makes,
 so a listing or the session's birth block reads as a set of claims and a reader
 tells a user's fact from a user's preference without opening the body. The
 vocabulary is open: a description may start with another word, which simply
-has no recognised kind. ``gaia memory add --help`` renders it and the CLI's
-write warnings read it.
+has no recognised kind. ``gaia memory add`` reads :func:`claims_measurement`
+to warn on a measurement without ``measured_at`` and ``method``.
 """
 
 from __future__ import annotations

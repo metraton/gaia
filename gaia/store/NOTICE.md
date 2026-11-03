@@ -19,22 +19,21 @@ its companion modules `gaia.paths` and `gaia.project`:
    `gaia.store.writer._resolve_identity`.
 
 2. **`topic_key` as an optional dimension of upsert** —
-   Tables holding long-text or multi-dimensional records (`apps`, `repos`,
+   Tables holding long-text or multi-dimensional records (`projects`, `apps`,
    `services`, `features`, `tf_modules`) include an optional `topic_key`
    column used to disambiguate upserts beyond the primary key. See
-   `schema.sql` and the `topic_key` parameter on `upsert_repo` /
+   `schema.sql` and the `topic_key` parameter on `upsert_project` /
    `upsert_app`.
 
 3. **FTS5 mirror tables for text search** —
-   `repos_fts`, `apps_fts`, `services_fts` are FTS5 virtual tables that
+   `projects_fts`, `apps_fts`, `services_fts` are FTS5 virtual tables that
    shadow their base tables and stay in sync via INSERT/UPDATE/DELETE
-   triggers. Used by `gaia ... search` (introduced in subsequent briefs).
+   triggers.
 
-4. **Snapshot-export pattern (`<repo>/.gaia/snapshot/`)** —
-   Workspace snapshots are exported to `<repo>/.gaia/snapshot/`, keyed by
-   workspace identity. The directory layout and `gaia workspace merge` flow
-   for handling drifted identities are inspired by engram's snapshot
-   model. See `gaia.paths.snapshot_dir` and `gaia.project.merge`.
+4. **Snapshot and merge flow for drifted identities** —
+   The `gaia workspace merge` flow for handling drifted workspace identities
+   is inspired by engram's snapshot model. See `gaia.paths.snapshot_dir`
+   (database snapshots under the Gaia data directory) and `gaia.project.merge`.
 
 ## Statement
 

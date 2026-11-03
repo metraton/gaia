@@ -358,9 +358,8 @@ def pending_threads_by_project(
 ) -> list[dict]:
     """Live-pending thread rows of the projects in ``keys``, freshest first.
 
-    A project's pending work is one corpus whichever workspace wrote it
-    (AC-12 of brief ``una-gaia-cualquier-instalacion``), so no workspace
-    filters the rows: a row belongs to a project when
+    A project's pending work is one corpus whichever workspace wrote it, so
+    no workspace filters the rows: a row belongs to a project when
     ``gaia.store.writer.canonical_project_key`` of its ``initiative`` and
     ``project_ref`` is in ``keys``. The thread predicate is
     ``bin/cli/memory.py::_PENDING_VIVO_SELECT``'s, both excluding superseded
@@ -490,8 +489,8 @@ def count_pending_by_initiative(
 # memory reads -- who the user is
 # ---------------------------------------------------------------------------
 
-# Every workspace, not the caller's: user memory belongs to no workspace
-# (AC-11), and rows written before the _gaia_user sentinel existed still sit
+# Every workspace, not the caller's: user memory belongs to no workspace,
+# and rows written before the _gaia_user sentinel existed still sit
 # under the workspace that wrote them until they are relocated.
 _USER_ANCHORS = (
     "SELECT m.workspace, m.name, m.description, m.body "
@@ -743,10 +742,9 @@ def _query_memory(
         where.append("type = ?")
         params.append(type_filter)
 
-    # scan-v2 SV3: tombstoned rows (deleted_at non-NULL) are soft-deleted and
-    # must never surface in a query. delete_memory() stamps deleted_at instead
-    # of physically removing the row, so this filter is what keeps a tombstone
-    # invisible to `gaia query` / cross_surface_query.
+    # Tombstoned rows (deleted_at non-NULL) are soft-deleted: delete_memory()
+    # stamps deleted_at instead of removing the row, so this filter keeps a
+    # tombstone out of cross_surface_query.
     where.append("deleted_at IS NULL")
 
     sql = (
@@ -784,10 +782,8 @@ def _query_memory(
 
 
 # Metric fields projected out of episodes.context_metrics when metrics=True.
-# The workflow recorder nests these under the "metrics" key of the JSON blob
-# (T4 episodic-workflow-to-db); a few older migrated rows store them at the
-# top level, so each extraction COALESCEs the nested path with the flat one.
-# json1 is compiled into SQLite by default -- no schema migration required.
+# Each extraction COALESCEs the path nested under the "metrics" key of the JSON
+# blob with the flat top-level one, so rows of either shape project the field.
 _METRIC_JSON_FIELDS = (
     # (output column, json leaf path under $.metrics / $)
     ("compliance_score", "compliance_score.total"),
@@ -959,10 +955,8 @@ def _query_harness_events(
         where.append("result LIKE ?")
         params.append(command_like)
     if failed:
-        # For harness_events, "failed" maps to severity=error or
-        # result-string starting with 'fail'/'error', plus payload exit_code != 0
-        # when present. We use a SQL approximation here; payload exit_code
-        # parsing happens in Python below if needed.
+        # For harness_events, "failed" maps to severity=error or a result
+        # string starting with 'fail'/'error'; payload exit_code is not read.
         where.append(
             "(severity = 'error' OR result LIKE 'fail%' OR result LIKE 'error%')"
         )
@@ -980,10 +974,6 @@ def _query_harness_events(
     out = []
     for r in rows:
         d = {k: r[k] for k in r.keys()}
-        # Optional payload-level filtering: for command.executed, an exit_code
-        # field may live inside the JSON payload. When --failed was requested
-        # but the SQL approximation matched too broadly, keep the row as-is;
-        # users can refine with --command-like or --type.
         result = (d.get("result") or "").strip().replace("\n", " ")
         if len(result) > 80:
             result = result[:77] + "..."
@@ -1227,7 +1217,8 @@ def cross_surface_query(
 
     Args:
         surface:       ``memory`` | ``episodes`` | ``harness_events`` | ``all``.
-        workspace:     Filter by project / workspace identity.
+        workspace:     Filter by workspace name; episodes and harness_events
+                       also match its retire aliases.
         since:         Lower bound for timestamps -- duration ('24h') or
                        date ('2026-05-01'). See :func:`parse_when`.
         until:         Upper bound for timestamps -- same format as ``since``.
@@ -1315,9 +1306,7 @@ def cross_surface_query(
 # Defect triage -- row-level reads across the two defect channels
 # ---------------------------------------------------------------------------
 #
-# ``gaia metrics`` already answers "how many of each anomaly type"; nothing
-# answered "show me the instances of one type so I can triage them". These
-# readers are that missing half -- one row per defect, never an aggregate.
+# These readers return one row per defect, never an aggregate.
 #
 # A defect reaches the substrate through two channels that cannot be merged
 # at the storage layer, so they are merged here:
@@ -1561,10 +1550,9 @@ def read_defects(
 #
 # episodes_fts is a content-linked FTS5 table (content='episodes') kept in
 # sync by INSERT/UPDATE/DELETE triggers declared in schema.sql. This is the
-# single canonical full-text index over episodic memory; the legacy
-# tools/memory/search_store.py (a separate search.db file) was retired in
-# favour of these two helpers, which both the ``gaia memory search`` CLI and
-# the context injector (tools/context/context_provider.py) call.
+# single canonical full-text index over episodic memory; the ``gaia memory
+# search`` CLI and the context injector (tools/context/context_provider.py)
+# both read it through the two helpers below.
 
 
 def sanitize_episodes_fts_query(query: str) -> str:
@@ -1576,11 +1564,6 @@ def sanitize_episodes_fts_query(query: str) -> str:
     break FTS5 MATCH syntax (quotes, stray ``*``) are removed. An empty or
     whitespace-only input yields an empty string, which callers use to skip
     the query entirely.
-
-    This preserves the tokenisation behaviour of the retired
-    ``search_store._sanitize_query`` so free-text prompts (e.g. the context
-    injector's ``user_task``) still produce meaningful matches instead of
-    erroring on raw punctuation.
     """
     query = (query or "").replace("-", " ")
     words = query.split()
@@ -1600,7 +1583,7 @@ def search_episodes_fts(
     Returns a list of episode dicts (all columns of the matched ``episodes``
     row) enriched with an ``fts_rank`` field (bm25 rank; lower = more
     relevant). Results are ordered by rank. When ``workspace`` is given the
-    match is restricted to that workspace.
+    match is restricted to it and its retire aliases.
 
     Fails safe: any import/DB/MATCH error yields an empty list so callers
     (CLI search, context injection) never block on a search failure. The

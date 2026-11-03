@@ -15,7 +15,7 @@ keeps every history row readable:
   (``UNEVIDENCED_INTEGRATION_SQL``). Listings leave it out; it is kept.
 - a dangling facet: a ``worktree`` or ``copy`` facet whose folder is gone.
 
-:func:`find_conditions` reads all four for ``gaia doctor``;
+:func:`find_conditions` reads all four;
 :func:`plan_curation` reports exactly what :func:`apply_curation` writes.
 """
 

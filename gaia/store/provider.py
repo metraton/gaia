@@ -168,8 +168,8 @@ def get_context(
 
         return {
             "identity": identity,
-            "stack": {},        # populated by future scanners (B2+)
-            "environment": {},  # populated by future scanners (B2+)
+            "stack": {},
+            "environment": {},
             "git": {
                 "workspace_name": workspace,
                 "created_at": created_at,

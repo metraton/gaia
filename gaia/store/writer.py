@@ -1,11 +1,11 @@
 """
 gaia.store.writer -- CRUD API for the Gaia SQLite substrate.
 
-The writer is the only authorized path to mutate `~/.gaia/gaia.db`. Every
-mutation consults `agent_permissions(table_name, agent_name, allow_write)`
-before touching data. If the (table, agent) pair is missing or has
-``allow_write=0``, the operation returns ``{"status": "rejected",
-"reason": "not_authorized"}`` without modifying the DB.
+`upsert_project`, `upsert_app` and `bulk_upsert` consult
+`agent_permissions(table_name, agent_name, allow_write)` before touching data.
+If the (table, agent) pair is missing or has ``allow_write=0``, the operation
+returns ``{"status": "rejected", "reason": "not_authorized"}`` without
+modifying the DB. The other writers here carry no such gate.
 
 Vocabulary:
   * ``workspaces`` table -- organizational containers (e.g. "me", "bildwiz").
@@ -70,7 +70,7 @@ _KNOWN_TABLES = {
 
 
 # ---------------------------------------------------------------------------
-# Approval window (brief aprobaciones-agnosticas-al-host, D4)
+# Approval window
 # ---------------------------------------------------------------------------
 #
 # APPROVAL_WINDOW_MINUTES is the single lifetime of every grant a user signs --
@@ -148,8 +148,7 @@ FILE_PATH_GRANT_TTL_MINUTES = APPROVAL_WINDOW_MINUTES
 # ---------------------------------------------------------------------------
 
 def _db_path() -> Path:
-    """Resolve the DB path via gaia.paths (B0). Imported lazily to avoid
-    side effects at import time."""
+    """Resolve the DB path via gaia.paths, imported lazily to avoid import-time side effects."""
     from gaia.paths import db_path
     return db_path()
 
@@ -468,12 +467,9 @@ def _named_refusal(con: sqlite3.Connection):
 def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
     """Materialize the schema exactly once, safe under concurrent first-write.
 
-    Replaces the historical ``fresh = not db_path.exists()`` TOCTOU: that check
-    raced ``sqlite3.connect()`` (which itself creates the empty file), so a
-    second process could observe the file present but schema-less and fail with
-    ``no such table: workspaces``. Here the decision is driven by the ACTUAL
-    presence of the schema (a committed sentinel object), never by file
-    existence, and the materialization itself is serialized across processes by
+    The decision is driven by the ACTUAL presence of the schema (a committed
+    sentinel object), never by file existence, because ``sqlite3.connect()``
+    itself creates the empty file. The materialization is serialized across processes by
     an ``O_EXCL`` lock file so only one process runs ``executescript`` while any
     others WAIT for it to finish and release the lock -- then re-check and skip.
     The schema is fully idempotent (every ``CREATE ... IF NOT EXISTS``), so the
@@ -516,9 +512,7 @@ def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
             # the lock, so any waiter re-checking here always sees the sentinel and
             # returns at the line above -- it never reaches this emptiness test on a
             # half-built schema. The test therefore only distinguishes a truly fresh
-            # DB (materialize) from an externally-initialized one (skip), preserving
-            # T18's fresh-DB TOCTOU fix and its O_EXCL serialization of empty
-            # concurrent first-writes.
+            # DB (materialize) from an externally-initialized one (skip).
             if _has_application_tables(con):
                 return
             con.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -555,12 +549,8 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # first defense against "database is locked" under concurrent writers.
     con.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
 
-    # Register gaia_sha256: scalar function used by the ai_approval_events_hash
-    # trigger to compute this_hash = SHA-256(prev_hash || fingerprint).
-    # SQLite does not include SHA-256 built-in; we inject it as a Python function
-    # at connection time. All connections opened via _connect() get this function,
-    # which means the trigger fires correctly on any INSERT into approval_events.
-    # The function accepts a single TEXT argument and returns the hex digest.
+    # SQLite has no built-in SHA-256, so gaia_sha256 is registered here as a Python
+    # function taking one TEXT argument and returning its hex digest.
     def _gaia_sha256(value: str | None) -> str:
         return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
 
@@ -661,30 +651,25 @@ def _applied(extra: dict | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 def _resolve_identity(workspace: str, workspace_path: Path | None = None) -> str:
-    """Resolve workspace identity -- REMOTE-derived, read directly (M2-T7).
+    """Resolve workspace identity, remote-derived and read directly.
 
     Rule:
-      * If ``workspace_path`` is provided AND ``workspace_path / .git`` exists
-        (the workspace root is itself a git project), resolve identity from
+      * If ``workspace_path`` is provided AND ``workspace_path / .git`` is a
+        directory (the workspace root is itself a git project), resolve identity from
         the git remote of that directory, read DIRECTLY via
         ``gaia.project._git_remote_origin`` + ``_normalize_remote``.
       * Otherwise (organizational workspace -- no .git at the root), the
         identity IS the workspace name. We do NOT leak the remote of a child
         project up to the workspace row.
 
-    This deliberately does NOT go through ``gaia.project.current()``. As of
-    M2-T7 (AC-9) ``current()`` is PATH-based (it answers "which workspace am I
-    in" by disk location, not by remote). The ``workspaces.identity`` column,
-    however, must remain the normalized git remote (``host/owner/repo``) so two
-    clones of the same remote collapse to the same identity row (the B0 design
-    in ``tools/scan/store_populator.py``). Reading the remote directly here
-    decouples the identity column from ``current()``'s path-first behavior and
-    preserves the remote-derived semantic.
+    This deliberately does NOT go through ``gaia.project.current()``, which is
+    path-based (it answers "which workspace am I in" by disk location, not by
+    remote). The ``workspaces.identity`` column must remain the normalized git
+    remote (``host/owner/repo``) so two clones of the same remote collapse to
+    the same identity row, and a child project's remote never becomes the
+    identity of its organizational workspace.
 
-    This also prevents the historical contamination where a workspace like
-    ``me`` received the identity of its first scanned child project.
-
-    Falls back to the workspace string itself when path resolution fails or no
+    Falls back to the lowercased workspace name when path resolution fails or no
     remote is configured.
 
     Args:
@@ -717,12 +702,11 @@ def _ensure_workspace_row(
     workspace: str,
     workspace_path: Path | None = None,
 ) -> None:
-    """Insert (or update) the workspaces row for a workspace.
+    """Insert the workspaces row for a workspace when it is absent.
 
     Identity is resolved from the git remote of ``workspace_path`` at insertion
     time IFF the workspace root itself is a git project (see
-    :func:`_resolve_identity`). On a fresh row the identity is captured; for
-    existing rows the identity is left intact (idempotent).
+    :func:`_resolve_identity`). An existing row is left untouched.
 
     Args:
         con:            Open SQLite connection.
@@ -755,7 +739,7 @@ def set_workspace_last_scan_at(
 ) -> None:
     """Record the ISO8601 timestamp of the most recent successful gaia scan.
 
-    Called by bin/cli/scan.py after a scan run completes without errors.
+    Called by the scan pipeline (``tools/scan``) after a scan run.
     The workspaces row is created (via _ensure_workspace_row) if it does
     not yet exist. The root is never written here: only
     :func:`declare_workspace` records one.
@@ -879,9 +863,8 @@ def mark_workspace_demoted(
     at the workspace level (v17). The row, its projects, and all historical
     context survive; the workspace is simply no longer treated as live.
 
-    Crucially this does NOT touch ``last_scan_at`` -- a demoted workspace must
-    not receive a fresh scan timestamp (that is the BUG-3 symptom: persisting a
-    demoted workspace as if it were freshly scanned).
+    This does NOT touch ``last_scan_at``: a demoted workspace must not receive
+    a fresh scan timestamp.
 
     Only a row that is not ALREADY missing is touched -- a row already
     ``status='missing'`` keeps its original ``missing_since`` (first-seen-gone),
@@ -936,10 +919,6 @@ def mark_workspace_demoted(
 # Column ownership map (coalesce-or-omit + agent-owned protection)
 # ---------------------------------------------------------------------------
 #
-# Ported from tools/scan/orchestrator.py's SCANNER_OWNED_TOP_LEVEL /
-# AGENT_ENRICHED_SECTIONS split (the retired project-context.json ownership
-# model) down to the DB write path (workspace-identity brief, M1-T2).
-#
 # Semantics:
 #   * Coalesce-or-omit: a column is only written when its key is PRESENT in
 #     the caller's `fields` mapping (even when the value is explicitly None,
@@ -956,15 +935,12 @@ def mark_workspace_demoted(
 #     future agent-driven write) keeps full write access -- the flag gates
 #     the SCAN PATH specifically, not the column in the abstract.
 #
-# M3/T9: `description` is agent-owned (schema v23, scripts/migrations/
-# v22_to_v23.sql). The scan path (strip_agent_owned=True) can never write it,
-# regardless of what a caller's `fields` dict happens to contain -- it is
-# stripped by _present_fields before the coalesce-or-omit step, same
-# mechanism already proven for apps.description/status in M1.
+# `description` is agent-owned. The scan path (strip_agent_owned=True) can never
+# write it, regardless of what a caller's `fields` dict contains -- it is
+# stripped by _present_fields before the coalesce-or-omit step.
 _PROJECTS_AGENT_OWNED: frozenset = frozenset({"description"})
-# NOTE: `role` is NOT agent-owned here (M1-T3): it is auto-detected by
-# tools/scan/role_detector.py and refreshed on every scan, so it belongs to
-# the scanner. See schema.sql's `role` column comment for the same note.
+# `role` is NOT agent-owned here: tools/scan/role_detector.py detects it and
+# every scan refreshes it, so it belongs to the scanner.
 _APPS_AGENT_OWNED: frozenset = frozenset({"description", "status"})
 
 
@@ -998,7 +974,7 @@ def _find_collision_free_name(
     a basename under the same workspace (e.g. two "foo" repos nested under
     different containers). Without this guard, upserting the second one would
     silently overwrite the first via the ``(workspace, name)`` UNIQUE
-    constraint -- the collision-key defect (workspace-identity brief, AC-2).
+    constraint.
 
     Read-only (issues no writes) so it is safe to call from a dry-run preview
     as well as from inside upsert_project's write transaction. When the
@@ -1131,9 +1107,8 @@ def _projects_has_identity_column(con: sqlite3.Connection) -> bool:
     """Return True iff the live ``projects`` table carries ``project_identity``.
 
     Guards the identity-collapse path against a DB that predates the v18
-    migration (column added by scripts/migrations/v17_to_v18.sql). When the
-    column is absent, :func:`upsert_project` degrades to the historical
-    ``(workspace, name)`` UPSERT so an un-migrated DB keeps working.
+    migration. When the column is absent, :func:`upsert_project` degrades to
+    the ``(workspace, name)`` UPSERT so an un-migrated DB keeps working.
     """
     rows = con.execute("PRAGMA table_info(projects)").fetchall()
     return any(r[1] == "project_identity" for r in rows)
@@ -1158,7 +1133,7 @@ def upsert_project(
         fields: Dict of column->value pairs. Recognized keys:
             ``role``, ``remote_url``, ``platform``, ``primary_language``,
             ``group_name``, ``path``, ``status``, ``missing_since``,
-            ``project_identity``. A key ABSENT from `fields` is coalesce-or-
+            ``project_identity``, ``description``. A key ABSENT from `fields` is coalesce-or-
             omit: the column keeps its current value instead of being forced
             to NULL (see the ownership map above `_PROJECTS_AGENT_OWNED`). A
             key present with value None (e.g. ``missing_since=None``) is an
@@ -1186,8 +1161,7 @@ def upsert_project(
             projects branch, populate_project), any key in
             ``_PROJECTS_AGENT_OWNED`` is dropped from `fields` before the
             coalesce-or-omit step, regardless of what the caller supplied.
-            Direct callers (tests, future agent-driven writes) leave this
-            False and keep full write access.
+            Direct callers leave this False and keep full write access.
 
     Returns:
         {"status": "applied", "name": <final name used, disambiguated if a
@@ -1218,7 +1192,7 @@ def upsert_project(
             now = _now_iso()
             project_identity = present.get("project_identity")
 
-            # Identity-collapse path (M1-T2): when a stable project_identity is
+            # Identity-collapse path: when a stable project_identity is
             # supplied AND the live schema carries the column, the SAME physical
             # repo must map to ONE row regardless of the workspace/root it was
             # scanned from. We look up any existing row keyed by that identity
@@ -1250,7 +1224,7 @@ def upsert_project(
             # No identity match -- this is a NEW row (or a legacy DB with no
             # identity column). Resolve a collision-free name so a DIFFERENT
             # physical repo sharing this basename never silently overwrites
-            # an existing, unrelated row (AC-2).
+            # an existing, unrelated row.
             final_name = name
             if has_identity_col and project_identity:
                 final_name = _find_collision_free_name(con, workspace, name, project_identity)
@@ -1334,9 +1308,8 @@ def upsert_app(
         strip_agent_owned: When True (the scan path -- bulk_upsert's apps
             branch), ``description`` and ``status`` (``_APPS_AGENT_OWNED``)
             are dropped from `fields` before the coalesce-or-omit step,
-            regardless of what the caller supplied. Direct callers (tests,
-            future agent-driven writes) leave this False and keep full
-            write access.
+            regardless of what the caller supplied. Direct callers leave
+            this False and keep full write access.
 
     Returns:
         {"status": "applied"} on success.
@@ -1567,7 +1540,8 @@ def bulk_upsert(
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Upsert multiple rows in a single transaction.
+    """Upsert multiple rows: projects and apps one row at a time through their
+    upsert function, every other table in a single transaction.
 
     Returns:
         {"applied": int, "rejected": int}
@@ -1576,10 +1550,8 @@ def bulk_upsert(
     applied = 0
     rejected = 0
     if table == "projects":
-        # bulk_upsert is exclusively the scan path's batch writer (see the
-        # module docstring: "populators NEVER touch agent-owned columns") --
-        # strip_agent_owned=True enforces that structurally, regardless of
-        # what a row dict happens to include.
+        # bulk_upsert is the scan path's batch writer: strip_agent_owned=True
+        # keeps agent-owned columns out of it, whatever a row dict includes.
         for r in rows_list:
             res = upsert_project(
                 workspace,
@@ -1697,14 +1669,12 @@ UNEVIDENCED_INTEGRATION_SQL = "(version IS NULL AND install_path IS NULL)"
 # Public API: write_harness_event
 # ---------------------------------------------------------------------------
 #
-# Brief 54 / Task 2.2: the harness event pipeline (every hook firing) writes
-# here instead of the legacy events.jsonl file. This is the hot path -- every
-# AGENT_DISPATCH / COMMAND_EXECUTED / AGENT_COMPLETE / SESSION_END event flows
-# through it -- so the contract is: non-blocking and silent-on-failure at the
-# call site (the hook wraps this in try/except: pass), append-only INSERT, no
+# The harness event pipeline (every hook firing) writes here. This is the hot
+# path, so the contract is: non-blocking and silent-on-failure at the call
+# site (the hook wraps this in try/except: pass), append-only INSERT, no
 # permission gate (episodic audit events are not curated memory).
 #
-# Column mapping (harness_events, schema.sql ~L756):
+# Column mapping (harness_events):
 #   type      <- event_type
 #   source    <- source
 #   agent     <- agent
@@ -1732,8 +1702,7 @@ def write_harness_event(
 ) -> int:
     """Append one row to ``harness_events`` and return its id.
 
-    This is the DB cutover of the historical ``EventWriter.write_event`` file
-    writer. It is append-only and not permission-gated. Callers in the hook
+    It is append-only and not permission-gated. Callers in the hook
     pipeline wrap it in ``try/except: pass`` -- this function itself does not
     swallow exceptions, so tests and direct callers see real failures.
 
@@ -1850,7 +1819,7 @@ def add_task_notification(
     Args:
         task_name: Task that produced a report, or the kind for a reminder.
         headline: Short one-line summary (the title).
-        body: Full detail message (generic; no PII / proper nouns).
+        body: Full detail message.
         session_id: Host session a report came from.
         workspace: Workspace name, or None for a global notification.
         kind: ``report``, ``reminder`` or ``routine``.
@@ -2166,7 +2135,6 @@ def resolve_memory_workspace(
 # pair. When a subagent dispatch carries GAIA_DISPATCH_AGENT, only those two
 # identities are allowed to mutate the `memory` table. Absence of the env var
 # means the caller is a human shell (CLI run directly) -- always permitted.
-# See brief: memory-model-refactor-class-status-links-structural-enforcement.
 # ---------------------------------------------------------------------------
 
 class MemoryWriteForbidden(PermissionError):
@@ -2206,12 +2174,9 @@ def _assert_dispatch_can_write_memory() -> None:
         f"orchestrator-operator pair."
     )
 
-# Curated slug taxonomy: when the type is one of the new curated types
-# (atom / decision / negative), the `name` must start with the MATCHING prefix
-# for that specific type, and use snake_case slug discipline. The legacy types
-# (project / user / feedback) keep their historical naming freedom, but are
-# NOT allowed to use a curated prefix -- that combination is a mismatch that
-# must fail loudly.
+# Curated slug taxonomy: for atom / decision / negative the `name` must start
+# with that type's own prefix and be a snake_case slug. project / user /
+# feedback names are free, but may not use a curated prefix.
 #
 # Single-source-of-truth rule: the slug prefix IS the type. (slug, type) pairs
 # that disagree are always an error -- never silently reclassified.
@@ -2270,16 +2235,12 @@ def resolve_project_ref(
     ``project_identity`` anchor -- the value ``upsert_memory(project_ref=...)``
     expects (forward-only anchoring).
 
-    Looks up the exact ``(workspace, project_name)`` row -- the same lookup
-    documented as the manual convention in ``skills/memory/SKILL.md`` before
-    this function existed (``SELECT project_identity FROM projects WHERE
-    workspace=? AND name=?``). Never guesses: raises ``ValueError`` with an
-    actionable message when the project does not exist, when more than one
-    row matches (structurally guarded against by the ``(workspace, name)``
-    primary key, but checked defensively), or when the matching row has not
-    yet been assigned a ``project_identity`` (e.g. a legacy pre-v18 row, or a
-    project scanned before the identity column was populated) -- anchoring to
-    an absent identity would be a guess, not a resolution.
+    Looks up the exact ``(workspace, project_name)`` row. Never guesses:
+    raises ``ValueError`` with an actionable message when the project does not
+    exist, when more than one row matches (the ``(workspace, name)`` primary
+    key rules it out; checked defensively), or when the matching row has no
+    ``project_identity`` yet -- anchoring to an absent identity would be a
+    guess, not a resolution.
 
     Args:
         workspace: Workspace name (matches ``projects.workspace``).
@@ -2335,7 +2296,7 @@ def project_workspaces(
 ) -> list[str]:
     """Return the workspaces that contain a project named ``project_name``.
 
-    Used by ``gaia memory add`` to tell two failure modes apart when
+    ``gaia memory add`` uses it to tell two failure modes apart when
     ``resolve_project_ref(workspace, name)`` cannot resolve: a project that
     does not exist at ALL vs. one that exists under a DIFFERENT workspace (a
     ``--project`` / ``--workspace`` mismatch). Considers rows of any
@@ -2374,31 +2335,18 @@ def resolve_project_ref_by_cwd(
 ) -> str | None:
     """Resolve the *active* project anchor for ``workspace`` from ``cwd``.
 
-    This is the cwd->project resolution used by the READ/injection side only
-    (``gaia memory get-relevant``, to scope and re-rank the SessionStart
-    block). It is deliberately NOT used by the write side: ``gaia memory add``
-    demands explicit scope and refuses to infer a `project_ref` from the cwd,
-    because a wrong guess on write would persist bad data, whereas on read it
-    only re-ranks what is shown (cheap, reversible). Unlike
-    :func:`resolve_project_ref` -- which resolves an *explicit* ``projects.name``
-    and RAISES when it cannot -- this one never raises and never guesses: it
-    returns the ``project_identity`` of the active project, or ``None`` when
-    the cwd does not sit inside exactly one project.
+    Unlike :func:`resolve_project_ref` -- which resolves an *explicit*
+    ``projects.name`` and RAISES when it cannot -- this one never raises: it
+    returns the ``project_identity`` of the active project, or ``None``.
 
-    Resolution rule (matches the design decision): among the workspace's
-    active projects, find those whose recorded ``path`` CONTAINS ``cwd``
-    (``path`` is an ancestor of, or equal to, ``cwd``). The MOST SPECIFIC
-    match wins -- the project with the longest such ``path`` -- so a nested
-    project resolves to itself rather than to an ancestor project. When NO
-    project path contains ``cwd`` (e.g. sitting at the root of a workspace
-    whose N projects all live in subdirectories), the result is ``None``
-    and the caller falls back to workspace-only behaviour. A row whose
-    ``path`` or ``project_identity`` is NULL, or whose ``status`` is not
-    'active', can never be the resolved anchor.
+    Among the workspace's active projects, find those whose recorded ``path``
+    is an ancestor of, or equal to, ``cwd``. The project with the longest such
+    ``path`` wins, so a nested project resolves to itself rather than to an
+    ancestor. When no project path contains ``cwd`` the result is ``None``. A
+    row whose ``path`` or ``project_identity`` is NULL, or whose ``status`` is
+    not 'active', can never be the resolved anchor.
 
-    Fail-safe: any error (unresolvable cwd, DB failure) returns ``None`` --
-    the injection path must never break SessionStart merely because the
-    active project could not be inferred.
+    Any error (unresolvable cwd, DB failure) returns ``None``.
 
     Args:
         workspace: Workspace name (scopes the ``projects`` lookup).
@@ -2515,8 +2463,7 @@ def canonical_project_key(
     be a git-common-dir path, a bare name or a remote identity; all resolve
     to the same key (``/x/gaia/.git``, ``gaia``, ``github.com/metraton/gaia``
     -> ``"gaia"``). An explicit initiative outranks the anchor, matching the
-    write path. Existing rows are resolved as stored, never rewritten
-    (decision D-a of brief ``una-gaia-cualquier-instalacion``), and writers
+    write path. Existing rows are resolved as stored, never rewritten, and writers
     persist this key in ``initiative``. ``None`` when neither column names a
     project.
     """
@@ -2568,27 +2515,16 @@ def upsert_memory(
     status included, is one transaction: a failing step leaves the row as it
     was.
 
-    ``project_ref`` -- forward-only remote-stable project anchor. The column
-    exists, but the automatic backfill in ``scripts/migrations/v25_to_v26.sql`` (guarded on "workspace
-    hosts exactly one active project") is a one-time, already-applied
-    historical statement that populated 0 rows in practice -- the
-    memory-row-to-project mapping is ambiguous whenever a workspace hosts more
-    than one project, and NEVER guessed. There is no live code that re-runs or
-    depends on that guard; going forward, ``project_ref`` is anchored
-    explicitly, at write time, by whoever calls this function knowing which
-    project a ``project``-type row is about (see ``gaia memory add --project``
-    in ``bin/cli/memory.py``, which resolves a project name to its
-    ``projects.project_identity`` via :func:`resolve_project_ref` before
-    calling here).
+    ``project_ref`` -- the project anchor, set only by the caller, never
+    inferred: ``gaia memory add --project`` in ``bin/cli/memory.py`` resolves a
+    project name to its ``projects.project_identity`` with
+    :func:`resolve_project_ref` before calling here.
 
-    Coalesce-or-omit (same discipline as ``topic_key`` elsewhere in this
-    module): ``project_ref=None`` (the default) never touches an existing
-    anchor -- an update that does not mention the project leaves a
-    previously-set anchor intact instead of clobbering it back to NULL. Pass
-    an explicit identity string to set or overwrite it. There is no "clear"
-    sentinel; once anchored, forward-only re-anchoring is the only write path
-    (matches the existing ``topic_key`` COALESCE convention -- no precedent in
-    this module for an explicit-NULL clear on a coalesced column).
+    Coalesce-or-omit (same discipline as ``topic_key`` in :func:`upsert_project`):
+    ``project_ref=None`` (the default) never touches an existing anchor, so an
+    update that does not mention the project leaves it intact. Pass an explicit
+    identity string to set or overwrite it. This function cannot clear an
+    anchor; :func:`reanchor_memory_project_ref` can.
 
     ``initiative`` -- canonical project/initiative grouping key. Same
     coalesce-or-omit discipline as ``project_ref``. When ``initiative`` is not
@@ -2717,12 +2653,8 @@ def upsert_memory(
                 # not mention audience preserves the row's EXISTING value
                 # instead of resetting it to 'any').
                 #
-                # `created_at` is bound ONCE, for the INSERT branch only, and
-                # deliberately absent from the DO UPDATE SET list -- v50's row
-                # age is forward-only BY DECISION. A brand-new row is born
-                # with `now`; an existing row's `created_at` (NULL for every
-                # pre-v50 row, since backfill is refused) is never touched by
-                # this statement's UPDATE branch, so editing a row is never
+                # `created_at` is bound once, for the INSERT branch only, and
+                # is absent from DO UPDATE SET: editing a row must never be
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
@@ -2785,7 +2717,7 @@ def delete_memory(
     hard: bool = False,
     db_path: Path | None = None,
 ) -> bool:
-    """Soft-delete (tombstone) a curated memory row -- scan-v2 SV3.
+    """Soft-delete (tombstone) a curated memory row.
 
     By default this is a SOFT delete: the row's ``deleted_at`` column is stamped
     with the current UTC timestamp instead of the row being physically removed.
@@ -2798,11 +2730,9 @@ def delete_memory(
     A tombstone is idempotent: calling delete_memory on an already-tombstoned
     row is a no-op (the row is not re-stamped and no new history row is written).
 
-    ``hard=True`` performs the real physical DELETE. This is the ONLY path that
-    destroys the row and its body, and it exists exclusively for explicit human
-    curation ("never hard-delete curated memory except by explicit human
-    curation" -- decision_scan_v2_memory_loss_vectors). The CLI surfaces it via
-    ``gaia memory delete --hard`` behind the existing confirmation prompt.
+    ``hard=True`` performs the real physical DELETE, the only path in this
+    function that destroys the row and its body. ``gaia memory delete --hard``
+    reaches it behind a confirmation prompt that ``--yes`` skips.
 
     Returns True when a row was affected (tombstoned or hard-deleted), False
     when no live row matched (already tombstoned, or absent).
@@ -2889,28 +2819,17 @@ def reanchor_memory_project_ref(
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """RE-ANCHOR an existing curated memory row's ``project_ref``.
+    """Overwrite a live curated memory row's ``project_ref`` with the value given.
 
-    This is the correction path that ``upsert_memory`` deliberately does NOT
-    provide: ``upsert_memory`` is COALESCE-preserving (it never clobbers an
-    existing ``project_ref`` when the field is omitted, so callers cannot
-    accidentally null it out), which means there is no way to CHANGE an already
-    set anchor through the normal write path. This function is the explicit
-    re-anchor: it OVERWRITES ``memory.project_ref`` to ``project_ref``
-    unconditionally -- the value ``gaia memory add --replace --project`` /
-    ``--project-ref`` resolves and passes in.
+    Unlike :func:`upsert_memory`, whose ``project_ref`` is COALESCE-preserving,
+    ``project_ref=None`` here CLEARS the anchor. ``initiative`` is only filled
+    from the new anchor, never replaced.
 
-    Passing ``project_ref=None`` explicitly CLEARS the anchor (back to the
-    forward-only-unattributed state); the CLI never does this (it always
-    resolves to a concrete identity), but the writer allows it so a caller can
-    correct a wrongly-anchored row.
-
-    Schema v41 includes ``project_ref`` in ``trg_memory_history``. A real
-    re-anchor records its before/after anchor automatically; a no-op update is
-    skipped here and creates no history row.
+    ``trg_memory_history`` records the before/after anchor; an update that
+    leaves ``project_ref`` as it was writes no history row.
 
     Raises:
-        ValueError: the ``(workspace, name)`` row does not exist.
+        ValueError: the ``(workspace, name)`` row does not exist or is deleted.
     """
     _assert_dispatch_can_write_memory()
 
@@ -2945,21 +2864,16 @@ def set_memory_audience(
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """PATCH the ``audience`` column of an existing curated memory row.
+    """Set the ``audience`` column of a live curated memory row.
 
-    This is the dedicated correction path for ``audience`` -- mirroring
-    :func:`reanchor_memory_project_ref` rather than
-    :func:`update_memory_field`: ``audience`` is an enum-constrained
-    classification, not free text, so it does not belong in
-    ``_MEMORY_PATCHABLE_FIELDS`` (which applies text append/overwrite
-    semantics that make no sense for an enum). ``gaia memory add --replace
-    --audience=<value>`` calls this unconditionally -- unlike
-    :func:`upsert_memory`'s coalesce-preserving ``audience`` parameter, this
-    function always sets the value the caller passed.
+    ``audience`` is an enum, not free text, so it is not in
+    ``_MEMORY_PATCHABLE_FIELDS``. Unlike :func:`upsert_memory`'s
+    coalesce-preserving ``audience`` parameter, this always sets the value the
+    caller passed.
 
     Args:
         workspace: Workspace name (FK -> workspaces.name).
-        name:      Curated memory slug; the row must already exist.
+        name:      Curated memory slug; the row must be live.
         audience:  New value. Must be one of :data:`VALID_MEMORY_AUDIENCES`.
         db_path:   Optional explicit DB path (used by tests).
 
@@ -3002,29 +2916,24 @@ def set_memory_audience(
 
 
 # ---------------------------------------------------------------------------
-# Public API: memory_links (v4 graph primitives)
+# Public API: memory_links
 # ---------------------------------------------------------------------------
 #
-# Brief: memory-model-refactor-class-status-links-structural-enforcement (T4).
-#
-# Duplicate-edge policy (architectural decision):
+# Duplicate-edge policy:
 #   The writer accepts ``if_exists`` with default ``"skip"``. Re-creating the
 #   same edge is idempotent -- no error, returns ``{"status":"applied",
 #   "action":"noop"}``. Callers that want strict semantics pass
 #   ``if_exists="error"`` to receive a ValueError on duplicates.
 #
-# Rationale: declarative wiring ("thread X supersedes anchor Y") is the dominant
-# CLI use case; idempotent default makes the `gaia memory link` command safely
-# re-runnable from scripts and migration tooling. The strict mode is preserved
-# for callers that need to detect drift (e.g. reclassify pipelines verifying
-# that an edge they expected to be a one-time event did not silently re-fire).
+# Rationale: the idempotent default makes `gaia memory link` safely re-runnable;
+# the strict mode lets a caller detect an edge that fired twice.
 #
 # Existence enforcement: src_name MUST already exist live in the ``memory`` table
 # for the workspace and dst_name for its own workspace (``dst_workspace``, the
 # same one unless the edge crosses owners). Links to non-existent slugs would
 # leave dangling edges that the injector cannot resolve -- the writer raises
-# ValueError instead of accepting them. ON DELETE CASCADE on workspace handles
-# the deeper integrity guarantees at the SQLite layer.
+# ValueError instead of accepting them. ON DELETE CASCADE on workspace removes
+# a workspace's links with it.
 # ---------------------------------------------------------------------------
 
 VALID_MEMORY_LINK_KINDS = ("relates_to", "supersedes", "derived_from", "graduated_to")
@@ -3128,7 +3037,7 @@ def insert_memory_link(
          "dst_workspace": ..., "created_at": ...,
          "src_born": ..., "dst_born": ...}
         ``dst_workspace`` is always the dst row's workspace; ``*_born`` is
-        each row's ``created_at``, or ``updated_at`` for a row older than v50.
+        each row's ``created_at``, or its ``updated_at`` when ``created_at`` is NULL.
 
     Raises:
         ValueError: invalid kind, missing src/dst, the same edge already
@@ -3300,34 +3209,18 @@ def delete_memory_link(
 
 
 # ---------------------------------------------------------------------------
-# Public API: reclassify_memory (v4 class/status fields)
+# Public API: reclassify_memory
 # ---------------------------------------------------------------------------
 #
-# Brief: memory-model-refactor-class-status-links-structural-enforcement (T5).
+# The writer validates the class/status enums; the schema CHECKs class but
+# carries no CHECK on status.
 #
-# The writer is the source of truth for the class/status enums (the schema
-# does NOT carry CHECK constraints on these columns -- see schema.sql L572-578
-# for the rebuild-avoidance rationale). Validation lives here.
+# status is meaningful only for class=thread, so moving a row off thread
+# without naming a status NULLs it: a stale 'open' left on an anchor row would
+# corrupt the lifecycle view.
 #
-# Design decisions captured here so future readers don't have to mine the
-# brief:
-#
-#   1. **Auto-clear status when class moves away from thread.** When the
-#      caller changes class from 'thread' to 'anchor' or 'log' (and does NOT
-#      pass an explicit status flag), the writer NULLs the status column on
-#      its own. Rationale: status is semantically meaningful only for
-#      class=thread (schema.sql L576-578). Leaving a stale 'open' status on
-#      an anchor row would silently corrupt the lifecycle view. Forcing
-#      callers to pass --status=null on every class change is busywork that
-#      hides the rule rather than naming it.
-#
-#   2. **Empty-string sentinel for explicit clear.** The Python signature
-#      uses ``status=None`` to mean "don't touch this column". When the CLI
-#      caller passes ``--status=null`` (the literal string), we translate it
-#      to ``status=""`` in the kwargs -- the writer treats the empty string
-#      as "explicitly clear to NULL". This separation is the only way to
-#      distinguish "leave alone" from "wipe" when both routes need to coexist
-#      on the same function signature.
+# status=None means "don't touch the column" and status="" means "clear it to
+# NULL"; the CLI translates the literal --status=null to "" (bin/cli/memory.py).
 # ---------------------------------------------------------------------------
 
 VALID_MEMORY_CLASSES = ("anchor", "thread", "log")
@@ -3370,8 +3263,9 @@ def reclassify_memory(
           and does NOT pass a status flag, status is auto-NULLed.
 
     Returns:
-        ``{"status": "applied", "action": "reclassified", "name": name,
-           "class": ..., "status": ..., "updated_at": ...}``.
+        ``{"status": "applied", "action": "reclassified", "workspace": ...,
+           "name": name, "class": ..., "memory_status": ...,
+           "note_appended": bool, "updated_at": ...}``.
 
     Raises:
         ValueError: missing row, invalid enum, missing both flags, or
@@ -3417,10 +3311,6 @@ def _apply_class_status(
     con, workspace: str, name: str, *, class_: str | None, status: str | None, now: str,
 ) -> tuple[str, str | None]:
     """Apply :func:`reclassify_memory`'s rules to a live row on ``con``, uncommitted; return (class, status)."""
-    # Disambiguate the three input modes for status:
-    #   * status is None        -> do not touch the column
-    #   * status == ""          -> explicit clear (write NULL)
-    #   * status == "<value>"   -> set to value; must be in enum
     status_explicit_clear = (status == "")
     status_touches_column = (status is not None)
 
@@ -3444,19 +3334,12 @@ def _apply_class_status(
 
     new_class = class_ if class_ is not None else current_class
 
-    # Decide the new status value:
-    #   * Caller passed status explicit-clear -> NULL.
-    #   * Caller passed status="<value>"      -> that value (already
-    #                                            enum-checked above).
-    #   * Caller did NOT pass status, AND class moved from thread to
-    #     non-thread -> auto-NULL.
-    #   * Otherwise -> leave current_status untouched.
     if status_touches_column:
         new_status = None if status_explicit_clear else status
     elif (current_class == "thread"
           and class_ is not None
           and class_ != "thread"):
-        new_status = None  # auto-clear on demotion / promotion
+        new_status = None
     else:
         new_status = current_status
 
@@ -3647,22 +3530,19 @@ def _rekey_memory_neighbours(con, from_workspace: str, to_workspace: str, name: 
 # Public API: close_session_memory (transactional session-close checkpoint)
 # ---------------------------------------------------------------------------
 #
-# Brief: session-close-checkpoint-verb.
-#
 # WHY a dedicated writer instead of composing upsert_memory + reclassify_memory
 # + insert_memory_link at the call site: each of those opens its OWN connection
 # and commits its OWN transaction, so an N+1-call sequence has N+1 independent
 # commit points -- a failure on the 3rd call leaves the first two already
-# durable. A session checkpoint is a SINGLE semantic unit (one record anchor +
-# N carry-forward threads + N derived_from links); it must be all-or-nothing.
-# This is the only memory writer that spans multiple rows under ONE
-# BEGIN/COMMIT, mirroring the bulk_upsert pattern earlier in this module.
+# durable. A session checkpoint is a SINGLE semantic unit (one record anchor,
+# N carry-forward threads, their derived_from links and any supersedes links);
+# it must be all-or-nothing, under ONE BEGIN/COMMIT.
 #
-# Ordering is obligatory: anchor -> threads -> links. A derived_from edge needs
-# both endpoints to exist, so the anchor and every thread are inserted before
-# any link is written.
+# Ordering: the anchor first, then each thread followed by its derived_from
+# edge, then the supersedes edges once every new row exists. An edge needs both
+# endpoints to exist when it is written.
 #
-# Validation split (matches the codebase's existing layering):
+# Validation split:
 #   * SHAPE of the payload (container structure + required name/body keys) is
 #     validated UPFRONT, before any connection is opened -- a malformed payload
 #     never reaches the DB. It raises MemorySessionPayloadError(code="bad_shape").
@@ -3728,14 +3608,12 @@ def _insert_checkpoint_row(
     restores a row: an existing name, live or deleted, is refused by
     :func:`_refuse_existing_name`.
 
-    ``initiative`` -- same coalesce-or-omit discipline as ``upsert_memory``:
-    an explicit value (already normalized by the caller) wins; ``None``
-    derives from ``project_ref`` via :func:`initiative_from_project_ref`.
-    Host-scope (:func:`apply_host_scope`) is applied here too, on top of
-    whatever ``workspace`` the caller resolved -- this is the actual INSERT
-    site, so the force must hold even if a future caller reaches this
-    function without going through :func:`close_session_memory`'s own
-    up-front application of the same rule.
+    ``initiative`` -- an explicit value (already normalized by the caller)
+    wins; ``None`` derives from ``project_ref`` via
+    :func:`initiative_from_project_ref`. :func:`resolve_memory_workspace` is
+    applied here too, on top of whatever ``workspace`` the caller resolved:
+    this is the INSERT site, so host-scope must hold here whatever the caller
+    did.
     """
     if not body or not body.strip():
         raise ValueError(f"memory body cannot be empty (slug {name!r})")
@@ -3846,10 +3724,10 @@ def close_session_memory(
 
     ``initiative`` -- one logical initiative for the WHOLE checkpoint (the
     payload carries no per-row initiative, matching the shared ``--type``
-    convention above). Normalized here, then host-scope (:func:`apply_host_scope`)
+    convention above). Normalized here, then :func:`resolve_memory_workspace`
     is applied ONCE up front so ``_ensure_workspace_row`` provisions the
     workspace the rows will actually land under; ``_insert_checkpoint_row``
-    re-applies the same rule per row as the real INSERT-site enforcement.
+    re-applies it per row.
 
     Returns::
 
@@ -3917,8 +3795,7 @@ def close_session_memory(
         try:
             _ensure_workspace_row(con, effective_workspace)
 
-            # (1) record anchor
-            anchor = _insert_checkpoint_row(
+            anchor =_insert_checkpoint_row(
                 con, effective_workspace,
                 name=record_name, mem_type=record_type,
                 description=resumen.get("description"), body=resumen["body"],
@@ -3928,7 +3805,6 @@ def close_session_memory(
                 now=now,
             )
 
-            # (2) carry-forward threads, then (3) derived_from edges
             threads: list[dict] = []
             links: list[dict] = []
             for p in pendientes:
@@ -4134,12 +4010,12 @@ def get_memory(
 ) -> dict | None:
     """Return a curated memory row as a dict, or ``None`` when missing.
 
-    Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
+    Tombstoned rows (``deleted_at`` non-NULL) are excluded by
     default so a soft-deleted memory reads as absent. Pass
     ``include_deleted=True`` to reach a tombstoned row (e.g. for an explicit
     hard-delete or a recovery inspection).
 
-    Projects the v48 telemetry pair (``injection_count``/``last_injected_at``,
+    Projects the telemetry pair (``injection_count``/``last_injected_at``,
     ``deliberate_count``/``last_deliberate_at``) alongside the row's content.
     Reading never bumps either counter; only ``record_memory_access`` does.
     """
@@ -4201,7 +4077,7 @@ def list_memory(
 
     Every row carries ``superseded_by``; ``include_superseded=False`` drops those rows.
 
-    Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
+    Tombstoned rows (``deleted_at`` non-NULL) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
     filters to rows tagged with exactly that value -- it must be one of
     :data:`VALID_MEMORY_AUDIENCES` when set; ``None`` (the default) applies no
@@ -4211,7 +4087,7 @@ def list_memory(
 
     Each row carries its placement and ``owner``, derived when ``owner_level`` is NULL.
 
-    Projects ``class``, ``status`` and the v48 telemetry pair
+    Projects ``class``, ``status`` and the telemetry pair
     (``injection_count``/``last_injected_at``, ``deliberate_count``/
     ``last_deliberate_at``) alongside the content columns.
 
@@ -4291,7 +4167,7 @@ def list_memory(
 
 
 # ---------------------------------------------------------------------------
-# Public API: curated-memory usage telemetry (v48, best-effort)
+# Public API: curated-memory usage telemetry (best-effort)
 # ---------------------------------------------------------------------------
 #
 # Two hard constraints, both load-bearing for the rest of the entry:
@@ -4300,7 +4176,7 @@ def list_memory(
 #     `updated_at` and trip trg_memory_history. The UPDATE below touches
 #     exactly one counter and its own timestamp column -- both are outside
 #     trg_memory_history's WHEN clause and memory_au's WHEN clause by design
-#     (see the v48 notes on both triggers in schema.sql), so a telemetry write
+#     (see the notes on both triggers in schema.sql), so a telemetry write
 #     lands zero memory_history rows, zero FTS re-index, and never moves
 #     `updated_at` -- the sort key the injected block's ordering depends on.
 #   * BEST-EFFORT. This runs on every deliberate read and every automatic
@@ -4314,16 +4190,12 @@ def list_memory(
 # get-relevant --initiative) is not authoring it, and any dispatched agent
 # must be able to trigger this write when it reads.
 #
-# v50: "kernel" is a third, separate axis (kernel_count/last_kernel_at) for
-# the dispatch kernel's own "How the user works" block, which fires on EVERY
-# subagent dispatch over type=user AND audience=executor rows. It used to
-# share "injection"'s columns; that mixed a fixed, high-frequency dispatch
-# signal into the same counter as context-injection surfaces (get-relevant
-# digest/sections/types), letting the kernel rows dominate any ranking by
-# construction. Kept apart for the same reason injection and deliberate were
-# kept apart in v48: mixing signals of different natures freezes the
-# ranking. Forward-only -- what the kernel already added to injection_count
-# before this split is NOT retroactively moved or subtracted.
+# "kernel" is a third, separate axis (kernel_count/last_kernel_at) for the rows
+# the dispatch kernel renders in its "Scope memory" block, which fires on EVERY
+# subagent dispatch. Kept apart from "injection" (get-relevant digest/sections/
+# types) so a fixed, high-frequency dispatch signal cannot dominate a ranking
+# built on injection_count; mixing signals of different natures freezes the
+# ranking, which is also why injection and deliberate are separate.
 _MEMORY_TELEMETRY_COLUMNS: dict[str, tuple[str, str]] = {
     "injection": ("injection_count", "last_injected_at"),
     "deliberate": ("deliberate_count", "last_deliberate_at"),
@@ -4380,8 +4252,8 @@ def record_memory_access(
     for a row the caller identified (by slug, or by naming the initiative that
     holds it), ``"injection"`` for a row rendered inside an automatic context
     block for someone who asked for neither (get-relevant digest/sections/
-    types), ``"kernel"`` for a row rendered inside the dispatch kernel's own
-    "How the user works" block, which fires on every subagent dispatch and is
+    types), ``"kernel"`` for a row rendered inside the dispatch kernel's
+    "Scope memory" block, which fires on every subagent dispatch and is
     kept off the ``"injection"`` axis for the same reason injection and
     deliberate are kept apart. Raises ``ValueError``
     for any other ``kind`` (a programming error, not a runtime condition worth
@@ -4436,8 +4308,7 @@ _BRIEF_PATCHABLE_FIELDS = (
     "out_of_scope",
     "description",
     "title",
-    # v5 (T5.4): metadata fields added to the whitelist so they are
-    # reachable via `gaia brief edit --headless --field=<field>`.
+    # Metadata fields, reachable via `gaia brief edit --headless --field=<field>`.
     "surface_type",
     "topic_key",
 )
@@ -4504,7 +4375,7 @@ def update_brief_field(
 
 VALID_PLAN_LIFECYCLE_STATUSES = ("draft", "active", "closed")
 
-# Brief statuses that reject plan persistence (D11, D13).
+# Brief statuses that reject plan persistence.
 # Saving a plan against a closed or archived brief is always a mistake --
 # fail-fast rather than silently creating an orphaned plan.
 _PLAN_SAVE_REJECTED_BRIEF_STATUSES = frozenset({"closed", "archived"})
@@ -4537,43 +4408,22 @@ def upsert_plan(
     with ``reason``, in ``plan_versions`` (see :func:`get_plan_history`); a
     save that leaves the content unchanged records no version.
 
-    Canonical persistence path for plans
-    ------------------------------------
-    This function is the ONE canonical writer for plan content. It is invoked
-    by ``gaia plan save --brief=<name> --content="..." [--status=...]`` and
-    has UPSERT semantics:
+    The writer behind ``gaia plan save --brief=<name> (--content=... |
+    --content-file=<path>) [--status=...]``, with UPSERT semantics:
 
     * If no plan row exists for the brief -> INSERT a new row.
     * If a plan row exists -> UPDATE ``status`` and ``content`` (preserving
       the existing ``content`` when ``content=None`` is passed).
 
-    The ``plans`` row id is permanent across re-runs of ``gaia plan save``;
-    only the content and status fields are updated. Verify after saving with
-    ``gaia plan show <brief>``.
-
-    Note that this writer is NOT full-sync. It only touches
-    ``plans.status`` and ``plans.content``. The ``tasks`` table is a
-    separate child of ``plans`` (FK CASCADE on delete). To mutate the
-    task list, use the granular writers ``add_task_to_plan``,
-    ``remove_task_from_plan``, and ``reorder_tasks`` (NOT this function).
-
-    Anti-patterns -- DO NOT use any of these:
-
-    * ``gaia brief edit <name>`` to persist a plan. ``gaia brief edit``
-      writes to the ``briefs`` table, not the ``plans`` table. Plans and
-      briefs are separate rows in separate tables. Edits applied to the
-      brief body do not appear in ``gaia plan show``.
-
-    * ``EDITOR=cp /tmp/plan.md gaia brief edit <name>``. This was a hack
-      used during session 2026-05-22 to side-load plan content. It bypasses
-      DB semantics, writes to the wrong table, and produces a stale brief
-      body that does not appear in ``gaia plan show``. Never repeat this
-      pattern. Use ``gaia plan save`` with ``--content="$(cat /tmp/plan.md)"``
-      if the content is too large to pass inline.
+    The ``plans`` row id is kept across saves. Only ``plans.status`` and
+    ``plans.content`` are touched; the ``tasks`` table is a separate child of
+    ``plans`` (FK CASCADE on delete), changed by ``add_task_to_plan``,
+    ``remove_task_from_plan`` and ``reorder_tasks``. ``gaia brief edit``
+    writes ``briefs``, not ``plans``, so its edits do not appear in
+    ``gaia plan show``.
 
     Raises ValueError if the brief does not exist, if the brief status is
-    ``closed`` or ``archived`` (D11 fail-fast), or if the status enum is
-    invalid.
+    ``closed`` or ``archived``, or if the status enum is invalid.
 
     Raises ContentWriteForbidden when GAIA_DISPATCH_AGENT names a dispatched
     agent not authorized to author plan content (plan content is authored by
@@ -4603,7 +4453,7 @@ def upsert_plan(
                 f"brief '{brief_name}' not found in workspace '{workspace}'"
             )
 
-        # D11 / D13: fail-fast guard -- reject plan persistence against
+        # Fail-fast guard -- reject plan persistence against
         # a brief whose lifecycle has ended.
         brief_status_row = con.execute(
             "SELECT status FROM briefs WHERE id = ?", (brief_id,)
@@ -4799,10 +4649,8 @@ def set_plan_status(
         )
         con.commit()
 
-        # D11 (advisory): when closing a plan, check AC satisfaction.
-        # Emit warnings for pending/blocked ACs -- the close is still
-        # permitted (ACs may be intentionally deferred), but the caller
-        # should surface any unsatisfied criteria to the user.
+        # Closing a plan warns about every AC not done but still proceeds: an
+        # AC may be deferred on purpose.
         warnings: list[str] = []
         if new_status == "closed":
             pending_acs = con.execute(
@@ -4827,7 +4675,7 @@ def set_plan_status(
 
 
 # ---------------------------------------------------------------------------
-# Public API: plan pause, history and managed change (v57)
+# Public API: plan pause, history and managed change
 # ---------------------------------------------------------------------------
 
 def _plan_row(con: sqlite3.Connection, workspace: str, brief_name: str):
@@ -5162,7 +5010,7 @@ def list_plan_changes(
 
 
 # ---------------------------------------------------------------------------
-# Public API: set_task_status, set_ac_status, set_milestone_status (v5)
+# Public API: set_task_status, set_ac_status, set_milestone_status
 # ---------------------------------------------------------------------------
 
 def set_task_status(
@@ -5197,10 +5045,9 @@ def set_task_status(
     a producer marking its own task ``'skipped'`` or reopening it stays exempt,
     because neither asserts the work was verified.
 
-    THE CONDITION LIVES HERE, NOT ONLY IN THE CLI. This is the single writer of
-    ``tasks.status``, so a condition placed here holds for every future caller --
-    a hook, a convergence step, a verifier seam -- whereas one placed at the
-    command-line flag holds only for the one path that goes through it.
+    THE CONDITION LIVES HERE, NOT ONLY IN THE CLI. This is the only writer of
+    ``tasks.status``, so the condition holds for every caller, not just the
+    command-line path.
 
     AN OVERRIDE'S RECORD PRECEDES ITS MUTATION. When the override carries the
     close, ``write_task_close_override_event`` is appended BEFORE the UPDATE and
@@ -5541,12 +5388,11 @@ def set_milestone_status(
 
 
 # ---------------------------------------------------------------------------
-# Public API: granular task mutation in plans (v5 -- T5.3)
+# Public API: granular task mutation in plans
 # ---------------------------------------------------------------------------
 #
-# upsert_plan is intentionally NOT full-sync (D7): it only touches
-# plans.status and plans.content. The tasks child table needs its own
-# granular writers. tasks are curator_only=False (D1) -- subagents allowed.
+# upsert_plan is intentionally NOT full-sync: it only touches plans.status and
+# plans.content. The tasks child table needs its own granular writers.
 
 
 def add_task_to_plan(
@@ -5672,13 +5518,10 @@ def update_task(
     """Update ``goal`` IN PLACE for the task at ``order_num`` in the plan
     attached to ``brief_name``.
 
-    Preserves ``tasks.id`` and, critically, every child ``task_gates`` row:
+    Preserves ``tasks.id`` and every child ``task_gates`` row:
     ``task_gates.task_id`` carries ``ON DELETE CASCADE`` from ``tasks.id``
-    (schema.sql), so the only prior way to edit a goal -- ``remove_task_from_plan``
-    followed by ``add_task_to_plan`` -- deletes the task row and cascades away
-    every gate attached to it. Adjusting a task's scope is not the same
-    operation as replacing the task, and this writer is what lets a caller do
-    the former without paying for the latter.
+    (schema.sql), so ``remove_task_from_plan`` followed by ``add_task_to_plan``
+    would cascade away every gate attached to the task.
 
     ``status`` is not written here. A goal that actually changes marks the
     task's recorded gate verdicts stale -- they proved the old goal -- and the
@@ -5791,11 +5634,9 @@ def reorder_tasks(
                     raise ValueError(
                         f"task with order_num={to_o} not found in plan"
                     )
-                # Three-step swap via temporary negative order_num to avoid
-                # the UNIQUE/CHECK conflict if we ever add a unique index.
-                # tasks table currently has no unique index on (plan_id,
-                # order_num), so two-step would also work. Three-step is
-                # defensive.
+                # Three steps through a temporary negative order_num: a unique
+                # index on (plan_id, order_num) would reject the intermediate
+                # duplicate; tasks has none today.
                 con.execute(
                     "UPDATE tasks SET order_num = -1 * order_num WHERE id = ?",
                     (from_row["id"],),
@@ -6153,15 +5994,15 @@ def list_brief_plan_task_ids(
 
 
 # ---------------------------------------------------------------------------
-# task_gates: planner-authored typed verification gate slot (v34, harness R1-A)
+# task_gates: planner-authored typed verification gate slot
 #
 # A gate is a one-to-many child of a task, addressed by its parent task's
 # order_num within the plan attached to a brief -- consistent with how
 # add_task_to_plan / remove_task_from_plan address tasks. These writers persist
 # a gate AS GIVEN: structural validation (gaia.state.gate_validation) is a
 # separate, independently-invokable pure function; whether `add` blocks a
-# malformed gate at write time is the advisory-vs-blocking decision, which is
-# out of scope for R1-A.
+# malformed gate at write time is the advisory-vs-blocking decision, which these
+# writers do not make.
 # ---------------------------------------------------------------------------
 
 def _resolve_task_id_by_order(
@@ -6196,12 +6037,10 @@ def _resolve_task_id_by_order(
 def _assert_valid_gate_status(status: str) -> None:
     """Raise ValueError when ``status`` is outside VALID_GATE_STATUSES.
 
-    Code-level guard for task_gates.status transitions (harness B3/T3). As of
-    v36 the column also carries a DB CHECK
-    (scripts/migrations/v35_to_v36.sql; see gaia.state.VALID_GATE_STATUSES),
-    but this guard remains the first transition enforcement point: it raises a
-    clean ValueError at the call site instead of letting an out-of-vocabulary
-    value reach sqlite3 and surface as a raw IntegrityError.
+    The column also carries a DB CHECK (see gaia.state.VALID_GATE_STATUSES);
+    this guard raises a clean ValueError at the call site instead of letting
+    an out-of-vocabulary value reach sqlite3 and surface as a raw
+    IntegrityError.
     """
     from gaia.state import VALID_GATE_STATUSES
     if status not in VALID_GATE_STATUSES:
@@ -6275,8 +6114,8 @@ def _read_task_binding_rows(con: sqlite3.Connection, task_id: int) -> list[dict]
     agent to a task it was dispatched to execute.
 
     Deliberately UNFILTERED by ``agent_state`` or ``kind``. A row born at
-    dispatch, a row that later converged to a terminal verdict, and a row written
-    by some future path all name an actor, and treating each of them as naming a
+    dispatch, a row that later converged to a terminal verdict, and a row from
+    any other path all name an actor, and treating each of them as naming a
     producer is the fail-closed direction: a new writer of the binding widens the
     refusal instead of slipping past it. Which of those actors is a COMPARABLE
     name is not decided here -- that is
@@ -6813,10 +6652,10 @@ def request_gate_reverification(
     }
 
 
-# Key under which :func:`set_gate_status` reports what the recorded verdict
-# implied for the task itself. Always present, so a caller distinguishes "the
-# derivation ran and did nothing" from "the derivation did not run" without
-# testing for a missing key.
+# Key under which the gate and task writers report what a change implied for
+# the task itself. :func:`set_gate_status` always carries it, so a caller
+# distinguishes "the derivation ran and did nothing" from "the derivation did
+# not run"; the other writers carry it only when a verdict went stale.
 DERIVED_CLOSURE_RESULT_KEY = "derived_closure"
 
 # Reported in place of the decided action when the derived transition itself
@@ -7006,18 +6845,15 @@ def set_gate_status(
     ``task_order_num``, then apply whatever that verdict implies for the task.
 
     ``cause`` (from ``gaia.state.VALID_GATE_FAIL_CAUSES``) is accepted only
-    with 'fail'. It is required at the agent surface, `gaia task gate
-    set-status ... fail --cause`; this writer still accepts a causeless fail
-    so internal callers written before v56 keep working. Every call records a fresh verdict, so it
-    clears the gate's stale mark.
+    with 'fail'. `gaia task gate set-status ... fail` requires it
+    (``--cause``); this writer itself accepts a causeless fail. Every call
+    records a fresh verdict, so it clears the gate's stale mark.
 
-    Write surface for `gaia task gate set-status` (harness B3/T3): the only
+    Write surface for `gaia task gate set-status`: the only
     way to move task_gates.status off its pending INSERT-time value. ``status``
     is enforced against
     ``gaia.state.VALID_GATE_STATUSES`` ('pending' / 'pass' / 'fail') by
-    ``_assert_valid_gate_status`` -- a code-level guard that raises a clean
-    ValueError ahead of the DB CHECK the column also carries as of v36 (see
-    gaia.state.VALID_GATE_STATUSES docstring).
+    ``_assert_valid_gate_status``, ahead of the DB CHECK on the column.
 
     THE VERDICT CARRIES THE TASK WITH IT. Once the gate row is committed, the
     task's own status either still follows from its gates or no longer does, and
@@ -7172,15 +7008,11 @@ def wipe_workspace(
     """Delete the workspaces row for `workspace`. FK CASCADE removes all
     child rows (projects, apps, integrations, etc.) automatically.
 
-    Memory preservation (scan-v2 SV3, Vector 4)
+    Memory preservation
     -------------------------------------------
     ``memory`` and ``memory_links`` are FK'd to ``workspaces`` with ON DELETE
-    CASCADE, so a naive workspace delete DESTROYS all curated memory for the
-    workspace. That is the loss vector `migrate_workspace.py` triggered on every
-    re-scan. This function now DECOUPLES memory from the CASCADE at the app
-    layer -- the safer of the two options (the alternative, changing the FK to
-    ON DELETE SET NULL / RESTRICT, would require a full ``memory`` table rebuild
-    per the v21->v22 precedent).
+    CASCADE, so a plain workspace delete destroys all curated memory for the
+    workspace. This function decouples memory from the CASCADE at the app layer.
 
     With ``preserve_memory=True`` (the DEFAULT): inside a single transaction the
     memory rows, memory_links rows, and the workspaces row itself are captured
@@ -7188,14 +7020,11 @@ def wipe_workspace(
     (with its identity / created_at / status preserved) plus every memory /
     memory_links row is re-inserted. Net effect: projects and all scannable
     children are cleared (what a re-scan wants), while curated memory survives
-    untouched. The memory_ai / memory_links insert triggers keep the FTS mirror
-    consistent.
+    untouched. The ``memory_ai`` insert trigger keeps the FTS mirror consistent.
 
-    ``preserve_memory=False`` performs the original full CASCADE (memory
-    destroyed). This exists ONLY for explicit human curation -- e.g.
-    ``gaia context wipe --purge-memory`` behind its confirmation prompt --
-    honouring "never hard-delete curated memory except by explicit human
-    curation".
+    ``preserve_memory=False`` lets the full CASCADE destroy the memory. It is
+    for explicit human curation, e.g. ``gaia context wipe --purge-memory``
+    behind its confirmation prompt.
     """
     con = _connect(db_path)
     try:
@@ -7242,11 +7071,6 @@ def prune_empty_workspaces(
     """Identify -- and optionally delete -- PHANTOM workspaces: rows in
     ``workspaces`` that carry ZERO ``projects`` rows (of any status).
 
-    Phantom workspaces are debris from historical scans run with different
-    ``--workspace`` values (e.g. a scan keyed on a container folder that later
-    became a ``group_name`` under a parent workspace). A workspace whose only
-    content is an empty shell adds noise to every context read.
-
     Governance (never delete curated content blindly)
     --------------------------------------------------
     A zero-project workspace is deleted ONLY when it also holds NO curated
@@ -7254,9 +7078,11 @@ def prune_empty_workspaces(
     ``project_context_contracts`` rows, and no ``briefs`` rows. When ANY of
     those is present the workspace is HELD -- reported, never deleted -- because
     the ``workspaces`` FK cascades ON DELETE and would destroy that curated
-    content. Such a workspace needs a human decision (relocate the memory/PCC
-    to its canonical workspace first, via ``gaia context move-memory`` /
-    ``move-contracts``), which is out of scope for an automatic prune.
+    content. A workspace with a declared ``root_path``, a retired status or a
+    ``workspace_aliases`` entry is HELD as well. Such a workspace needs a human
+    decision (relocate the memory/PCC to its canonical workspace first, via
+    ``gaia context move-memory`` / ``move-contracts``), which is out of scope
+    for an automatic prune.
 
     This is a READ on ``apply=False`` (the default): it computes and returns the
     plan without mutating. On ``apply=True`` it deletes the confirmed-empty
@@ -7351,38 +7177,22 @@ def prune_empty_workspaces(
 
 
 # ---------------------------------------------------------------------------
-# Surgical reconciliation helpers (workspace-identity brief, M4/T10)
+# Surgical reconciliation helpers
 # ---------------------------------------------------------------------------
 #
 # `gaia scan` reconciles the `projects` table workspace-by-workspace: it
 # upserts the repos it finds under the SCANNED workspace and prunes
-# (mark_missing_in / delete_missing_in) only WITHIN that same workspace. Two
-# consequences make a plain rescan unable to repair historical drift:
-#
-#   1. A stale row with project_identity=NULL living under a DIFFERENT
-#      workspace than the one being scanned is never collapsed (the identity-
-#      collapse path in upsert_project only fires for a non-null identity) and
-#      never pruned (prune is scoped to the scanned workspace) -- so a rescan
-#      RESURRECTS the repo as a fresh duplicate row and leaves the stale row
-#      ORPHANED under its old workspace.
-#   2. project_context_contracts is not touched by scan at all, so a contract
-#      written under the wrong workspace can only be corrected by moving it.
+# (mark_missing_in / delete_missing_in) only WITHIN that same workspace, so a
+# stale row with project_identity=NULL under another workspace is neither
+# collapsed (the identity-collapse path in upsert_project only fires for a
+# non-null identity) nor pruned.
 #
 # wipe_workspace is too blunt for a LIVE workspace: it CASCADE-deletes the
 # workspaces row and EVERY child (projects, memory, briefs, episodes, PCC).
-# The helper below is the surgical, workspace-preserving primitive that
-# repairs drift without destroying collateral:
-#
-#   relocate_contracts -- re-key project_context_contracts rows between
-#                         workspaces (the only correction path for mis-keyed PCC).
-#
-# NOTE: a `delete_projects` sibling (targeted deletion of `projects` rows)
-# existed here as a one-time reconciliation tool (workspace-identity brief
-# M4/T10) and was removed in scan-v2 SV4 -- agents must never hold the power
-# to hard-delete project rows; `mark_missing_in` (soft-delete, scanner-owned)
-# and the resolve-move adjudication (re-key + tombstone, see
-# `resolve_move_candidate` below) are the only sanctioned paths that touch a
-# project row's lifecycle.
+# relocate_contracts and relocate_memory below re-key rows between workspaces
+# without destroying collateral; `mark_missing_in` (soft-delete, scanner-owned)
+# and `resolve_move_candidate` (re-key or tombstone) change a project row's
+# lifecycle without deleting it.
 # ---------------------------------------------------------------------------
 
 
@@ -7397,15 +7207,11 @@ def relocate_contracts(
 ) -> dict:
     """Re-key ``project_context_contracts`` rows from one workspace to another.
 
-    `gaia scan` itself never writes ``project_context_contracts`` -- it only
-    populates the raw ``projects`` index. The decoupled promotion stage
-    (``tools/scan/promote.py::promote_workspace``, invoked by ``gaia scan``
-    after a successful classify pass) does write into it, but only
-    scan-owned fields on entries keyed by physical identity (path / remote),
-    never the ``workspace`` PK column itself. So a contract mis-keyed to the
-    wrong workspace (e.g. AOS project context mis-keyed to the 'me'
-    workspace) still cannot self-correct via scan or promotion -- it can only
-    be corrected by moving the row. This re-keys the named
+    `gaia scan` populates the raw ``projects`` index, and its promotion stage
+    (``tools/scan/promote.py::promote_workspace``) writes only scan-owned
+    fields of ``project_context_contracts``, never the ``workspace`` PK column.
+    A contract keyed to the wrong workspace is therefore corrected only by
+    moving the row. This re-keys the named
     contracts by UPDATEing the ``workspace`` PK column IN PLACE -- payload,
     metadata and updated_at are preserved, and the ``trg_pcc_history`` AFTER
     UPDATE trigger records the move in project_context_contracts_history.
@@ -7537,9 +7343,8 @@ def relocate_memory(
     curated memory table.
 
     `gaia scan` never touches ``memory``, so a memory row written under the
-    wrong workspace (e.g. the 'project_gaia_roadmap' / 'user_blog_articles'
-    notes mis-keyed to the 'rnd' workspace but belonging to 'me') can only be
-    corrected by moving the row. This re-keys the named rows by UPDATEing the
+    wrong workspace can only be corrected by moving the row. This re-keys the
+    named rows by UPDATEing the
     ``workspace`` PK column IN PLACE: every other column (type, description,
     body, origin_session_id, updated_at, class, status) is preserved untouched,
     and the ``memory_au`` AFTER UPDATE trigger keeps the ``memory_fts`` mirror
@@ -7547,15 +7352,11 @@ def relocate_memory(
 
     memory_links follow the notes: a link under ``from_workspace`` whose BOTH
     endpoints are in the moved set is re-keyed to ``to_workspace`` (the edge
-    travels with the pair). A link with only ONE endpoint in the moved set
-    cannot stay consistent under the single-workspace link model -- scan-v2 SV3
-    DELETES that now-dangling edge (its endpoint left the workspace) and reports
-    it under 'partial_links'. The link is derived graph metadata, not curated
-    memory: both endpoint rows survive untouched; only the broken edge is
-    removed, so nothing is lost silently and no dangling reference is left
-    behind.
+    travels with the pair). A link with only ONE endpoint in the moved set is
+    DELETED and reported under 'partial_links'; both endpoint rows survive
+    untouched.
 
-    Provenance (scan-v2 SV3): the workspace re-key UPDATE fires the
+    Provenance: the workspace re-key UPDATE fires the
     ``trg_memory_history`` trigger, which records before_workspace ->
     after_workspace for each moved row -- the origin of every move is preserved
     in ``memory_history`` automatically, no explicit trace-write needed.
@@ -7589,8 +7390,7 @@ def relocate_memory(
         MemoryHostScopeError: a named row is host-scoped (its ``initiative``
             is in :data:`HOST_SCOPED_INITIATIVES`) and ``to_workspace`` is not
             :data:`HOST_WORKSPACE`. Moving a host-scoped row INTO the sentinel
-            is always allowed regardless of ``from_workspace`` -- that is the
-            migration path for a row written before this rule existed.
+            is always allowed, whatever ``from_workspace`` is.
         MemoryUserScopeError: a non-user row targets :data:`USER_WORKSPACE`,
             or a row is moved OUT of it.
         MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
@@ -7713,17 +7513,9 @@ def relocate_memory(
                             )
                         links_moved.append(entry)
                     else:
-                        # Only one endpoint moved. Under the single-workspace
-                        # link model this edge is now referentially dangling:
-                        # one of its endpoints no longer exists under
-                        # ``from_workspace`` and cannot be re-homed to
-                        # ``to_workspace`` (the other endpoint stayed). Leaving
-                        # it in place is silent corruption -- scan-v2 SV3 removes
-                        # the dangling edge and reports it under 'partial_links'
-                        # so nothing is lost silently. A link is derived graph
-                        # metadata, not curated memory: both endpoint rows (the
-                        # data) survive untouched; only the broken edge is
-                        # dropped. Never touches memory rows.
+                        # Only one endpoint moved: the edge is deleted and
+                        # reported under 'partial_links'. Both memory rows
+                        # survive untouched.
                         if not dry_run:
                             con.execute(
                                 "DELETE FROM memory_links "
@@ -7755,9 +7547,9 @@ def relocate_memory(
 
 
 # ---------------------------------------------------------------------------
-# scan-v2 SV4: move-candidate adjudication (superseded_by write / re-key).
+# Move-candidate adjudication (superseded_by write / re-key).
 #
-# `gaia scan` (SV2) only DETECTS and REPORTS a move -- it pairs a project that
+# `gaia scan` only DETECTS and REPORTS a move -- it pairs a project that
 # vanished from one workspace 1:1 (by normalized remote) with a project that
 # appeared in another, and emits a `move_candidate`. It never mutates the
 # lineage. A human then adjudicates each candidate; `resolve_move_candidate`
@@ -7768,10 +7560,10 @@ def relocate_memory(
 #     reconcile pass), still carrying the pre-move project_identity and any
 #     agent-owned `description`.
 #   * the NEW row (the `to` side): freshly upserted, status='active', carrying
-#     a DIFFERENT project_identity. Since v64 a repo with a remote keeps its
-#     identity when it moves, so its row follows it and no candidate arises;
-#     the pair appears for a repo without a remote (its git-common-dir moved)
-#     or for rows written before v64. This is the successor.
+#     a DIFFERENT project_identity. A repo with a remote keeps its identity
+#     when it moves, so its row follows it and no candidate arises; the pair
+#     appears for a repo without a remote (its git-common-dir moved). This is
+#     the successor.
 #
 # The 'movido' adjudication links the two WITHOUT ever hard-deleting either:
 #   * When the successor row ALREADY exists (the realistic post-scan state, and
@@ -7844,7 +7636,7 @@ def resolve_move_candidate(
     dry_run: bool = False,
     db_path: Path | None = None,
 ) -> dict:
-    """Execute a 'movido' adjudication of a scan-v2 move_candidate.
+    """Execute a 'movido' adjudication of a move_candidate.
 
     Links the OLD (``from``) project row to its successor (``to``) without ever
     hard-deleting a row. Two branches (see the module comment above):
@@ -8006,15 +7798,13 @@ def resolve_move_candidate(
 
 
 # ---------------------------------------------------------------------------
-# Public API: approval_grants (DB-backed command_set grant store, M3)
+# Public API: approval_grants (DB-backed command_set grant store)
 # ---------------------------------------------------------------------------
 # These functions are the authoritative write path for the approval_grants
-# table added in v7 (M3).  Filesystem JSON approval files are superseded by
-# this DB store per D5.  No permission enforcement is applied here -- the
-# approval_grants table is system-internal and not agent-owned per the
-# agent_permissions matrix.
+# table.  No dispatch-permission check is applied here: the table is not in
+# DISPATCH_PERMISSIONS (gaia/state/permissions.py).
 
-import json as _json  # local alias to avoid shadowing top-level json in callers
+import json as _json
 
 
 def insert_approval_grant(
@@ -8035,7 +7825,7 @@ def insert_approval_grant(
             ``rationale`` (str).  Each entry is single-use; the
             ``consumed_indexes_json`` column tracks which have been used.
         agent_id: Requesting agent identifier.
-        session_id: CLAUDE_SESSION_ID at grant creation time.
+        session_id: Session id at grant creation time.
         scope: Grant scope type (default 'COMMAND_SET').
         expires_at: Optional ISO8601 expiry timestamp.
         db_path: Optional explicit DB path (used by tests).
@@ -8119,12 +7909,11 @@ def _plan_grant_born_before(now_iso: str) -> str:
 def _plan_grant_is_live(grant: dict, now_iso: str) -> bool:
     """Return whether a plan-first grant row is still inside its authority window.
 
-    A row written before grants carried a TTL has expires_at NULL, and its deadline
-    is DERIVED from created_at rather than backfilled. Deriving gives an already-
-    issued grant exactly the window a new one gets, measured from when it really
-    began: a set approved minutes ago stays usable, one approved yesterday is
-    already lapsed. It also rewrites no row, so the user's recorded decision and
-    the grant's own history stay as they were.
+    A row with expires_at NULL has its deadline DERIVED from created_at rather
+    than backfilled. Deriving gives it exactly the window a new grant gets,
+    measured from when it really began: a set approved minutes ago stays usable,
+    one approved yesterday is already lapsed. It also rewrites no row, so the
+    user's recorded decision and the grant's own history stay as they were.
     """
     deadline = grant.get("expires_at") or _plan_grant_deadline(grant.get("created_at") or "")
     # No readable stamp means no window can be measured; refuse the grant rather
@@ -8272,14 +8061,14 @@ def reserve_plan_command(
     grant stays unconsumed and the command asks for a new signature.
     An item sealed by gaia.approvals.core (it carries ``position``) matches only
     in its sealed ``cwd`` and only for the session and agent the grant is bound
-    to; an item sealed before that carries neither and keeps its old reach.
+    to; an item without ``position`` is not bound to a directory, session or
+    agent.
 
     A ``tool_use_id`` that already reserved under this grant is refused: a retry
     must be a different host tool call than the one that was blocked, and both
     hosts supply a unique per-call id (Claude Code natively, OpenCode through
-    build_policy_payload), so the rule is meetable on either. A grant predating
-    the reserved_tool_use_ids_json column carries an empty history and therefore
-    reserves exactly as it did before the column existed.
+    build_policy_payload), so the rule is meetable on either. A grant with no
+    reserved_tool_use_ids_json carries an empty history.
 
     A reservation older than PLAN_COMMAND_RESERVATION_TTL_MINUTES is reclaimed
     rather than refused: settle_plan_command runs only if the command reaches
@@ -8367,8 +8156,8 @@ def reserve_plan_command(
 def _iter_live_plan_grants(con: sqlite3.Connection, now_iso: str):
     """Yield ``(identity, items)`` for every plan-first grant still inside its TTL.
 
-    A database predating the plan-first columns yields nothing instead of
-    raising, so a lookup on an old substrate reports "no live grant".
+    A database lacking the plan-first columns yields nothing instead of
+    raising, so a lookup there reports "no live grant".
     """
     try:
         rows = con.execute(
@@ -8630,7 +8419,8 @@ def update_approval_grant_status(
 
     Returns:
         {"status": "applied"} on success, {"status": "error", ...} when the
-        status is PENDING or the grant is not PENDING.
+        status is PENDING or the grant exists in another status than the one
+        asked for.
     """
     if status == "PENDING":
         return {"status": "error", "reason": "a grant is never moved back to PENDING here"}
@@ -8743,7 +8533,9 @@ def revoke_approval_grant(
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
-        {"status": "applied"} on success, {"status": "not_found"} if no row.
+        {"status": "applied"} on success, {"status": "not_found"} if no row,
+        {"status": "no_op", "current_status": ...} when it is already REVOKED
+        or CONSUMED.
     """
     con = _connect(db_path)
     try:
@@ -8790,7 +8582,7 @@ def list_approval_grants(
 
     Args:
         agent_id: Filter by requesting agent.
-        session_id: Filter by CLAUDE session ID.
+        session_id: Filter by session ID.
         status: Filter by status (PENDING|CONSUMED|REVOKED|EXPIRED).
         limit: Maximum rows to return (default 100).
         db_path: Optional explicit DB path (used by tests).
@@ -8831,22 +8623,18 @@ def list_command_set_grants_agnostic(
     limit: int = 100,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """List COMMAND_SET grants WITHOUT a session_id constraint (Brief 71).
+    """List COMMAND_SET grants WITHOUT a session_id constraint.
 
     This is the COMMAND_SET analogue of the session-agnostic lookup that
     ``check_db_semantic_grant`` performs for the SINGULAR (semantic-signature)
-    grant. The block-approve-retry flow legitimately spans sessions -- a
-    command is blocked under the subagent session, the user approves under the
-    orchestrator session, and the consuming retry runs under whichever session
-    (or none -- CLAUDE_SESSION_ID is not guaranteed to be exported into the bash
-    subprocess, where ``get_session_id()`` then falls back to the literal
-    ``"default"``). A session_id filter therefore never matches the grant the
-    approval created, which is exactly the consumption-bypass bug this function
-    fixes.
+    grant. The block-approve-retry flow spans sessions -- a command is blocked
+    under the subagent session, the user approves under the orchestrator
+    session, and the retry may run under another or none -- so a session_id
+    filter would never match the grant the approval created.
 
-    The security boundary is preserved WITHOUT a session_id constraint, by the
-    same conjunction of session-agnostic facts the singular path relies on
-    (mirrors the comment in ``check_db_semantic_grant``):
+    The security boundary holds WITHOUT a session_id constraint, by the same
+    session-agnostic facts the singular path relies on (see the comment in
+    ``check_db_semantic_grant``):
       * the byte-for-byte command match (applied by the caller against each
         unconsumed command_set item) binds the grant to THIS command's exact
         intent;
@@ -8883,10 +8671,10 @@ def list_command_set_grants_agnostic(
 
 # ---------------------------------------------------------------------------
 # Public API: insert_semantic_grant / check_db_semantic_grant /
-#             consume_db_semantic_grant (CHECK-side DB cutover, Brief 71)
+#             consume_db_semantic_grant
 # ---------------------------------------------------------------------------
 #
-# These three functions implement the DB-primary path for SCOPE_SEMANTIC_SIGNATURE
+# These three functions implement the DB path for SCOPE_SEMANTIC_SIGNATURE
 # grants created on approval activation.  They use the same
 # approval_grants table (scope='SCOPE_SEMANTIC_SIGNATURE') so all grant lifecycle
 # is visible in one place.
@@ -8914,8 +8702,9 @@ def insert_semantic_grant(
 ) -> dict:
     """Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants (status=PENDING).
 
-    Called on approval activation, after the user approves.  The row represents a grant valid for one execution of
-    the approved command within the TTL window.
+    Called on approval activation, after the user approves.  The row represents
+    a grant valid for one execution of the approved command within the TTL
+    window.
 
     Args:
         approval_id: The P-{hex} approval id that was activated.  Used as PK.
@@ -8923,11 +8712,11 @@ def insert_semantic_grant(
         scope_signature: Dict from ApprovalSignature.to_dict() -- stored in
             command_set_json so check_db_semantic_grant() can match semantically.
         agent_id: Requesting agent identifier.
-        session_id: CLAUDE_SESSION_ID of the subagent that will execute.
+        session_id: Session id of the subagent that will execute.
             Retained for audit only -- check_db_semantic_grant() matches
-            cross-session (Brief 71), so this is NOT used to scope lookup.
+            cross-session, so this is NOT used to scope lookup.
         ttl_minutes: Grant lifetime in minutes. Defaults to
-            APPROVAL_GRANT_TTL_MINUTES (5). The grant is consumed AT THE MATCH,
+            APPROVAL_GRANT_TTL_MINUTES (30). The grant is consumed AT THE MATCH,
             so this short window only needs to cover the block -> approve ->
             retry round trip; a grant never presented to a matching retry simply
             expires. This is the GRANT window, distinct from the 24h pending
@@ -9002,7 +8791,7 @@ def check_db_semantic_grant(
     value in it matches only grants sealed without one. Omitted, no requester
     filter applies.
 
-    Called by check_approval_grant() as the primary (DB) check path.
+    Called by check_approval_grant().
 
     Matching uses the scope_signature stored in command_set_json:
     - Deserializes the ApprovalSignature via ApprovalSignature.from_dict()
@@ -9110,16 +8899,8 @@ def check_db_semantic_grant(
 def _consumed_grant_exists(command: str, con) -> bool:
     """Return True if a CONSUMED semantic grant already matches ``command``.
 
-    Single, session-agnostic replay guard shared by both planes (Brief 71,
-    Change 4):
-      * check_approval_grant()'s DB path, and
-      * its DEPRECATED filesystem fallback,
-    which previously each carried their own copy of this query -- and the
-    filesystem copy was session-locked (``AND session_id=?``), reintroducing the
-    very cross-session bug the CHECK side was fixed for. Consolidating here keeps
-    the guard in one place and session-agnostic: once a command's grant is
-    CONSUMED, no later retry -- in ANY session -- may slip past via a stale
-    filesystem copy.
+    Session-agnostic: it reads the 50 most recent CONSUMED
+    SCOPE_SEMANTIC_SIGNATURE grants whatever their session.
 
     Matching mirrors check_db_semantic_grant(): the stored scope_signature is
     rehydrated and compared semantically, so the guard recognizes the same
@@ -9189,7 +8970,7 @@ def consume_db_semantic_grant(
 
     Called by bash_validator immediately after a command is allowed via a DB
     semantic grant.  Setting status=CONSUMED prevents the same grant from
-    being reused within the TTL window (Gap B fix).
+    being reused within the TTL window.
 
     Args:
         approval_id: The grant to consume.
@@ -9226,26 +9007,18 @@ def consume_db_semantic_grant(
 
 # ---------------------------------------------------------------------------
 # Public API: insert_file_path_grant / check_db_file_path_grant /
-#             consume_db_file_path_grant (SCOPE_FILE_PATH DB migration)
+#             consume_db_file_path_grant
 # ---------------------------------------------------------------------------
 #
-# Mirrors the SCOPE_SEMANTIC_SIGNATURE grant triplet above but for protected-
-# path Write/Edit approvals.  Uses scope='SCOPE_FILE_PATH' in the same
-# approval_grants table so all grant lifecycle is visible in one place.
+# Mirrors the SCOPE_SEMANTIC_SIGNATURE grant triplet above for protected-path
+# Write/Edit approvals, in the same approval_grants table
+# (scope='SCOPE_FILE_PATH'). insert_file_path_grant is called from
+# gaia/approvals/store.py; check_db_file_path_grant from
+# check_approval_grant_for_file.
 #
-# Lifecycle:
-#   insert_file_path_grant()       -- called by activate_db_pending_by_id()
-#                                     SCOPE_FILE_PATH branch; writes status=PENDING.
-#   check_db_file_path_grant()     -- called by check_approval_grant_for_file();
-#                                     returns the matching row dict.
-#   consume_db_file_path_grant()   -- available, and deliberately UNCALLED: a
-#                                     path grant stays reusable for its whole
-#                                     window (see FILE_PATH_GRANT_TTL_MINUTES),
-#                                     since a protected-path fix is several Edits
-#                                     to one file and consuming the grant on the
-#                                     first would re-prompt the user for each of
-#                                     the rest. Kept for an operator/close path
-#                                     that needs to retire one grant early.
+# consume_db_file_path_grant is deliberately UNCALLED: a path grant stays
+# reusable for its whole window (FILE_PATH_GRANT_TTL_MINUTES), since a fix is
+# several Edits to one file. It is kept to retire one grant early.
 # ---------------------------------------------------------------------------
 
 
@@ -9262,9 +9035,10 @@ def insert_file_path_grant(
 ) -> dict:
     """Insert a SCOPE_FILE_PATH row into approval_grants (status=PENDING).
 
-    Called by activate_db_pending_by_id() when a SCOPE_FILE_PATH pending
-    approval is activated (user approved the protected-path write).  The row
-    is later found by check_db_file_path_grant() on the subagent retry.
+    Called by gaia.approvals.store.activate_approval_atomically() when a
+    SCOPE_FILE_PATH pending approval is activated (user approved the
+    protected-path write).  The row is later found by
+    check_db_file_path_grant() on the subagent retry.
 
     Args:
         approval_id: The P-{hex} approval id that was activated.  Used as PK.
@@ -9272,7 +9046,7 @@ def insert_file_path_grant(
         scope_signature: Dict from ApprovalSignature.to_dict() -- stored in
             command_set_json so check_db_file_path_grant() can match.
         agent_id: Requesting agent identifier (audit only).
-        session_id: CLAUDE_SESSION_ID at grant time (audit only -- the check
+        session_id: Session id at grant time (audit only -- the check
             side is cross-session, same as SCOPE_SEMANTIC_SIGNATURE).
         ttl_minutes: Grant lifetime in minutes, measured from now. Defaults to
             FILE_PATH_GRANT_TTL_MINUTES -- this lane's window, not the Bash
@@ -9338,7 +9112,7 @@ def check_db_file_path_grant(
 ) -> dict | None:
     """Find an active SCOPE_FILE_PATH grant for file_path in the DB.
 
-    Called by check_approval_grant_for_file() as the primary (DB) check path.
+    Called by check_approval_grant_for_file().
     Matching uses the scope_signature stored in command_set_json via
     matches_file_path_approval().
 
@@ -9420,13 +9194,13 @@ def consume_db_file_path_grant(
 ) -> bool:
     """Mark a SCOPE_FILE_PATH grant as CONSUMED, when something calls it.
 
-    Nothing does: this function has no caller anywhere in the tree, so CONSUMED
-    is a state a path grant never reaches by this route. That is by design --
-    the grant stays reusable for its whole window, because a protected-path fix
-    is several Edits to one file and consuming it on the first would re-prompt
-    the user for each of the rest. In this lane the only thing that retires a
-    grant is FILE_PATH_GRANT_TTL_MINUTES running out. The function is kept
-    unwired for an operator or close path that needs to retire one grant early.
+    No production code does, so CONSUMED is a state a path grant does not
+    reach by this route. A path grant stays reusable for its whole window,
+    because a protected-path fix is several Edits to one file and consuming it
+    on the first would re-prompt the user for each of the rest. Short of
+    :func:`revoke_approval_grant`, only FILE_PATH_GRANT_TTL_MINUTES running
+    out retires one. This function is for a caller that needs to retire a
+    grant early.
 
     Args:
         approval_id: The grant to consume.
@@ -9462,20 +9236,14 @@ def consume_db_file_path_grant(
 
 
 # ---------------------------------------------------------------------------
-# Public API: confirm_db_grant / cleanup_expired_db_grants (v20 / grant-lifecycle)
+# Public API: confirm_db_grant / cleanup_expired_db_grants
 # ---------------------------------------------------------------------------
 #
-# Foundation scaffolding for the grant-lifecycle FS-to-DB migration (v20).
-# confirm_db_grant() backs the confirm_grant flow. (The former
-# consume_session_grants SubagentStop sweep was removed in the approvals
-# redesign M1 -- grants are consumed at the match and expire on their short TTL.)
-#
 #   confirm_db_grant()          -- sets confirmed=1 on a PENDING grant row;
-#                                  used when the user explicitly confirms a
-#                                  multi-use grant.
-#   cleanup_expired_db_grants() -- marks EXPIRED (or hard-deletes) any grant
-#                                  whose expires_at is in the past and whose
-#                                  status is still PENDING.  Idempotent.
+#                                  called by confirm_grant() in
+#                                  hooks/modules/security/approval_grants.py.
+#   cleanup_expired_db_grants() -- marks EXPIRED any PENDING grant whose
+#                                  deadline has lapsed.  Idempotent.
 # ---------------------------------------------------------------------------
 
 
@@ -9531,11 +9299,9 @@ def cleanup_expired_db_grants(
     are not touched.
 
     A row with expires_at=NULL carries no TTL and is skipped, EXCEPT on the
-    plan-first source, where NULL means the row predates plan-first grants
-    carrying a TTL at all rather than a deliberate no-expiry grant. Those rows
-    are swept on the deadline derived from created_at, so the sweep reaches the
-    already-issued keys instead of leaving them PENDING forever. The exception is
-    anchored to source='plan-first' so no other scope's no-TTL semantics change.
+    plan-first source, where it is swept on the deadline derived from
+    created_at, so it is not left PENDING forever. The exception is anchored to
+    source='plan-first' so no other scope's no-TTL semantics change.
 
     Args:
         db_path: Optional explicit DB path (used by tests).
@@ -9581,18 +9347,12 @@ def count_expired_db_grants(
 
 
 # ---------------------------------------------------------------------------
-# Public API: agent_contract_handoffs (v9 / M4)
+# Public API: agent_contract_handoffs
 # ---------------------------------------------------------------------------
 #
-# Brief: agent-contract-handoff M4 (handoff persistence).
-#
-# Guard model (T8 -- brief contract-as-managed-data): INVERTED from curator-only
-# to finalize-by-any-seeded-agent. Formerly, handoff rows were written by the
-# SubagentStop hook (curator context) and every subagent dispatch was FORBIDDEN.
-# Under contract-as-managed-data the terminal row is finalized BY the agent
-# itself via `gaia contract finalize`, so any agent in the fleet seed (every
-# agent declared under agents/ with `contract_handoff_writer: true`) is
-# authorized. Only an identity ABSENT from the seed (a rogue/unseeded dispatch)
+# Guard model: the terminal row is finalized BY the agent itself via `gaia
+# contract finalize`, so any agent in the fleet seed (every agent declared under
+# agents/ with `contract_handoff_writer: true`) is authorized. Only an identity ABSENT from the seed (a rogue/unseeded dispatch)
 # is rejected. The fleet seed and its loader live in gaia.state.permissions
 # (`handoff_writer_fleet` / `is_handoff_writer`).
 # ---------------------------------------------------------------------------
@@ -9604,15 +9364,15 @@ class HandoffWriteForbidden(PermissionError):
 def _assert_dispatch_can_write_handoff() -> None:
     """Allow handoff finalize from any SEEDED fleet agent; block unseeded identities.
 
-    Contract (INVERTED from the prior curator-only gate):
+    Contract:
     * GAIA_DISPATCH_AGENT unset / empty -> CLI / human / hook context, allowed
       (the harness-agnostic CLI path and the SubagentStop hook both run without
       a dispatch identity set).
     * Set to a seeded fleet identity (any agent under agents/ carrying
-      `contract_handoff_writer: true`, plus curator aliases) -> allowed. This is
-      the inversion: a subagent finalizing its own handoff is now permitted.
+      `contract_handoff_writer: true`, plus curator aliases) -> allowed, so a
+      subagent may finalize its own handoff.
     * Set to an identity NOT in the fleet seed -> raises HandoffWriteForbidden
-      (a rogue / unseeded dispatch -- the write AC-7 keeps blocked).
+      (a rogue / unseeded dispatch).
     """
     from gaia.state.permissions import handoff_writer_fleet, is_handoff_writer
 
@@ -9630,24 +9390,18 @@ def _assert_dispatch_can_write_handoff() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Public API: finalize_agent_contract_handoff (v28 / T7 -- sole idempotent
-# writer of the terminal agent_contract_handoffs row)
+# Public API: finalize_agent_contract_handoff (v28 -- sole idempotent writer of
+# the terminal agent_contract_handoffs row)
 # ---------------------------------------------------------------------------
 #
-# Brief: contract-as-managed-data-agent-contract-handoff-agnostico-por-cli,
-# task T7 (M3: "finalize is the sole idempotent writer").
-#
-# THIS is the primitive T8 (write-guard + fleet-seed permissions) and T9
-# (SubagentStop hook conditional backstop) build on -- both are expected to
-# call this same function rather than reinvent the UPSERT, so document the
-# contract precisely instead of letting them reverse-engineer it:
+# `gaia contract finalize` and the SubagentStop backstop call this same function
+# rather than reinventing the UPSERT; its contract:
 #
 #   Idempotency key: `contract_id` -- the CLI-minted draft/contract id from
-#   `gaia.contract.drafts.mint_draft_id` (shape `"{agent_id}.{token}"`; NEVER
-#   derived from CLAUDE_SESSION_ID or any harness value -- decisions #1/#3).
-#   `agent_contract_handoffs.contract_id` carries a UNIQUE index (schema v28,
-#   scripts/migrations/v27_to_v28.sql). v37 (born-at-dispatch, plan 34 task 5)
-#   this function CONVERGES rather than only DO NOTHING:
+#   `gaia.contract.drafts.mint_draft_id` (shape `"{agent_id}.{token}"`; never
+#   derived from a harness session id). `agent_contract_handoffs.contract_id`
+#   carries a UNIQUE index. This function CONVERGES an existing non-terminal
+#   row rather than only DO NOTHING:
 #
 #       INSERT INTO agent_contract_handoffs (...) VALUES (...)
 #       ON CONFLICT(contract_id) DO UPDATE SET <terminal fields>
@@ -9667,21 +9421,17 @@ def _assert_dispatch_can_write_handoff() -> None:
 #   parent_handoff_id, kind) and the birth created_at are NOT in the SET list, so
 #   convergence preserves them.
 #
-#   BUG FIXED (was: `WHERE agent_state = 'DISPATCHED'`): that guard treated ANY
-#   non-DISPATCHED state as write-blocking, so a row that legitimately
-#   auto-finalized as IN_PROGRESS (a paused checkpoint, not a verdict) could
-#   never converge to its true COMPLETE outcome on a later finalize call for
-#   the SAME contract_id (e.g. after a resume) -- the row lied forever about
-#   work that had genuinely completed. The guard now blocks convergence ONLY
-#   when the row's CURRENT state is already in TERMINAL_PLAN_STATUSES
-#   (COMPLETE) -- the one verdict that must never be overwritten or regressed.
+#   The guard blocks convergence ONLY when the row's CURRENT state is already
+#   in TERMINAL_PLAN_STATUSES (COMPLETE) -- the one verdict that must never be
+#   overwritten or regressed -- so a paused IN_PROGRESS checkpoint can still
+#   converge to its true outcome on a later finalize for the SAME contract_id.
 #
 #   The `WHERE agent_state NOT IN <TERMINAL_PLAN_STATUSES>` guard is what
 #   preserves the write-once-for-COMPLETE + exactly-once-per-verdict invariant
 #   under a race: the first writer to COMMIT for a contract_id wins (it
 #   inserts, or converges the existing non-terminal row); every subsequent
-#   write for the SAME contract_id (a retried `gaia contract finalize`, or --
-#   T9 -- a racing SubagentStop hook backstop) is itself free to converge
+#   write for the SAME contract_id (a retried `gaia contract finalize`, or a
+#   racing SubagentStop hook backstop) is itself free to converge
 #   again UNLESS the row is already COMPLETE, in which case the WHERE is
 #   false, the UPDATE is skipped, RETURNING yields no row, and the call is a
 #   genuine no-op: no duplicate row, no exception, no mutation of the terminal
@@ -9690,42 +9440,17 @@ def _assert_dispatch_can_write_handoff() -> None:
 #   because a COMPLETE row is never edited in place). Whichever writer loses
 #   the race against an already-COMPLETE row accepts the winner's verdict as-is.
 #
-#   `contract_id` may be omitted (None/empty) by a caller that has no draft
-#   concept (legacy/back-compat path) -- SQLite's UNIQUE index permits any
-#   number of NULL values, so such rows never collide with each other or with
-#   a real contract_id and simply are not deduplicated (there is nothing to
-#   deduplicate against). Only a NON-EMPTY contract_id participates in the
-#   idempotent-UPSERT guarantee.
+#   Only THIS function can produce a clean closure: the born row carries
+#   'never_finalized' from birth (insert_dispatched_handoff), the DO UPDATE
+#   writes cut_reason last-write-wins, and the default None is what clears it.
+#   An agent finalizing its own contract passes nothing; the closure paths
+#   (reap / backstop capture / truncation salvage) pass the reason they are
+#   closing under, so the row stays marked and `WHERE cut_reason IS NOT NULL`
+#   finds it without parsing raw_handoff_json.
 #
-# Public signature (stable for T8/T9):
-#
-#   finalize_agent_contract_handoff(
-#       contract_id: str,
-#       agent_id: str,
-#       workspace: str,
-#       agent_state: str,
-#       raw_handoff_json: str,
-#       *,
-#       session_id: str | None = None,
-#       brief_id: int | None = None,
-#       cut_reason: str | None = None,
-#       db_path: Path | None = None,
-#   ) -> dict
-#
-#   v39 adds `cut_reason`, and with it the property that only THIS function can
-#   produce a clean closure: the born row carries 'never_finalized' from birth
-#   (insert_dispatched_handoff), the DO UPDATE writes cut_reason last-write-wins,
-#   and the default None is what clears it. An agent finalizing its own contract
-#   passes nothing; the closure paths (reap / backstop capture / truncation
-#   salvage) pass the reason they are closing under, so the row stays marked and
-#   `WHERE cut_reason IS NOT NULL` finds it without parsing raw_handoff_json.
-#
-#   Returns {"status": "applied", "created": bool, "handoff_id": int | None,
-#   "contract_id": str}. `created` is True only for the call that actually
-#   inserted the row; every later call for the same contract_id returns
-#   `created=False` with the SAME `handoff_id` -- this is how a caller (the
-#   CLI, T9's backstop) tells "I just wrote this" apart from "this was
-#   already finalized" without a second round trip.
+#   `created` in the result is True when the call inserted the row or converged
+#   a non-terminal one, and False with the SAME `handoff_id` when the row was
+#   already COMPLETE.
 #
 #   Permission gate: `_assert_dispatch_can_write_handoff`.
 # ---------------------------------------------------------------------------
@@ -9746,9 +9471,10 @@ def finalize_agent_contract_handoff(
     """Idempotently write the terminal agent_contract_handoffs row.
 
     See the module comment immediately above for the full idempotency-key
-    contract. In short: INSERT ... ON CONFLICT(contract_id) DO NOTHING, so a
-    second call for the same ``contract_id`` never creates a second row --
-    it is a genuine no-op that returns the already-existing row's id.
+    contract. In short: INSERT ... ON CONFLICT(contract_id) DO UPDATE ... WHERE
+    the row is not terminal, so a call for the same ``contract_id`` never
+    creates a second row: it converges a non-terminal row, and is a no-op that
+    returns the existing id when the row is already COMPLETE.
 
     Args:
         contract_id:      The CLI-minted draft/contract id (the idempotency
@@ -9771,8 +9497,8 @@ def finalize_agent_contract_handoff(
                           never read from the environment. A None here NEVER
                           clears a binding already stamped on the row at birth
                           (see the COALESCE in the UPSERT below).
-        brief_id:         briefs.id FK (optional -- EXTENSION_POINT).
-        cut_reason:       v39 structural cut marker (gaia.state.CUT_REASONS).
+        brief_id:         briefs.id FK (optional).
+        cut_reason:       Structural cut marker (gaia.state.CUT_REASONS).
                           DEFAULT None, and that default is the point: this
                           function is the ONLY writer that can produce a CLEAN
                           closure, and it does so precisely by leaving this
@@ -9788,16 +9514,17 @@ def finalize_agent_contract_handoff(
         db_path:          Optional explicit DB path (used by tests).
 
     Returns:
-        {"status": "applied", "created": True, "handoff_id": <new id>,
-         "contract_id": contract_id} on the FIRST write for this contract_id.
+        {"status": "applied", "created": True, "handoff_id": <row id>,
+         "contract_id": contract_id} when this call inserted the row or
+        converged a non-terminal one.
         {"status": "applied", "created": False, "handoff_id": <existing id>,
-         "contract_id": contract_id} on every SUBSEQUENT call (the no-op).
+         "contract_id": contract_id} when the row was already COMPLETE (the
+        no-op).
 
     Raises:
         ValueError: contract_id is empty/None.
-        HandoffWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator
-            (see _assert_dispatch_can_write_handoff; T8 owns the fleet-seed
-            inversion of this gate).
+        HandoffWriteForbidden: when GAIA_DISPATCH_AGENT names an unseeded agent
+            (see _assert_dispatch_can_write_handoff).
     """
     if not contract_id:
         raise ValueError(
@@ -9834,9 +9561,9 @@ def finalize_agent_contract_handoff(
             # a plain deferred BEGIN produces when the body is SELECT-then-INSERT
             # (here: _ensure_workspace_row's SELECT, then the INSERT below). With
             # IMMEDIATE, the second cycle waits (busy_timeout) for the first to
-            # commit rather than deadlocking. The idempotency contract is
-            # unchanged: contract_id UNIQUE + ON CONFLICT DO NOTHING still makes
-            # the second writer for the SAME contract_id a genuine no-op.
+            # commit rather than deadlocking. The contract_id UNIQUE index plus
+            # the ON CONFLICT ... WHERE guard below still make a second writer
+            # for the SAME contract_id a no-op once the row is terminal.
             con.execute("BEGIN IMMEDIATE")
             try:
                 _ensure_workspace_row(con, workspace)
@@ -9967,7 +9694,7 @@ def finalize_agent_contract_handoff(
                         "contract_id": contract_id,
                     }
                 # No returned row -- a terminal row for this contract_id already
-                # existed (a prior finalize call, or -- T9 -- a racing hook backstop
+                # existed (a prior finalize call, or a racing hook backstop
                 # that got there first). Look the winner's row up explicitly and
                 # report the no-op with its id.
                 existing = con.execute(
@@ -10021,9 +9748,6 @@ def _seal_cut_harness_record(
 # Public API: insert_dispatched_handoff (v37 -- born-at-dispatch nascent row)
 # ---------------------------------------------------------------------------
 #
-# Brief: contrato-binding-y-verificacion-por-task-id, plan 34 task 5
-# ("born-at-dispatch writer lifecycle").
-#
 # The FIRST half of the born-at-dispatch lifecycle: a handoff row is BORN at
 # dispatch time -- before the agent produces any contract envelope -- carrying
 # agent_state='DISPATCHED' and the four binding coordinates (plan_task_id,
@@ -10062,8 +9786,8 @@ def _seal_cut_harness_record(
 # Idempotent by construction (INSERT ... ON CONFLICT(contract_id) DO NOTHING):
 # a re-dispatch / re-fire for the SAME contract_id never births a second row
 # and never clobbers a row that has already converged to a terminal verdict.
-# 'DISPATCHED' is a ROW state only -- never an envelope agent_state value (plan
-# 34 F9); it exists solely to mark "born, not yet closed" so the stop hook can
+# 'DISPATCHED' is a ROW state only -- never an envelope agent_state value; it
+# exists solely to mark "born, not yet closed" so the stop hook can
 # tell a turn that produced its own contract from one that never finalized, and
 # close each accordingly without ever producing a false COMPLETE.
 #
@@ -10113,7 +9837,7 @@ def insert_dispatched_handoff(
         raw_handoff_json:  Optional serialized placeholder envelope. Defaults to
                            a minimal born-at-dispatch marker (the column is NOT
                            NULL, but no contract envelope exists yet at birth).
-        session_id:        CLAUDE_SESSION_ID at dispatch time (optional).
+        session_id:        Session id at dispatch time (optional).
         brief_id:          briefs.id FK (optional).
         agent_name:        The dispatched agent's NAME (``gaia-system``,
                            ``gaia-verifier``). Recorded INSIDE the birth envelope,
@@ -10268,13 +9992,12 @@ def agent_contract_handoff_exists(
 ) -> bool:
     """Return True iff ANY row exists for ``contract_id``.
 
-    Read-only helper exposing the existence check T9's conditional hook
-    backstop was originally designed around. Kept here (rather than inlined in
+    Read-only helper exposing the existence check. Kept here (rather than inlined in
     the hook) so callers share the SAME notion of existence that
     :func:`finalize_agent_contract_handoff` relies on (the `contract_id` UNIQUE
     index) -- no separate query to keep in sync.
 
-    NOTE (v37 born-at-dispatch): this returns True for a NASCENT row too -- one
+    NOTE: this returns True for a NASCENT row too -- one
     born at dispatch with ``agent_state='DISPATCHED'`` that has not yet
     converged to a terminal verdict. A caller that means "did the agent
     FINALIZE a terminal row" must use :func:`agent_contract_handoff_finalized`
@@ -10310,7 +10033,7 @@ def agent_contract_handoff_state(
 ) -> "str | None":
     """Return the current ``agent_state`` of the row for ``contract_id``, or None.
 
-    v37 born-at-dispatch (plan 34 task 5). The three states a caller cares about:
+    The states a caller cares about:
 
       * None            -- no row exists at all for this contract_id.
       * 'DISPATCHED'    -- a NASCENT row was born at dispatch but has not yet
@@ -10352,12 +10075,11 @@ def agent_contract_handoff_finalized(
 ) -> bool:
     """Return True iff a TERMINAL (non-DISPATCHED) row exists for ``contract_id``.
 
-    v37 born-at-dispatch (plan 34 task 5). This is the "did the agent FINALIZE"
-    question, distinct from :func:`agent_contract_handoff_exists` ("does ANY row
-    exist"): a nascent row born at dispatch (``agent_state='DISPATCHED'``) exists
-    but is NOT finalized. The conditional hook backstop and the M4 fence-missing
-    reconstruction both key on THIS notion -- a nascent row must not be mistaken
-    for a completed one.
+    The "did the agent FINALIZE" question, distinct from
+    :func:`agent_contract_handoff_exists` ("does ANY row exist"): a nascent row
+    born at dispatch (``agent_state='DISPATCHED'``) exists but is NOT finalized.
+    The SubagentStop reconstruction of a missing fence keys on THIS notion -- a
+    nascent row must not be mistaken for a completed one.
 
     Args:
         contract_id: The draft/contract id to check. A falsy value returns False.
@@ -10489,7 +10211,7 @@ def find_orphaned_dispatched_handoff(
 ) -> "dict | None":
     """Locate a nascent DISPATCHED row for ``(session_id, agent_id)``, or None.
 
-    v37 born-at-dispatch (plan 34 task 5) -- the reaper's orphan-discovery
+    The reaper's orphan-discovery
     query. A row born at dispatch is keyed by its ``contract_id``, which a caller
     that did not observe the dispatch cannot reconstruct, so the orphan is found
     instead by the coordinate pair the birth DOES stamp: ``session_id`` +
@@ -10499,17 +10221,13 @@ def find_orphaned_dispatched_handoff(
     dispatch began minting a real, adoptable identity
     (``modules.agents.dispatch_identity.mint_dispatch_identity``), this column
     carries a MINTED handle (``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``),
-    the same space every other writer on this table uses; the agent's NAME is no
-    longer here at all -- it lives in the birth ENVELOPE under
-    :data:`BIRTH_AGENT_NAME_KEY`, which is what
-    :func:`find_dispatched_row_by_agent_name` matches on. Rows born BEFORE that
-    change still hold the agent NAME in this column, and a caller searching by
-    one shape while the row carries the other matches NOTHING -- the defect that
-    left every born row stuck in 'DISPATCHED' (zero reaps ever recorded) while
-    the reaper's own unit tests passed against fixtures born under the other
-    shape. So ``agent_id`` accepts EITHER a single identity OR an iterable of
-    candidate identities, matched with IN (...): a caller that does not know
-    which shape the row carries passes both.
+    the same space every other writer on this table uses; the agent's NAME lives
+    in the birth ENVELOPE under :data:`BIRTH_AGENT_NAME_KEY`, which is what
+    :func:`find_dispatched_row_by_agent_name` matches on. Older rows still hold
+    the agent NAME in this column, and a search by one shape matches nothing in
+    a row carrying the other. So ``agent_id`` accepts EITHER a single identity
+    OR an iterable of candidate identities, matched with IN (...): a caller that
+    does not know which shape the row carries passes both.
 
     Only rows still in the 'DISPATCHED' ROW state are returned: a row that has
     already converged to a terminal verdict is not an orphan and is skipped. The
@@ -10592,7 +10310,7 @@ def find_dispatched_row_by_agent_name(
     """Locate the SOLE nascent DISPATCHED row born for ``agent_name`` in a session.
 
     The fallback lane for a turn that never ADOPTED the identity minted for it at
-    dispatch. Since the born row's ``agent_id`` column now holds that minted
+    dispatch. Since the born row's ``agent_id`` column holds that minted
     handle (not the agent's name), an unadopting turn shares no identifier with
     its own row: the agent minted an unrelated handle of its own, so neither the
     row's ``contract_id`` nor its ``agent_id`` can be reached from anything the
@@ -10648,7 +10366,7 @@ def find_dispatched_row_by_agent_name(
 
 
 # ---------------------------------------------------------------------------
-# Public API: claim_dispatch_row (v43 -- atomic dispatch->start correlation)
+# Public API: claim_dispatch_row (atomic dispatch->start correlation)
 # ---------------------------------------------------------------------------
 #
 # SubagentStart holds the host's own coordinates (prompt_id, task_description,
@@ -10829,9 +10547,8 @@ def claim_dispatch_row(
         dispatch_description: Host task_description observed at SubagentStart.
         dispatch_tool_use_id: Host call id of the Task/Agent call that started
                               this turn, when the host reports one at start
-                              (layer 0); a host that never reports one (today's
-                              Claude Code) passes None and the ladder behaves
-                              exactly as it did before this parameter existed.
+                              (layer 0); a host that reports none passes None
+                              and the ladder starts at layer (a).
         db_path:              Optional explicit DB path (used by tests).
 
     Returns:
@@ -10982,7 +10699,10 @@ def is_born_at_dispatch_row(
     *,
     db_path: "Path | None" = None,
 ) -> bool:
-    """Return True iff the row for ``contract_id`` CAME from a dispatch.
+    """Return True iff the row for ``contract_id`` carries a dispatch binding column.
+
+    False is not proof the row never came from a dispatch: a free dispatch with
+    no plan coordinates leaves all three columns NULL.
 
     Structural, not textual: ``kind``, ``plan_id`` and ``parent_handoff_id`` are
     written only by :func:`insert_dispatched_handoff` and by
@@ -10996,8 +10716,9 @@ def is_born_at_dispatch_row(
 
     A LINK ANSWERS TRUE, and must: a resumption is the same turn, still holding
     the dispatch identity it adopted. Answering by the row alone made a resumed
-    turn look like one that never adopted -- see the constraint-tuple comment for
-    what the caller below then did to a concurrent sibling's live dispatch.
+    turn look like one that never adopted -- see the comment on
+    ``_CONTINUATION_CONSTRAINT_COLUMNS`` for what the closure then did to a
+    concurrent sibling's live dispatch.
 
     The caller that needs this is the born-row closure: when the turn's OWN
     contract row is itself a born row, the turn adopted its dispatch identity and
@@ -11028,18 +10749,12 @@ def is_born_at_dispatch_row(
 # Public API: mirror_partial_contract_handoff (incremental fill -> the row)
 # ---------------------------------------------------------------------------
 #
-# Brief: contrato-adoptado-en-dispatch-con-llenado-incremental-y-finalize (AC-2).
-#
-# Incremental contract building persisted to DISK only: `gaia contract
-# set/add/fill` wrote the draft under ``data_dir()/contract_drafts/`` and nothing
-# reached the row. A turn cut before `finalize` therefore left a row holding the
-# birth envelope and none of the evidence the turn had already accumulated -- the
-# work existed on disk but was invisible to every DB reader. This is the
-# capability that closes that gap: the partial envelope is MIRRORED onto the
+# `gaia contract set/add/fill` write the draft under
+# ``data_dir()/contract_drafts/`` and MIRROR the partial envelope onto the
 # turn's own already-born row as it is built, so the row carries recoverable
 # partial evidence at every point of the turn, not only after finalize.
 #
-# It is a strictly WEAKER writer than finalize, by construction -- three
+# It is a strictly WEAKER writer than finalize, by construction -- four
 # properties, each enforced by the shape of the statement rather than by a
 # caller's discipline:
 #
@@ -11050,10 +10765,10 @@ def is_born_at_dispatch_row(
 #     sole business of insert_dispatched_handoff and finalize.
 #   * NEVER TOUCHES A ROW WHOSE TURN ALREADY CLOSED. The guard is
 #     ``agent_state NOT IN <CLOSED_TURN_PLAN_STATUSES>``, NOT the narrower
-#     TERMINAL_PLAN_STATUSES finalize converges under, and the difference is the
-#     measured defect: a producer that closed NEEDS_VERIFICATION is not terminal,
-#     so a mirror used to MERGE the same agent's next assignment into the record
-#     an independent verifier was about to read. Evidence is per-turn; a turn
+#     TERMINAL_PLAN_STATUSES finalize converges under: a producer that closed
+#     NEEDS_VERIFICATION is not terminal, so a mirror under the narrower guard
+#     would MERGE the same agent's next assignment into the record an
+#     independent verifier is about to read. Evidence is per-turn; a turn
 #     that ended accepts none. This is the second layer -- `gaia contract
 #     set/add/fill` already diverts such a write into a continuation before it
 #     gets here (bin/cli/contract.py::_plan_continuation) -- and it is what makes
@@ -11069,9 +10784,9 @@ def is_born_at_dispatch_row(
 #     binding columns (plan_task_id, plan_id, parent_handoff_id, kind), the
 #     attribution (session_id) and the birth created_at are untouched for the
 #     same reason finalize's DO UPDATE leaves them alone.
-#   * NEVER CLEARS THE CUT MARK (v39). cut_reason is not in the SET list either,
+#   * NEVER CLEARS THE CUT MARK. cut_reason is not in the SET list either,
 #     so mirroring evidence onto a row does NOT make it look cleanly closed. This
-#     is what keeps the two AC-2/AC-3 halves consistent: a turn cut after several
+#     is what keeps the two halves consistent: a turn cut after several
 #     `set`/`add`/`fill` calls leaves a row that BOTH carries its partial
 #     evidence AND still reads as a cut. Only finalize earns the clean state.
 #
@@ -11082,7 +10797,7 @@ def is_born_at_dispatch_row(
 # the row stays DISPATCHED would erase the only coordinate that lane has, so the
 # marker keys are carried forward onto the mirrored envelope. finalize still
 # replaces the envelope wholesale -- by then the row has left 'DISPATCHED' and
-# the name lane no longer looks at it.
+# the name lane only looks at rows still in that state.
 # ---------------------------------------------------------------------------
 
 # Top-level keys of the birth envelope that a mirror carries forward (see the
@@ -11098,7 +10813,7 @@ def merge_birth_markers(existing_raw: "str | None", envelope_raw: str) -> str:
     the existing row carries no marker -- the mirror must degrade to "write the
     partial envelope as-is", never to a failed write.
 
-    Public because the mirror is no longer the only writer that replaces a born
+    Public because the mirror is not the only writer that replaces a born
     row's envelope: the SubagentStop capture converges that same row when the
     turn never finalized, and it must preserve the dispatch's own marks for the
     same reason. One definition of "which keys are birth marks", used by both.
@@ -11191,7 +10906,7 @@ def mirror_partial_contract_handoff(
                     f"""
                     -- raw_handoff_json is the ONLY column written: agent_state,
                     -- the born-at-dispatch binding (plan_task_id, plan_id,
-                    -- parent_handoff_id, kind), session_id, the v39 cut_reason
+                    -- parent_handoff_id, kind), session_id, cut_reason
                     -- and the birth created_at all stay exactly as they are.
                     -- Leaving cut_reason alone is load-bearing: a mirrored row
                     -- is a turn still in flight, and letting evidence-filling
@@ -11353,25 +11068,21 @@ def record_update_contracts_outcome(
 
 
 # ---------------------------------------------------------------------------
-# Public API: the CONTINUATION chain (v46)
+# Public API: the CONTINUATION chain
 # ---------------------------------------------------------------------------
 #
 # A TURN IS A CONTRACT. RESUMING DOES NOT REOPEN: IT CONTINUES.
 #
 # When the orchestrator resumes an agent that already closed its turn, the agent
-# keeps working -- and, before this, had nowhere to write. Its row was terminal,
-# so mirror_partial_contract_handoff answered `skipped/terminal` and
-# finalize_agent_contract_handoff's `WHERE agent_state NOT IN (COMPLETE)` guard
-# converged nothing while still reporting success. Every finding the resumed turn
-# produced was dropped, and the row stayed frozen at the first close's content.
+# keeps working, but its row is closed: mirror_partial_contract_handoff answers
+# `skipped/closed` and finalize_agent_contract_handoff's `WHERE agent_state NOT
+# IN <TERMINAL_PLAN_STATUSES>` guard (COMPLETE only) converges nothing.
 #
-# The obvious repair -- prepare a fresh row when the resumption starts -- is not
-# available: a resumption emits NO birth. The nascent row is written only from
-# the dispatching PreToolUse:Task event; a resume arrives as SendMessage and
-# births nothing. (Measured: since 2026-08-01 every specialist shows more
-# agent.complete than agent.dispatch events -- platform-architect 426/256,
-# gitops-operator 301/232, gaia-system 265/240.) So the ONLY moment left is the
-# FIRST WRITE, which is where the CLI opens a continuation.
+# A fresh row cannot be prepared when the resumption starts, because a
+# resumption emits NO birth: the nascent row is written only from the
+# dispatching PreToolUse:Task event, and a resume arrives as SendMessage. So the
+# ONLY moment left is the FIRST WRITE, which is where the CLI opens a
+# continuation.
 #
 # What is reused across a resumption is the agent's CONTEXT, not its RECORD. A
 # closed row is never modified -- not its state, not its content. The new work is
@@ -11382,16 +11093,14 @@ def record_update_contracts_outcome(
 #     is `agent_state IN gaia.state.CLOSED_TURN_PLAN_STATUSES` -- every state an
 #     agent can finalize under. It is deliberately NOT TERMINAL_PLAN_STATUSES,
 #     which answers a different question (may a later, truer verdict replace this
-#     one?) and is a strict subset. Both frontiers document each other at their
-#     definitions; the gap between them is where the measured defect lived. A
-#     turn that closed declaring NEEDS_VERIFICATION had ENDED, yet its row was
-#     not terminal, so the same agent's next assignment merged its evidence into
-#     the record it had already closed and its close replaced its own earlier
-#     verdict -- every call exiting 0. Widening the trigger does not touch the
+#     one?) and is a strict subset. A turn that closed declaring
+#     NEEDS_VERIFICATION has ended yet its row is not terminal, so under the
+#     narrower set the same agent's next assignment would merge its evidence into
+#     the record it had already closed. Widening the trigger does not touch the
 #     convergence the narrower set guards: finalize_agent_contract_handoff still
 #     refuses only an already-COMPLETE row, so every lane that exists to correct
 #     a record still reaches it (gaia.state, section 1b, records what those lanes
-#     are and what merging the two sets was measured to break).
+#     are).
 #   * ONE LINK PER CLOSED ROW. The insert runs under BEGIN IMMEDIATE and first
 #     looks for an existing child, so two concurrent first-writes cannot fork a
 #     closed row into two continuations; the loser adopts the winner's link.
@@ -11407,61 +11116,41 @@ def record_update_contracts_outcome(
 # CAME FROM. Two categories are inherited and one is not, and the two rules point
 # in opposite directions because the ways they fail are opposite:
 #
-#   * A column that DESCRIBES THE ASSIGNMENT is never inherited. Inheriting it
-#     LIES. The assignment (dispatch_prompt), its description, the prompt and
-#     tool-use correlation keys, the project, the brief and the parent binding
-#     all belong to the turn that ENDED; the link exists precisely because a new
-#     turn began, so no new value is available at mint time and the old one is
-#     false. Inheriting them produced a link whose content described renaming a
-#     module while its recorded assignment said "audit the pipeline": not empty,
-#     but populated with something untrue, which is worse, because an empty
-#     column is visible to every reader and a filled one is not. They stay NULL,
-#     and the dispatch coordinates of the turn that ended remain readable where
-#     they already are -- on the parent, which `gaia contract chain` walks to.
+#   * A column that DESCRIBES THE ASSIGNMENT is never inherited. The assignment
+#     (dispatch_prompt), its description, the prompt and tool-use correlation
+#     keys, the project, the brief and the parent binding all belong to the turn
+#     that ENDED; no new value exists at mint time and the old one would describe
+#     work the link is not doing. They stay NULL, and the dispatch coordinates of
+#     the turn that ended remain readable on the parent, which `gaia contract
+#     chain` walks to.
 #   * A column that CONSTRAINS THE AGENT is never dropped. Dropping it makes the
-#     resumption an ESCAPE HATCH. MEASURED: minting the link clean took
-#     ``plan_task_id`` with it, so a producer bound to a plan task -- forbidden
+#     resumption an ESCAPE HATCH: a producer bound to a plan task is forbidden
 #     from signing its own COMPLETE by both finalize seams
 #     (bin/cli/contract.py::cmd_finalize and
-#     hooks/adapters/claude_code.py::_blind_verification_required) -- self-signed
-#     simply by writing once more after its close: the producer's contract id
-#     answered "blocked, task 910" and the link's answered "not blocked, None".
-#     The SubagentStop gate is reached the same way, since it resolves the row by
-#     harness id and that lookup collapses the chain to this very link
-#     (collapse_continuation_chains).
+#     hooks/adapters/subagent_stop_core.py::_blind_verification_required), and a
+#     link without ``plan_task_id`` would let it self-sign by writing once more
+#     after its close. The SubagentStop gate is reached the same way, since it
+#     resolves the row by harness id and that lookup collapses the chain to this
+#     very link (collapse_continuation_chains).
 #
-# The two categories cannot be merged because a constraint is not a description:
-# ``dispatch_prompt`` says what the ended turn was ASKED, which the new turn does
-# not know; ``plan_task_id`` says what the agent MAY NOT DO, which the new turn
-# has not stopped being subject to. Its truth does not expire with the turn --
-# the same agent is still working the same plan task -- so carrying it forward
-# asserts nothing the record does not already hold.
+# A constraint is not a description: ``dispatch_prompt`` says what the ended turn
+# was ASKED, which the new turn does not know; ``plan_task_id`` says what the
+# agent MAY NOT DO, which the new turn has not stopped being subject to.
 #
-# ``kind``, ``plan_id`` and ``parent_handoff_id`` belong here for the same reason
-# as ``plan_task_id``, and were once left out of it by reading them as labels for
-# WHICH assignment this is rather than as restrictions on it. That reading is
-# wrong, and one code path is enough to make it wrong: ``is_born_at_dispatch_row``
-# answers "did this turn adopt an identity minted at dispatch?" by asking whether
-# ANY of the three is present, and its only consumer -- the SubagentStop closure,
-# hooks/modules/agents/handoff_persister.py::close_born_dispatch_row -- turns a
-# YES into a REFUSAL: the last-resort lane that finds a born row by the dispatched
-# agent's NAME is then skipped entirely. That lane must be refused for an adopting
-# turn, because a NAME is shared by every dispatch of that agent while an identity
-# is not. MEASURED: a link minted without the three answered "not born at
-# dispatch" for a turn that was; the lane switched back on; and since the turn had
-# by then closed both its own rows, the only row still DISPATCHED under that name
-# was a CONCURRENT SIBLING'S live dispatch -- which the resuming turn closed and
-# stamped as superseded by its own link.
-#
-# They pass the DESCRIPTIVE test too, which is why carrying them forward asserts
-# nothing false: each names something a resumption does not change -- the same
-# agent, still running the same kind of turn, on the same plan, answering to the
-# same producer's row. ``dispatch_prompt`` is the contrast: it is the text of an
-# assignment that ENDED, and no new value for it exists at mint time.
+# ``kind``, ``plan_id`` and ``parent_handoff_id`` belong here for the same reason:
+# ``is_born_at_dispatch_row`` answers "did this turn adopt an identity minted at
+# dispatch?" by asking whether ANY of the three is present, and its only consumer
+# -- the SubagentStop closure,
+# hooks/modules/agents/handoff_persister.py::close_born_dispatch_row -- skips the
+# last-resort lane that finds a born row by the dispatched agent's NAME on a YES.
+# That lane must be refused for an adopting turn, because a NAME is shared by every
+# dispatch of that agent while an identity is not. A link minted without the three
+# answers "not born at dispatch", the lane switches back on, and the only row
+# still DISPATCHED under that name is then a CONCURRENT SIBLING'S live dispatch,
+# which the resuming turn would close.
 #
 # The admission rule stays narrow: some code path must REFUSE an action because
-# of the column. One that merely identifies the work stays out, or it reopens the
-# lie the first category exists to prevent.
+# of the column. One that merely identifies the work stays out.
 _CONTINUATION_CONSTRAINT_COLUMNS = (
     "plan_task_id",
     "kind",
@@ -11513,10 +11202,10 @@ def _row_by_contract_id(con: sqlite3.Connection, contract_id: str):
 def _continuation_edge(row: sqlite3.Row) -> "int | None":
     """The parent link of ``row``, as a diagnosis rather than a key error.
 
-    A ``SELECT *`` against a database predating schema v46 returns a row with no
-    such key, and sqlite3.Row reports that as ``IndexError: No item with that
-    key`` -- a message that names neither the column nor the reason, and would
-    have been the whole content of the recorded incident.
+    A ``SELECT *`` against a database without the ``continues_handoff_id``
+    column returns a row with no such key, and sqlite3.Row reports that as
+    ``IndexError: No item with that key`` -- a message that names neither the
+    column nor the reason.
     """
     try:
         return row["continues_handoff_id"]
@@ -11589,8 +11278,8 @@ class ContinuationChainUnreadable(RuntimeError):
     """The chain of a contract id could not be READ -- distinct from "no row".
 
     Raised only after the substrate itself refused the walk (most concretely: a
-    database predating ``continues_handoff_id``, schema < v46, where selecting
-    the edge raises). An id that simply names no row is not this: that answer is
+    database without the ``continues_handoff_id`` column, where selecting the
+    edge raises). An id that simply names no row is not this: that answer is
     known, and it is the empty chain.
     """
 
@@ -11663,15 +11352,11 @@ def continuation_chain(
     is the link currently open. A contract that was never resumed returns a
     single-element list (itself); an unknown contract id returns ``[]``.
 
-    AN EMPTY LIST MEANS "NO SUCH ROW" AND NOTHING ELSE. This used to catch every
-    exception and return ``[]``, which merged that answer with "the walk failed"
-    -- and the merge was not hypothetical: against a database still on schema
-    < v46 the edge column does not exist, so every existing contract read as
-    absent and ``gaia contract chain`` told the operator no row existed for an id
-    they were holding. A failure now RAISES
+    AN EMPTY LIST MEANS "NO SUCH ROW" AND NOTHING ELSE. A failed walk (for
+    example a database where the edge column does not exist) RAISES
     :class:`ContinuationChainUnreadable` and leaves a
-    ``contract.chain_unreadable`` harness_event behind, so the distinction
-    survives the process that made it.
+    ``contract.chain_unreadable`` harness_event behind, so "the walk failed"
+    is never read as "no such row".
 
     This is the read behind ``gaia contract chain``: given ANY link, an operator
     recovers the whole chain with one call rather than following ids by hand.
@@ -11740,7 +11425,7 @@ def find_dispatch_row_by_harness_agent_id(
     db_path: "Path | None" = None,
 ) -> "dict | None":
     """The host-neutral join from a harness's own per-run session id back to
-    the ONE row it was stamped onto (plan 65, T11).
+    the ONE row it was stamped onto.
 
     Host-neutral counterpart of ``hooks.modules.agents.handoff_persister.
     dispatch_row_by_harness_id``, which reads Claude Code's own ``task_info``
@@ -12134,10 +11819,8 @@ def attach_worktree_capture_to_contract(
 
     Unlike ``stamp_harness_agent_id`` this does NOT refuse a terminal row --
     a dirty worktree's release happens at turn close, which is normally
-    AFTER ``gaia contract finalize`` already landed the verdict (confirmed
-    against the live orphaned-worktree case this function was built for: its
-    contract row was already ``COMPLETE``). Writing capture metadata is not
-    editing the verdict in place -- it is audit-side annex, the same
+    AFTER ``gaia contract finalize`` already landed the verdict. Writing capture
+    metadata is not editing the verdict in place -- it is audit-side annex, the same
     relationship an ``evidence`` row has to a brief/AC whose own state this
     table never gates either.
 
@@ -12196,7 +11879,7 @@ def get_contract_worktree_capture(
     """Read back the capture ``attach_worktree_capture_to_contract`` wrote.
 
     Returns the parsed JSON object, or ``None`` when *contract_id* is falsy,
-    no row exists, the row predates schema v53 (no such column), or the
+    no row exists, the database has no ``worktree_capture_json`` column, or the
     column is NULL / unparseable -- every one of those reads as "nothing
     captured for this contract," never as an error the caller must handle
     separately.
@@ -12232,8 +11915,8 @@ def get_contract_worktree_capture(
 
 # ---------------------------------------------------------------------------
 # Public API: bind_harness_child_session / is_harness_session_bound
-# (plan 65 T10 -- unambiguous binding via the PARENT's own start-adjacent
-# event, plus its read side for the fail-closed backstop)
+# (unambiguous binding via the PARENT's own start-adjacent event, plus its read
+# side for the fail-closed backstop)
 # ---------------------------------------------------------------------------
 #
 # Claude Code's SubagentStart fires ON the child's own turn, so
@@ -12243,20 +11926,20 @@ def get_contract_worktree_capture(
 # no such event: its only start-adjacent signal (``message.part.updated``)
 # fires on the PARENT's own tool part and reports the callID<->child-session
 # pair separately from -- and sometimes after -- the child's first action.
-# T9 already claims the row (``claimed_at``) at Task PreToolUse time, keyed
+# claim_dispatch_row has already claimed the row (``claimed_at``), keyed
 # by that same callID (``dispatch_tool_use_id``, layer 0 of
 # ``claim_dispatch_row``'s ladder). ``bind_harness_child_session`` is the
 # SECOND join this leaves open: stamping the child's own harness_agent_id
 # onto that already-claimed row once the parent's event names it.
 #
 # Deliberately NOT ``claim_dispatch_row`` called a second time: that ladder
-# requires ``claimed_at IS NULL`` and would find nothing on a row T9 already
+# requires ``claimed_at IS NULL`` and would find nothing on a row already
 # claimed (or, worse, decline as "already bound" -- see
 # ``_tool_use_id_already_bound``). This function instead targets the row by
 # ``dispatch_tool_use_id`` directly, in ANY claim state, and carries NO
 # correlation ladder of its own: no FIFO, no divergent-signature guard --
 # an exact, resolvable callID or nothing at all. That asymmetry is the
-# E1 discipline itself: Claude Code's FIFO layer for callID-less rows lives
+# discipline itself: Claude Code's FIFO layer for callID-less rows lives
 # entirely inside ``claim_dispatch_row`` and this function never runs it.
 
 
@@ -12276,7 +11959,7 @@ def bind_harness_child_session(
 
     Also claims the row (``claimed_at``) when it is somehow still unclaimed
     at this point, via ``COALESCE`` -- defensive only. The ordinary sequence
-    is T9's claim first (at Task PreToolUse) and this stamp second (at
+    is claim_dispatch_row's claim first and this stamp second (at
     ``message.part.updated``), but a caller must not depend on that
     ordering to reach a fully bound row.
 
@@ -12351,7 +12034,7 @@ def is_harness_session_bound(
 ) -> bool:
     """Whether any row already carries ``harness_agent_id`` for this session.
 
-    The read side of the plan 65 T10 fail-closed backstop: the OpenCode
+    The read side of the fail-closed backstop: the OpenCode
     adapter denies a dispatched child's tool call until this returns True
     for that child's own session id -- i.e. until
     :func:`bind_harness_child_session` (or, on Claude Code, its own
@@ -12374,15 +12057,15 @@ def is_harness_session_bound(
 
 
 # ---------------------------------------------------------------------------
-# Public API: reap_stale_dispatched_handoffs (plan 65 T13 -- host-death reaper)
+# Public API: reap_stale_dispatched_handoffs (host-death reaper)
 # ---------------------------------------------------------------------------
 #
 # The birth stamp (CUT_REASON_NEVER_FINALIZED) already marks every DISPATCHED
-# row as cut; only finalize clears it. That is enough to FIND a row nobody
-# closed, but not enough to REAP one: a row still legitimately mid-turn is
-# also 'DISPATCHED' with the same birth mark, and closing it out from under a
-# live host would be the exact defect this reaper must not become. So the
-# question this pair of functions answers is not "is this row cut" (every
+# row as cut; only finalize (or reconcile_cut_row) clears it. That is enough to
+# FIND a row nobody closed, but not enough to REAP one: a row still legitimately
+# mid-turn is also 'DISPATCHED' with the same birth mark, and closing it out
+# from under a live host would be the exact defect this reaper must not become.
+# So the question this pair of functions answers is not "is this row cut" (every
 # candidate already is) but "is this row's HOST STILL ALIVE" -- and only the
 # caller can answer that: this module knows nothing about attestation
 # ledgers, host runs, or any other harness-specific liveness signal (it stays
@@ -12391,7 +12074,7 @@ def is_harness_session_bound(
 # a caller passes a predicate over the row, and this module only enforces the
 # staleness window, the promotion, and the idempotency.
 #
-# NO NEW COLUMN (S2 decision, in favor of existing signals): a liveness
+# NO NEW COLUMN, in favor of existing signals: a liveness
 # predicate needs to know WHICH host_run a row belongs to, and no column
 # stores that today. Adding one would need a value to be stamped at claim
 # time by a caller this facade cannot reach without editing the protected
@@ -12779,7 +12462,7 @@ def dispatched_binding_plan_task_id(
     """Return the ``plan_task_id`` bound to the nascent DISPATCHED row for
     ``(session_id, agent_id)``, or None.
 
-    The finalize gate (plan 34 task 7) keys blind verification on whether the
+    The finalize gate keys blind verification on whether the
     turn's dispatch binding carries a ``plan_task_id``. A row born at dispatch
     stamps that binding alongside ``session_id`` + ``agent_id`` (the same
     coordinate pair :func:`find_orphaned_dispatched_handoff` reaps by), so the
@@ -12820,9 +12503,9 @@ def dispatched_binding_plan_task_id_by_contract(
     ``contract_id`` (== ``draft_id``) and NOT the harness session id, so it needs
     to recover the binding by that key instead.
 
-    This is what lets the CLI finalize path (plan 34 task 8) close the
+    This is what lets the CLI finalize path close the
     role-blind self-COMPLETE leak: a turn born at dispatch stamps its
-    ``plan_task_id`` onto the row (task 6), so before the CLI converges a draft to
+    ``plan_task_id`` onto the row, so before the CLI converges a draft to
     a terminal COMPLETE it can ask "is this turn bound to a plan task?" and refuse
     the self-COMPLETE when the answer is yes -- the SAME binding-keyed decision the
     SubagentStop gate already enforces, now applied at the CLI seam too so neither
@@ -12848,9 +12531,9 @@ def dispatched_binding_plan_task_id_by_contract(
     to; a DESCENDANT's binding never reaches back to constrain its ancestor.
 
     Degrades to the flat read on any chain error, which is what a database
-    predating the ``continues_handoff_id`` column (schema < v46) raises. Such a
-    database holds no links at all, so the fallback loses nothing that exists;
-    the walk only ever ADDS a constraint the flat read could not see.
+    without the ``continues_handoff_id`` column raises. Such a database holds no
+    links at all, so the fallback loses nothing that exists; the walk only ever
+    ADDS a constraint the flat read could not see.
     """
     if not contract_id:
         return None
@@ -12992,16 +12675,16 @@ def list_agent_contract_handoffs(
     Args:
         workspace:   Filter by workspace name.
         agent_id:    Filter by agent identity string.
-        session_id:  Filter by CLAUDE session ID.
+        session_id:  Filter by session ID.
         brief_id:    Filter by briefs.id FK.
         agent_state: Filter by resolved agent_state (turn status).
-        contract_id: Filter by the T7 idempotency key (the CLI-minted
+        contract_id: Filter by the idempotency key (the CLI-minted
             draft/contract id) -- see finalize_agent_contract_handoff.
-        harness_agent_id: Filter by the harness's per-run agent id (v40,
-            stamped at SubagentStart -- see stamp_harness_agent_id). This is
+        harness_agent_id: Filter by the harness's per-run agent id (stamped at
+            SubagentStart -- see stamp_harness_agent_id). This is
             the recovery coordinate for a cut turn: the parent's Task result
             carries this id even when the subagent never finalized.
-        cut_reason:  Filter by the exact v39 cut marker (never_finalized /
+        cut_reason:  Filter by the exact cut marker (never_finalized /
             reaped / backstop_capture / salvaged_truncation -- gaia.state.CUT_REASONS).
         any_cut:     Filter to every row that did NOT close cleanly, whatever the
             reason (``cut_reason IS NOT NULL``). Ignored when ``cut_reason`` names
@@ -13016,7 +12699,8 @@ def list_agent_contract_handoffs(
             nearest-ancestor binding ``_inherited_plan_task_id`` resolves.
         since / until: Inclusive ``created_at`` bounds, as ISO-8601 UTC
             strings. Applied in SQL, so ``limit`` counts only matching rows.
-        text:        Substring of the goal, description or conclusion; ASCII
+        text:        Substring of the dispatch prompt, dispatch description or
+            envelope conclusion; ASCII
             case-insensitive, ``%`` and ``_`` literal.
         agent_name:  Read from the birth marker (:data:`BIRTH_AGENT_NAME_KEY`),
             so a finalized row, whose envelope replaced it, does not match.
@@ -13046,8 +12730,6 @@ def list_agent_contract_handoffs(
             clauses.append("brief_id = ?")
             params.append(brief_id)
         if agent_state is not None:
-            # v37: column renamed task_status -> agent_state (plan 34 task 3);
-            # the keyword arg is now agent_state to match (plan 34 task 4).
             clauses.append("agent_state = ?")
             params.append(agent_state)
         if contract_id is not None:
@@ -13181,17 +12863,13 @@ def contract_fill_rate(
 # Public API: insert_episode / insert_episode_anomaly
 # ---------------------------------------------------------------------------
 #
-# Brief: episodic-workflow-to-db (T4).
-#
-# Episodes are the persistence target for SubagentStop telemetry: every agent
-# turn produces one row in the ``episodes`` table plus zero or more child rows
-# in ``episode_anomalies``. The legacy filesystem writers
-# (.claude/project-context/episodic-memory/episodes.jsonl + per-episode JSON
-# files; .claude/project-context/workflow-episodic-memory/run-snapshots.jsonl;
-# anomalies.jsonl) are superseded by these DB writers.
+# Episodes are the persistence target for SubagentStop telemetry
+# (EpisodicMemory.store_episode): every agent turn produces one row in the
+# ``episodes`` table plus zero or more child rows in ``episode_anomalies``;
+# _record_claim_ambiguity writes one more of each when a dispatch claim is refused.
 #
 # No agent_permissions enforcement: episodes are system-internal telemetry
-# written exclusively by the SubagentStop hook chain (not by named subagents).
+# written by hook-side code (not by named subagents).
 # This mirrors the approach used for ``approval_grants`` and
 # ``agent_contract_handoffs`` -- they are infrastructure tables, not surfaces
 # the per-agent permission matrix governs.
@@ -13238,10 +12916,8 @@ def insert_episode(
 ) -> dict:
     """Insert a row into the ``episodes`` table.
 
-    Called from ``EpisodicMemory.store_episode()`` (T4 of brief
-    episodic-workflow-to-db). The caller is the SubagentStop hook chain,
-    which has no GAIA_DISPATCH_AGENT set -- there is no per-agent permission
-    check.
+    Called from ``EpisodicMemory.store_episode()`` and ``_record_claim_ambiguity``;
+    there is no per-agent permission check.
 
     JSON-shaped columns (``clarifications``, ``keywords``, ``tags``,
     ``commands_executed``, ``context_metrics``) accept either a Python
@@ -13311,7 +12987,7 @@ def insert_episode(
         except Exception:
             con.rollback()
             raise
-        # Automatic retention (episodic-workflow-to-db growth control): once
+        # Automatic retention: once
         # the row is safely committed, occasionally prune episodes older than
         # the retention window. Gated to ~1/N inserts so it costs nothing on
         # the common turn; wrapped so a prune failure NEVER masks the
@@ -13328,26 +13004,22 @@ def insert_episode(
 # Episode retention (automatic, DB-side)
 # ---------------------------------------------------------------------------
 #
-# The ``episodes`` table had NO DB-side retention: the only retention that
-# existed (bin/cli/cleanup.py, tools/memory/episodic.py.cleanup_old_episodes)
-# operates on the LEGACY filesystem layout and explicitly does not touch
-# gaia.db. Left unbounded, ``episodes`` grows without limit (13.7k rows /
-# ~13MB observed in workspace 'me'), which also slows every full-table read.
+# Left unbounded, ``episodes`` grows without limit and slows every full-table
+# read.
 #
 # Policy: 90 days (user decision). ``prune_episodes`` is the testable unit --
 # a single ``DELETE FROM episodes WHERE timestamp < cutoff``. The schema's
 # ``episodes_ad`` AFTER DELETE trigger keeps ``episodes_fts`` synchronized, so
-# no separate FTS cleanup is needed. Timestamps are stored as
+# no separate FTS cleanup is needed. EpisodicMemory.store_episode stamps
 # ``datetime.now(timezone.utc).isoformat()`` (fixed ``+00:00`` offset), so a
 # lexicographic string comparison against a cutoff built the same way is
-# correct.
+# correct for those rows; a row inserted without a timestamp gets ``_now_iso()``
+# (``...Z``) and compares by that string order.
 #
-# Trigger point: inside ``insert_episode`` (the sole SubagentStop write path),
+# Trigger point: inside ``insert_episode``,
 # behind a probabilistic 1/N gate (_maybe_prune_episodes). This keeps the cost
 # off the hot path -- a turn pays for the prune only ~1/N of the time -- while
-# staying fully automatic with no new scheduler, hook, or cron. A closing hook
-# was considered but rejected: SessionEnd fires just as often and would add a
-# second write path to reason about.
+# staying fully automatic with no new scheduler, hook, or cron.
 
 EPISODE_RETENTION_DAYS = 90
 
@@ -13434,9 +13106,8 @@ def _maybe_prune_episodes(db_path: Path | None = None) -> None:
 # ---------------------------------------------------------------------------
 #
 # ``harness_events`` is the append-only audit mirror written on every hook
-# firing (write_harness_event); it had NO retention and grew unbounded (~11k
-# rows already past the window / ~39% of the table observed in workspace 'me').
-# Left unbounded it slows every full-table read and inflates the DB file.
+# firing (write_harness_event); left unbounded it slows every full-table read
+# and inflates the DB file.
 #
 # Policy: 90 days (user decision -- parity with episodes). ``prune_harness_events``
 # is the testable unit: a single ``DELETE FROM harness_events WHERE ts < cutoff``.
@@ -13445,8 +13116,9 @@ def _maybe_prune_episodes(db_path: Path | None = None) -> None:
 # (which episodes uses) -- for the lexicographic string comparison to be correct.
 # harness_events has no FK and no child tables, so the DELETE needs no cascade.
 #
-# Trigger point: inside write_harness_event (the sole write path) behind the
-# shared 1/N probabilistic gate, mirroring episodes -- automatic, no scheduler.
+# Trigger point: inside write_harness_event and
+# write_task_close_override_divergence_event, behind the shared 1/N probabilistic
+# gate, mirroring episodes; write_harness_event_lean does not sweep.
 
 HARNESS_EVENT_RETENTION_DAYS = 90
 _HARNESS_EVENT_PRUNE_ENV = "GAIA_HARNESS_EVENT_PRUNE_SAMPLE_RATE"
@@ -13520,9 +13192,7 @@ def _maybe_prune_harness_events(db_path: Path | None = None) -> None:
 # ---------------------------------------------------------------------------
 #
 # ``agent_contract_handoffs`` persists one terminal contract row per finalized
-# agent turn; it had NO retention and grew unbounded (~5.4k rows / ~51 days
-# observed in workspace 'me'). Policy: 90 days (user decision -- parity with
-# episodes).
+# agent turn. Policy: 90 days (user decision -- parity with episodes).
 #
 # FK/cascade: agent_contract_handoff_approvals.handoff_id REFERENCES
 # agent_contract_handoffs(id) ON DELETE CASCADE (schema.sql). _connect() sets
@@ -13534,9 +13204,8 @@ def _maybe_prune_harness_events(db_path: Path | None = None) -> None:
 # The ``created_at`` column is written by _now_iso() (``...Z`` UTC format), so
 # the cutoff is built with the same strftime format via _retention_cutoff_iso.
 #
-# Trigger point: inside finalize_agent_contract_handoff -- the SOLE runtime
-# write path (bin/cli/contract.py + hooks/modules/agents/handoff_persister.py)
-# -- on the winner (created) branch after commit, behind the shared 1/N gate.
+# Trigger point: inside finalize_agent_contract_handoff, on the winner (created)
+# branch after commit, behind the shared 1/N gate.
 
 HANDOFF_RETENTION_DAYS = 90
 _HANDOFF_PRUNE_ENV = "GAIA_HANDOFF_PRUNE_SAMPLE_RATE"
