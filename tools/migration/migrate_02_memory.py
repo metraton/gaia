@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
-"""
-migrate_02_memory.py
+"""Convert curated memory .md files into a SQL file of INSERT OR IGNORE statements.
 
-Convierte los archivos .md de memoria curada -> archivo SQL con INSERT OR IGNORE.
+It never opens the database, and rerunning the SQL skips notes already present
+((project, name) is the key). MEMORY.md, the index, is not converted. The name
+is the file stem; description, type and originSessionId come from the
+frontmatter. A type outside VALID_TYPES is taken from the file-name prefix
+(project_, user_, feedback_), else the note is stored as a project note.
 
-Reglas:
-  - Solo I/O sobre filesystem.
-  - NO importa sqlite3.
-  - Idempotente: PK = (project, name) -> INSERT OR IGNORE.
-  - MEMORY.md (índice) NO se migra.
-  - Frontmatter YAML mínimo: name, description, type. Opcional: originSessionId.
-
-CLI args (parametrización cross-workspace):
-  --project   workspace name (default: 'me')
-  --src       directory holding the memory .md files (required)
-  --out       path al SQL de salida (default: /tmp/migrate_02_memory.sql)
-  --fragment  emite solo INSERTs (sin BEGIN/COMMIT)
+Options: --project (default 'me'), --src (required), --out (default
+/tmp/migrate_02_memory.sql) and --fragment (INSERTs only, no BEGIN/COMMIT).
 """
 from __future__ import annotations
 
@@ -100,8 +93,7 @@ def extract_row(md_path: Path, project: str):
         elif base.startswith("feedback_"):
             note_type = "feedback"
         else:
-            # Fallback final: tratar cualquier .md sin prefijo como 'project' note.
-            # Necesario para workspaces aaxis donde los nombres no siguen prefijo (ej. wsl_mirrored_docker_setup).
+            # Some workspaces name their notes with no type prefix.
             note_type = "project"
 
     name = md_path.stem

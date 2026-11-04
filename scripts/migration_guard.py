@@ -22,7 +22,7 @@ THE DISTINCTION DOES NOT DEPEND ON ANYONE DECLARING IT
     statement whose target table already held rows. Both inputs are evidence,
     not testimony.
 
-ONE CONSENT COVERS ONE CHAIN (D68)
+ONE CONSENT COVERS ONE CHAIN
     A chain that only adds structure applies on its own, after a backup. A
     chain in which any migration reaches data asks once for the whole chain,
     and the consent names the chain (``v51..v58``) rather than a file, so it

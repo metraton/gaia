@@ -128,9 +128,7 @@ function runNode(args) {
   fs.rmSync(captureDir, { recursive: true, force: true });
   return { code: result.status ?? 1, out: `${out}${result.error?.message || ''}` };
 }
-// fs.rmSync here is a Node API call inside THIS process, not a chained shell
-// `rm` — the T3 gate only classifies Bash-tool commands, so cleanup is not
-// expected to be blocked; the try/catch is defensive against OS-level errors.
+// Cleanup is best-effort; DIAGRAM_GUARD_KEEP_FIXTURES=1 keeps the fixture.
 function rmDeck(dir) {
   if (process.env.DIAGRAM_GUARD_KEEP_FIXTURES === '1') {
     console.log(`[INFO] kept fixture ${dir}`);
@@ -165,7 +163,7 @@ function rebuild(dir) {
   rmDeck(dir);
 }
 
-// ── 2a. Invariant A, layer 1 — build-data.mjs rejects unknown page form ────
+// ── 2a. build-data.mjs rejects an unknown page form ────────────────────────
 {
   const dir = mkDeck();
   const { p, doc } = loadOverview(dir);
@@ -311,9 +309,9 @@ function rebuild(dir) {
 
 // ── 3g2. CASCADE — the breakpoints link before the inline <style> FAILS ─────
 // The generated collapse rules repeat inline selectors at equal specificity, so
-// a tier applies only when its sheet loads later. Put the link back where it sat
-// when stacked zones rendered squashed: the gate must name the link and the base
-// rule that outranked the stack tier.
+// a tier applies only when its sheet loads later. Move the link before the inline
+// <style>: the gate must name the link and the base rule that outranks the stack
+// tier.
 {
   const dir = mkDeck();
   const idx = path.join(dir, 'index.html');
@@ -345,8 +343,7 @@ function rebuild(dir) {
 }
 
 // ── 3i. INK — the height budget reports an overflow and a fit, by slack ─────
-// INK runs only on the pages a deck lists in INK_PAGES, which the seed ships
-// empty, so the budget itself is exercised as a pure function: a `half` box
+// The budget is exercised as a pure function here: a `half` box
 // carrying a kicker, a title and three description lines cannot fit the ~63px
 // it gets (negative slack), while a title-only full box fits its 130px row.
 {
@@ -486,12 +483,12 @@ function shapeCorpus() {
   report('AGREE/placement: gate place == engine rowOccupants over the shape corpus', mismatch === null, mismatch);
 }
 
-// The band rule is where the two ACTUALLY diverged: the engine asks `w >= tracks`
-// (tier-relative, which is what the CSS does — at the 640px endpoint a .mspan
-// becomes grid-column:1/-1) while the gate asked a precomputed `span >= cols`.
-// A span-3-of-4 at the 2-track tier is the case that split them. This asserts the
-// gate now answers it the engine's way, and that the .msp CLASS question — the one
-// the root's `:has(> .msp)` rule keys on — still gets the authored answer.
+// The band rule is where the two placement models can diverge: the engine asks
+// `w >= tracks` (tier-relative, which is what the CSS does — at the 640px endpoint
+// a .mspan becomes grid-column:1/-1), which a precomputed `span >= cols` answers
+// differently. A span-3-of-4 at the 2-track tier is that case. This asserts the
+// gate answers it the engine's way, and that the .msp CLASS question — the one
+// the root's `:has(> .msp)` rule keys on — gets the authored answer.
 {
   const w = widthAtTier(3, 4, 2);
   const ok = w === 2 && isBandAtTier(w, 2) === true && isBandClass(3, 4) === false
@@ -501,8 +498,8 @@ function shapeCorpus() {
 }
 
 // The agreement cases above are only worth their line if they would SPEAK UP. Feed
-// the comparator the pre-fix rule (band decided by the authored span) and it must
-// report a mismatch — otherwise it is a test that cannot fail.
+// the comparator a deliberately wrong width function and it must report a
+// mismatch — otherwise it is a test that cannot fail.
 {
   const divergentWidth = (span, cols, tracks) => (tracks === 1 ? 1
     : span >= cols ? tracks
@@ -552,9 +549,9 @@ function thinCorpus() {
   report('AGREE/thin: gate isThinRowLeaf == engine isThinRowLeaf', mismatch === null, mismatch);
 }
 
-// The thin comparator is only worth its line if it would SPEAK UP. Feed it the
-// PRE-RAIL rule (separator/spacer only — the exact predicate the rail admission
-// replaced) and it must report a mismatch on the horizontal no-rowspan rail.
+// The thin comparator is only worth its line if it would SPEAK UP. Feed it a
+// rule without rails (separator/spacer only) and it must report a mismatch on the
+// horizontal no-rowspan rail.
 {
   const divergentThin = c => c && !Array.isArray(c.children) &&
     (c.type === 'spacer' ||
@@ -578,7 +575,7 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
   { availPx: N_CELL_PX, fontPx: N_FONT_PX, half: false, cell: 'cell' })
   .findings.some(f => f.kind === 'token');
 
-// 6 — a token that FAILS N is flagged by the budget, end to end and by predicate.
+// 6 — a token wider than its cell is flagged by the budget, end to end and by predicate.
 {
   const LONG = 'Orquestacionmultiregionconsolidada';   // 34 chars, one token
   const cap = capacityFor(N_CELL_PX, N_FONT_PX);
@@ -605,7 +602,7 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
 }
 
 // 7 — TEETH IN THE OTHER DIRECTION: a token that fits must be flagged by NEITHER.
-// Without this the budget could "agree" with N by flagging everything.
+// Without this the budget could pass case 6 by flagging everything.
 {
   const SHORT = 'Orden';                               // 5 chars, comfortably inside
   const cap = capacityFor(N_CELL_PX, N_FONT_PX);
@@ -788,7 +785,7 @@ const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
   rmDeck(dir);
 }
 
-// ── 10c. COMPACT — the short row and the released clamp are modelled ───────
+// ── 10c2. COMPACT — the short row and the released clamp are modelled ──────
 // A `compact` grid runs a 74px row with no description clamp, so the clamp
 // cannot hide a long description: the static gate reports no desc-lines finding
 // there, and INK measures the whole description against the short slot.
@@ -1115,7 +1112,7 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
 // ── 11c. TOKENS/slot — a section sitting in a grid's slot is read as a section ──
 // The fixture's root is one track wide, so section-e is a band and the root is a
 // placed grid whose slots hold a section. Its own `row.cell_h` is a section
-// token; read as a box's, it was a failure.
+// token and must be read as one.
 {
   const dir = mkDeck();
   const failing = () => {
@@ -1171,7 +1168,7 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
 }
 
 // ── 13b. PALETTE/neutral — the default palette gates its own text ────────────
-// The shipped grey passes; neutral's grey from before 2026-10-26 (3.65:1) fails.
+// The shipped grey passes; a neutral --muted of #87867F (3.65:1 on the surface) fails.
 {
   const dir = mkDeck();
   fs.copyFileSync(path.join(ROOT, 'tools', 'contrast-audit.cjs'), path.join(dir, 'tools', 'contrast-audit.cjs'));

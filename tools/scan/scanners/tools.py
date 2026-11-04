@@ -33,8 +33,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tools.scan.config import TOOL_DEFINITIONS, ToolDefinition
 
-# Default tool list excludes extended tools; use get_tool_definitions(full=True)
-# to include all tools.
 def get_tool_definitions(full: bool = False) -> list:
     """Return tool definitions, optionally including extended (low-value) tools."""
     if full:
@@ -59,10 +57,9 @@ _MAX_WORKERS = 10
 # Process-wide memo of version probes, keyed by (path, flag, regex).
 #
 # An installed tool's version cannot change while this process runs, so the
-# value is measured once and reused. Re-probing per scan used to make repeated
-# scans disagree: under load a probe would exceed _VERSION_TIMEOUT and record
-# "unknown" instead of the real version, so scan N and scan N+1 reported
-# different versions for an unchanged machine.
+# value is measured once and reused. Re-probing per scan would let repeated
+# scans disagree: under load a probe can exceed _VERSION_TIMEOUT and record
+# "unknown" for an unchanged machine.
 _version_cache: Dict[Tuple[str, str, Optional[str]], str] = {}
 _version_cache_lock = threading.Lock()
 
@@ -100,9 +97,8 @@ class ToolScanner(BaseScanner):
     def OWNED_SECTIONS(self) -> List[str]:
         return ["environment.tools", "environment.tool_preferences"]
 
-    # Class-level flag: set to True before instantiation to scan extended tools.
-    # This allows the registry auto-discovery to work with default args while
-    # still supporting the --full CLI flag.
+    # Set to True before instantiation to scan extended tools: the registry
+    # instantiates scanners with default args, so it cannot pass full=True.
     scan_extended: bool = False
 
     def __init__(self, full: bool = False) -> None:

@@ -109,8 +109,7 @@ const COMPONENT_TREATMENTS = new Set(['centered', 'half', 'vertical', 'outside']
 // `middle` centres a section's grid vertically inside the height its compound
 // row stretches it to, so a short cell beside taller neighbours leaves no gap.
 // `compact` gives one leaf grid a shorter row (index.html `.zone.compact`), for
-// a staircase that must end level with a shorter neighbour; the uniform-row
-// gates (validate U) exempt only grids that declare it.
+// a staircase that must end level with a shorter neighbour.
 const SECTION_TREATMENTS = new Set(['plain', 'envelope', 'middle', 'compact']);
 // Which axis a value belongs to, for the error message. A value that MOVED axes
 // gets a targeted "that is a treatment, not a variant" error instead of a bare
@@ -129,10 +128,8 @@ const PALETTES = new Set(['neutral', 'rose-pine', 'rose-pine-moon', 'contrast'])
 
 // ── CLOSED VALUE ENUMS: form / layout / type / style ───────────────────────
 // The whitelists above close the KEY space; these close the VALUE space of the
-// four fields the engine or the guardrail DISPATCHES on. Until now only the keys
-// were checked, so a typo in one of these VALUES passed the gate and then failed
-// SILENTLY downstream — and each of the three below is a real observed false
-// green, not a hypothetical:
+// four fields the engine or the guardrail DISPATCHES on. A typo in one of these
+// VALUES would pass the key whitelists and then fail SILENTLY downstream:
 //   • `form: dashboards` — the guardrail scopes its invariant table by form
 //     MEMBERSHIP, so an undeclared form matched no row at all and the page was
 //     reported with ZERO checks ("ALL PASS — 0 checks", exit 0). Closed here at
@@ -148,9 +145,6 @@ const PALETTES = new Set(['neutral', 'rose-pine', 'rose-pine-moon', 'contrast'])
 //   • `style: dotetd` — buildSeparator's `sep.style === 'dotted'` ternary
 //     silently yields 'solid'. The mildest of the four; closed for symmetry, so
 //     no dispatched value is left unchecked.
-// Same shape as PALETTES above: a closed Set, a `.has()` gate, and a `suggest()`
-// near-miss hint naming the valid values.
-//
 const FORMS = new Set(census.FORMS);
 // The engine renders exactly one page layout (engine.js: `(p.layout || 'grid') === 'grid'`).
 const LAYOUTS = new Set(['grid']);
@@ -159,7 +153,7 @@ const LAYOUTS = new Set(['grid']);
 const COMPONENT_TYPES = new Set(['box', 'separator', 'rail', 'spacer']);
 // A `spacer` is the DECLARED HOLE: a leaf that occupies its cell and draws
 // nothing, so a rectangle can be closed without inventing content for it
-// (principle 9 — the hole speaks: close it, or declare it). Being an OCCUPANT and
+// (SKILL.md principle 3: a hole is closed or declared). Being an OCCUPANT and
 // not a modifier is the whole of it, which is why the two merge dials are the
 // only fields it keeps: a hole two tracks wide, or three rows tall, is as
 // legitimate a hole as a single cell, and `span`/`rowspan` belong to the CELL
@@ -206,7 +200,7 @@ function suggest(field, allowed) {
     const dist = editDistance(field.toLowerCase(), cand.toLowerCase());
     if (dist < bestD) { bestD = dist; best = cand; }
   }
-  // only suggest when it is plausibly the same word (edit distance ≤ ~1/3 len)
+  // only suggest when it is plausibly the same word (distance ≤ max(2, a third of the length))
   return bestD <= Math.max(2, Math.ceil(field.length / 3)) ? best : null;
 }
 function checkFields(obj, allowed, kind, pageId, where) {
@@ -222,10 +216,8 @@ function checkFields(obj, allowed, kind, pageId, where) {
 }
 
 // One value of a CLOSED VALUE ENUM (form / layout / type / style). Same shape as
-// the PALETTES gate above — a `.has()` test plus a `suggest()` near-miss hint —
-// factored into one function only because four fields now need the identical
-// message, exactly as checkVariantValue already does for the colour axis. An
-// absent value is legal: every one of these four fields has an engine default.
+// the PALETTES gate above — a `.has()` test plus a `suggest()` near-miss hint.
+// An absent value is legal: every one of these four fields has an engine default.
 function checkEnumValue(value, allowed, what, pageId, label) {
   if (value === undefined || value === null) return;
   const hint = suggest(String(value), allowed);
@@ -303,9 +295,9 @@ function checkTreatment(node, kind, pageId, label) {
 // contradictions and some payloads no longer fit. Rejecting them here is what
 // keeps the guardrail's invariants true BY CONSTRUCTION rather than by luck:
 //
-//   half + description  → a half-height component has ~63px of box; a title plus
-//                         three clamped description lines cannot fit, and the
-//                         overflow would trip invariant C (no box clipping). `half`
+//   half + description  → a half-height component has about half of --cell-h; a
+//                         title plus three clamped description lines cannot fit,
+//                         and the overflow would clip the box. `half`
 //                         is the TITLE-ONLY treatment by design — put the prose in
 //                         `detail`, which lives in the click panel anyway.
 //   vertical + description → same reason: the text block is rotated, so a
@@ -355,8 +347,8 @@ function checkSpacer(node, pageId, label) {
 // placing them adjacently). Two rules are enforced here rather than left to the
 // renderer:
 //   • a run of consecutive halves must be EVEN — an odd one out would occupy half
-//     a slot and leave the other half empty, which is precisely the "hole" the
-//     governing definition forbids. Loud beats a silent gap.
+//     a slot and leave the other half empty, which is a hole. Loud beats a
+//     silent gap.
 //   • both members of a pair must declare the SAME `span` — they share one slot,
 //     so a disagreement has no coherent rendering.
 // Runs over a section's children in the SAME order the engine renders them.
@@ -416,8 +408,8 @@ function validateNode(node, pageId, where) {
   checkVariantValue(node.variant, kind, pageId, label);
   const treatments = checkTreatment(node, kind, pageId, label);
   if (!isSection) {
-    // The leaf `type` is a DISPATCH: buildGrid routes separator | rail | (default)
-    // box. An unrecognized value does not error there, it falls through to
+    // The leaf `type` is a DISPATCH: buildGrid routes separator | rail | spacer |
+    // (default) box. An unrecognized value does not error there, it falls through to
     // buildBox — so `type: seperator` renders an empty card that every layout
     // invariant counts as a legitimately filled cell. Closed here at the door.
     checkEnumValue(node.type, COMPONENT_TYPES, 'component type', pageId, label);
@@ -426,12 +418,9 @@ function validateNode(node, pageId, where) {
     // non-separator is a separate, narrower question — the field whitelist still
     // permits it on any component.)
     checkEnumValue(node.style, SEPARATOR_STYLES, 'separator style', pageId, label);
-    // `variant_extra` is the narrow escape hatch for a SECOND COLOUR role (e.g. a
-    // `bad` box that is also a `muted` secondary): the risk axis and the kind axis are
-    // genuinely different dimensions, and a single-valued `variant` cannot carry
-    // both. It is validated against the SAME colour enum as `variant`, which is
-    // what closes the old hole — a structural value can no longer hide in here,
-    // it must go on `treatment`.
+    // `variant_extra` is a deprecated SECOND COLOUR role (collected into
+    // `deprecated` below). It is validated against the SAME colour enum as
+    // `variant`, so a structural value cannot hide in here; it goes on `treatment`.
     for (const extra of node.variant_extra || [])
       checkVariantValue(extra, kind, pageId, `${label} variant_extra`);
     if (node.variant_extra !== undefined) deprecated.variant_extra.push(`${pageId} > ${id}`);
@@ -469,9 +458,8 @@ function resolveNodeOverride(node, kind, pageId, label) {
   else delete node.tokens;
 }
 
-// Validate the chips of a `filters[]` list. Previously NOT validated at all: a
-// typo in a `key` was invisible — the chip rendered, matched nothing, and dimmed
-// the entire canvas with no error anywhere. The referential half of this (every
+// Validate the chips of a `filters[]` list. A typo in a `key` would otherwise
+// render a chip that matches nothing and dims the entire canvas. The referential half of this (every
 // declared chip has a member, every referenced key is declared) is asserted by
 // the model's CHIP check; here we only guarantee the SHAPE.
 function validateFilters(filters, pageId, where) {
@@ -660,8 +648,8 @@ const pages = manifest.pages
   });
 
 // `layout` has one value the engine renders, so it selects nothing; and a second
-// colour role puts two claims on one frame's fill and border, where principle 5
-// wants one claim per channel. Both still build, so old decks keep rendering.
+// colour role puts two claims on one frame's fill and border, where SKILL.md
+// principle 4 wants one claim per channel. Both still build, so old decks keep rendering.
 if (deprecated.layout.length)
   console.warn(`[deprecated] \`layout\` on ${deprecated.layout.length} page(s) (${deprecated.layout.join(', ')}): ` +
     'the engine renders one page layout, so the field selects nothing. Delete it; a later version will refuse it.');
@@ -737,12 +725,11 @@ function breakpointsCss(bp) {
 }
 writeFileSync(join(DATA_DIR, 'breakpoints.generated.css'), breakpointsCss(tokens.breakpoints), 'utf8');
 
-// The generated file APPLIES THE PALETTE ITSELF, before the deck renders. It is
-// loaded by a <script src> in <head>-order ahead of engine.js and before any
-// content paints, so setting `data-palette` here avoids the flash of neutral that
-// waiting for engine.js's mount would cause. Guarded so the file stays harmless if
-// it is ever loaded outside a browser. The palette overrides ride the same early
-// path, as one inserted <style>, for the same reason.
+// The generated file APPLIES THE PALETTE ITSELF: it loads ahead of engine.js, so
+// setting `data-palette` here avoids the flash of neutral that waiting for
+// engine.js's mount would cause. Guarded so the file stays harmless if it is
+// ever loaded outside a browser. The palette overrides ride the same path, as
+// one inserted <style>.
 const overrideCss = paletteOverrideCss(paletteOverrides);
 const out = `// GENERATED FILE — do not edit by hand.
 // Produced by build-data.mjs from data/document.yaml + data/pages/*.yaml.

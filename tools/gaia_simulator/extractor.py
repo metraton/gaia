@@ -20,24 +20,24 @@ from typing import Any, Optional
 
 @dataclass(frozen=True)
 class ReplayEvent:
-    """A single hook invocation extracted from logs."""
+    """A hook invocation recovered from a log, with the outcome the log recorded.
+
+    expected_decision is ALLOW, DENY or BLOCK for logged pre-tool decisions and
+    PASS for stop_hook and audit events; expected_tier is "" when the log has none.
+    """
 
     timestamp: str
-    hook_name: str  # "pre_tool_use", "post_tool_use", "subagent_stop"
-    tool_name: str  # "Bash", "Agent", "Read", etc.
-    stdin_payload: dict  # The JSON that was sent to the hook
-    expected_decision: str  # "ALLOW", "BLOCK", "DENY"
-    expected_exit_code: int  # 0, 1, 2
-    expected_tier: str  # "T0", "T1", "T2", "T3", "" for non-bash
-    source_file: str  # Which log file this came from
+    hook_name: str
+    tool_name: str
+    stdin_payload: dict
+    expected_decision: str
+    expected_exit_code: int
+    expected_tier: str
+    source_file: str
     expected_metadata: dict[str, Any] = field(default_factory=dict)
     compare_tier: bool = False
     limitations: tuple[str, ...] = field(default_factory=tuple)
 
-
-# ---------------------------------------------------------------------------
-# Internal regex patterns for hooks-*.log parsing
-# ---------------------------------------------------------------------------
 
 # Matches: 2026-03-11 00:03:32,080 [pre_tool_use] __main__ - INFO - Hook invoked: tool=Bash, params={...}
 _RE_HOOK_INVOKED = re.compile(
@@ -115,9 +115,7 @@ def _try_parse_params(raw: str) -> Optional[dict]:
     except json.JSONDecodeError:
         pass
 
-    # Truncated JSON -- try to find a valid JSON prefix
-    # The log line cuts off params, so we try progressively shorter substrings
-    # that end with }
+    # The log line cuts params off; the longest prefix ending in "}" that parses wins.
     for i in range(len(raw) - 1, 0, -1):
         if raw[i] == "}":
             try:
@@ -141,10 +139,8 @@ class LogExtractor:
     def extract_from_hooks_log(self, path: Path) -> list[ReplayEvent]:
         """Parse hooks-YYYY-MM-DD.log and extract hook invocation events.
 
-        Strategy:
-        1. Find "Hook invoked" lines to get the tool + params (stdin payload)
-        2. Find the corresponding ALLOWED/BLOCKED line to get the decision
-        3. Pair them by timestamp proximity to build ReplayEvents
+        Each "Hook invoked" line is paired with the next unused ALLOWED/BLOCKED
+        line in file order; each "Stop:" line becomes a stop_hook event.
 
         Returns:
             List of ReplayEvent instances, ordered by timestamp.
@@ -156,15 +152,10 @@ class LogExtractor:
         source = path.name
         events: list[ReplayEvent] = []
 
-        # Two-pass approach:
-        # Pass 1: collect all "Hook invoked" entries with their params
-        # Pass 2: match them to ALLOWED/BLOCKED outcomes
-
         pending_invocations: list[dict] = []
         outcomes: list[dict] = []
 
         for line in lines:
-            # Hook invoked line
             m = _RE_HOOK_INVOKED.match(line)
             if m:
                 params = _try_parse_params(m.group("params"))
@@ -176,7 +167,6 @@ class LogExtractor:
                 })
                 continue
 
-            # ALLOWED bash command
             m = _RE_ALLOWED_BASH.match(line)
             if m:
                 outcomes.append({
@@ -189,7 +179,6 @@ class LogExtractor:
                 })
                 continue
 
-            # ALLOWED task (agent)
             m = _RE_ALLOWED_TASK.match(line)
             if m:
                 outcomes.append({
@@ -203,25 +192,11 @@ class LogExtractor:
                 })
                 continue
 
-            # BLOCKED bash command
             m = _RE_BLOCKED.match(line)
             if m:
                 reason = m.group("reason")
-                # The hook logs "BLOCKED:" for both permanent blocks (exit 2,
-                # plain string) and structured deny responses (exit 0, JSON
-                # with permissionDecision: "deny").  Distinguish them by
-                # reason text:
-                #
-                # Exit 0 DENY (block_response is set):
-                #   - "Dangerous ..." -- mutative verb T3 nonce flow
-                #   - "Command-execution rule violated ..." -- cloud pipe
-                #   - "Failed to persist pending approval ..." -- T3 nonce write error
-                #   - Compound wrappers that propagate a component's block_response
-                #
-                # Exit 2 BLOCK (block_response is None):
-                #   - "Command blocked by security policy ..." -- permanent deny list
-                #   - "Commit message validation failed ..." -- validation error
-                #   - "Empty command not allowed"
+                # One "BLOCKED:" line covers exit-2 blocks and exit-0 structured
+                # denies; the reason prefix is the only thing that tells them apart.
                 if (
                     reason.startswith("Dangerous")
                     or reason.startswith("Command-execution rule violated")
@@ -244,7 +219,6 @@ class LogExtractor:
                 })
                 continue
 
-            # BLOCKED task
             m = _RE_BLOCKED_TASK.match(line)
             if m:
                 outcomes.append({
@@ -259,7 +233,6 @@ class LogExtractor:
                 })
                 continue
 
-            # Stop hook result (minimal replayable payload)
             m = _RE_STOP_RESULT.match(line)
             if m:
                 quality_sufficient = m.group("quality") == "True"
@@ -286,8 +259,8 @@ class LogExtractor:
                 ))
                 continue
 
-        # Match invocations to outcomes by sequential pairing
-        # Each Hook invoked is followed by exactly one ALLOWED or BLOCKED
+        # Pairing is positional: it assumes every "Hook invoked" line has exactly
+        # one outcome line, in the same order.
         outcome_idx = 0
         for inv in pending_invocations:
             if outcome_idx >= len(outcomes):
@@ -296,18 +269,13 @@ class LogExtractor:
             outcome = outcomes[outcome_idx]
             outcome_idx += 1
 
-            # Build the stdin_payload that the hook expects
             tool = inv["tool"]
             params = inv["params"]
 
-            # Skip events with truncated/unparseable params -- they cannot
-            # be replayed meaningfully. The log line was cut off before the
-            # JSON closed, so we don't have the full payload.
+            # A params line cut off before its JSON closed has no full payload to replay.
             if params is None:
                 continue
 
-            # Validate minimum payload: Bash needs "command", Agent needs
-            # at least "subagent_type" or "description"
             if tool == "Bash" and "command" not in params:
                 continue
             if tool == "Agent" and not any(
@@ -339,9 +307,8 @@ class LogExtractor:
     def extract_from_audit_jsonl(self, path: Path) -> list[ReplayEvent]:
         """Parse audit-YYYY-MM-DD.jsonl for structured event data.
 
-        Audit JSONL files contain post_tool_use records with:
-        - timestamp, session_id, tool_name, command, parameters, duration_ms,
-          exit_code, tier
+        Reads timestamp, session_id, tool_name, parameters, duration_ms, exit_code
+        and tier from each record.
 
         These records are emitted by the post_tool_use hook after a tool ran,
         so they are replayed back into post_tool_use with the best available
@@ -370,9 +337,8 @@ class LogExtractor:
             if not tool_name:
                 continue
 
-            # Build stdin payload matching PostToolUse format. The audit log does
-            # not persist tool stdout/stderr, so replay can only restore the
-            # tool metadata, exit code, and duration.
+            # The audit log keeps no tool output, so replay restores only the
+            # tool metadata, exit code and duration.
             params = record.get("parameters", {})
             tool_exit_code = int(record.get("exit_code", 0) or 0)
             duration_ms = record.get("duration_ms", 0)
@@ -429,28 +395,24 @@ class LogExtractor:
         """
         events: list[ReplayEvent] = []
 
-        # Process hooks logs
         pattern = f"hooks-{date_filter}.log" if date_filter else "hooks-*.log"
         for log_path in sorted(logs_dir.glob(pattern)):
             events.extend(self.extract_from_hooks_log(log_path))
 
-        # Process audit JSONL
         pattern = f"audit-{date_filter}.jsonl" if date_filter else "audit-*.jsonl"
         for jsonl_path in sorted(logs_dir.glob(pattern)):
             events.extend(self.extract_from_audit_jsonl(jsonl_path))
 
-        # Apply hook filter
         if hook_filter:
             events = [e for e in events if e.hook_name == hook_filter]
 
-        # Deduplicate: same timestamp + same tool_name + same expected_decision
-        # Keep the hooks-log version (richer data) over audit version
+        # Same timestamp, tool and decision count as one event; a hooks-log copy
+        # replaces whatever was seen first.
         seen: dict[tuple, ReplayEvent] = {}
         for ev in events:
             key = (ev.timestamp, ev.tool_name, ev.expected_decision)
             if key not in seen or ev.source_file.startswith("hooks-"):
                 seen[key] = ev
 
-        # Sort by timestamp
         result = sorted(seen.values(), key=lambda e: e.timestamp)
         return result

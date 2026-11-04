@@ -1,14 +1,14 @@
 """
-Scan-core -- the atomic, pure scan engine.
+Scan-core -- the atomic scan engine.
 
-This is the single núcleo of `gaia scan`. Given a *target path* and the
+This is the single core of `gaia scan`. Given a *target path* and the
 *workspace* it belongs to, it:
 
     1. runs the read-only scanners over the target tree,
     2. populates the Gaia store (projects / apps / services / ... rows) via
        :func:`tools.scan.store_populator.scan_workspace_to_store`,
     3. soft-prunes (marks missing, never deletes) project rows that vanished
-       from disk -- preserving the v16 soft-delete contract,
+       from disk,
     4. records the scan timestamp on the workspace row.
 
 It NEVER installs. It does not create ``package.json``, run ``npm``, build a
@@ -16,8 +16,7 @@ It NEVER installs. It does not create ``package.json``, run ``npm``, build a
 is a separate flow owned by ``bin/cli/install.py`` + ``cli._install_helpers``.
 
 The function is the reusable seam: the CLI, SessionStart, hooks, and tests all
-call :func:`scan_workspace` and share one code path. Install logic lives
-elsewhere by design (separar scan de install).
+call :func:`scan_workspace` and share one code path.
 
 Public API::
 
@@ -34,8 +33,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger("gaia.scan.core")
 
-# Agent identity used when scan-core populates the store. Single named constant
-# so tests and future callers can refer to it.
+# Agent identity used when scan-core populates the store.
 SCAN_AGENT = "gaia-system"
 
 # Tables the scan agent must be able to write for store population to succeed.
@@ -75,30 +73,21 @@ class ScanResult:
         return bool(getattr(self.output, "errors", None))
 
 
-# ---------------------------------------------------------------------------
-# Workspace detection (used by the CLI entry points to enforce the
-# "outside a workspace + no target -> clean error" contract)
-# ---------------------------------------------------------------------------
-
 def is_gaia_workspace(path: Path) -> bool:
     """Return True when ``path`` is an installed Gaia workspace.
 
-    Reuses the canonical, mode-agnostic ``.claude/plugin-registry.json`` signal
-    (the same one scan-core uses for workspace attribution), so detection stays
-    consistent across the codebase. Read-only; never raises.
+    True when ``.claude/plugin-registry.json`` lists the gaia plugin (the
+    signal store_populator uses for workspace attribution). Read-only; never
+    raises.
     """
     from tools.scan.store_populator import _is_installed_gaia_workspace
     return _is_installed_gaia_workspace(path)
 
 
-# ---------------------------------------------------------------------------
-# Scanner execution (pure, read-only)
-# ---------------------------------------------------------------------------
-
 def run_scanners(project_root: Path, config: Any) -> Any:
     """Run the scanner orchestrator over ``project_root`` and return ScanOutput.
 
-    Pure read-only discovery. No store writes, no install side-effects.
+    Read-only discovery: no store writes.
     """
     from tools.scan.orchestrator import ScanOrchestrator
     from tools.scan.registry import ScannerRegistry
@@ -107,10 +96,6 @@ def run_scanners(project_root: Path, config: Any) -> Any:
     orchestrator = ScanOrchestrator(registry=registry, config=config)
     return orchestrator.run(project_root=project_root)
 
-
-# ---------------------------------------------------------------------------
-# Store population (projects/apps/services/... + soft-prune)
-# ---------------------------------------------------------------------------
 
 def ensure_scan_permissions(db_path: Path | None = None) -> None:
     """Idempotently grant ``SCAN_AGENT`` write access on scanner tables.
@@ -150,10 +135,9 @@ def populate_store(
 
     This is the single wiring point between scan-core and the store populator.
     After populating scanner-owned data, project rows that no longer exist on
-    disk are **marked missing** -- NOT deleted -- via ``mark_missing_in``
-    (soft-delete v16: ``status='missing'`` / ``missing_since`` set).
+    disk are **marked missing** -- NOT deleted -- via ``mark_missing_in``.
 
-    Soft-delete safety constraints (preserved from the original CLI path):
+    Soft-delete safety constraints:
       * Scoped strictly per workspace (never touches sibling workspaces).
       * Only marks rows whose project name is absent from the current scan's
         discovered set. Live projects are reactivated by ``populate_project``.
@@ -232,10 +216,6 @@ def populate_store(
     return results, total_marked, failures
 
 
-# ---------------------------------------------------------------------------
-# The single núcleo
-# ---------------------------------------------------------------------------
-
 def scan_workspace(
     project_root: Path,
     workspace: str,
@@ -247,7 +227,7 @@ def scan_workspace(
     """Run scanners over ``project_root`` and sync ``workspace`` into the store.
 
     This is scan-core: the atomic, reusable function every entry point shares.
-    It discovers, classifies, populates, and soft-prunes -- and never installs.
+    It discovers, populates, and soft-prunes -- and never installs.
 
     Args:
         project_root: The target path to scan (a workspace root or a named
@@ -275,10 +255,8 @@ def scan_workspace(
     marked = 0
     failures: list = []
 
-    # Stamp the timestamp and populate. Attribution is deterministic: every
-    # discovered repo belongs to the caller-provided ``workspace`` (the
-    # inference / demote layer was removed -- see tools.scan.classify for the
-    # deterministic --workspace-driven classifier used by the CLI).
+    # Every discovered repo is attributed to the caller-provided ``workspace``;
+    # tools.scan.classify holds the --workspace-driven classifier the CLI uses.
     try:
         from gaia.store.writer import set_workspace_last_scan_at
         set_workspace_last_scan_at(workspace, db_path=db_path)

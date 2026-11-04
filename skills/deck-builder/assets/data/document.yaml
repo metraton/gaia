@@ -139,8 +139,7 @@ pages:
     file: pages/p9-the-hole.yaml
     omit_filters: [gate]
   # Last: combinations of values the pages above do not need but the engine
-  # must keep supporting; three are the only live subjects invariants G and X
-  # have. It teaches data, not orientation, so it closes the tour.
+  # must keep supporting. It teaches data, not orientation, so it closes the tour.
   - id: overview
     name: "Data · values that combine"
     order: 17

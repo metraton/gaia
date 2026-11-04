@@ -2,7 +2,7 @@
 // check-layout.mjs — the MANDATORY, PROGRAMMATIC layout gate. No browser.
 // @version 1.0.0  (part of the deck-builder skill; keep the placement model in
 //                  sync with engine/engine.js buildGrid + the container-query
-//                  tiers in index.html)
+//                  tiers in data/breakpoints.generated.css)
 //
 // Run: npm run model   (or: node tools/check-layout.mjs [deckRoot])
 //
@@ -109,7 +109,7 @@ const ROOT = process.argv[2] ? path.resolve(process.argv[2])
 
 // ── THE COLLAPSE CASCADE, AS ARITHMETIC ───────────────────────────────────
 // The three breakpoints come from static-census.cjs, which mirrors the
-// `@container stage` queries in index.html and can read the real declarations
+// `@container stage` queries in data/breakpoints.generated.css and can read the real declarations
 // back out — the CSS line below ASSERTS the mirror against them, so this gate
 // cannot quietly drift from the stylesheet the browser actually obeys.
 // They are CONTAINER queries, not media queries, and the container is `.stage`
@@ -263,49 +263,23 @@ function effectiveCols(authored, slots, compound) {
 const rowspanOf = n => Math.max(1, Math.floor(Number(n && n.rowspan) || 1));
 
 // ── THE TEXT BUDGET: CHARACTERS, NOT PIXELS ───────────────────────────────
-// Everything above is geometry, and geometry is where arithmetic is EXACT. TEXT
-// is the one irreducible thing left — the defect the eye kept catching with all
-// three gates green: a description cut mid-sentence, a title wrapped past its
-// clamp, a rotated label clipped with no ellipsis. So this is the one
-// APPROXIMATE check in the file, and it is declared as such:
+// The one APPROXIMATE check in the file: it marks what is risky and never
+// blesses what is good. The demand is over-estimated (MONO_ADVANCE_EM is the
+// ceiling of the families the CSS names) and the cell is derived from the
+// stylesheet's own chrome, so a flagged text is near its limit, while a text that
+// passes can still wrap badly in a real font. That is why every finding is an
+// advisory ([INFO], never a failure), the kicker token included: it is the same
+// approximation as the others, and no pixel ruling backs it.
 //
-//        IT MARKS WHAT IS RISKY. IT NEVER BLESSES WHAT IS GOOD.
+// Both text roles are monospace (`--mono`), so a token's width is its length times
+// one advance and the cell is expressed as how many characters fit; each finding
+// names the number measured, the number available and the cell.
 //
-// The direction is chosen, not incidental. The DEMAND is over-estimated (the
-// monospace advance below is the CEILING of the families the CSS names) and the
-// CELL is derived from the stylesheet's own chrome, so a text flagged here is
-// genuinely near its limit. The converse does not hold — a text that passes here
-// can still wrap badly in a real font — which is exactly why every finding is an
-// ADVISORY ([INFO], never a failure) and the person looking at the deck rules.
-// This file never claims an authority the arithmetic does not have.
-//
-// THE KICKER TOKEN IS THE ONE ROLE WITH NO RULING ABOVE IT, AND IT IS STILL AN
-// ADVISORY. `kicker-token` (see textBudget) budgets `.box .k` exactly as `token`
-// budgets `.box .t`, and it was added because the eye caught a fracture the
-// budget could not see: it measured titles only. There is no render invariant
-// for the kicker — N covers the title alone — so unlike every other kind here,
-// this one has no verdict downstream of it. That is an argument for making it
-// [FAIL], and it is outweighed by the argument against: the measurement is the
-// SAME approximation as the others (one assumed constant, MONO_ADVANCE_EM, and
-// a chain of mirrored stylesheet numbers), and a check calibrated to
-// over-estimate demand must not be the thing that stops a build. Two severities
-// over one arithmetic would say the estimate is trustworthy for the kicker and
-// merely indicative for the title, which is false. So it reports as [INFO] with
-// the others, and the gap it leaves — no pixel ruling for the kicker — is a
-// stated limitation rather than one papered over with a harder verdict.
-//
-// WHY CHARACTERS AND NOT PIXELS. Both text roles are MONOSPACE (`--mono`), so a
-// token's width is its LENGTH times one advance — which means the cell can be
-// expressed as "how many characters fit". That is the author's own unit, and it
-// is what lets every finding name the number MEASURED, the number AVAILABLE and
-// the exact CELL instead of offering generic advice.
-//
-// WHAT IT DOES NOT SEE. A `vertical` treatment rotates the title onto the block
-// axis, where the constraint is the cell's HEIGHT, not its width — exempt here
-// for the same reason N exempts it. A box sitting DIRECTLY in a nested compound
-// grid is content-sized (`.sec-grid.sec-compound > .box { flex:0 0 auto }`), so
-// it has no track to be budgeted against and is not visited: only grids with a
-// real track model are.
+// A `vertical` treatment rotates the title onto the block axis, where the
+// constraint is the cell's height, so it is exempt. A box directly in a nested
+// compound grid is content-sized (`.sec-grid.sec-compound > .box { flex:0 0 auto }`),
+// has no track to be budgeted against, and is not visited: only grids with a real
+// track model are.
 
 // THE FIXED CHROME: the craft values tokens.mjs deliberately does not expose.
 // Each is still read back out of index.html by the CSS check (CSS_FIXED_PROBES),
@@ -439,13 +413,11 @@ const CSS_TEXT_SHAPES = [
 // THE SPAN->TRACKS MAPPING, in BOTH grid shapes, and it is a HARD check of its
 // own rather than another entry in the mirror above. Everything in this file is
 // arithmetic over the authored data, and every width it reports assumes a span of
-// M occupies M tracks. That assumption is not self-evident — it is these four CSS
-// rules — and when one is ABSENT the model stays internally consistent and
-// reports a geometry the browser never draws. Measured: the root band grid
-// (display:grid, where the compound flex weighting is inert) carried a rule for
-// .msp and NONE for .mspan, so a section declared span 5 of 6 was auto-placed
-// into ONE track and rendered at 35% of the canvas while every assertion here
-// passed.
+// M occupies M tracks. That assumption is these four CSS rules, and when one is
+// ABSENT the model stays internally consistent and reports a geometry the browser
+// never draws: the root band grid is display:grid, where the compound flex
+// weighting is inert, so without its .mspan rule a partial span is auto-placed
+// into ONE track.
 //
 // SEPARATE because the mirror's arithmetic has a mirrored constant to compute
 // with even when a declaration moved; there is no fallback for a rule that does
@@ -579,8 +551,7 @@ function cssCascadeOrder(root) {
 // level) a section's share of its parent, minus its own zone frame -> the leaf
 // grid's tracks and gaps -> the box's border and padding. Every subtraction is a
 // declaration in index.html, which is why the numbers above are mirrored and
-// asserted rather than tuned: the chain reproduces `.zone` 636px -> grid 602px
-// and a 6-track band cell of 201px, the widths the browser draws.
+// asserted rather than tuned.
 
 // What the canvas leaves for the content plane at a container width.
 function planeWidth(cw) {
@@ -657,8 +628,8 @@ const longestToken = text => tokensOf(text).reduce((a, w) => (w.length > a.lengt
 
 // Greedy wrap into lines of `cap` characters, mirroring `.box`'s
 // `overflow-wrap:break-word; word-break:normal`: lines break between words, and
-// a token too long for a whole line FRACTURES mid-word (which is the defect N
-// names). Returns the visual line count.
+// a token too long for a whole line FRACTURES mid-word. Returns the visual line
+// count.
 function wrapLines(text, cap) {
   const words = tokensOf(text);
   if (!words.length) return 0;
@@ -719,10 +690,8 @@ function textBudget(leaf, ctx) {
       `${ctx.cell}. Shorten the title or widen the cell.`);
   }
 
-  // THE KICKER TOKEN. The exact analogue of the title-token check above, against
-  // `.box .k` instead of `.box .t`, and it exists because the eye caught what the
-  // budget could not: a machine-name kicker fracturing mid-word while every check
-  // ran green, because the budget only ever measured titles.
+  // THE KICKER TOKEN. The analogue of the title-token check above, against
+  // `.box .k` instead of `.box .t`.
   //
   // Three things make it a DIFFERENT measurement rather than the same one reused:
   //   • the font is smaller (10.5px vs 15-17px), so the cell holds MORE kicker
@@ -792,9 +761,7 @@ function textHeadline() {
 // CENSUS compares page ids and NODE COUNTS, so a text-only edit — rewording a
 // description, decoding a piece of jargon, fixing a title — leaves the counts
 // identical and the census green while data.generated.js still holds the OLD
-// words. MEASURED: after nine wording edits the gate printed ALL PASS and the
-// bundle still carried the old sentences. That is the coupled-trio trap in its
-// quietest form: the browser renders the stale text and nothing fails.
+// words, and the browser renders the stale text with nothing failing.
 //
 // Every authored string must appear VERBATIM in the bundle, because the bundle
 // is generated FROM these strings — the comparison needs no model of the
@@ -825,21 +792,16 @@ const escapeForBundle = s => JSON.stringify(s).slice(1, -1);
 // it actually gets, and how a box left far shorter than its row leaves an
 // undeclared hole no hole check can see (the cell IS occupied).
 //
-// WHAT INK CANNOT SEE, stated because it was read as more than it is. The slot
-// is DERIVED from the authored spans through this file's width chain, so INK is a
-// claim about the cell the stylesheet OWES the box, never about the cell the
-// browser drew. When the two disagree INK reports the model and stays green:
-// measured, it passed a title at 47.4px of a 63.0px slot while Chromium clamped
-// that very title, because the real cell was 179.5px wide instead of the modelled
-// 236.6px. The arithmetic was right and the render was wrong; the divergence
-// that produced it is now caught by the CSS span->tracks shapes above.
+// WHAT INK CANNOT SEE. The slot is DERIVED from the authored spans through this
+// file's width chain, so INK is a claim about the cell the stylesheet OWES the
+// box, never about the cell the browser drew. When the two disagree INK reports
+// the model and stays green; the CSS span->tracks shapes above guard the
+// divergence that caused it.
 //
 // OPT-OUT, not opt-in: every page is asserted unless it declares
 // `text_fit: advisory`, which demotes its overflows to [INFO]. An overflow FAILS
 // only at the presentation tier (`document.yaml` `viewport.w`) — the width the
-// deck is shown at — and advises at the others. The three-line description clamp
-// puts a full box at ~128 of 130px, so a box that fails here is one whose text
-// the author should move into the detail.
+// deck is shown at — and advises at the others.
 
 // The one assumed constant on this axis, and the analogue of MONO_ADVANCE_EM:
 // `.box .k` and `.box .t` declare no line-height, so they render at the family's
@@ -1183,7 +1145,7 @@ function headerBudget(sec, innerPx, cw, m = CSS_TEXT) {
 //
 // `chromePx` is the page outside the canvas box — the canvas's top offset and
 // the frame below it — which no single declaration gives. 207 is the seed's
-// measurement at 1920x1080, and a deck whose chrome differs passes its own value in.
+// value, and a deck whose chrome differs passes its own value in.
 const PAGE_CHROME_PX = 207;
 
 function predictPageHeight(page, cw, m = CSS_TEXT, chromePx = PAGE_CHROME_PX) {
@@ -1243,9 +1205,8 @@ const fail = (check, where, detail) => findings.push({ check, sev: 'fail', where
 const info = (check, where, detail) => findings.push({ check, sev: 'info', where, detail });
 // A check that COULD NOT RUN — its own severity because an advisory is something
 // the gate MEASURED and chose not to fail on, and this is something it never
-// measured. Measured: reported through a raw console.log instead, it recorded no
-// finding, so the summary loop found no failure for the check and printed an
-// affirmative [PASS] for a claim nothing had read.
+// measured. Without a recorded finding the summary loop finds no failure for the
+// check and prints an affirmative [PASS] for a claim nothing had read.
 const notAsserted = (check, where, detail) =>
   findings.push({ check, sev: 'not-asserted', where, detail });
 
@@ -1324,7 +1285,7 @@ function checkPage(page) {
         `declared but NO component references it. An active chip DIMS every component it does not ` +
         `name, so this chip switches the whole deck off when clicked.`);
     } else if (mem.length === 1) {
-      // ARITY. This is the half of K that closing the join could never see: the
+      // ARITY. Closing the join cannot see this: the
       // join CLOSES (one chip, one member) and the chip is still broken, because
       // a chip is a RELATION — a flow, a trace, a grouping — and a relation needs
       // at least two ends. With one member, clicking it dims everything else, so
@@ -1377,7 +1338,7 @@ function checkPage(page) {
     }
     // A leaf grid whose EFFECTIVE column count is below its AUTHORED one: the
     // grow-with-content clamp removed the tracks the content could not fill, so
-    // no dead track ever reaches the screen (that is why E passes) — but the
+    // no dead track ever reaches the screen (so TRACK passes) — but the
     // authored intent and the render differ, and a PARTIAL merge silently becomes
     // a full-width BAND when the clamp lands on its span. Advisory, not a
     // failure: the clamp is the documented behaviour, and the deck is correct.
@@ -1408,8 +1369,7 @@ function checkPage(page) {
       // TIER — the cascade is MONOTONE NON-DECREASING in the container width:
       // TIERS runs NARROW -> WIDE, so a grid may only ever gain tracks as the
       // container grows. A violation means the breakpoint rules disagree with each
-      // other (the exact class of bug the enumerated sec-c3/c4/c5 rules had, where
-      // a 6-column grid stayed uncollapsed in a window between two tiers).
+      // other.
       asserted++;
       if (prevTracks !== null && tracks < prevTracks)
         fail('TIER', `${g.label}`,
@@ -1568,7 +1528,7 @@ function checkPage(page) {
       // RAILT — the rail-title ceiling. A horizontal no-rowspan rail sits in an
       // `auto` row (the thin-row rule in engine.js rowTrackList), and
       // `.rail-title` declares NO line clamp — so where a box's third title line
-      // is CLIPPED (invariant C's territory), a rail's third line silently GROWS
+      // is CLIPPED, a rail's third line silently GROWS
       // its row and every stack built on the thin-row arithmetic. Run at every
       // tier like TEXT (the narrowest tier holds the fewest characters), deduped
       // to the worst tier per rail, and emitted as a HARD fail: the two-line
@@ -1598,8 +1558,8 @@ function checkPage(page) {
       if (!authoredTier) continue;   // the checks below are authored-tier truths
 
       // TRACK — a dead track: a column no slot ever occupies. The engine's clamp
-      // is what prevents this, so this check GUARDS THE CLAMP (as E does on the
-      // render). If it ever fires, the clamp and the placement have diverged.
+      // is what prevents this, so this check GUARDS THE CLAMP. If it ever fires,
+      // the clamp and the placement have diverged.
       const usedCols = new Set();
       for (const p of placed) for (let j = 0; j < p.w; j++) usedCols.add(p.c + j);
       asserted++;
@@ -1682,9 +1642,7 @@ function checkPage(page) {
   // be grown to meet the row without saying something else — and nothing in the
   // data ties that rowspan to the neighbour that sets the row height. The author
   // did that arithmetic once, in their head; any later change to the neighbour
-  // reopens the hole in silence. This check IS the missing tie, and it is the
-  // defect the eye caught when a thin separator row grew back to --cell-h and
-  // pushed its neighbour 90px past a bar that could not follow.
+  // reopens the hole in silence. This check IS the missing tie.
   //
   // WHY IT FAILS WHERE TEXT ONLY INFORMS. TEXT rests on an ASSUMED constant and
   // OVER-states demand, so it can flag text that is fine — an estimate must not
@@ -1841,18 +1799,8 @@ function main() {
       'falls back to DEFAULT_TOKENS, which may not be the deck that was built.');
   }
 
-  // CSS — the breakpoints this gate computes with, against the ones index.html
-  // actually declares. Every tracks-per-tier number below is derived from them, so
-  // a stylesheet edit that moved a cut would otherwise leave this gate asserting a
-  // cascade the browser no longer renders — green, and wrong.
-  //
-  // The two ways a mirror can fail to read are OPPOSITE and split accordingly. No
-  // index.html at all is a data-only fixture: there is nothing to disagree with,
-  // so it is NOT ASSERTED — recorded, counted, and never a pass. An index.html
-  // that IS present and whose probe missed is a FAILURE: the declaration the
-  // mirror needs is gone or was rewritten past the probe, so every number derived
-  // from it is unverified, and "not asserted" would be exactly the silence that
-  // certifies the drift. Never the reverse.
+  // CSS — the breakpoints this gate computes with, against data/breakpoints.generated.css; a missing sheet FAILS.
+  // The index.html checks split: no file is NOT ASSERTED (data-only fixture), a present file whose probe missed FAILS.
   const bp = cssBreakpoints(ROOT);
   const mirrored = [...new Set([BP_STACK, BP_TWO, BP_ONE])].sort((a, b) => b - a);
   console.log('\nCSS  (tokens.breakpoints vs the `@container stage` queries in data/breakpoints.generated.css)');
@@ -1949,8 +1897,8 @@ function main() {
   const pages = [];
   for (const { page } of deck.pages) pages.push(checkPage(page));
 
-  // CHIP-X — a key means one thing on every page (principle 6: the same key on
-  // two pages projects one onto the other), so it carries one label everywhere.
+  // CHIP-X — a key means one thing on every page (SKILL.md principle 5: a deck
+  // keeps its conventions on every page), so it carries one label everywhere.
   // Core chips hold by construction; this catches two page chips sharing a key.
   const labelsByKey = new Map();
   for (const { page } of deck.pages)

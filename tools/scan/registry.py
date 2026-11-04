@@ -2,8 +2,9 @@
 Scanner Auto-Discovery Registry
 
 Auto-discovers scanner modules from tools/scan/scanners/ directory.
-Any .py file that contains a subclass of BaseScanner is registered
-automatically. Validates no section ownership overlap at registration time.
+Every concrete BaseScanner subclass found in a module (other than base.py and
+names starting with "_") is registered. Registration rejects a duplicate
+scanner name or a section already owned by another scanner.
 """
 
 import importlib
@@ -20,9 +21,8 @@ logger = logging.getLogger(__name__)
 class ScannerRegistry:
     """Registry for auto-discovered scanner modules.
 
-    Auto-discovers all scanner modules in tools/scan/scanners/ by importing
-    them and finding BaseScanner subclasses. Validates section ownership
-    uniqueness at registration time.
+    Discovery runs in the constructor. A module that fails to import is
+    logged as a warning and skipped.
     """
 
     def __init__(self) -> None:
@@ -31,7 +31,7 @@ class ScannerRegistry:
         self._discover()
 
     def _discover(self) -> None:
-        """Auto-discover all scanner modules in the scanners package."""
+        """Import each scanner module and register its concrete BaseScanner subclasses."""
         scanners_dir = Path(__file__).parent / "scanners"
 
         if not scanners_dir.is_dir():
@@ -49,7 +49,6 @@ class ScannerRegistry:
                     f"{scanners_package}.{module_info.name}"
                 )
 
-                # Find all BaseScanner subclasses in the module
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if (
@@ -87,7 +86,6 @@ class ScannerRegistry:
                 f"Duplicate scanner name: '{name}' is already registered"
             )
 
-        # Check section ownership overlap
         for section in scanner.OWNED_SECTIONS:
             if section in self._section_owners:
                 existing_owner = self._section_owners[section]
@@ -96,7 +94,6 @@ class ScannerRegistry:
                     f"'{existing_owner}', cannot be claimed by '{name}'"
                 )
 
-        # Register
         self._scanners[name] = scanner
         for section in scanner.OWNED_SECTIONS:
             self._section_owners[section] = name

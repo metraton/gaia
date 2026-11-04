@@ -20,7 +20,7 @@ Three properties this module guarantees:
 
   2. GATE. :func:`validate_promotion` is the point where completeness/coherence
      is enforced BEFORE any write. An ``status='active'`` project row missing
-     its resolvable identity (``project_identity``) or its on-disk ``path`` is
+     its resolvable identity (``project_identity``) or an absolute ``path`` is
      rejected -- partial/corrupt rows never promote. This function is the
      extension seam: as scan gains intelligence, new gate rules are added HERE
      (see :data:`_HARD_RULES` / ``REQUIRE_REMOTE``). Rows the scan soft-deleted
@@ -58,7 +58,7 @@ Three properties this module guarantees:
      store writer enforces for the ``projects`` table
      (``gaia/store/writer.py::_present_fields`` + ``_PROJECTS_AGENT_OWNED``).
 
-Reconciliation (requirement 4): a re-scan re-reads the current ``projects``
+Reconciliation: a re-scan re-reads the current ``projects``
 state and re-runs promotion. Because the merge is keyed on physical identity
 (``local_path`` / normalized ``remote_url``), a rescanned project updates its
 existing contract entry in place instead of duplicating, and agent-owned keys
@@ -83,30 +83,17 @@ from typing import Any, Optional
 
 CONTRACT_NAME = "project_identity"
 
-# ---------------------------------------------------------------------------
-# Ownership boundary for a project_identity contract ENTRY.
-#
-# Anchored to the projects-table ownership split in gaia/store/writer.py
-# (_PROJECTS_AGENT_OWNED = {"description"}). Within a contract entry the
-# agent-owned surface is broader (curated display name, type, description, and
-# any structural keys the agent authored), so promotion touches only the small
-# explicit scan-owned set below and preserves everything else.
-# ---------------------------------------------------------------------------
-
-# Always refreshed from the scan (coalesce-or-omit: only when the scan value is
-# non-null, so a NULL never clobbers a curated value).
+# The projects table owns only "description" for the agent
+# (gaia/store/writer.py::_PROJECTS_AGENT_OWNED); in a contract entry the agent
+# owns more, so promotion touches only the keys named here. Refreshed only when
+# the scan value is non-null, so a NULL never clobbers a curated value.
 _ENTRY_SCAN_REFRESH = ("local_path", "remote_url", "platform", "language")
 
-# Seeded from the scan ONLY when absent from an existing entry (an agent value,
-# once present, is never overwritten).
+# Seeded from the scan ONLY when absent from an existing entry.
 _ENTRY_SCAN_SEED = ("name", "type")
 
 
-# ---------------------------------------------------------------------------
-# Gate policy (the extension seam -- add rules here as scan gains intelligence)
-# ---------------------------------------------------------------------------
-
-# HARD rules: a project row failing ANY of these is rejected (never promoted).
+# A project row failing ANY of these is rejected, never promoted.
 # Each entry is (reason_label, predicate(row) -> bool_is_ok).
 _HARD_RULES = (
     ("missing project_identity", lambda r: bool(r.get("project_identity"))),
@@ -114,19 +101,13 @@ _HARD_RULES = (
     ("path not absolute", lambda r: (not r.get("path")) or os.path.isabs(r["path"])),
 )
 
-# ADVISORY: promotion still proceeds but records the warning. Flip to True to
-# make a present git remote a HARD requirement once scan reliably captures it
-# (today many valid local repos legitimately have no origin remote, so keeping
-# this advisory avoids blocking real data). This is the documented escalation
-# point for requirement 2's "ruta y remote presentes".
+# False: a row without remote_url is promoted with an advisory warning, because
+# many valid local repos have no origin remote. True: it is rejected.
 REQUIRE_REMOTE = False
 
 
-# ---------------------------------------------------------------------------
-# DB helpers (mirror tools/scan/classify.py: never materialize the DB file on a
-# read; a dry-run against a never-scanned workspace must touch nothing).
-# ---------------------------------------------------------------------------
-
+# Like tools/scan/classify.py, never materialize the DB file on a read: a
+# dry-run against a never-scanned workspace must touch nothing.
 def _resolve_db_path(db_path: Optional[Path]) -> Path:
     if db_path is not None:
         return db_path
@@ -141,10 +122,6 @@ def _db_file_exists(db_path: Optional[Path]) -> bool:
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-
-# ---------------------------------------------------------------------------
-# Stage 2: the validation gate
-# ---------------------------------------------------------------------------
 
 def validate_promotion(workspace: str, *, db_path: Optional[Path] = None) -> dict:
     """Gate the projects rows of ``workspace`` for promotion. Read-only.
@@ -222,10 +199,6 @@ def validate_promotion(workspace: str, *, db_path: Optional[Path] = None) -> dic
 
     return result
 
-
-# ---------------------------------------------------------------------------
-# Payload shape + merge helpers
-# ---------------------------------------------------------------------------
 
 def _scan_entry(proj: dict) -> dict:
     """Return the non-null scan-owned refresh keys for a project row.
@@ -443,14 +416,11 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
     that only MOVED (a single promotable row this run) follow its remote match
     to its new path, since nothing else in this run has claimed that slug.
 
-    AC-2: a diversion (the claimed-slug skip actually changing the outcome) is
-    not just avoided, it is REPORTED. ``raw_slug`` recomputes the SAME match
-    with no claim filter -- what this project would have resolved to before
-    the per-run scoping existed. When that differs from the claim-scoped
-    ``slug`` actually used, two promotable rows this run resolved by remote to
-    the same contract entry; each got its own slug instead of one clobbering
-    the other. This is a diversion, not a completed merge: no data was lost,
-    so the trace records what was resolved, not what was "lost".
+    A diversion (the claimed-slug skip changing the outcome) is reported.
+    ``raw_slug`` recomputes the same match with no claim filter; when it differs
+    from the claim-scoped ``slug`` actually used, two promotable rows this run
+    resolved by remote to the same contract entry and each got its own slug.
+    No data is lost, so the trace records what was resolved.
     """
     result = copy.deepcopy(existing_map)
     used = set(result.keys())
@@ -540,10 +510,6 @@ def _auto_convert_to_map(
         seed[WORKSPACE_META_KEY] = copy.deepcopy(existing)
     return _merge_map(seed, promotable, missing)
 
-
-# ---------------------------------------------------------------------------
-# Contract read / write (reuses the store connection + the SQL history trigger)
-# ---------------------------------------------------------------------------
 
 def _select_identity_payload(con, workspace: str) -> Optional[dict]:
     """Read the stored payload on an ALREADY-OPEN connection.
@@ -659,7 +625,7 @@ def _merge_for_shape(
         # payload with no project entry to show for it.
         return shape, None, None
     elif shape == "flat" and len(promotable) == 1:
-        # P2 (parked): a single-project flat / workspace-identity contract keeps
+        # A single-project flat / workspace-identity contract keeps
         # its top-level shape -- refresh scan-owned keys in place, no conversion.
         payload, stats = _merge_flat(existing or {}, promotable[0])
     else:
@@ -729,10 +695,6 @@ def _merge_and_write_atomically(
     finally:
         con.close()
 
-
-# ---------------------------------------------------------------------------
-# Stage 3: the promotion driver (validate gate -> merge -> write)
-# ---------------------------------------------------------------------------
 
 def promote_workspace(
     workspace: str,

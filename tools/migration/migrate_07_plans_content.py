@@ -3,22 +3,14 @@
 migrate_07_plans_content.py -- One-shot migration that adds the
 ``content`` and ``updated_at`` columns to the ``plans`` table.
 
-Pre-substrate, the ``plans`` table only carried ``(id, brief_id, status,
-created_at)``. The CLI work to add headless CRUD for plans (``gaia plan
-save / show / list / delete / set-status``) requires a body column to
-hold the rendered plan markdown plus an ``updated_at`` timestamp so that
-listings can be sorted by recency. This migration adds both columns to
-existing DBs without disturbing data.
-
 Behaviour:
 
-1. Backs up ``~/.gaia/gaia.db`` to a timestamped sibling.
-2. Detects whether ``content`` already exists; if so, exits 0 (idempotent).
-3. Issues ``ALTER TABLE plans ADD COLUMN content TEXT`` and
-   ``ALTER TABLE plans ADD COLUMN updated_at TEXT NOT NULL DEFAULT
-   (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))``.
-4. Backfills ``updated_at`` to the existing ``created_at`` for every
-   pre-existing row so chronology is preserved.
+1. Exits 0 when both columns already exist, before touching anything.
+2. With ``--dry-run``, prints the statements it would run and writes nothing.
+3. Otherwise backs up the database to a timestamped sibling, then adds
+   whichever of ``content`` and ``updated_at`` is missing.
+4. After adding ``updated_at``, sets it to ``created_at`` on rows where it
+   is NULL or empty.
 
 Usage::
 
@@ -41,10 +33,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-
-# ---------------------------------------------------------------------------
-# CLI plumbing
-# ---------------------------------------------------------------------------
 
 def _default_db_path() -> Path:
     return Path.home() / ".gaia" / "gaia.db"
@@ -100,7 +88,6 @@ def main(argv: list[str] | None = None) -> int:
             if not has_content:
                 con.execute("ALTER TABLE plans ADD COLUMN content TEXT")
             if not has_updated:
-                # SQLite ALTER TABLE ... DEFAULT must be a literal/strftime
                 con.execute(
                     "ALTER TABLE plans ADD COLUMN updated_at TEXT NOT NULL "
                     "DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"

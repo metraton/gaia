@@ -44,59 +44,29 @@ def _is_gaia_instance(directory: Path) -> bool:
 def find_highest_claude_root(start: Optional[Path] = None) -> Optional[Path]:
     """Return the highest Gaia instance root at or above *start*.
 
-    Walk from *start* (defaults to ``Path.cwd()``) up to ``Path.home()``
-    (inclusive).  Every directory that has a ``.claude/`` child **and**
-    passes the Gaia-instance check (has ``hooks/``, ``agents/``, or
-    ``skills/`` under ``.claude/``) is collected; the one *closest to HOME*
-    (highest in the hierarchy) is returned.
-
-    If no Gaia-qualified ``.claude/`` is found anywhere in the walk, the
-    function falls back to returning the highest plain ``.claude/`` ancestor
-    (matching the original semantics), so callers that don't have a full
-    Gaia layout still get a reasonable result.
-
-    Edge cases
-    ----------
-    - If no ``.claude/`` directory is found at all, returns ``None``.
-    - If *start* is already above ``Path.home()`` the walk is bounded at
-      ``Path.home()``; if that yields no candidates the function returns
-      ``None``.
-    - Symlinks in the path are **not** resolved — the walk uses the logical
-      path reported by the OS, consistent with the rest of the project.
-
-    Parameters
-    ----------
-    start:
-        Directory from which to begin the upward walk.  Defaults to
-        ``Path.cwd()``.
-
-    Returns
-    -------
-    Path or None
-        The ancestor path (not the ``.claude/`` child itself) that should
-        be used as the Gaia instance root, or ``None`` if no such ancestor
-        exists within the walk range.
+    Walks from *start* (default ``Path.cwd()``) up to ``Path.home()``
+    (inclusive) and returns the highest ancestor that has a Gaia-qualified
+    ``.claude/``. With none, it falls back to the highest ancestor with any
+    ``.claude/``, and with none of those returns ``None``. The result is the
+    ancestor, not the ``.claude/`` child. Symlinks are not resolved.
     """
     if start is None:
         start = Path.cwd()
 
     home = Path.home()
 
-    # Walk from start up to home (inclusive).
     candidates: list[Path] = [start, *start.parents]
 
-    highest_gaia: Optional[Path] = None   # best match: Gaia-qualified
-    highest_any: Optional[Path] = None    # fallback: any .claude/
+    highest_gaia: Optional[Path] = None
+    highest_any: Optional[Path] = None
 
     for directory in candidates:
         if (directory / ".claude").is_dir():
-            highest_any = directory  # keep updating — last = highest
+            highest_any = directory
             if _is_gaia_instance(directory):
-                highest_gaia = directory  # keep updating — last = highest
+                highest_gaia = directory
 
-        # Stop at HOME; don't traverse system directories above it.
         if directory == home:
             break
 
-    # Prefer a Gaia-qualified root; fall back to any .claude/ if none found.
     return highest_gaia if highest_gaia is not None else highest_any

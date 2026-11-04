@@ -140,7 +140,7 @@ export function audioPath(page) {
   return file;
 }
 
-/** Returns the exported text of the page at `index` of the timeline: out/video/script/NN-<page>.txt. */
+/** Returns the path of the exported text of the page at `index` of the timeline: out/video/script/NN-<page>.txt. */
 export function scriptTextPath(page, index) {
   return join(OUT_DIR, 'script', `${String(index + 1).padStart(2, '0')}-${page.page}.txt`);
 }

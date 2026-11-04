@@ -93,7 +93,6 @@ class ReplayReporter:
             for rtype, count in reg_types.most_common():
                 lines.append(f"  {rtype}: {count}")
 
-        # Quick stats by decision
         lines.append("")
         decision_counts = Counter(r.event.expected_decision for r in results)
         lines.append("Events by expected decision:")
@@ -131,7 +130,6 @@ class ReplayReporter:
             lines.append(f"  Tool:       {r.event.tool_name}")
             lines.append(f"  Source:     {r.event.source_file}")
 
-            # Show the command or agent name
             tool_input = r.event.stdin_payload.get("tool_input", {})
             if r.event.tool_name == "Bash":
                 cmd = tool_input.get("command", "")
@@ -170,7 +168,6 @@ class ReplayReporter:
 
         lines = [self.summary(results)]
 
-        # Stats by hook
         hooks: dict[str, list[ReplayResult]] = {}
         for r in results:
             hooks.setdefault(r.event.hook_name, []).append(r)
@@ -184,7 +181,6 @@ class ReplayReporter:
             lines.append(f"  {hook_name}: {total} events, {matched} matched, "
                          f"{total - matched} regressions")
 
-        # Stats by tier
         tiers: dict[str, list[ReplayResult]] = {}
         for r in results:
             tier = r.event.expected_tier or "n/a"
@@ -199,7 +195,6 @@ class ReplayReporter:
             lines.append(f"  {tier_name}: {total} events, {matched} matched, "
                          f"{total - matched} regressions")
 
-        # Stats by tool
         tools: dict[str, list[ReplayResult]] = {}
         for r in results:
             tools.setdefault(r.event.tool_name, []).append(r)
@@ -213,7 +208,6 @@ class ReplayReporter:
             lines.append(f"  {tool_name}: {total} events, {matched} matched, "
                          f"{total - matched} regressions")
 
-        # Stats by source file / artifact
         sources: dict[str, list[ReplayResult]] = {}
         for r in results:
             sources.setdefault(r.event.source_file, []).append(r)
@@ -240,7 +234,6 @@ class ReplayReporter:
             for limitation in limitations:
                 lines.append(f"  - {limitation}")
 
-        # Show regressions if any
         regressions = [r for r in results if not r.matched]
         if regressions:
             lines.append("")

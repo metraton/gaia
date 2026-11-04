@@ -29,8 +29,8 @@ gzip copy is written to ``<database dir>/backups/`` (the gaia.paths.backup forma
 the newest BACKUPS_KEPT; plain ``.db`` backups from earlier versions are left. A chain that
 only adds structure then applies on its own; a chain in which any migration
 reaches rows that already exist is refused until ``--consent-chain vA..vB``
-names that exact chain (D68: one consent for the whole chain), or until
-``--apply-after-backup`` -- what ``gaia install`` passes (D140) -- lets the
+names that exact chain (one consent for the whole chain), or until
+``--apply-after-backup`` -- what ``gaia install`` passes -- lets the
 verified backup stand in for it. A backup that fails integrity_check or does
 not hold the counted rows stops the run before any write.
 
@@ -78,8 +78,8 @@ SCHEMA_FLOOR = 18
 
 FRESH, SEALED, UNSEALED = "fresh", "sealed", "unsealed"
 
-# gaia install applies data-reaching chains itself once the backup verifies
-# (D140); `gaia migrate apply` keeps asking for --consent-chain.
+# gaia install applies data-reaching chains itself once the backup verifies;
+# `gaia migrate apply` keeps asking for --consent-chain.
 AFTER_BACKUP_FLAG = "--apply-after-backup"
 
 BACKUPS_KEPT = 3
@@ -134,8 +134,6 @@ def _read_expected_schema_version() -> int:
     return int(m.group(1))
 
 
-# === Reading the database's state ===
-
 def _ledger_version(con: sqlite3.Connection) -> int:
     if not _scalar(
         con,
@@ -157,8 +155,6 @@ def _chain(start: int, expected: int) -> list[tuple[int, Path]]:
         (n, MIG_DIR / f"v{n - 1}_to_v{n}.sql") for n in range(start + 1, expected + 1)
     ]
 
-
-# === Applying the chain ===
 
 _ADD_COLUMN_RE = re.compile(
     r"^alter\s+table\s+[\"'`\[]?([a-z0-9_]+)[\"'`\]]?\s+add\s+column\s+[\"'`\[]?([a-z0-9_]+)",
@@ -377,8 +373,6 @@ def _apply_chain(
             con.execute("ROLLBACK")
         raise
 
-
-# === Plan / apply ===
 
 def _open_for_plan() -> sqlite3.Connection | None:
     """Read-only connection, or None when the database does not exist yet."""

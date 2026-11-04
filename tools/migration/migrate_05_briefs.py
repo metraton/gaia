@@ -1,33 +1,22 @@
 #!/usr/bin/env python3
-"""
-migrate_05_briefs.py
+"""Convert a directory of briefs into a SQL file of INSERT OR IGNORE statements.
 
-Convierte directorios de briefs (cada uno con brief.md / plan.md / handoff.md /
-announcement.md) -> archivo SQL con INSERT OR IGNORE.
+It never opens the database. Each subdirectory of --src is one brief and only
+its brief.md is read; a subdirectory without one is skipped and listed in the
+SQL header. The name is the directory name without its open_/closed_ prefix.
 
-Reglas:
-  - Solo I/O sobre filesystem.
-  - NO importa sqlite3.
-  - Idempotente: UNIQUE (project, name) -> INSERT OR IGNORE.
-  - Cada subdirectorio del briefs/ source es UN brief.
-  - Convención dir: '<status_prefix>_<bare-name>' donde status_prefix ∈ {open, closed}.
-      * 'closed_*' -> status='closed'
-      * 'open_*'   -> status='draft' (la mayoría de los open_* en DB son 'draft')
-  - Frontmatter status (si existe en brief.md) override:
-      * 'complete' o 'closed' -> 'closed'
-      * 'draft'   -> 'draft'
-      * 'open'    -> 'open'
+Status comes from the brief.md frontmatter when it says complete, completed or
+closed (closed), draft or open; otherwise from the prefix: closed_ is closed,
+open_ and any other name are draft. surface_type and topic_key also come from
+the frontmatter. The H1 is the title; the objective, context, approach and
+out-of-scope columns come from the matching H2 sections.
 
-Schema columnas (briefs):
-  project, name, status, surface_type, title, objective, context,
-  approach, out_of_scope, topic_key, created_at, updated_at
-  (id es AUTOINCREMENT, NO se inserta. created_at/updated_at tienen DEFAULT.)
+The `project` column name predates the workspace rename: schema.sql now keys
+briefs by `workspace` (NOT NULL, UNIQUE with name), which this INSERT does not
+set, so against that schema OR IGNORE skips every row.
 
-CLI args:
-  --project   workspace name (default: 'me')
-  --src       briefs directory, one subdirectory per brief (required)
-  --out       path al SQL de salida (default: /tmp/migrate_05_briefs.sql)
-  --fragment  emite solo INSERTs (sin BEGIN/COMMIT)
+Options: --project (default 'me'), --src (required), --out (default
+/tmp/migrate_05_briefs.sql) and --fragment (INSERTs only, no BEGIN/COMMIT).
 """
 from __future__ import annotations
 
@@ -39,8 +28,8 @@ from pathlib import Path
 DEFAULT_PROJECT = "me"
 DEFAULT_OUT = Path("/tmp/migrate_05_briefs.sql")
 
-# `created_at` y `updated_at` tienen DEFAULT en el schema; los pasamos
-# explicitamente desde el mtime del directorio para preservar señal histórica.
+# Both timestamps are set from the brief directory's mtime instead of the
+# table's DEFAULT, to keep the original date.
 COLUMNS = [
     "project",
     "name",
@@ -65,7 +54,7 @@ def sql_quote(value) -> str:
 
 
 def parse_frontmatter(text: str):
-    """Devuelve (front: dict, body: str). YAML mínimo key:value."""
+    """Return (frontmatter, body), reading only top-level `key: value` lines."""
     if not text.startswith("---"):
         return {}, text
 
@@ -83,8 +72,6 @@ def parse_frontmatter(text: str):
 
     front = {}
     for raw in lines[1:end_idx]:
-        # Solo capturamos pares simples key: value en la raíz; ignoramos listas
-        # anidadas (acceptance_criteria, etc.) que no se mapean al schema.
         if not raw or raw.startswith(" ") or raw.startswith("\t"):
             continue
         if ":" not in raw:
@@ -112,10 +99,7 @@ def file_iso_mtime(p: Path) -> str:
 
 
 def split_brief_sections(body: str):
-    """
-    Extrae secciones markdown estándar -> dict.
-    Buscamos H1 (# Title) y H2 (## Section).
-    """
+    """Return (title, sections): the first H1 and the text of the recognized H2 sections."""
     title = None
     sections = {
         "objective": None,
@@ -124,20 +108,18 @@ def split_brief_sections(body: str):
         "out_of_scope": None,
     }
 
-    # Headers H2 -> nombre canónico de columna
     h2_map = {
         "objective": "objective",
         "objetivo": "objective",
         "context": "context",
         "contexto": "context",
         "approach": "approach",
-        "scope": "approach",  # algunos briefs usan 'Scope' como approach
+        "scope": "approach",
         "out of scope": "out_of_scope",
         "out-of-scope": "out_of_scope",
         "fuera de alcance": "out_of_scope",
     }
 
-    # Particionar por headers
     lines = body.splitlines()
     current_key = None
     current_buf = []
@@ -152,18 +134,15 @@ def split_brief_sections(body: str):
         current_buf = []
 
     for line in lines:
-        # H1
         m1 = re.match(r"^#\s+(.+?)\s*$", line)
         if m1 and title is None:
             title = m1.group(1).strip()
             flush()
             continue
-        # H2
         m2 = re.match(r"^##\s+(.+?)\s*$", line)
         if m2:
             flush()
             heading = m2.group(1).strip().lower()
-            # quita números/prefijos como "1. " "2. "
             heading_clean = re.sub(r"^\d+[\.\)]\s*", "", heading)
             mapped = h2_map.get(heading_clean)
             if mapped:
@@ -180,16 +159,7 @@ def split_brief_sections(body: str):
 
 
 def derive_status(dir_name: str, front: dict) -> str:
-    """
-    Status mapping:
-      - frontmatter status='complete'|'closed' -> 'closed'
-      - frontmatter status='draft' -> 'draft'
-      - frontmatter status='open'  -> 'open'
-      - else por prefijo dir:
-          'closed_*' -> 'closed'
-          'open_*'   -> 'draft'  (consistente con DB existente)
-          fallback   -> 'draft'
-    """
+    """Frontmatter status wins (complete, completed, closed, draft, open); else the directory prefix; else draft."""
     fm = (front.get("status") or "").strip().lower()
     if fm in ("complete", "completed", "closed"):
         return "closed"
@@ -203,7 +173,7 @@ def derive_status(dir_name: str, front: dict) -> str:
 
 
 def derive_bare_name(dir_name: str) -> str:
-    """Quita prefijo 'open_' / 'closed_' del directorio."""
+    """Strip a leading 'closed_' or 'open_' from the directory name."""
     for prefix in ("closed_", "open_"):
         if dir_name.startswith(prefix):
             return dir_name[len(prefix):]
@@ -211,10 +181,7 @@ def derive_bare_name(dir_name: str) -> str:
 
 
 def extract_brief(brief_dir: Path, project: str):
-    """
-    Lee un directorio de brief. Source canónico: brief.md.
-    Si no existe brief.md, retorna None y se skipea.
-    """
+    """Build the row for one brief directory, or None when it has no brief.md."""
     brief_md = brief_dir / "brief.md"
     if not brief_md.exists():
         return None
@@ -228,7 +195,6 @@ def extract_brief(brief_dir: Path, project: str):
     surface_type = front.get("surface_type")
     topic_key = front.get("topic_key")
 
-    # timestamps from dir mtime (best-effort)
     dir_mtime = file_iso_mtime(brief_dir)
 
     return {

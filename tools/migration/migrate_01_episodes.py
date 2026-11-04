@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
-"""
-migrate_01_episodes.py
+"""Convert episodes.jsonl into a SQL file of batched INSERT OR IGNORE statements.
 
-Convierte episodes.jsonl -> archivo SQL con INSERT OR IGNORE batched.
+It never opens the database, and rerunning the SQL skips episodes already
+present (episode_id is the primary key). keywords, tags, clarifications,
+commands_executed and context.metrics are stored as JSON text. Blank lines,
+invalid JSON and records without an episode_id are skipped and counted.
 
-Reglas:
-  - Solo I/O sobre filesystem.
-  - NO importa sqlite3.
-  - Idempotente: usa INSERT OR IGNORE (PK = episode_id).
-  - Campos JSON anidados (keywords, tags, clarifications, commands_executed,
-    context.metrics) se serializan con json.dumps y se guardan como TEXT.
-
-CLI args (parametrización cross-workspace):
-  --project   workspace name (default: 'me')
-  --src       path to episodes.jsonl (required)
-  --out       path al SQL de salida (default: /tmp/migrate_01_episodes.sql)
-  --fragment  emite solo INSERTs (sin BEGIN/COMMIT) — para concatenar en master SQL
+Options: --project (default 'me'), --src (required), --out (default
+/tmp/migrate_01_episodes.sql) and --fragment (INSERTs only, no BEGIN/COMMIT,
+for concatenation).
 """
 from __future__ import annotations
 
@@ -24,13 +17,12 @@ import json
 import sys
 from pathlib import Path
 
-# --- Defaults (compat invocaciones previas con 'me') ------------------------
-
 DEFAULT_PROJECT = "me"
 DEFAULT_OUT = Path("/tmp/migrate_01_episodes.sql")
-BATCH_SIZE = 80  # filas por sentencia VALUES (...)
+BATCH_SIZE = 80
 
-# Orden y nombre de columnas en la tabla episodes (ver schema.sql).
+# Column order of the INSERT. The names are those of the episodes table before
+# the workspace rename: schema.sql now has `workspace` where this has `project`.
 COLUMNS = [
     "episode_id",
     "project",
@@ -59,7 +51,7 @@ COLUMNS = [
 
 
 def sql_quote(value) -> str:
-    """Convierte un valor Python a literal SQL seguro para SQLite."""
+    """Render a Python value as a SQLite literal; NaN and infinities become NULL."""
     if value is None:
         return "NULL"
     if isinstance(value, bool):

@@ -25,18 +25,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-# A criterion line is a bullet ("-", "*") or a numbered item ("1.", "2)") --
-# the common rubric-authoring conventions. Anything else is treated as one
-# undivided criterion (a rubric authored as a single paragraph).
+# A bullet ("-", "*") or numbered ("1.", "2)") marker followed by the criterion
+# text; a non-blank line without one is still a criterion, as written.
 _BULLET_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(.*\S)\s*$")
 
 
 def parse_rubric_criteria(evidence_shape: str) -> list[str]:
     """Split rubric prose into discrete, checkable criteria.
 
-    Lines matching a bullet or numbered-list marker become one criterion each
-    (marker stripped). If no line matches, the whole (stripped) text is
-    returned as a single criterion. Blank lines are dropped. Raises
+    Every non-blank line becomes one criterion, with a bullet or numbered-list
+    marker stripped when present; blank lines are dropped. Raises
     ``ValueError`` on empty/whitespace-only input -- there is nothing to
     parse.
     """

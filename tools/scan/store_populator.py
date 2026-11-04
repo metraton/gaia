@@ -1,9 +1,8 @@
 """
 Store Populator -- Scanner-side adapter to the Gaia SQLite substrate.
 
-Replaces the legacy "produce JSON sections" path. Each populator function
-inspects a repository directory (or a workspace of repos) and emits CRUD
-operations through the gaia.store API:
+Each populator function inspects a repository directory (or a workspace of
+repos) and emits CRUD operations through the gaia.store API:
 
     upsert_project, upsert_app, bulk_upsert, delete_missing_in
 
@@ -23,12 +22,10 @@ Public API::
     populate_features(workspace, project, project_path, agent, *, db_path=None) -> dict
     scan_workspace_to_store(workspace, root, agent, *, db_path=None) -> dict
 
-Each function returns ``{"applied": int, "rejected": int, "deleted": int,
-"identity": str}`` so callers can audit the effect.
+``populate_project`` returns ``applied``/``rejected`` flags; the multi-row
+populators return one ``{applied, rejected, deleted}`` count dict per table.
 
-This module produces NO JSON output. The legacy scanners keep working for
-back-compat test suites, but the canonical scan loop calls these functions
-to mutate the SQLite store directly.
+This module produces NO JSON output; it mutates the SQLite store directly.
 """
 
 from __future__ import annotations
@@ -38,10 +35,6 @@ from typing import Any, Iterable, Mapping
 
 from tools.scan.role_detector import detect_role
 
-
-# ---------------------------------------------------------------------------
-# Identity resolution
-# ---------------------------------------------------------------------------
 
 def resolve_project_identity(project_path: Path) -> str:
     """Resolve the identity that names one project wherever its clones sit.
@@ -76,10 +69,6 @@ def resolve_project_identity(project_path: Path) -> str:
     except (OSError, RuntimeError):
         return str(project_path)
 
-
-# ---------------------------------------------------------------------------
-# Repo-level populator
-# ---------------------------------------------------------------------------
 
 def populate_project(
     workspace: str,
@@ -125,34 +114,25 @@ def populate_project(
             "platform": platform,
             "primary_language": primary_language,
             "group_name": group_name,
-            # Stable, vantage-independent project identity (M1-T2). The writer
-            # keys its UPSERT on this value (partial unique index
-            # idx_projects_identity) so the SAME physical repo scanned from
-            # different workspaces/roots collapses into ONE projects row.
+            # The writer keys its UPSERT on project_identity (partial unique
+            # index idx_projects_identity), so the SAME physical repo scanned
+            # from different roots collapses into ONE projects row.
             "project_identity": project_identity,
-            # Persist the on-disk path so the project is directly findable
-            # (project -> path + workspace). The value is the project root
-            # itself; ``upsert_project`` accepts it via ``fields["path"]``.
             "path": str(project_path),
-            # Reactivation (soft-delete, AC-4): a project discovered on disk is
-            # LIVE. Set status='active' and missing_since=NULL explicitly so a
-            # previously-missing project is reactivated on reappearance, rather
-            # than relying on the writer's defaults.
+            # A project found on disk is live: this reactivates a previously
+            # missing one.
             "status": "active",
             "missing_since": None,
         },
         agent=agent,
         db_path=db_path,
         workspace_path=project_path,
-        # populate_project IS the scan path -- structurally guarantee it can
-        # never write a projects.* agent-owned column (M1-T2/T3), regardless
-        # of what a future edit to the `fields` dict above might add.
+        # Strips agent-owned projects.* columns from `fields`, whatever it holds.
         strip_agent_owned=True,
     )
     applied = 1 if res.get("status") == "applied" else 0
-    # AC-2 (M1-T1): the writer may have disambiguated `name` when a DIFFERENT
-    # physical repo already occupies (workspace, name) -- always report the
-    # name actually persisted, not the raw basename this call started with.
+    # The writer disambiguates `name` when a DIFFERENT repo already occupies
+    # (workspace, name); report the name actually persisted.
     final_name = res.get("name") or name
     return {
         "applied": applied,
@@ -164,10 +144,6 @@ def populate_project(
         "group_name": group_name,
     }
 
-
-# ---------------------------------------------------------------------------
-# Infrastructure-side populator (tf_modules, tf_live, clusters)
-# ---------------------------------------------------------------------------
 
 def populate_infrastructure(
     workspace: str,
@@ -195,7 +171,6 @@ def populate_infrastructure(
 
     out = {"tf_modules": {}, "tf_live": {}, "clusters_defined": {}}
 
-    # tf_modules
     rows_tm = [
         {"project": project, "name": m["name"], "source": m.get("source"),
          "version": m.get("version"), "scanner_ts": _now_iso()}
@@ -210,7 +185,6 @@ def populate_infrastructure(
         "tf_modules", workspace, project, surviving_tm, db_path
     )
 
-    # tf_live
     rows_tl = [
         {"project": project, "name": l["name"], "kind": l.get("kind"),
          "attributes": l.get("attributes"), "scanner_ts": _now_iso()}
@@ -225,7 +199,6 @@ def populate_infrastructure(
         "tf_live", workspace, project, surviving_tl, db_path
     )
 
-    # clusters_defined
     rows_cd = [
         {"project": project, "name": c["name"], "provider": c.get("provider"),
          "region": c.get("region"), "scanner_ts": _now_iso()}
@@ -242,10 +215,6 @@ def populate_infrastructure(
 
     return out
 
-
-# ---------------------------------------------------------------------------
-# Orchestration-side populator (releases, workloads, clusters_defined)
-# ---------------------------------------------------------------------------
 
 def populate_orchestration(
     workspace: str,
@@ -294,10 +263,6 @@ def populate_orchestration(
 
     return out
 
-
-# ---------------------------------------------------------------------------
-# Features-side populator
-# ---------------------------------------------------------------------------
 
 def populate_features(
     workspace: str,
@@ -354,10 +319,6 @@ def populate_features(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Apps populator (B2 gap fix: scanners-populate-workspace-model)
-# ---------------------------------------------------------------------------
-
 def populate_apps(
     workspace: str,
     project: str,
@@ -413,10 +374,6 @@ def populate_apps(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Services populator (B2 gap fix: scanners-populate-workspace-model)
-# ---------------------------------------------------------------------------
-
 def populate_services(
     workspace: str,
     project: str,
@@ -469,10 +426,6 @@ def populate_services(
     )
     return out
 
-
-# ---------------------------------------------------------------------------
-# Libraries populator (B2 gap fix: scanners-populate-workspace-model)
-# ---------------------------------------------------------------------------
 
 def populate_libraries(
     workspace: str,
@@ -540,10 +493,6 @@ def populate_libraries(
     )
     return out
 
-
-# ---------------------------------------------------------------------------
-# Facets populator (M3/T8, AC-6): the per-project stack fingerprint
-# ---------------------------------------------------------------------------
 
 # Generic, extensible scope vocabulary for the stack fingerprint. Adding a new
 # aspect (e.g. "documentation", "data_ml") is a new value here plus a mapping
@@ -776,10 +725,6 @@ def populate_facets(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Gaia installations populator (B5 gap fix: rescan-real-workspaces-with-backup)
-# ---------------------------------------------------------------------------
-
 def populate_gaia_installations(
     workspace: str,
     workspace_root: Path,
@@ -833,10 +778,6 @@ def populate_gaia_installations(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Workspace scan loop
-# ---------------------------------------------------------------------------
-
 def scan_workspace_to_store(
     workspace: str,
     root: Path,
@@ -854,7 +795,7 @@ def scan_workspace_to_store(
         agent: Agent name for permission enforcement.
         db_path: Optional explicit DB path (test override).
 
-    Deterministic attribution (post inference-removal):
+    Attribution:
 
     * A **project** is a dir with ``.git`` (discovered by :func:`_list_repos`).
     * Every discovered repo is attributed to the single caller-provided
@@ -870,21 +811,17 @@ def scan_workspace_to_store(
         plus a ``__failures__`` key holding a list of per-project failure dicts
         (``{"workspace", "project", "path", "error"}``) for repos whose
         population raised -- the scan isolates each repo so one failure does not
-        abort the whole scan (AC-4, soft-delete).
+        abort the whole scan.
     """
     project_dirs = _list_repos(root)
 
     results: dict = {}
-    # Per-project isolation (AC-4): a single problematic repo (bad column,
-    # permissions, malformed content) must NOT abort the whole scan. Each
-    # project is populated inside its own try/except; failures are collected
-    # here and reported at the end via the reserved ``__failures__`` key, while
-    # the loop continues with the remaining projects.
+    # Each project is populated in its own try/except: a failure is collected
+    # for the ``__failures__`` key and the loop continues.
     failures: list[dict] = []
     for project_path in project_dirs:
         project_name = project_path.name
 
-        # Deterministic: every repo belongs to the caller-provided workspace.
         target_workspace = workspace
 
         group_name = group_path(project_path, root)
@@ -951,17 +888,11 @@ def scan_workspace_to_store(
         "gaia_installations": gaia_inst_res,
     }
     results["__workspace__"] = workspace_results
-    # Per-project isolation (AC-4): collected failures, empty when all repos
-    # populated cleanly. Callers (bin/cli/scan.py:_populate_store) consume this
-    # to keep failed-but-on-disk projects out of the soft-delete pass and to
-    # report the failures.
+    # bin/cli/scan.py:_populate_store reads this to keep failed-but-on-disk
+    # projects out of the soft-delete pass.
     results["__failures__"] = failures
     return results
 
-
-# ===========================================================================
-# Internal helpers (filesystem + git probing -- pure read-only)
-# ===========================================================================
 
 def _now_iso() -> str:
     from datetime import datetime, timezone
@@ -1164,20 +1095,11 @@ def _platform_from_remote(url: str | None) -> str | None:
 def _detect_primary_language(project_path: Path) -> str | None:
     """Resolve the DOMINANT language of a repo, or None.
 
-    Delegates to the SAME scanner detection that produces the ``language``
-    facets (recursive / monorepo-aware, with the complete ``LANGUAGE_MANIFESTS``
-    list -- Gemfile->ruby, composer.json->php, TypeScript, C#, ...). This
-    replaces the historical top-level-only manifest probe, which scanned only
-    ``project_path.iterdir()`` and hard-coded an INCOMPLETE list (no Gemfile,
-    no composer.json, no TypeScript/C#): a repo whose sole manifest was a
-    Gemfile, or whose manifest lived in a subdirectory, got a ``language``
-    facet but a NULL ``primary_language`` -- the facet->primary_language drift.
-
-    Deriving from the scanner sections guarantees ``primary_language`` never
-    drifts from the detected ``language`` facet again. None for a repo with no
-    detected language (e.g. IaC-only), which legitimately has no primary
-    language. Callers that already ran the scanners should prefer
-    :func:`primary_language_from_sections` to avoid a second scan.
+    Delegates to the same scanner detection that produces the ``language``
+    facets, so ``primary_language`` cannot drift from them. None for a repo
+    with no detected language (e.g. IaC-only). Callers that already ran the
+    scanners should prefer :func:`primary_language_from_sections` to avoid a
+    second scan.
     """
     if not project_path.is_dir():
         return None
@@ -1327,7 +1249,6 @@ def _scan_tf_modules(project_path: Path) -> list[dict]:
                 if name in seen:
                     continue
                 seen.add(name)
-                # Find source/version near the match
                 tail = content[m.end(): m.end() + 400]
                 src = source_re.search(tail)
                 ver = version_re.search(tail)
@@ -1539,7 +1460,6 @@ def _scan_features(project_path: Path) -> list[dict]:
     if not project_path.is_dir():
         return out
 
-    # Tier 1: features/ directory
     features_dir = project_path / "features"
     if features_dir.is_dir():
         try:
@@ -1549,7 +1469,6 @@ def _scan_features(project_path: Path) -> list[dict]:
         except OSError:
             pass
 
-    # Tier 2: feature descriptor files
     try:
         for desc in project_path.rglob("feature.json"):
             if any(p in desc.parts for p in _SKIP):
@@ -1562,7 +1481,6 @@ def _scan_features(project_path: Path) -> list[dict]:
     except OSError:
         pass
 
-    # Tier 3: flags.json / flags.yaml at project root
     for flags_file in (project_path / "flags.json", project_path / "flags.yaml", project_path / "flags.yml"):
         if not flags_file.is_file():
             continue
@@ -1614,7 +1532,6 @@ def _scan_apps(project_path: Path) -> list[dict]:
     if not project_path.is_dir():
         return out
 
-    # Tier 1: apps/ directory
     apps_dir = project_path / "apps"
     if apps_dir.is_dir():
         try:
@@ -1637,7 +1554,6 @@ def _scan_apps(project_path: Path) -> list[dict]:
         if out:
             return out
 
-    # Tier 2: single-project deployable
     pkg = project_path / "package.json"
     if pkg.is_file():
         try:
@@ -1663,10 +1579,8 @@ def _scan_services(project_path: Path) -> list[dict]:
 
     Tier 2: docker-compose top-level services -- ``docker-compose.yml`` /
     ``docker-compose.yaml`` / ``docker-compose-*.yml`` at the project root.
-    Parses the top-level ``services:`` mapping. ``kind`` is inferred from
-    the image name when present (``postgres``/``mysql`` -> ``"database"``;
-    ``redis``/``memcached`` -> ``"cache"``; ``rabbitmq``/``kafka`` ->
-    ``"queue"``; otherwise ``"api"``).
+    Parses the top-level ``services:`` mapping. ``kind`` comes from the image
+    name via :func:`_infer_service_kind`.
 
     Returns a de-duplicated list of ``{"name": str, "kind": str|None}`` dicts.
     """
@@ -1682,7 +1596,6 @@ def _scan_services(project_path: Path) -> list[dict]:
     if not project_path.is_dir():
         return out
 
-    # Tier 1: services/ directory
     services_dir = project_path / "services"
     if services_dir.is_dir():
         try:
@@ -1692,7 +1605,6 @@ def _scan_services(project_path: Path) -> list[dict]:
         except OSError:
             pass
 
-    # Tier 2: docker-compose top-level services
     compose_files: list[Path] = []
     try:
         for child in project_path.iterdir():
@@ -1721,9 +1633,8 @@ def _scan_services(project_path: Path) -> list[dict]:
 def _parse_compose_services(content: str) -> list[tuple[str, str | None]]:
     """Parse a docker-compose YAML for top-level service names + image strings.
 
-    Returns a list of ``(service_name, image_or_None)`` tuples. Tolerates
-    the absence of PyYAML by doing line-based parsing of the top-level
-    ``services:`` block.
+    Returns a list of ``(service_name, image_or_None)`` tuples, read line by
+    line from the top-level ``services:`` block (no YAML library).
     """
     out: list[tuple[str, str | None]] = []
     lines = content.splitlines()
@@ -1743,41 +1654,34 @@ def _parse_compose_services(content: str) -> list[tuple[str, str | None]]:
         current_indent = -1
 
     for raw in lines:
-        # Strip comment-only lines but keep indentation
         if raw.strip().startswith("#") or not raw.strip():
             continue
 
         indent = len(raw) - len(raw.lstrip(" "))
         stripped = raw.strip()
 
-        # Detect entering services: block
         if not in_services:
             if stripped == "services:" and indent == 0:
                 in_services = True
                 services_indent = 0
             continue
 
-        # Inside services: block. Top-level key (one indent step in) = service name.
-        # Stop when indentation returns to <= services_indent and is a different key.
         if indent <= services_indent and stripped.endswith(":") and stripped != "services:":
             _emit()
             in_services = False
             continue
 
-        # Service name line: indent > services_indent and ends with ":"
         if current_service is None and indent > services_indent and stripped.endswith(":"):
             current_service = stripped[:-1].strip().strip("'\"")
             current_indent = indent
             current_image = None
             continue
 
-        # Image line under current service
         if current_service is not None and indent > current_indent and stripped.startswith("image:"):
             val = stripped[len("image:"):].strip().strip("'\"")
             current_image = val or None
             continue
 
-        # Next sibling service starts (same indent as current service)
         if current_service is not None and indent == current_indent and stripped.endswith(":"):
             _emit()
             current_service = stripped[:-1].strip().strip("'\"")
@@ -1808,12 +1712,11 @@ def _infer_service_kind(image: str | None) -> str:
 def _scan_libraries(project_path: Path) -> list[dict]:
     """Detect workspace-internal libraries (shared packages) in a project.
 
-    Tier 1: ``packages/`` subdirectory -- each child dir with a
-    ``package.json`` becomes a library row. ``name`` and ``version`` come
-    from the package.json.
+    Tier 1: ``packages/`` subdirectory -- each child dir becomes a library
+    row. ``name`` and ``version`` come from its ``package.json``; without
+    one, the directory name is the name and the version is None.
 
-    Tier 2: ``libs/`` and ``libraries/`` subdirectories -- alternative
-    monorepo conventions.
+    Tier 2: ``libs/`` and ``libraries/`` subdirectories -- same rule.
 
     Tier 3: package.json with ``workspaces`` field -- glob each pattern
     (e.g. ``packages/*``) and emit one row per matched directory's
@@ -1847,7 +1750,6 @@ def _scan_libraries(project_path: Path) -> list[dict]:
     if not project_path.is_dir():
         return out
 
-    # Tier 1+2: packages/, libs/, libraries/ directories
     for dir_name in ("packages", "libs", "libraries"):
         d = project_path / dir_name
         if not d.is_dir():
@@ -1861,12 +1763,10 @@ def _scan_libraries(project_path: Path) -> list[dict]:
                     n, v = _read_pkg(pkg)
                     _add(n or child.name, v)
                 else:
-                    # Even without package.json, treat as library by dirname
                     _add(child.name, None)
         except OSError:
             pass
 
-    # Tier 3: package.json with workspaces field
     root_pkg = project_path / "package.json"
     if root_pkg.is_file():
         try:
@@ -1874,7 +1774,6 @@ def _scan_libraries(project_path: Path) -> list[dict]:
         except (OSError, ValueError):
             data = {}
         workspaces = data.get("workspaces") if isinstance(data, dict) else None
-        # workspaces can be a list or a dict {"packages": [...]}
         patterns: list[str] = []
         if isinstance(workspaces, list):
             patterns = [p for p in workspaces if isinstance(p, str)]
@@ -1885,7 +1784,6 @@ def _scan_libraries(project_path: Path) -> list[dict]:
 
         for pattern in patterns:
             try:
-                # Translate trailing /* into a glob over a single directory level
                 for match in project_path.glob(pattern):
                     if not match.is_dir():
                         continue
@@ -1907,8 +1805,10 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
     * ``node_modules/@jaguilar87/gaia/package.json`` -- canonical npm install.
     * ``.claude/skills/`` AND ``.claude/agents/`` -- Gaia footprint without
       a node_modules entry (dev symlink scenario).
+    * a ``.claude/plugin-registry.json`` listing ``gaia`` (``install_mode``
+      ``"plugin"``).
 
-    When neither marker is found, returns an empty list.
+    The first marker found wins; when none is found, returns an empty list.
     """
     import json
     import socket
@@ -1919,7 +1819,6 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
 
     machine = socket.gethostname() or "unknown"
 
-    # Marker 1: node_modules/@jaguilar87/gaia/package.json
     npm_pkg = workspace_root / "node_modules" / "@jaguilar87" / "gaia" / "package.json"
     if npm_pkg.is_file():
         version: str | None = None
@@ -1929,7 +1828,6 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
                 version = data["version"]
         except (OSError, ValueError):
             version = None
-        # Detect symlinked dev install: node_modules/@jaguilar87/gaia is a symlink
         gaia_dir = npm_pkg.parent
         install_mode = "dev" if gaia_dir.is_symlink() else "npm"
         out.append({
@@ -1939,7 +1837,6 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
         })
         return out
 
-    # Marker 2: .claude/ footprint (skills/ + agents/) without node_modules
     claude_dir = workspace_root / ".claude"
     if claude_dir.is_dir():
         skills_dir = claude_dir / "skills"
@@ -1960,12 +1857,8 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
             })
             return out
 
-    # Marker 3: canonical plugin-registry.json signal (mode-agnostic). This is
-    # the signal the canonical classification rule uses to call a dir a
-    # workspace; record the installation so the workspaces row is anchored even
-    # when the npm / skills+agents markers are absent (e.g. plugin-managed
-    # installs where the footprint lives in the plugin data dir, not under
-    # ./.claude/). Version comes from the registry entry when present.
+    # Plugin-managed installs keep their footprint outside ./.claude/, so the
+    # registry is the only marker they leave.
     if _is_installed_gaia_workspace(workspace_root):
         version = None
         try:
@@ -2000,19 +1893,15 @@ def _safe_delete_missing(
 ) -> int:
     """Prune rows in `table` for this workspace that no longer survive.
 
-    The store's ``delete_missing_in`` deletes by project + PK fragment. For
-    project-scoped tables (PK = (project, name)), we pass
-    ``[(project, name), ...]`` directly. We also include the rows for OTHER
-    projects in the same workspace under the same PK shape so we don't delete
-    sibling projects' rows.
+    ``delete_missing_in`` deletes every workspace row whose PK
+    ``(project, name)`` is not in the surviving set, so the rows of OTHER
+    projects are added to it and only ``project``'s rows can be pruned.
     """
     from gaia.store import delete_missing_in
     from gaia.store.writer import _connect
 
     surviving = list(surviving)
 
-    # Read ALL rows for this workspace and add foreign-project PKs to the
-    # surviving set so we only prune the rows belonging to `project`.
     con = _connect(db_path)
     try:
         cur = con.execute(

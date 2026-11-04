@@ -1,6 +1,4 @@
-"""
-Workspace scanning shared constants.
-"""
+"""Directory names a workspace scan should skip (read by no scanner)."""
 
 import logging
 from dataclasses import dataclass, field
@@ -9,7 +7,6 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Directories to always skip during workspace scanning
 _SKIP_DIRS = frozenset({
     "node_modules", "__pycache__", ".tox", ".venv",
     "venv", "dist", "build", ".next", ".nuxt", "target",

@@ -1,16 +1,15 @@
 """
 Git Scanner
 
-Detects git platform, remotes, default branch, branch strategy, and monorepo
-workspace configuration from the project's .git directory and manifest files.
-
-Returns the `git` section per data-model.md section 2.5.
+Detects git platform, remotes, default branch and branch strategy from the
+project's .git directory, and returns the `git` section.
 
 Pure Function Contract:
 - No file writes
 - No state modification
 - No network calls
-- Only reads: filesystem reads (`.git/config`, `.git/HEAD`, manifest files)
+- Only reads: filesystem reads (`.git/config`, `.git/HEAD`, `.git/refs`,
+  `.git/packed-refs`)
 """
 
 import configparser
@@ -347,9 +346,9 @@ def _determine_primary_platform(
 class GitScanner(BaseScanner):
     """Scanner for git repository configuration.
 
-    Detects platform, remotes, default branch, branch strategy, and
-    monorepo workspace configuration. Returns the `git` section per
-    data-model.md section 2.5.
+    Detects platform, remotes, default branch and branch strategy, and returns
+    the `git` section. Its `monorepo.workspace_config` is always None: monorepo
+    detection is owned by StackScanner.
 
     Always returns a git section even when no .git directory exists
     (platform=null, remotes=[]).
@@ -390,8 +389,7 @@ class GitScanner(BaseScanner):
             git_dir = None
 
         if git_dir is None:
-            # No .git directory found at root or in subdirectories
-            # Note: monorepo detection is owned by StackScanner, not duplicated here
+            # Only root/.git is looked at; subdirectories are not searched
             section: Dict[str, Any] = {
                 "platform": None,
                 "remotes": [],
@@ -429,7 +427,6 @@ class GitScanner(BaseScanner):
         # Detect branch strategy
         branch_strategy = _detect_branch_strategy(git_dir)
 
-        # Note: monorepo detection is owned by StackScanner, not duplicated here
         section: Dict[str, Any] = {
             "platform": platform,
             "remotes": remotes,
@@ -449,14 +446,13 @@ class GitScanner(BaseScanner):
             duration_ms=elapsed,
         )
 
-# Module-level convenience for T009 task verify command compatibility
 SCANNER_NAME = GitScanner.SCANNER_NAME.fget(GitScanner())  # type: ignore[union-attr]
 SCANNER_VERSION = GitScanner.SCANNER_VERSION.fget(GitScanner())  # type: ignore[union-attr]
 OWNED_SECTIONS = GitScanner.OWNED_SECTIONS.fget(GitScanner())  # type: ignore[union-attr]
 
 
 def scan(root: Path) -> Dict[str, Any]:
-    """Module-level scan function for backward compatibility with T009 verify.
+    """Run GitScanner on ``root`` and return only its sections dict.
 
     Args:
         root: Absolute path to the project root directory.

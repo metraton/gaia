@@ -9,9 +9,9 @@
 // A palette is a set of DESIGN TOKENS declared in index.html. If this tool
 // duplicated those hex values it would drift the first time a token changed and
 // then report ratios for colours nobody renders — a false pass, the exact trap
-// the layout guardrail avoids by measuring the real render. So the token blocks
-// in index.html are the SINGLE SOURCE OF TRUTH: this script extracts them, so a
-// palette edit is audited by construction.
+// check-layout.mjs avoids by reading its mirrored values back out of index.html.
+// So the token blocks in index.html are the SINGLE SOURCE OF TRUTH: this script
+// extracts them, so a palette edit is audited by construction.
 //
 // WHAT IT ASSERTS. For every (palette × theme) it resolves the token set, then
 // checks a declared list of REAL foreground/background pairs — the pairs the
@@ -21,13 +21,11 @@
 // colour a viewer actually sees, not on the translucent token in isolation.
 //
 // THRESHOLDS (WCAG 2.1):
-//   AA text        4.5:1  — normal-size text. Every text role in this engine
-//                           qualifies as normal-size: the largest is .bar h1 at
-//                           23px/700, still under the 18.66px-bold large-text
-//                           threshold's companion requirement, and every other
-//                           role (kicker 10.5px, description 12px, box title
-//                           15–17px, zone title 13–14.5px) is far below it. So
-//                           no pair gets the 3:1 large-text exemption.
+//   AA text        4.5:1  — normal-size text. No pair gets the 3:1 large-text
+//                           allowance: even .bar h1 (23px/700, which WCAG would
+//                           class as large text) is audited at 4.5:1, and every
+//                           other role (kicker 10.5px, description 12px, box
+//                           title 15–17px, zone title 13–14.5px) is normal-size.
 //   AA non-text    3.0:1  — UI component boundaries (WCAG 1.4.11): the cell,
 //                           zone, and control borders that carry the grid's
 //                           structure. If a border falls below this the layout
@@ -35,11 +33,9 @@
 //
 // WHAT `gates` MEANS, AND WHY neutral GATES ITS TEXT BUT NOT ITS BORDERS.
 // `neutral` is the default palette, so its secondary text (box kickers and
-// descriptions, the subtitle, chips) is what most readers read. It used to gate
-// nothing, to keep published decks looking as they did, and that text sat at 3.5:1.
-// On 2026-10-26 the user accepted the cost: neutral's text tokens were darkened
-// just enough to clear 4.5:1, so a published deck takes a slightly darker grey on
-// its next re-seed. Its hairline borders stay reported only, as Rosé Pine's do.
+// descriptions, the subtitle, chips) is what most readers read: it gates primary
+// and accent, and must clear 4.5:1. Its hairline borders stay reported only, as
+// Rosé Pine's do.
 // ─────────────────────────────────────────────────────────────────────────
 const fs = require('fs');
 const path = require('path');

@@ -17,9 +17,9 @@ PATH``; its name is never matched against path segments. The scan of workspace
                  ``projects.group_name``. None when the repo sits directly in
                  the root.
   R4 walk      = every folder at any depth, dot-folders included, except the
-                 tool folders ``.git .claude .opencode .gaia .terraform
-                 .project-worktrees .worktrees .codex .agents`` and
-                 ``node_modules``. The walk never enters a repo or follows a
+                 names in ``store_populator._REPO_WALK_SKIP`` (tool and cache
+                 folders such as ``.git .claude .gaia node_modules``) and
+                 build trees. The walk never enters a repo or follows a
                  symlinked folder (``store_populator._list_repos``).
   R5 reconcile = upsert keyed by ``project_identity``; soft-delete scoped to the
                  ``(workspace, name)`` set discovered this run. A repo whose
@@ -54,10 +54,6 @@ from tools.scan.store_populator import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Per-repo classification (R1, R3)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class RepoClassification:
     """One repo of workspace ``workspace``: its project slot (R1), its group (R3,
@@ -84,10 +80,6 @@ def classify_repo(repo: Path, W: str, workspace_root: Path) -> RepoClassificatio
     )
 
 
-# ---------------------------------------------------------------------------
-# Structured report (R6)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ScanReport:
     """Structured, non-crashing result of a scan (R6).
@@ -106,20 +98,17 @@ class ScanReport:
             previewed on a dry-run and persisted to ``project_facets`` on apply.
         errors: One dict per repo inside no declared workspace (R2):
             ``{repo, W, path, reason}``.
-        warnings: One dict per would-be collision (M2-T6, AC-5). A collision
-            is any repo whose requested project slot ``(workspace, project)``
-            was already occupied by a DIFFERENT physical repo, forcing the
-            writer to disambiguate the DB slot name. Under the pre-M1 model
-            these repos silently overwrote each other; T1 stopped the data
-            loss, and T6 makes the event VISIBLE instead of silent. Shape:
-            ``{kind, repo, workspace, requested_project, assigned_project,
-            path, message}``.
+        warnings: One dict per notable event: ``repo_collision`` (a repo whose
+            requested project slot ``(workspace, project)`` was already held by
+            a DIFFERENT physical repo, so the writer disambiguated the slot
+            name), ``repo_copy``, ``project_moved`` and ``project_move_refused``.
+            Collision shape: ``{kind, repo, workspace, requested_project,
+            assigned_project, path, message}``.
         marked_missing: Count of project rows soft-marked missing during
-            reconcile (R5). Zero in dry-run. Kept for back-compat; the same
-            information, per-row, is now also in ``vanished`` (SV2).
-        facet_failures: One dict per repo whose facet persistence raised
-            (M3/T8). Per-repo isolation: a facet write error is collected here
-            and never aborts the scan. Empty on a clean run and always empty in
+            reconcile (R5). Zero in dry-run; ``vanished`` holds the same
+            information per row.
+        facet_failures: One dict per repo whose facet persistence raised. A
+            facet write error is collected here and never aborts the scan. Empty on a clean run and always empty in
             dry-run (facets are only persisted on apply). Shape:
             ``{workspace, project, path, error}``.
         foreign_repos: Repos under ``root`` whose nearest declared workspace is
@@ -127,11 +116,11 @@ class ScanReport:
             classified, created or re-owned here. Shape: ``{repo, path,
             workspace}``.
         vanished: One dict per project row that would be / was marked missing
-            during reconcile (R5, SV2). Shape: ``{workspace, project, path,
+            during reconcile (R5). Shape: ``{workspace, project, path,
             project_identity, remote, missing_since}``. ``missing_since`` is
             ``None`` on a dry-run (nothing was written) and the persisted
             timestamp on apply.
-        move_candidates: Detected repo moves (SV2) -- a project that vanished
+        move_candidates: Detected repo moves -- a project that vanished
             from this scan's workspace paired 1:1, by normalized git remote,
             with an ACTIVE project row in a DIFFERENT workspace, or a project
             just seen here paired 1:1 with a MISSING row elsewhere carrying the
@@ -145,7 +134,7 @@ class ScanReport:
             match the persisted project name, typically a slot renamed by
             collision-disambiguation (R1). Shape: ``{workspace, project, repo,
             path, expected_name, reason}``.
-        orphaned_autored: Detection-only (SV2, never mutates) list of vanished
+        orphaned_autored: Detection-only (never mutates) list of vanished
             projects that carried an agent-authored ``description``, together
             with a count of the memory notes and open briefs still held by the
             affected workspace -- content that may now be orphaned and worth a
@@ -155,9 +144,7 @@ class ScanReport:
         diff: Summary counts for this run. Dry-run keys: ``would_create``,
             ``would_update``, ``would_move``, ``would_mark_missing``. Apply
             keys: ``did_create``, ``did_update``, ``did_move``,
-            ``did_mark_missing``. ``*_move`` counts detected move_candidates
-            (SV2 only ever detects/reports a move -- adjudication and the
-            actual ``superseded_by`` write happen in SV4).
+            ``did_mark_missing``. ``*_move`` is ``len(move_candidates)``.
         already_missing: Rows of the scanned workspaces an earlier scan marked
             missing; ``*_mark_missing`` counts only this run's transitions.
         mode:``"dry-run"`` or ``"apply"`` -- mirrors the ``apply`` flag this
@@ -214,12 +201,7 @@ def error_report(message: str) -> ScanReport:
     return ScanReport(error=message)
 
 
-# ---------------------------------------------------------------------------
-# The scan driver (R5 reconcile + R6 output)
-# ---------------------------------------------------------------------------
-
-# Agent identity used when the scan persists rows. Kept as a module constant so
-# tests and callers refer to it by name.
+# Agent identity under which the scan persists rows.
 SCAN_AGENT = "gaia-system"
 
 # Tables the scan agent must be able to write for population to succeed.
@@ -269,20 +251,19 @@ def _upsert(
 
     Returns ``(applied, final_name)``. ``final_name`` may differ from
     ``classification.project`` when the writer detected a genuine
-    repo-name collision (AC-2, M1-T1): a DIFFERENT physical repo already
-    occupying ``(workspace, classification.project)`` never gets silently
-    overwritten -- the writer disambiguates instead.
+    repo-name collision: a DIFFERENT physical repo already occupying
+    ``(workspace, classification.project)`` is never overwritten -- the writer
+    disambiguates instead.
 
-    Reuses the writer's identity-collapse UPSERT (keyed on ``project_identity``
-    via the partial unique index) so the SAME physical repo scanned from
-    different roots collapses to ONE row. group_name records the repo's group
-    (R3).
+    The UPSERT is keyed on ``project_identity`` (partial unique index), so the
+    SAME physical repo scanned from different roots collapses to ONE row.
+    group_name records the repo's group (R3).
 
     Args:
-        remote_url: The repo's raw ``git remote get-url origin`` value (SV2),
-            or None when unavailable. This is the base signal move-detection
-            (SV2 ``move_candidates``) matches on across rows written before
-            v64, whose ``project_identity`` was the git-common-dir.
+        remote_url: The repo's raw ``git remote get-url origin`` value, or None
+            when unavailable. Move detection (``move_candidates``) matches on it
+            across rows written before v64, whose ``project_identity`` was the
+            git-common-dir.
     """
     from gaia.store.writer import upsert_project
 
@@ -296,27 +277,13 @@ def _upsert(
             "group_name": classification.container,
             "status": "active",
             "missing_since": None,
-            # SV2: base signal for cross-workspace move detection. Written
-            # even when None (mirrors store_populator.populate_project) --
-            # a repo whose origin was removed reports that honestly rather
-            # than leaving a stale value silently in place.
+            # remote_url is written even when None, so a repo whose origin was
+            # removed does not keep a stale value.
             "remote_url": remote_url,
-            # Scan-owned scalars, populated deterministically for PARITY with
-            # store_populator.populate_project (the sibling scan path). Both
-            # are scan-owned (writer._PROJECTS_AGENT_OWNED == {"description"}),
-            # so `gaia scan` must fill them or promotion carries NULLs into the
-            # project_identity contract even when the data is on disk.
-            #   * primary_language: the DOMINANT language, derived from the
-            #     SAME scanner detection that produces the `language` facets
-            #     (passed in by the caller so both come from ONE scan) -- so the
-            #     scalar column can never drift from the multi-language
-            #     `language` facets in project_facets, which enumerate ALL
-            #     languages. None for an IaC-only repo (no language detected).
-            #   * platform: derived from the git remote host (None when the
-            #     repo has no origin remote -- honest NULL, not a bug).
-            #   * role: deterministic disk-based classification; without it
-            #     promote._apply_scan_owned never seeds the contract entry's
-            #     `type` (promote.py seeds type from role when absent).
+            # Scan-owned scalars, filled as store_populator.populate_project
+            # does. primary_language comes from the same detection as the
+            # `language` facets (None for an IaC-only repo); role seeds the
+            # contract entry's `type` in promote._apply_scan_owned.
             "primary_language": primary_language,
             "platform": _platform_from_remote(remote_url),
             "role": detect_role(repo_path),
@@ -324,8 +291,6 @@ def _upsert(
         agent=agent,
         db_path=db_path,
         workspace_path=repo_path,
-        # `gaia scan` IS the scan path -- structurally guarantee it can never
-        # write a projects.* agent-owned column (M1-T2/T3).
         strip_agent_owned=True,
     )
     final_name = res.get("name") or classification.project
@@ -350,17 +315,8 @@ def _reconcile(
     return mark_missing_in("projects", workspace, surviving_keys, db_path=db_path)
 
 
-# ---------------------------------------------------------------------------
-# SV2: cross-DB detection helpers (move / rename / orphaned-authored)
-#
-# All read-only. Every helper below is guarded by :func:`_db_file_exists` so a
-# dry-run against a workspace that has never been scanned before touches
-# nothing on disk -- mirrors the same "dry-run touches-nothing" guarantee
-# `preview_project_name` already established (see its docstring): `_connect`
-# runs schema.sql and MATERIALIZES the DB file the first time it opens a
-# connection, so a read-only helper must never call it against a path that
-# does not yet exist.
-# ---------------------------------------------------------------------------
+# The detection helpers below are read-only, each guarded by `_db_file_exists`:
+# `_connect` creates the DB file on first open, which a dry-run must not do.
 
 def _resolve_db_path(db_path: Path | None) -> Path:
     """Resolve the effective DB path the same way `_connect` would, without
@@ -411,8 +367,8 @@ def _compute_vanished(
     file does not yet exist (nothing can have vanished from a DB that was
     never written).
 
-    Each item carries the fields the SV2 report needs downstream (remote for
-    move-candidate matching, description for orphaned-authored detection).
+    Each item carries the remote (move-candidate matching) and the description
+    (orphaned-authored detection).
     """
     if not _db_file_exists(db_path):
         return []
@@ -458,14 +414,10 @@ def _missing_count(workspace: str, db_path: Path | None) -> int:
 def _memory_and_brief_counts(workspace: str, db_path: Path | None) -> tuple[int, int]:
     """Return ``(memory_count, open_brief_count)`` for ``workspace``.
 
-    Read-only, workspace-scoped (``memory.project_ref`` is added in SV1 but
-    not yet populated -- see schema.sql -- so per-project attribution is
-    deferred to SV3; this is the best-effort workspace-level signal for
-    "does this workspace still hold authored context that referenced the
-    vanishing project"). ``memory_count`` excludes tombstoned rows
-    (``deleted_at IS NOT NULL``, SV3/v26) so it reflects live memory only --
-    a soft-deleted note is no longer "authored context" worth flagging.
-    Returns ``(0, 0)`` when the DB file does not exist.
+    Read-only and workspace-scoped, not per project. ``memory_count`` counts
+    rows with ``deleted_at IS NULL``; ``open_brief_count`` counts briefs whose
+    status is neither ``closed`` nor ``archived``. Returns ``(0, 0)`` when the
+    DB file does not exist.
     """
     if not _db_file_exists(db_path):
         return 0, 0
@@ -762,20 +714,16 @@ def scan(
         _ensure_scan_permissions(db_path)
 
     # Track surviving projects per workspace so reconcile is scoped to the exact
-    # (workspace, project) set this run discovered (R5). Populated for BOTH
-    # apply and dry-run (SV2) so `_compute_vanished` can preview the R5 diff
-    # without writing anything.
+    # (workspace, project) set this run discovered (R5). Filled on dry-run too,
+    # so `_compute_vanished` can preview the diff without writing.
     surviving_by_ws: dict[str, list[str]] = {}
 
-    # Per-workspace {name: project_identity} of names already resolved earlier
-    # in THIS batch (M1-T1, AC-2). A real apply=True run commits each repo's
-    # upsert sequentially, so a later repo in the batch already sees an
-    # earlier repo's committed row when the writer checks for collisions --
-    # but a dry-run writes nothing, so this in-memory map lets the preview
-    # simulate the same sequential-commit visibility without touching the DB.
+    # Per-workspace {name: project_identity} already resolved earlier in this
+    # batch. An apply run commits each upsert in turn, so a later repo sees the
+    # earlier row when the writer checks for collisions; a dry-run writes
+    # nothing, and this map gives the preview the same visibility.
     claimed_by_ws: dict[str, dict[str, str]] = {}
 
-    # SV2 diff counters (create vs update, both dry-run and apply).
     create_count = 0
     update_count = 0
 
@@ -791,8 +739,7 @@ def scan(
         # missing rows elsewhere for move_candidates.
         remote_url = _git_remote_origin(Path(c.path))
 
-        # SV2: create-vs-update, decided BEFORE the write so dry-run and
-        # apply agree on the same answer (read-only; see _identity_exists).
+        # Read before the write so dry-run and apply agree on create vs update.
         existed_before = _identity_exists(c.project_identity, db_path)
 
         recorded = _project_row_by_identity(c.project_identity, db_path)
@@ -801,19 +748,10 @@ def scan(
                 _move_to_owner(c, recorded, apply=apply, db_path=db_path)
             )
 
-        # M3/T8 (AC-6): compute the repo's stack fingerprint (languages,
-        # frameworks with version, build tools, detected infra/deployment/
-        # orchestration) as facet rows. This runs the read-only scanner
-        # orchestrator over the repo and maps its output to
-        # {scope, key, value} facets. Always full (no --deep mode) and
-        # side-effect-free -- persistence happens only on apply, below.
-        # Run the scanner orchestrator ONCE per repo and derive BOTH the facet
-        # rows and the dominant primary_language from the SAME sections, so the
-        # scalar projects.primary_language column can never drift from the
-        # multi-language `language` facets (the bug this path historically had:
-        # a Gemfile / subdir manifest yielded a language facet but a NULL
-        # primary_language, because primary_language used a separate, incomplete
-        # top-level-only probe instead of the scanner detection).
+        # The read-only scanner orchestrator runs once per repo; the facet rows
+        # (the stack fingerprint as {scope, key, value}) and the dominant
+        # primary_language both come from its sections, so the scalar column
+        # cannot drift from the `language` facets. Facets persist only on apply.
         from tools.scan.store_populator import (
             compute_stack_sections,
             primary_language_from_sections,
@@ -839,20 +777,14 @@ def scan(
                 c, agent=agent, db_path=db_path, remote_url=remote_url,
                 primary_language=primary_language,
             )
-            # Persist the scanner-owned facets for this repo. The facets FK
-            # references projects(workspace, name), so they MUST be written to
-            # the workspace/name where the canonical projects row ACTUALLY
-            # lives -- which, under identity-collapse, may differ from
-            # (c.workspace, final_name): the same physical repo scanned from a
-            # second root under a different workspace collapses onto its
-            # first-seen row (M1-T1 writer identity-collapse). Resolve the row
-            # by its stable project_identity and target that (workspace, name).
+            # The facets FK references projects(workspace, name), and under
+            # identity-collapse the row may live elsewhere than (c.workspace,
+            # final_name), so the target is resolved by project_identity.
             facet_ws, facet_name = _facet_target(
                 c.project_identity, c.workspace, final_name, db_path=db_path
             )
-            # Per-repo isolation (mirrors scan_workspace_to_store): a facet
-            # write error must NEVER abort the whole scan -- collect it and
-            # continue. The projects row itself is already committed above.
+            # A facet write error is collected and never aborts the scan; the
+            # projects row is already committed.
             from tools.scan.store_populator import populate_facets
             try:
                 populate_facets(
@@ -880,13 +812,9 @@ def scan(
         else:
             create_count += 1
 
-        # M2-T6 (AC-5): a would-be collision is now VISIBLE, not silent. When
-        # the writer/preview had to disambiguate the DB slot (final_name differs
-        # from the requested project), a DIFFERENT physical repo already held
-        # ``(workspace, c.project)``. Under the pre-M1 model these repos
-        # overwrote each other with no signal; T1 stopped the loss and T6
-        # surfaces the event as an explicit warning so no colliding repo is
-        # ever merged/renamed silently.
+        # final_name differs from the requested project only when the writer
+        # or preview disambiguated the slot because a DIFFERENT physical repo
+        # already held ``(workspace, c.project)``.
         if final_name != c.project:
             report.warnings.append({
                 "kind": "repo_collision",
@@ -915,11 +843,9 @@ def scan(
             "applied": applied,
         })
 
-        # SV2 rename_candidates: the project name is now ALWAYS the repo
-        # basename, so ``persisted name == folder basename`` is a global
-        # invariant. A mismatch means M1-T1 collision-disambiguation (two
-        # different repos share a basename under one workspace) -- or a
-        # legacy/pre-move row -- is masking the physical folder's real name.
+        # The project name is the repo basename, so a persisted name that
+        # differs means a collision-disambiguated slot or an older row masks
+        # the folder's real name.
         if Path(c.path).name != final_name:
             report.rename_candidates.append({
                 "workspace": c.workspace,
@@ -934,9 +860,8 @@ def scan(
                 ),
             })
 
-        # SV2 move_candidates (direction: appeared here <- missing elsewhere).
-        # Anti-false-positive: only when EXACTLY one missing row elsewhere
-        # shares the same normalized remote (see _find_remote_matches).
+        # move_candidate, appeared here <- missing elsewhere: only when EXACTLY
+        # one missing row elsewhere shares the normalized remote.
         if remote_url:
             from gaia.project import _normalize_remote
             remote_norm = _normalize_remote(remote_url)
@@ -982,10 +907,9 @@ def scan(
     if covers_workspace:
         surviving_by_ws.setdefault(W, [])
 
-    # SV2: vanished / move_candidates (direction: vanished here -> active
-    # elsewhere) / orphaned_autored. Computed for every workspace this scan
-    # touched (dry-run AND apply), BEFORE _reconcile actually writes anything,
-    # so the same code produces the dry-run preview and the apply record.
+    # vanished, move_candidates (vanished here -> active elsewhere) and
+    # orphaned_autored, computed before _reconcile writes so dry-run and apply
+    # share one code path.
     for ws, projects in surviving_by_ws.items():
         vanished_rows = _compute_vanished(ws, projects, db_path=db_path)
         for row in vanished_rows:
@@ -995,7 +919,7 @@ def scan(
                 "path": row["path"],
                 "project_identity": row["project_identity"],
                 "remote": row["remote"],
-                "missing_since": None,  # filled in below when apply=True
+                "missing_since": None,
             })
 
             if row["remote"]:
@@ -1031,7 +955,6 @@ def scan(
                             ),
                         })
 
-            # SV2 orphaned_autored: detect-and-report only, never mutates.
             if row["description"]:
                 mem_count, brief_count = _memory_and_brief_counts(ws, db_path)
                 report.orphaned_autored.append({

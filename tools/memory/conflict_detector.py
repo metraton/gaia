@@ -62,7 +62,7 @@ def detect_conflicts(
     owner: str | None = None,
     exclude_classes: tuple[str, ...] = (),
 ) -> list[dict]:
-    """Candidate pairs of live rows of one owner whose wording overlaps above ``threshold``.
+    """Candidate pairs of live rows of one owner whose wording overlaps at or above ``threshold``.
 
     Each candidate carries ``owner``, ``score`` (Jaccard over word stems of
     name, description and body) and the two rows as ``a`` and ``b``, the more

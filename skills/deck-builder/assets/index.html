@@ -57,9 +57,8 @@
      repurposes one.
 
      Selected by `palette:` in data/document.yaml → `data-palette` on <html>,
-     written by data/data.generated.js BEFORE the deck renders (so there is no
-     flash of the neutral skin). Values: neutral (default, no attribute) ·
-     rose-pine · rose-pine-moon · contrast.
+     written by data/data.generated.js, which loads ahead of engine.js. Values:
+     neutral (default) · rose-pine · rose-pine-moon · contrast.
 
      SPECIFICITY, and why the dark blocks must be spelled `html.dark[...]`:
      `:root[data-palette="x"]` is (0,2,0) and `html.dark` is (0,1,1), so a LIGHT
@@ -189,18 +188,14 @@
   /* ── top bar ── */
   .bar { display:flex; align-items:center; gap:16px 20px; flex-wrap:wrap;
     padding:20px 28px 0; flex:none; }
-  /* the header controls (prev · toggle · next · page · theme) travel as ONE
+  /* the header controls (prev, page tabs, next, help, theme) travel as ONE
      block: never allowed to break apart from each other, they wrap as a unit. */
   .nav-cluster { display:flex; align-items:center; gap:12px; flex-wrap:nowrap;
     flex:0 0 auto; white-space:nowrap; }
   .bar h1 { font-family:var(--mono); font-weight:700; font-size:23px; line-height:1.25; color:var(--ink); letter-spacing:-0.01em; }
   .bar .sub { font-family:var(--mono); font-size:12px; color:var(--muted); letter-spacing:0.05em; line-height:1.4; margin-top:3px; }
-  /* deck version — set by data/document.yaml `version` (optional) and rendered
-     by engine.js after the subtitle; same mono/muted styling as .sub, one size
-     down and dimmer so it reads as a footnote rather than competing with it.
-     The node stays in the markup empty when `version` is omitted; :empty
-     collapses it to display:none with no JS branching needed on the HTML
-     side — engine.js only ever writes text, never toggles visibility. */
+  /* deck version: engine.js writes document.yaml `version` into it as text; it
+     stays empty when `version` is omitted and :empty hides it. */
   .bar .ver { font-family:var(--mono); font-size:11px; color:var(--muted); letter-spacing:0.05em; line-height:1.4; margin-top:2px; opacity:0.65; }
   .bar .ver:empty { display:none; }
   /* the header's flex filler. Named `bar-spacer`, not `spacer`: `.spacer` is the
@@ -209,9 +204,9 @@
   .bar-spacer { flex:1; }
 
   /* page navigator — [ ‹ ] [ TITLE 1 ] [ TITLE 2 ] … [ › ]. Page names are
-     VISIBLE tabs in `order`; the current one is highlighted, the rest dimmed
-     but legible. Click a tab or use the arrows. For 3+ pages a sliding window
-     centered on the selection shows current + neighbours. */
+     visible tabs in `order`; the current one is highlighted. With more than
+     three pages (WINDOW in engine.js) a window of three tabs centered on the
+     current page is shown. */
   .pagenav { display:flex; align-items:center; gap:8px; }
   .navbtn { display:inline-flex; align-items:center; justify-content:center; font-family:var(--mono);
     font-size:18px; line-height:1; width:38px; height:38px; padding:0; border:1px solid var(--line);
@@ -252,77 +247,38 @@
     padding:12px 28px 14px; flex:none; border-bottom:1px solid var(--line-soft); }
   .actbar .note { font-family:var(--mono); font-size:13.5px; line-height:1.5; color:var(--ink); font-weight:500; }
 
-  /* outer frame: consistent breathing room on all four sides of the stage.
-     --frame-top anchors the stage to the exact rhythm of the header→chips
-     gap above it: bar bottom-padding (20px) + bar border (1px) + actbar
-     top-padding (14px) = 35px. Matched exactly rather than rounded to the
-     8pt grid, so the stage's top inset reads as the same gap by eye. */
+  /* outer frame: the canvas insets --frame-h on the sides, --frame-v at the
+     bottom and --frame-top from the top of the stage. */
   :root { --frame-v:28px; --frame-h:40px; --frame-top:35px;
     /* ── FILL / STRETCH LAYOUT MODEL ────────────────────────────────────────
-       Every section is a FILLED RECTANGLE: it stretches to the full width it is
-       allocated, and its leaf cells STRETCH EQUALLY to fill that width — so a
-       row of cells always spans the section edge-to-edge with NO trailing gap
-       on the right. Cells in the same row are always of EQUAL width (equal fr
-       tracks). This is the inversion of the old "fixed 232px cell, section
-       shrink-wraps, block centers" model, which left dead space: right-gaps
-       inside bands, lateral voids at wide screens, and short sections stranded
-       beside tall ones.
-
-       A LEAF grid is a CSS grid of `repeat(N, minmax(0,1fr))` tracks: the N
-       authored columns divide the section width into N EQUAL cells that fill it
-       (minmax(0,…) lets them shrink, so they always fit — no overflow). The
-       column count steps down (…→2→1) at the container-query tiers below purely
-       for READABILITY as width tightens (fr always fits, so the step is about
-       cell legibility, not fitting). --cell-h stays a FIXED row height so every
-       cell is the same height (title + up to 3 clamped description lines);
-       boxes fill their track width AND the fixed row height. A COMPOUND grid
-       (nested sections) is a flex row whose children `flex:1 1 0` GROW EQUALLY
-       to fill the row, so paired sections are equal-width halves; at the
-       stacked tier they go column-direction and `align-items:stretch` to fill
-       the full width. `span` still merges cells (Excel-style); span == columns
-       is a full-width band spanning its own row edge-to-edge. The whole block
-       fills the canvas (no fit-content centering), so there are no lateral
-       voids even at 2560.
+       A LEAF grid is `repeat(N, minmax(0,1fr))` tracks: the N authored columns
+       divide the section width into equal cells, so a row always spans the
+       section edge-to-edge. The column count steps down (…→2→1) at the
+       container-query tiers in data/breakpoints.generated.css. --cell-h is a
+       fixed row height, so every cell is the same height (title + up to 3
+       clamped description lines). A COMPOUND grid (nested sections) is a flex
+       row whose children grow to fill it, and at the stacked tier goes
+       column-direction with `align-items:stretch`. `span` merges cells
+       (Excel-style); span == columns is a full-width band.
        TOKEN DEFAULTS. Every declaration in a :root block below that names a
        design token is its FALLBACK: engine.js sets the resolved value of each on
        <html> from window.__DOC__.css_vars, which wins over these. Each must equal
-       the projection of DEFAULT_TOKENS in engine/tokens.mjs — `npm run model`
-       (CSS line) fails on the first one that does not. */
+       the projection of DEFAULT_TOKENS in engine/tokens.mjs — the CSS check of
+       `npm run model` fails on any that does not. */
     --cell-h:130px;
-    /* THE SEPARATOR ROW — the one row height that is NOT --cell-h.
-       A `separator` is a leaf COMPONENT, so it occupies a full cell: a 1px rule
-       was charged the whole --cell-h (130px), and with the grid's own 8px row
-       gaps on either side a divider inserted 146px of air between the boxes
-       above and below it. That reads as a HOLE, not as a division.
-       So a row whose ONLY occupants are horizontal separators gets a REDUCED
-       TRACK HEIGHT. The separator is still a CELL (principle 1 — everything
-       visible is a merged cell — is untouched); what changes is the height of
-       that one row. 40px was chosen, not guessed:
-         • CONTENT: the tallest thing a separator row can ever carry is one line
-           of `.sep-text` (11px mono, ~17px line box, see .sep-h.sep-labeled).
-           40px leaves ~11px of air above and below it, so a LABELED divider
-           still breathes and never clips (invariant C).
-         • DIVISION, not paste: with the grid's --s-2 (8px) row gaps on both
-           sides the total break between the box above and the box below is
-           8+40+8 = 56px — 7x a normal inter-row gap, unmistakably a division —
-           against 146px today, which reads as a missing cell.
-         • SCALE: 40px == 5 x the 8pt step the whole spacing scale uses, so it
-           introduces no off-grid value, and it is <1/3 of --cell-h — nowhere
-           near "charging 130 for one pixel of ink".
-       A VERTICAL separator is deliberately EXCLUDED (see the engine's
-       isThinRowLeaf): a `.sep-v` draws a line whose LENGTH IS the row height,
-       so thinning its row would shorten the ink instead of matching it.
-       Applied per-row by the engine as a `grid-auto-rows` TRACK LIST
+    /* THE THIN ROW — the row height that is not --cell-h. A row whose occupants
+       are all separators, spacers or rails (engine.js isThinRowLeaf) gets a
+       reduced track instead of a full cell: --sep-row-h for separators and
+       spacers, `auto` for a row holding a rail. A vertical separator, a vertical
+       rail and a rail with rowspan > 1 are excluded, since their ink is as tall
+       as the row. The engine applies it as a `grid-auto-rows` track list
        (--row-tracks / --row-tracks-2 / --row-tracks-1, one per collapse tier).
-       Its default is the `row.sep_h` token, which the model's CSS mirror checks. */
+       Its default is the `row.sep_h` token, which the model's CSS check compares. */
     --sep-row-h:40px;
-    /* MINIMO LEGIBLE — the readable floor for a leaf cell. A cell narrower than
-       this can only show ~1 character per line (a short title stops being
-       readable). It is the FLOOR of the leaf-grid track min below, so a grid
-       never shrinks a cell below it: instead the section's compound parent
-       WRAPS/STACKS (collapses columns) before the cell degrades to illegible
-       text. Its default is the `cell_min_w` token (MIN_LEGIBLE in the model,
-       which fails a modelled cell below it). ~120px fits a short mono title. */
+    /* The readable floor for a leaf cell: the minimum of each leaf-grid track
+       below, so the section's compound parent wraps or stacks before a cell
+       gets narrower. Its default is the `cell_min_w` token (MIN_LEGIBLE in
+       tools/check-layout.mjs fails a modelled cell below it). */
     --cell-min-w:120px;
     /* grab & pan (configurable; read by engine.js): pointer travel, in px,
        below which a pointerdown→up on the canvas is a CLICK (opens a box's
@@ -396,10 +352,9 @@
      columns and side-by-side behave by real screen size while the content block
      stays capped and centered. */
   .sec-plane { width:100%; max-width:var(--plane-max, 1280px); margin-inline:auto; }
-  /* The root grid FILLS the canvas width — no centering, no fit-content block,
-     so there are no lateral voids even at 2560. A generic root without bands is
-     a flex row whose sections grow equally (flex:1 1 0) to fill it edge-to-edge;
-     the root-with-bands case below overrides to a filling CSS grid. */
+  /* The root grid fills the plane. A generic root without bands is a flex row
+     whose sections grow to fill it; the root-with-bands case below overrides it
+     to a CSS grid. */
   .sec-plane > .sec-grid.sec-compound { align-items:stretch; }
   /* ── Root compound that holds span BANDS — the spreadsheet model made literal.
      When the root has at least one span-band child (:has(> .msp), e.g. an inline
@@ -424,13 +379,9 @@
     align-items:stretch; }
   .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
     grid-column:1 / -1; }
-  /* A root section with a PARTIAL span (1 < span < cols) must occupy exactly
-     that many tracks. Without this rule the span-weighted width of a compound
-     row (`.sec-grid.sec-compound > .zone { flex: var(--span,1) 1 0 }`) is inert
-     here — this root is display:grid, so flex-grow says nothing — and the
-     section is auto-placed into ONE track, where it merely overflows to its
-     min-content width. A declared span 5 of 6 then rendered at 35% of the
-     canvas, and every inner grid collapsed inside that false width. */
+  /* A root section with a PARTIAL span (1 < span < cols) occupies exactly that
+     many tracks. This root is display:grid, so the span-weighted flex-grow of a
+     compound row (`.sec-grid.sec-compound > .zone`) does not apply to it. */
   .sec-plane > .sec-grid.sec-compound:has(> .msp) > .mspan {
     grid-column:span var(--span, 1); }
 
@@ -439,55 +390,35 @@
      --cols (set inline by the engine) is the authored column count; children
      auto-flow left→right and wrap DOWN. A child that itself is a section is a
      nested .zone holding its own .sec-grid (recursion). A child with span>1
-     carries .msp + --span and occupies that many columns.
+     carries --span and occupies that many columns: the class .mspan, or .msp
+     when span reaches the column count.
 
      TWO grid shapes, tagged by the engine:
-       • a LEAF grid (.sec-grid:not(.sec-compound)) holds only components. Its
-         tracks are EQUAL fr columns that FILL the section width and its rows a
-         FIXED --cell-h (grid-auto-rows); items stretch to fill — so a row of
-         cells spans the section edge-to-edge (no right gap), every cell in the
-         grid is the same width, and every cell is the same height. A leaf that
-         spans M columns fills M tracks + gaps but is still one cell-h row tall.
-       • a COMPOUND grid (.sec-compound) holds only nested sections. Its
-         children GROW EQUALLY (flex:1 1 0) to fill the row as equal-width
-         slices, and align-items:stretch makes them equal height — so the row
-         is a clean filled rectangle. */
-  /* LEAF grid: the authored column count as EQUAL fr tracks that FILL the
-     section width. `repeat(N, minmax(0,1fr))` divides the section into N equal
-     cells edge-to-edge — the cells STRETCH to fill, so the row always spans the
-     full width with no trailing gap on the right, and every cell in the grid is
-     the same width. minmax(0,…) lets the tracks shrink below content so they
-     always fit (no overflow). Column count steps down at the container-query
-     tiers below (…→2→1) for readability as width tightens; the cells re-divide
-     the width at each tier. Rows are a FIXED --cell-h so every cell is the same
-     height; align-items:stretch fills that row height. */
+       • a LEAF grid (.sec-grid:not(.sec-compound)) holds only components: equal
+         fr tracks that fill the section width, rows of a fixed --cell-h
+         (grid-auto-rows), items stretched to fill. A leaf that spans M columns
+         fills M tracks + gaps but is still one cell-h row tall.
+       • a COMPOUND grid (.sec-compound) holds nested sections: a flex row whose
+         children grow to fill it, with align-items:stretch for equal height. */
+  /* LEAF grid: the authored column count as equal fr tracks. minmax(0,…) lets
+     the tracks shrink below content so they always fit. The count steps down at
+     the container-query tiers in data/breakpoints.generated.css (…→2→1). */
   .sec-grid:not(.sec-compound) {
     display:grid;
-    /* MINIMO LEGIBLE: each track is at least --cell-min-w (the readable floor).
-       This is a PLAIN pixel min on purpose — it must survive the grid's
-       INTRINSIC (min-content) sizing so a leaf grid's min-content is a real
-       N×--cell-min-w. That is what makes a compound parent WRAP/STACK its
-       sections (flex-wrap + min-width:min-content below) when it cannot give each
-       child that width, instead of squeezing the cells to ~1 character per line.
-       (A `min(--cell-min-w,100%)` guard was tried, but the 100% collapses to 0
-       during intrinsic sizing, so the parent never "sees" the floor and never
-       wraps — RowSpan 2B/2C stayed at ~75px cells. The plain px avoids that.)
-       The old 48px min let deeply-nested grids collapse to illegible ~40px cells
-       (RowSpan 2A/2B); raising it makes columns COLLAPSE before the cell does. No
-       overflow risk: the narrow-stage container-query tiers below override to
-       minmax(0,1fr) (where sections are already full-width), and at wide stage a
-       grid's own min-content forces its parent to give it >= the floor or wrap. */
+    /* Each track is at least --cell-min-w, a plain pixel min on purpose: it must
+       survive the grid's intrinsic (min-content) sizing, so a leaf grid's
+       min-content is a real N×--cell-min-w and a compound parent wraps or stacks
+       its sections (flex-wrap + min-width:min-content below) instead of squeezing
+       the cells. The narrow tiers in data/breakpoints.generated.css override to
+       minmax(0,1fr), where sections are already full-width. */
     grid-template-columns:repeat(var(--cols,1), minmax(var(--cell-min-w),1fr));
-    /* Rows are a FIXED --cell-h — EXCEPT where the engine emits an explicit
-       TRACK LIST. `grid-auto-rows` takes a LIST of sizes applied to the implicit
-       rows IN ORDER, which is the only way to give ONE row of an auto-flowed
-       grid a different height; the engine emits `--row-tracks` (one entry per
-       row) exactly when at least one row is separator-only, so the default path
-       stays a single fixed --cell-h for every grid that has no separator row.
-       The list is per-TIER because the collapse changes the placement (a
-       separator alone on row 1 of a 3-track grid is not on row 1 of a 2-track
-       one), and a list shorter than the real row count would CYCLE onto the
-       wrong rows — see the tier overrides at the 1000px/640px breakpoints. */
+    /* Rows are --cell-h unless the engine emits a track list: `grid-auto-rows`
+       takes a list applied to the implicit rows in order, the only way to give
+       one row of an auto-flowed grid another height. The engine sets
+       `--row-tracks` (one entry per row) when at least one row is thin. There is
+       one list per collapse tier, because the placement changes with the track
+       count and a list shorter than the row count would cycle onto the wrong
+       rows (--row-tracks-2 / --row-tracks-1 in data/breakpoints.generated.css). */
     grid-auto-rows:var(--row-tracks, var(--cell-h));
     gap:var(--s-2); align-items:stretch; }
   /* A leaf grid whose LAST child is a declared hole GROWS to its section's full
@@ -504,10 +435,8 @@
      --span2 (round(M/N·2), clamped [1,2], emitted by the engine) and the
      1-column endpoint makes it a full band (both below). */
   .sec-grid:not(.sec-compound) > .mspan { grid-column:span var(--span, 1); }
-  /* VERTICAL merge (.mrsp): occupy --rowspan rows (double/triple --cell-h) — the
-     base for a cell-graph where a cell's height encodes magnitude. Only the row
-     extent grows; the column position is unchanged and unaffected by the
-     horizontal cascade. */
+  /* VERTICAL merge (.mrsp): occupy --rowspan rows. Only the row extent grows;
+     the horizontal cascade does not touch it. */
   .sec-grid:not(.sec-compound) > .mrsp { grid-row:span var(--rowspan, 1); }
 
   /* COMPOUND grid: nested sections in a flex-wrap row. They sit side by side
@@ -524,39 +453,22 @@
        row is a clean filled rectangle instead of a short section stranded
        beside a taller one. */
     align-items:stretch; align-content:flex-start; }
-  /* flex:1 1 0 — nested sections GROW EQUALLY to fill the row: N sections on a
-     row are N equal-width slices that together span the row edge-to-edge, with
-     no gap on the right. (flex-basis 0 makes the widths equal regardless of each
-     section's content; flex-grow 1 divides the row evenly.) min-width:min-content
-     lets a section shrink/wrap as width tightens (its inner leaf grids collapse
-     …→2→1 on their own). A band child (span == columns) takes a full row (overridden
-     below). Its inner leaf cells still fill the band width. */
+  /* min-width:min-content lets a nested section shrink or wrap as width
+     tightens (its inner leaf grids collapse …→2→1 on their own). */
   .sec-grid.sec-compound > * { min-width:min-content; }
-  /* NESTED SECTIONS grow to fill the row, WEIGHTED BY their authored span: a
-     section's flex-grow IS its --span (default 1), so a span:2 section is twice
-     the width of a span:1 sibling — section-level width FOLLOWS CONTENT WEIGHT
-     (the author expresses the weight as a span on the heavier section) instead
-     of every section splitting the row into equal slices regardless of how much
-     content it carries. --span is only emitted when span>1, so an unspanned
-     section falls back to grow:1 (the old equal-share behaviour). This is what
-     lets a content-heavy grid (e.g. a wide 3-col GKE envelope) sit WIDER than a
-     light lone-box section beside it rather than 50/50. */
+  /* Nested sections grow to fill the row, weighted by their authored span: a
+     section's flex-grow is its --span (default 1), so a span:2 section is twice
+     the width of a span:1 sibling. --span is only emitted when span>1, so an
+     unspanned section grows by 1. */
   .sec-grid.sec-compound > .zone { flex: var(--span, 1) 1 0; }
-  /* LEAF components are NOT content slices: a `box` (a single card), a
-     `separator` (a divider LINE) or a `rail` (a swimlane LABEL) sitting DIRECTLY
-     in a compound row must size to CONTENT (flex:0 0 auto), NEVER grow to an
-     equal flex share. Without this a plain box sibling of a nested section
-     (isCompound is true because ANY child is a section) would get the grow rule
-     and balloon to an equal slice; a box must stay a card. It keeps the uniform
-     --cell-h height and pins to the row top (align-self:start) so it reads as a
-     card, not a stretched panel. Likewise a width:0 vertical separator or a thin
-     rail must not each balloon into a full slice. (At the stacked tier every
-     child is reset to flex:0 0 auto anyway.) */
+  /* A box directly in a compound row sizes to its content (flex:0 0 auto)
+     instead of taking an equal share, keeps the uniform --cell-h height and pins
+     to the row top (align-self:start), so it stays a card. */
   .sec-grid.sec-compound > .box { flex:0 0 auto; align-self:start; height:var(--cell-h); }
   /* The LEAD band is the one box authored to span its root. In a columns:1 root
      (a column flex) the card rule's align-self:start sizes it to its content;
      stretch fills the cross axis instead. It must stay on the CROSS axis: a
-     flex-basis of 100% maps to height in a column and balloons the cell (G, U).
+     flex-basis of 100% maps to height in a column and balloons the cell.
      In a row or grid root the lead is already a .msp band, where this is inert. */
   .sec-grid.sec-compound > .box.lead { align-self:stretch; }
   .sec-grid.sec-compound > .sep,
@@ -601,7 +513,7 @@
      leaf grid collapses …→2→1 as width tightens, and compound grids stack below
      the widest tier. The three tiers live in data/breakpoints.generated.css,
      written by engine/build-data.mjs from tokens.breakpoints (a container query
-     cannot read var()); the WHY of each rule is documented there. */
+     cannot read var()); breakpointsCss there explains each tier. */
 
   /* ── zones (a section's frame) ── */
   .zone { position:relative; min-height:var(--zone-min-h);
@@ -620,8 +532,7 @@
      `row.cell_h: <tokens.row.compact_h>`, set inline by the engine like any
      section override; these rules are the structural rest (a --s-1 row gap and
      box padding). Its boxes drop the description clamp: their height comes from
-     rowspan, and the one single-row box must carry a one-line description
-     (validate C catches a clip). */
+     rowspan, and the one single-row box must carry a one-line description. */
   .zone.compact > .sec-grid { row-gap:var(--s-1); }
   .zone.compact .box { padding:var(--s-1) var(--s-3); }
   .zone.compact .box .desc { display:block; -webkit-line-clamp:unset; line-clamp:none; }
@@ -694,7 +605,7 @@
   .box.muted { background:var(--surface2); }
   /* Categorical hues: four colours with NO fixed meaning, for a page that must
      tell four peer groups apart. The page that uses them declares what each one
-     means in its own content (principle 5); none of them may stand for good/bad. */
+     means in its own content (SKILL.md principle 4); none of them may stand for good/bad. */
   .box.blue { background:var(--hue-blue-soft); border-color:var(--hue-blue); }
   .box.blue .k { color:var(--hue-blue); }
   .box.violet { background:var(--hue-violet-soft); border-color:var(--hue-violet); }
@@ -713,34 +624,23 @@
      engine/build-data.mjs; what each one does is tabled in the skill's
      toolbox.md.) */
 
-  /* centered — centre the text block on BOTH axes. No colour.
-     `.box` is a top-aligned flex column, so a box whose ink is shorter than the
-     fixed --cell-h used to leave the remainder of the cell empty below it and
-     `centered` corrected only the horizontal axis. Centring the main axis too is
-     what lets a short, deliberately spare box (a title with one line under it)
-     sit balanced in its cell instead of being padded out with filler ink. It
-     cannot overflow: the title and description clamps guarantee the content
-     already fits --cell-h. */
+  /* centered — centre the text block on both axes: `.box` is a top-aligned flex
+     column, so the vertical axis needs justify-content. No colour. It cannot
+     overflow: the title and description clamps already fit the content in
+     --cell-h. */
   .box.centered { text-align:center; justify-content:center; }
 
-  /* outside — the dashed frame that reads "outside the perimeter". Border STYLE only,
-     no colour whatsoever, which is precisely why it belongs on this axis: it used
-     to sit in the colour enum and had to be smuggled through `variant_extra`
-     whenever a box needed to be both external AND coloured. */
+  /* outside — the dashed frame that reads "outside the perimeter". Border style
+     only, no colour, so it composes with any variant. */
   .box.outside { border-style:dashed; }
 
-  /* half + .half-slot — SLOT DIVISION, not cell shrinking.
-     The `.half-slot` IS the grid cell: it stretches to the full --cell-h like any
-     other cell, and its two children split that height (flex:1 1 0 each). So the
-     grid's rows, tracks and fill are completely unchanged — from the outside a
-     half pair reads as ONE full cell. That is what keeps the rectangle full (no
-     half-empty cell, no hole) and lets every row/column invariant (E, L, P, M)
-     keep measuring the same geometry as before; only U had to move, from
-     asserting the COMPONENT's height to asserting the SLOT's.
-     --cell-h is untouched at 130px: two halves get (130 - 4)/2 = 63px each.
-     A half box is TITLE-ONLY (build-data.mjs rejects a description on one), so its
-     title clamps to a single line and its padding tightens — at 63px there is room
-     for a kicker plus one title line with nothing clipping (invariant C). */
+  /* half + .half-slot — slot division, not cell shrinking.
+     The `.half-slot` is the grid cell: it stretches to the full --cell-h like any
+     other cell, and its two children split that height (flex:1 1 0 each), so from
+     the outside a half pair reads as one full cell and the layout model counts
+     the slot, not the component. Two halves get (--cell-h minus the --s-1 gap)/2
+     each. A half box is title-only (build-data.mjs rejects a description on one),
+     so its title clamps to a single line and its padding tightens. */
   .half-slot { display:flex; flex-direction:column; gap:var(--s-1); min-width:0; min-height:0; }
   .half-slot > .box { flex:1 1 0; min-height:0; }
   .box.half { padding:var(--s-1) var(--s-3); justify-content:center; }
@@ -748,14 +648,14 @@
   /* In a COMPOUND row a .half-slot must behave exactly like the lone .box it
      stands in for — content-sized, pinned to the row top, one cell tall — and
      never grow into an equal flex share. Mirrors the `.sec-grid.sec-compound >
-     .box` rule above; invariant G fails if either ever balloons. */
+     .box` rule above. */
   .sec-grid.sec-compound > .half-slot { flex:0 0 auto; align-self:start; height:var(--cell-h); }
 
   /* vertical — run the text down the block axis: a rotated lane label, the same
      reading direction as `.rail-v`. Title-only for the same reason as `half`.
      The clamp is released (a clamp counts LINES along the inline axis, which is
      now vertical) and replaced by max-height + overflow so a long token clips
-     inside the title instead of growing the box past --cell-h (invariant C). */
+     inside the title instead of growing the box past --cell-h. */
   .box.vertical { flex-direction:row; align-items:stretch; justify-content:center; gap:var(--s-2); }
   .box.vertical .k, .box.vertical .t {
     writing-mode:vertical-rl; transform:rotate(180deg);
@@ -779,11 +679,8 @@
   .sep-text { flex:0 0 auto; font-family:var(--mono); font-size:11px; letter-spacing:0.08em;
     text-transform:uppercase; color:var(--muted); white-space:nowrap; }
   /* vertical: a thin full-height rule centered in the cell.
-     min-height is 0 HERE and restored only for a COMPOUND row (below). The
-     shared --zone-min-h floor (180px) is a SECTION floor, and it contradicted
-     --cell-h (130px): a `.sep-v` sitting in a LEAF grid cell overflowed its own
-     row by 50px downward, over whatever the next row holds. In a leaf grid the
-     row IS the height contract, and align-self:stretch already fills it. */
+     min-height is 0 here and restored only for a COMPOUND row (below): in a leaf
+     grid the row is the height contract, and align-self:stretch fills it. */
   .sep-v { justify-self:center; align-self:stretch; width:0; min-height:0;
     border-left:1px solid var(--line); }
   .sep-v.sep-dotted { border-left-style:dotted; }
@@ -797,10 +694,8 @@
     min-width:0; }
   .rail-title { font-family:var(--mono); font-size:var(--rail-px, 13px); font-weight:700; letter-spacing:var(--rail-track, 0.09em);
     text-transform:uppercase; color:var(--muted); }
-  /* `centered` mirrors `.box.centered`: the treatment centres, its ABSENCE means
-     start-aligned. Before these two rules .rail-title carried its own
-     text-align:center, so `centered` — a documented component treatment — was
-     silently a no-op on a rail. Text alignment only; no invariant reads it. */
+  /* `centered` mirrors `.box.centered`: the treatment centres, its absence means
+     start-aligned. */
   .rail.centered { justify-content:center; }
   .rail.centered .rail-title { text-align:center; }
   /* The four categorical hues on a rail: the box's tint and border, the title
@@ -816,7 +711,7 @@
   /* A hue rail is a word, not a lane label: it keeps its authored case, and it is
      set tighter (tokens.type.rail_hue, --s-1 sides) so a word fits a narrow
      cell on one line (RAILT in tools/check-layout.mjs measures it from the same
-     tokens). The vertical padding keeps the rail inside the rail-row band. */
+     tokens). */
   .rail.blue, .rail.violet, .rail.gold, .rail.clay { padding:var(--rail-hue-pad-y, 10px) var(--s-1); }
   .rail.blue .rail-title, .rail.violet .rail-title,
   .rail.gold .rail-title, .rail.clay .rail-title { text-transform:none; font-size:var(--rail-hue-px, 10.5px);
@@ -824,45 +719,34 @@
   /* An indented rail (engine.js buildRail, `indent` in the YAML) still fills its
      cell, so every cell gate measures it unchanged; the drawn frame moves onto
      the title, sized to the word and inset by --indent steps, so a tree reads
-     as a staircase. The title's vertical padding keeps the row at 33px. */
+     as a staircase. */
   .rail.indented { background:none; border-color:transparent; padding-top:0; padding-bottom:0;
     padding-left:calc(var(--indent) * var(--indent-step)); }
   .rail.indented .rail-title { display:inline-block; max-width:100%; padding:7px var(--s-3);
     background:var(--rail-fill); border:1px solid var(--rail-line); border-radius:10px; }
-  /* A hue title is set smaller, so at 7px its indented row measured 30px, under
-     the band validate U holds; 9px keeps a hue tree inside it. */
   .rail.indented.blue .rail-title, .rail.indented.violet .rail-title,
   .rail.indented.gold .rail-title, .rail.indented.clay .rail-title { padding-block:9px; }
   /* min-height 0 for the same reason as .sep-v: in a leaf grid the row height is
-     the contract, and a --zone-min-h floor overflowed it by 50px. */
-  /* A vertical rail keeps both centrings unconditionally: a rotated lane label
-     has no start/centre text-axis to align, so the default flip above must not
-     move it. */
+     the contract. A vertical rail keeps both centrings unconditionally: a
+     rotated lane label has no start/centre text-axis to align, so the centered
+     flip above must not move it. */
   .rail-v { align-self:stretch; min-height:0; justify-content:center; }
   .rail-v .rail-title { writing-mode:vertical-rl; transform:rotate(180deg); text-align:center; }
-  /* COMPOUND rows are where the stretch floor actually earns its keep: a lane
-     divider or a lane label sitting DIRECTLY beside nested sections has no row
-     track to fill (a compound grid is a flex row, not a track grid), so without
-     a floor a 0-width `.sep-v` / a slim `.rail-v` would collapse to nothing when
-     it is the tallest thing on the row. Restoring --zone-min-h ONLY here keeps
-     the BranchKinect-style phase timeline — five sections split by four vertical
-     separators — drawing full-height lines, while a leaf-grid cell obeys its row.
-     Scoped to the direct child so it never reaches into a nested leaf grid. */
-  /* The floor is --cell-h, not --zone-min-h: a floor ABOVE the row's own content
-     height stops being a floor and becomes the row height, stretching every
-     section beside it and opening a strip of dead space under their cards. One
-     cell is the smallest height at which a lane divider still reads as a
-     divider, and align-self:stretch already carries it past that whenever a
-     real sibling is taller. */
+  /* In a compound row a lane divider or lane label sits directly beside nested
+     sections and has no row track to fill (a compound grid is a flex row), so a
+     0-width `.sep-v` or a slim `.rail-v` would collapse when it is the tallest
+     thing on the row. The floor is --cell-h, not --zone-min-h: a floor above the
+     row's own content height becomes the row height and stretches every section
+     beside it. Scoped to the direct child so it never reaches a nested leaf
+     grid. */
   .sec-grid.sec-compound > .sep-v,
   .sec-grid.sec-compound > .rail-v { min-height:var(--cell-h); }
 
   /* ── spacer (component type: spacer) ──
      The DECLARED HOLE: a cell occupant that draws nothing. It needs no paint at
      all — a grid item stretches to its area by default, which is exactly the
-     behaviour wanted — so the rule only releases the intrinsic minimums, the same
-     two `.sep` and `.rail` release, so a spacer can never impose a floor on the
-     track it merely holds open. Its ONE visual claim is that it makes none: a
+     behaviour wanted — so the rule only releases the intrinsic minimums, so a
+     spacer can never impose a floor on the track it merely holds open. Its ONE visual claim is that it makes none: a
      spacer is indistinguishable from an empty cell BY DESIGN, and what tells the
      reader it was meant is the surrounding content, never a style here. */
   .spacer { min-width:0; min-height:0; }
@@ -1167,21 +1051,17 @@
   </div>
 </div>
 
-<!-- Cache-busting placeholder: index.html + engine/engine.js + data/data.generated.js
-     are a coupled contract that changes together on every meaningful deck
-     change, so a browser must never reuse a stale cached engine/data pair
-     against fresh HTML after a release. This seed ships with NO server, so
-     {{DIAGRAM_DECK_VERSION}} is substituted by nobody by default — a static
-     file server / file:// resolves the path and ignores the query string, so
-     "view immediately, zero tooling" (assets/README.md) keeps working with no
-     visible change when the placeholder is left as-is. Whatever the TARGET
-     repo's deploy layer is (a server templating this HTML, a CI build step, a
-     static-site generator) should substitute this token with the real deck
-     version (data/document.yaml's `version`, or the release tag) before
-     serving, and should also send `Cache-Control: no-cache, must-revalidate`
-     on these three coupled paths as a second layer (ETag revalidation covers
-     the case the placeholder is left unsubstituted). Full guidance + a worked
-     FastAPI example: assets/README.md → "Deploy: cache-busting & no-cache". -->
+<!-- Cache-busting placeholder: index.html, data/breakpoints.generated.css,
+     data/data.generated.js and engine/engine.js change together, so a browser
+     must never reuse a stale cached copy of one against fresh HTML. This seed
+     ships with no server, so {{DIAGRAM_DECK_VERSION}} is substituted by nobody
+     by default; a static file server or file:// ignores the query string, so
+     the deck opens as-is. A deploy layer that serves it (a server templating
+     this HTML, a CI build step, a static-site generator) should substitute the
+     token with the real deck version (data/document.yaml's `version`, or the
+     release tag) and send `Cache-Control: no-cache, must-revalidate` on those
+     paths as a second layer. Full guidance:
+     assets/README.md → "Deploy: cache-busting & no-cache". -->
 <script src="data/data.generated.js?v={{DIAGRAM_DECK_VERSION}}"></script>
 <script src="engine/engine.js?v={{DIAGRAM_DECK_VERSION}}"></script>
 </body>

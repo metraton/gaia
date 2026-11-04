@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# QuickTriage for GCP - Optimized version
-# Only shows critical resource status
+# Prints GKE, Cloud SQL, recent error and quota status of one project. Exits 2 when
+# gcloud or a query fails, 1 when a cluster or Cloud SQL instance is unhealthy.
 
 set -euo pipefail
 
@@ -14,9 +14,8 @@ if ! command -v gcloud >/dev/null 2>&1; then
 fi
 
 GCLOUD_ERROR=""
-# Capture gcloud stdout into the named variable, keeping stderr out of the
-# captured value: gcloud prints configuration chatter and WARNINGs on stderr,
-# and folding them into the data stream makes a healthy project report issues.
+# Stores gcloud's stdout in the variable named by $1. Its stderr (warnings and
+# chatter) stays out of the data, or a healthy project would report issues.
 gcloud_capture() {
     local target_var="$1"
     shift
@@ -35,8 +34,7 @@ gcloud_capture() {
     return 1
 }
 
-# Get current project if not specified. A failed identity/config lookup is not
-# equivalent to an empty configuration: surface it as an operational failure.
+# A failed project lookup is an operational failure (exit 2), not an empty configuration.
 if [ -z "$PROJECT" ]; then
     if ! gcloud_capture PROJECT config get-value project; then
         echo "❌ Unable to read the configured GCP project"
@@ -57,7 +55,6 @@ QUERY_FAILURE=0
 UNHEALTHY=""
 SQL_DOWN=""
 
-# 1. GKE Clusters status (only if unhealthy)
 echo -n "GKE Clusters: "
 if ! gcloud_capture CLUSTERS container clusters list \
     --project="$PROJECT" --format="value(name,status)"; then
@@ -77,7 +74,6 @@ else
     fi
 fi
 
-# 2. Cloud SQL status (only if issues)
 echo -n "Cloud SQL: "
 if ! gcloud_capture SQL_INSTANCES sql instances list \
     --project="$PROJECT" --format="value(name,state)"; then
@@ -97,7 +93,6 @@ else
     fi
 fi
 
-# 3. Recent errors (only critical)
 echo -n "Recent errors: "
 LOG_FILTER="severity>=ERROR AND timestamp>=\"$(date -u -d '1 hour ago' '+%Y-%m-%dT%H:%M:%S')\""
 if ! gcloud_capture RECENT_ERRORS logging read "$LOG_FILTER" \
@@ -109,15 +104,13 @@ if ! gcloud_capture RECENT_ERRORS logging read "$LOG_FILTER" \
 elif [ -n "$RECENT_ERRORS" ]; then
     ERROR_COUNT=$(printf '%s\n' "$RECENT_ERRORS" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
     echo "⚠️  $ERROR_COUNT errors in last hour"
-    # `|| true`: head -3 closes the pipe early; on a large payload printf dies
-    # with SIGPIPE (141) and pipefail would abort the whole triage. The
-    # pipeline's exit status is never consulted, only its output.
+    # head -3 closes the pipe early, printf dies of SIGPIPE (141) on a large
+    # payload and pipefail would abort the triage, so the status is ignored.
     printf '%s\n' "$RECENT_ERRORS" | head -3 | sed 's/^/  - /' || true
 else
     echo "✅ No recent errors"
 fi
 
-# 4. Quota warnings (only if near limits)
 echo -n "Quota status: "
 if ! gcloud_capture QUOTAS compute project-info describe \
     --project="$PROJECT" --format="value(quotas[].usage,quotas[].limit)"; then

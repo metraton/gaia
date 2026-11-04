@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
-"""
-migrate_03_context_contracts.py
+"""Convert project-context.json into a SQL file of INSERT OR IGNORE statements.
 
-Convierte project-context.json -> archivo SQL con INSERT OR IGNORE.
+It never opens the database. Each key under "sections" becomes one row whose
+payload is the JSON of its value; the top-level "metadata" object is repeated
+on every row as JSON and metadata.last_updated is the row's updated_at.
+Rerunning skips rows already present, relying on (project, section_name) being
+the table key.
 
-Reglas:
-  - Solo I/O sobre filesystem.
-  - NO importa sqlite3.
-  - Idempotente: PK = (project, section_name).
-  - Cada sección de top-level "sections" es una fila; payload = json.dumps(value).
-  - metadata = json.dumps(top-level metadata) -- replicado en cada fila.
-
-CLI args (parametrización cross-workspace):
-  --project   workspace name (default: 'me')
-  --src       path to project-context.json (required)
-  --out       path al SQL de salida (default: /tmp/migrate_03_context_contracts.sql)
-  --fragment  emite solo INSERTs (sin BEGIN/COMMIT)
+Options: --project (default 'me'), --src (required), --out (default
+/tmp/migrate_03_context_contracts.sql) and --fragment (INSERTs only, no
+BEGIN/COMMIT).
 """
 from __future__ import annotations
 

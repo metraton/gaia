@@ -117,7 +117,6 @@ function plainScalar(text, source, n) {
   return text;
 }
 
-// ── flow collections: [a, b] and {k: v} ──────────────────────────────────
 function parseFlow(text, source, n) {
   let pos = 0;
   const ws = () => { while (text[pos] === ' ') pos++; };
@@ -216,7 +215,6 @@ function splitEntry(text, source, n) {
 
 const isItem = body => body === '-' || body.startsWith('- ');
 
-// ── block collections ─────────────────────────────────────────────────────
 function parseBlock(st) {
   const line = st.lines[st.i];
   if (isItem(line.body)) return parseSeq(st, line.indent);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # migrate_03_context_contracts.sh
-# Wrapper: regenera el .sql desde project-context.json y lo carga en ~/.gaia/gaia.db.
+# Regenerates the .sql from project-context.json, then loads it into ~/.gaia/gaia.db.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,11 +9,9 @@ SQL_FILE="/tmp/migrate_03_context_contracts.sql"
 DB_PATH="${HOME}/.gaia/gaia.db"
 SRC="${1:?usage: migrate_03_context_contracts.sh <path to project-context.json>}"
 
-# Paso 1: regenerar el .sql.
 echo "[migrate_03] regenerando ${SQL_FILE} ..."
 python3 "${PY_SCRIPT}" --src "${SRC}"
 
-# Paso 2: aplicar el SQL (interceptado por el hook).
 echo "[migrate_03] aplicando ${SQL_FILE} en ${DB_PATH} ..."
 sqlite3 "${DB_PATH}" < "${SQL_FILE}"
 

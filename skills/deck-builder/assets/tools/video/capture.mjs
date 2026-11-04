@@ -58,9 +58,8 @@ function holds(files) {
 // Takes each missing frame at the instant it first appears, sharing the queue
 // between browsers. A PNG is written under a temporary name and renamed, so a
 // stopped run never leaves a truncated frame that the next run would trust.
-// The device scale is set again on the session that takes the screenshots: the
-// context's deviceScaleFactor alone left every frame at 1920x1080, so each
-// frame's size is checked against DEVICE and a frame at the wrong scale stops
+// The device scale is set again on the session that takes the screenshots, and
+// each frame's size is checked against DEVICE: a frame at the wrong scale stops
 // the capture.
 // Returns how many of the frames it took were already on disk.
 async function captureMissing(playwright, plan, missing) {

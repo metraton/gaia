@@ -5,7 +5,6 @@ Detects project languages, frameworks, build tools, monorepo structure,
 and project identity from manifest files and dependency declarations.
 
 Owned sections: project_identity, stack
-Contract: specs/002-gaia-scan/data-model.md sections 2.3, 2.4
 """
 
 import json
@@ -19,9 +18,6 @@ from tools.scan.scanners.base import BaseScanner, ScanResult
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Language detection: mapping of manifest files to language names
-# ---------------------------------------------------------------------------
 LANGUAGE_MANIFESTS: List[Tuple[str, str]] = [
     # (filename_or_glob, language_name)
     ("package.json", "javascript"),
@@ -37,12 +33,9 @@ LANGUAGE_MANIFESTS: List[Tuple[str, str]] = [
     ("Gemfile", "ruby"),
 ]
 
-# C#/.NET uses glob patterns
+# C#/.NET has no fixed manifest name, so it is detected by file extension
 CSHARP_EXTENSIONS = (".csproj", ".sln")
 
-# ---------------------------------------------------------------------------
-# Framework detection: mapping of dependency names to framework info
-# ---------------------------------------------------------------------------
 # (dep_name, framework_name, language)
 JS_FRAMEWORKS: List[Tuple[str, str, str]] = [
     ("@nestjs/core", "nestjs", "javascript"),
@@ -68,9 +61,6 @@ PYTHON_FRAMEWORKS: List[Tuple[str, str, str]] = [
     ("aiohttp", "aiohttp", "python"),
 ]
 
-# ---------------------------------------------------------------------------
-# Build tool / lock file detection
-# ---------------------------------------------------------------------------
 LOCK_FILE_TO_TOOL: List[Tuple[str, str]] = [
     ("package-lock.json", "npm"),
     ("pnpm-lock.yaml", "pnpm"),
@@ -90,19 +80,14 @@ MANIFEST_TO_BUILD_TOOL: List[Tuple[str, str]] = [
     ("build.gradle.kts", "gradle"),
 ]
 
-# ---------------------------------------------------------------------------
-# Monorepo detection
-# ---------------------------------------------------------------------------
 MONOREPO_TOOLS: Dict[str, str] = {
     "turbo.json": "turborepo",
     "nx.json": "nx",
     "lerna.json": "lerna",
 }
 
-# Maximum depth for monorepo subdirectory scanning
 MONOREPO_SCAN_DEPTH = 3
 
-# Directories to always skip during scanning
 SKIP_DIRS = frozenset({
     "node_modules", ".git", "__pycache__", ".tox", ".venv",
     "venv", "dist", "build", ".next", ".nuxt", "target",
@@ -151,8 +136,8 @@ class StackScanner(BaseScanner):
             build_tools = self._detect_build_tools(root, warnings)
             project_identity = self._detect_project_identity(root, languages, warnings)
 
-            # Multi-repo workspace override: if orchestrator detected multi-repo,
-            # set project type and add workspace_repos listing
+            # Only reachable when workspace_info marks a multi-repo workspace
+            # (ScanOrchestrator leaves it None).
             if self.workspace_info and self.workspace_info.is_multi_repo:
                 project_identity["type"] = "multi-repo-workspace"
                 project_identity["workspace_repos"] = self._build_workspace_repos(
@@ -192,10 +177,6 @@ class StackScanner(BaseScanner):
         elapsed_ms = (time.monotonic() * 1000) - start_ms
         return self.make_result(sections, warnings=warnings, duration_ms=elapsed_ms)
 
-    # ------------------------------------------------------------------
-    # Language detection
-    # ------------------------------------------------------------------
-
     def _detect_languages(
         self, root: Path, warnings: List[str]
     ) -> List[Dict[str, Any]]:
@@ -208,7 +189,6 @@ class StackScanner(BaseScanner):
         seen_languages: Dict[str, Dict[str, Any]] = {}
         first_found = True
 
-        # Scan root and subdirectories
         for manifest_file, language in LANGUAGE_MANIFESTS:
             for path in self._find_files(root, manifest_file):
                 rel_path = str(path.relative_to(root))
@@ -220,7 +200,6 @@ class StackScanner(BaseScanner):
                     }
                     first_found = False
 
-        # C#/.NET detection via glob patterns
         for ext in CSHARP_EXTENSIONS:
             for path in self._find_files_by_extension(root, ext):
                 if "csharp" not in seen_languages:
@@ -231,10 +210,8 @@ class StackScanner(BaseScanner):
                         "primary": first_found,
                     }
                     first_found = False
-                break  # Only need one match per extension type
+                break
 
-        # Check for TypeScript: tsconfig*.json at root or subdirectories,
-        # or .ts/.tsx file extensions in the project tree
         if "javascript" in seen_languages and self._has_typescript_indicators(root):
             js_entry = seen_languages.pop("javascript")
             seen_languages["typescript"] = {
@@ -250,16 +227,13 @@ class StackScanner(BaseScanner):
 
         Searches root and subdirectories (for monorepo support).
         """
-        # Check for tsconfig*.json at root
         for f in root.iterdir() if root.is_dir() else []:
             if f.is_file() and f.name.startswith("tsconfig") and f.name.endswith(".json"):
                 return True
 
-        # Check subdirectories for tsconfig*.json (monorepo workspace roots)
         for path in self._find_files(root, "tsconfig.json"):
             return True
 
-        # Also check for tsconfig.*.json patterns in subdirectories
         try:
             for entry in self._iter_subdirs(root, depth=0):
                 for f in entry.iterdir():
@@ -268,7 +242,6 @@ class StackScanner(BaseScanner):
         except (PermissionError, OSError):
             pass
 
-        # Check for .ts or .tsx file extensions
         for ext in (".ts", ".tsx"):
             if self._find_files_by_extension(root, ext):
                 return True
@@ -289,10 +262,6 @@ class StackScanner(BaseScanner):
             pass
         return results
 
-    # ------------------------------------------------------------------
-    # Framework detection
-    # ------------------------------------------------------------------
-
     def _detect_frameworks(
         self,
         root: Path,
@@ -303,7 +272,6 @@ class StackScanner(BaseScanner):
         frameworks: List[Dict[str, Any]] = []
         lang_names = {lang["name"] for lang in languages}
 
-        # JavaScript/TypeScript frameworks from package.json
         if "javascript" in lang_names or "typescript" in lang_names:
             js_lang = "typescript" if "typescript" in lang_names else "javascript"
             for path in self._find_files(root, "package.json"):
@@ -312,11 +280,8 @@ class StackScanner(BaseScanner):
                     if not any(f["name"] == fw["name"] for f in frameworks):
                         frameworks.append(fw)
 
-            # NestJS wraps Express/Fastify -- promote NestJS to primary position
-            # and mark the underlying framework as secondary
             self._promote_meta_framework(frameworks, "nestjs", ["express", "fastify"])
 
-        # Python frameworks from pyproject.toml and requirements.txt
         if "python" in lang_names:
             for path in self._find_files(root, "pyproject.toml"):
                 found = self._detect_python_frameworks_pyproject(path, warnings)
@@ -349,7 +314,6 @@ class StackScanner(BaseScanner):
             warnings.append(f"Cannot read {package_json_path}: {exc}")
             return frameworks
 
-        # Merge dependencies and devDependencies
         deps: Dict[str, str] = {}
         deps.update(data.get("dependencies", {}))
         deps.update(data.get("devDependencies", {}))
@@ -357,7 +321,6 @@ class StackScanner(BaseScanner):
         for dep_name, framework_name, _ in JS_FRAMEWORKS:
             if dep_name in deps:
                 version = deps[dep_name]
-                # Strip version prefix (^, ~, >=, etc.)
                 version_clean = re.sub(r"^[\^~>=<]*", "", version) if version else None
                 frameworks.append({
                     "name": framework_name,
@@ -388,12 +351,10 @@ class StackScanner(BaseScanner):
         if meta_idx is None:
             return
 
-        # Move meta-framework to front
         if meta_idx > 0:
             meta_fw = frameworks.pop(meta_idx)
             frameworks.insert(0, meta_fw)
 
-        # Mark underlying frameworks
         for fw in frameworks:
             if fw["name"] in underlying_names:
                 fw["role"] = "underlying"
@@ -409,12 +370,10 @@ class StackScanner(BaseScanner):
             warnings.append(f"Cannot read {pyproject_path}: {exc}")
             return frameworks
 
-        # Parse dependencies from [project.dependencies] and [tool.poetry.dependencies]
-        # Using simple regex since we avoid external TOML parser dependency
+        # No TOML parser dependency: the dependency sections are matched with regex.
         deps_text = self._extract_toml_deps(content)
 
         for dep_name, framework_name, lang in PYTHON_FRAMEWORKS:
-            # Match dep_name with optional version specifier
             pattern = rf'(?:^|\n)\s*["\']?{re.escape(dep_name)}(?:\[.*?\])?["\']?\s*(?:[>=<~!]|$)'
             if re.search(pattern, deps_text, re.IGNORECASE):
                 version = self._extract_python_version(deps_text, dep_name)
@@ -474,10 +433,6 @@ class StackScanner(BaseScanner):
 
         return frameworks
 
-    # ------------------------------------------------------------------
-    # Build tool detection
-    # ------------------------------------------------------------------
-
     def _detect_build_tools(
         self, root: Path, warnings: List[str]
     ) -> List[Dict[str, Any]]:
@@ -485,7 +440,6 @@ class StackScanner(BaseScanner):
         tools: List[Dict[str, Any]] = []
         seen_tools: set = set()
 
-        # Lock file detection
         for lock_file, tool_name in LOCK_FILE_TO_TOOL:
             for path in self._find_files(root, lock_file):
                 if tool_name not in seen_tools:
@@ -497,7 +451,6 @@ class StackScanner(BaseScanner):
                     })
                     seen_tools.add(tool_name)
 
-        # Manifest-based build tool detection
         for manifest_file, tool_name in MANIFEST_TO_BUILD_TOOL:
             for path in self._find_files(root, manifest_file):
                 if tool_name not in seen_tools:
@@ -508,7 +461,7 @@ class StackScanner(BaseScanner):
                     })
                     seen_tools.add(tool_name)
 
-        # Detect pip from requirements.txt (no lock file equivalent)
+        # pip has no lock file, so requirements.txt stands in for it
         for path in self._find_files(root, "requirements.txt"):
             if "pip" not in seen_tools:
                 tools.append({
@@ -518,7 +471,6 @@ class StackScanner(BaseScanner):
                 })
                 seen_tools.add("pip")
 
-        # Detect poetry from pyproject.toml [tool.poetry] section
         if "poetry" not in seen_tools:
             for path in self._find_files(root, "pyproject.toml"):
                 try:
@@ -534,8 +486,6 @@ class StackScanner(BaseScanner):
                 except OSError:
                     pass
 
-        # Detect monorepo build orchestrators (turbo.json, nx.json, lerna.json)
-        # at root and in subdirectories
         for config_file, tool_name in MONOREPO_TOOLS.items():
             if tool_name not in seen_tools:
                 for path in self._find_files(root, config_file):
@@ -547,13 +497,9 @@ class StackScanner(BaseScanner):
                         "config_file": rel_path,
                     })
                     seen_tools.add(tool_name)
-                    break  # One match per tool is enough
+                    break
 
         return tools
-
-    # ------------------------------------------------------------------
-    # Project identity detection
-    # ------------------------------------------------------------------
 
     def _detect_project_identity(
         self,
@@ -563,15 +509,16 @@ class StackScanner(BaseScanner):
     ) -> Dict[str, Any]:
         """Detect project identity from manifest files.
 
-        Reads name, description, and type from the primary manifest file
-        (package.json or pyproject.toml). Falls back to directory name.
+        Reads name, description, and type from package.json, pyproject.toml,
+        go.mod, Cargo.toml or composer.json at the root (the first to supply
+        a name wins), then from subdirectory package.json files, and finally
+        falls back to the directory name.
         """
         name: Optional[str] = None
         description: Optional[str] = None
         manifest_file: Optional[str] = None
         project_type = "unknown"
 
-        # Try package.json first
         pkg_json = root / "package.json"
         if pkg_json.is_file():
             try:
@@ -580,7 +527,6 @@ class StackScanner(BaseScanner):
                 description = data.get("description")
                 manifest_file = "package.json"
 
-                # Detect monorepo indicators in package.json
                 if data.get("workspaces"):
                     project_type = "monorepo"
                 elif data.get("private") is True and not data.get("main"):
@@ -590,7 +536,6 @@ class StackScanner(BaseScanner):
             except (json.JSONDecodeError, OSError) as exc:
                 warnings.append(f"Cannot read package.json: {exc}")
 
-        # Try pyproject.toml
         pyproject = root / "pyproject.toml"
         if pyproject.is_file():
             try:
@@ -606,7 +551,6 @@ class StackScanner(BaseScanner):
             except OSError as exc:
                 warnings.append(f"Cannot read pyproject.toml: {exc}")
 
-        # Try go.mod
         go_mod = root / "go.mod"
         if go_mod.is_file() and name is None:
             try:
@@ -620,7 +564,6 @@ class StackScanner(BaseScanner):
             except OSError as exc:
                 warnings.append(f"Cannot read go.mod: {exc}")
 
-        # Try Cargo.toml
         cargo_toml = root / "Cargo.toml"
         if cargo_toml.is_file() and name is None:
             try:
@@ -630,7 +573,6 @@ class StackScanner(BaseScanner):
                     description = self._extract_toml_value(content, "description")
                 manifest_file = "Cargo.toml"
                 if project_type == "unknown":
-                    # Cargo workspace = monorepo
                     if "[workspace]" in content:
                         project_type = "monorepo"
                     else:
@@ -638,7 +580,6 @@ class StackScanner(BaseScanner):
             except OSError as exc:
                 warnings.append(f"Cannot read Cargo.toml: {exc}")
 
-        # Try composer.json
         composer = root / "composer.json"
         if composer.is_file() and name is None:
             try:
@@ -651,23 +592,18 @@ class StackScanner(BaseScanner):
             except (json.JSONDecodeError, OSError) as exc:
                 warnings.append(f"Cannot read composer.json: {exc}")
 
-        # Before falling back to directory name, check monorepo subdirectory
-        # package.json files for a project name
         if name is None:
             name = self._derive_name_from_subdirs(root, warnings)
 
-        # Fallback to directory name
         if name is None:
             name = root.name
 
-        # Monorepo detection
         monorepo_info = self._detect_monorepo(root, warnings)
         if monorepo_info["detected"]:
             project_type = "monorepo"
 
-        # Multi-language implies potential monorepo
+        # Manifests of different languages in more than one subdirectory imply a monorepo
         if len(languages) > 1 and not monorepo_info["detected"]:
-            # Check if languages come from different subdirectories
             subdirs = set()
             for lang in languages:
                 manifest_dir = str(Path(lang["manifest"]).parent)
@@ -712,10 +648,6 @@ class StackScanner(BaseScanner):
             pass
         return None
 
-    # ------------------------------------------------------------------
-    # Monorepo detection
-    # ------------------------------------------------------------------
-
     def _detect_monorepo(
         self, root: Path, warnings: List[str]
     ) -> Dict[str, Any]:
@@ -726,21 +658,18 @@ class StackScanner(BaseScanner):
             "workspace_roots": [],
         }
 
-        # Check for monorepo tool config files at root level
         for config_file, tool_name in MONOREPO_TOOLS.items():
             if (root / config_file).is_file():
                 result["detected"] = True
                 result["tool"] = tool_name
                 break
 
-        # Check pnpm workspaces at root level
         pnpm_workspace = root / "pnpm-workspace.yaml"
         if pnpm_workspace.is_file():
             result["detected"] = True
             if result["tool"] is None:
                 result["tool"] = "pnpm-workspaces"
 
-        # Check npm/yarn workspaces in package.json at root level
         pkg_json = root / "package.json"
         if pkg_json.is_file():
             try:
@@ -750,21 +679,17 @@ class StackScanner(BaseScanner):
                     result["detected"] = True
                     if result["tool"] is None:
                         result["tool"] = "npm-workspaces"
-                    # Extract workspace patterns
                     if isinstance(workspaces, list):
                         workspace_patterns = workspaces
                     elif isinstance(workspaces, dict):
                         workspace_patterns = workspaces.get("packages", [])
                     else:
                         workspace_patterns = []
-                    # Resolve workspace roots from patterns
                     for pattern in workspace_patterns:
                         result["workspace_roots"].append(str(pattern))
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # If not yet detected, scan immediate subdirectories for workspace
-        # config files (handles projects where monorepo root is a subdirectory)
         if not result["detected"]:
             result = self._detect_monorepo_in_subdirs(root, result, warnings)
 
@@ -781,7 +706,6 @@ class StackScanner(BaseScanner):
         Detects monorepo when a subdirectory contains workspace config files
         like pnpm-workspace.yaml, pnpm-lock.yaml, lerna.json, etc.
         """
-        # Workspace config files that indicate a monorepo root
         workspace_markers = [
             ("pnpm-workspace.yaml", "pnpm-workspaces"),
             ("pnpm-lock.yaml", "pnpm-workspaces"),
@@ -807,7 +731,6 @@ class StackScanner(BaseScanner):
                             result["workspace_roots"].append(subdir_rel)
                         break
 
-                # Also check for package.json with workspaces in subdirs
                 sub_pkg = entry / "package.json"
                 if sub_pkg.is_file() and not result["detected"]:
                     try:
@@ -828,10 +751,6 @@ class StackScanner(BaseScanner):
             pass
 
         return result
-
-    # ------------------------------------------------------------------
-    # Multi-repo workspace helpers
-    # ------------------------------------------------------------------
 
     def _build_workspace_repos(
         self,
@@ -860,12 +779,10 @@ class StackScanner(BaseScanner):
                 "path": str(repo_dir.relative_to(root)),
             }
 
-            # Detect primary language from manifest files
             primary_language = self._detect_primary_language(repo_dir)
             if primary_language:
                 repo_entry["primary_language"] = primary_language
 
-            # Detect role from directory naming conventions
             repo_entry["role"] = self._infer_repo_role(repo_dir, primary_language)
 
             repos.append(repo_entry)
@@ -890,7 +807,6 @@ class StackScanner(BaseScanner):
 
         for filename, language in manifest_checks:
             if (repo_dir / filename).is_file():
-                # Check for TypeScript indicator
                 if language == "javascript":
                     for f in repo_dir.iterdir():
                         if f.is_file() and f.name.startswith("tsconfig") and f.name.endswith(".json"):
@@ -903,37 +819,28 @@ class StackScanner(BaseScanner):
     def _infer_repo_role(repo_dir: Path, primary_language: Optional[str]) -> str:
         """Infer the role of a repo from its name and contents.
 
-        Returns one of: gitops, iac, platform, agent, library, application.
+        Returns one of: gitops, iac, platform, agent, application.
         """
         name_lower = repo_dir.name.lower()
 
-        # GitOps indicators
         if any(kw in name_lower for kw in ("gitops", "flux", "argocd", "deploy")):
             return "gitops"
 
-        # IaC indicators
         if any(kw in name_lower for kw in ("iac", "infra", "terraform")):
             return "iac"
-        # Also check for .tf files at root
         try:
             if any(f.suffix == ".tf" for f in repo_dir.iterdir() if f.is_file()):
                 return "iac"
         except OSError:
             pass
 
-        # Platform indicators
         if any(kw in name_lower for kw in ("platform", "core", "shared", "common")):
             return "platform"
 
-        # Agent indicators
         if any(kw in name_lower for kw in ("agent", "bot", "assistant")):
             return "agent"
 
         return "application"
-
-    # ------------------------------------------------------------------
-    # File search helpers
-    # ------------------------------------------------------------------
 
     def _find_files(self, root: Path, filename: str) -> List[Path]:
         """Find files matching filename in root and subdirectories.
@@ -943,12 +850,10 @@ class StackScanner(BaseScanner):
         """
         results: List[Path] = []
 
-        # Check root first
         root_file = root / filename
         if root_file.is_file():
             results.append(root_file)
 
-        # Scan subdirectories up to MONOREPO_SCAN_DEPTH
         self._find_files_recursive(root, filename, results, 0)
 
         return results
@@ -976,19 +881,21 @@ class StackScanner(BaseScanner):
             pass
 
     def _find_files_by_extension(self, root: Path, ext: str) -> List[Path]:
-        """Find files with a given extension in root and subdirectories."""
+        """Return a one-item list with the first file ending in ``ext``.
+
+        The root is searched first, then subdirectories down to
+        MONOREPO_SCAN_DEPTH; the list is empty when none matches.
+        """
         results: List[Path] = []
 
-        # Check root
         try:
             for entry in root.iterdir():
                 if entry.is_file() and entry.name.endswith(ext):
                     results.append(entry)
-                    return results  # One match is enough
+                    return results
         except PermissionError:
             pass
 
-        # Check subdirectories
         self._find_ext_recursive(root, ext, results, 0)
         return results
 
@@ -1002,7 +909,6 @@ class StackScanner(BaseScanner):
         try:
             for entry in sorted(directory.iterdir()):
                 if entry.is_dir() and entry.name not in SKIP_DIRS and not entry.name.startswith("."):
-                    # Check for matching files in this directory
                     try:
                         for child in entry.iterdir():
                             if child.is_file() and child.name.endswith(ext):
@@ -1013,10 +919,6 @@ class StackScanner(BaseScanner):
                     self._find_ext_recursive(entry, ext, results, depth + 1)
         except PermissionError:
             pass
-
-    # ------------------------------------------------------------------
-    # TOML parsing helpers (no external dependency)
-    # ------------------------------------------------------------------
 
     def _extract_toml_value(self, content: str, key: str) -> Optional[str]:
         """Extract a simple string value from TOML content.
@@ -1036,7 +938,6 @@ class StackScanner(BaseScanner):
         """
         sections: List[str] = []
 
-        # [project.dependencies]
         dep_match = re.search(
             r"\[project\]\s*\n(.*?)(?=\n\[|\Z)",
             content,
@@ -1045,7 +946,6 @@ class StackScanner(BaseScanner):
         if dep_match:
             sections.append(dep_match.group(1))
 
-        # dependencies = [...] array
         dep_array = re.search(
             r"dependencies\s*=\s*\[(.*?)\]",
             content,
@@ -1054,7 +954,6 @@ class StackScanner(BaseScanner):
         if dep_array:
             sections.append(dep_array.group(1))
 
-        # [tool.poetry.dependencies]
         poetry_deps = re.search(
             r"\[tool\.poetry\.dependencies\]\s*\n(.*?)(?=\n\[|\Z)",
             content,
@@ -1063,7 +962,6 @@ class StackScanner(BaseScanner):
         if poetry_deps:
             sections.append(poetry_deps.group(1))
 
-        # optional-dependencies sections
         opt_deps = re.findall(
             r"\[(?:project\.)?optional-dependencies(?:\.\w+)?\]\s*\n(.*?)(?=\n\[|\Z)",
             content,

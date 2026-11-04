@@ -15,8 +15,8 @@ and wrap down. A **component** is a leaf; it renders by its `type` — `box`
 real PARTIAL merge; `span == columns` is a full-width **band** on its own row),
 and a leaf cell may set `rowspan: K` to merge down K rows (height as
 magnitude). The page/root is itself a section. Nesting is a section whose
-children are sections — a grid of grids. There is no envelope primitive, no
-subsection, no mosaic, no `wraps` — the engine is one recursive
+children are sections — a grid of grids. There is no subsection, no mosaic, no
+`wraps` (`envelope` exists only as a section treatment) — the engine is one recursive
 `buildSection` / `buildGrid` pair, with no JS layout or measurement pass.
 
 A leaf grid divides its section's width into `columns` EQUAL `fr` tracks:
@@ -107,7 +107,8 @@ assets/
 ## Responsive behavior
 
 The layout is pure CSS, driven by the STAGE container query (works under
-split-screen / narrow panes, not just the viewport):
+split-screen / narrow panes, not just the viewport). The widths below are the
+defaults of `tokens.breakpoints`:
 
 - **Wide (>1440px)** — sections sit side by side at their authored `columns`;
   the plane fills to the 1280px cap and centers (no horizontal scroll).

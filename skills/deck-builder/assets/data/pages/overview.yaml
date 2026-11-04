@@ -14,8 +14,7 @@
 #   • a LONE BOX sibling of sections inside a row of zones (Section I);
 #   • a VERTICAL rail and separator sitting DIRECTLY in a row of zones (Section F);
 #   • a SIX-COLUMN band whose collapse cascade generalises to any N (Section H).
-# Section A indexes all five, so the page states its own remit. Retiring this
-# page leaves invariant G with nothing to assert.
+# Section A indexes all five, so the page states its own remit.
 
 id: overview
 # Root: a 2-column canvas. Section A and Section B are span 1 (inline), so they
@@ -50,11 +49,8 @@ sections:
     detail: "The last data page: values you write can combine, and the look follows every one of them at once. A leaf can carry a colour and two treatments together, a chip can be the reset with no members, and a box can sit alone beside groups. Each case below is data the tour's other pages did not need."
 
   # ── ROW 1, LEFT · THE PAGE'S REMIT — one cell per case that lives only here ──
-  # This section is ALSO the fix for the void this row used to carry: a 1-row leaf
-  # grid (130px) beside Section B's 3-deep nested stack (488px) was stretched by
-  # the row and left ~358px of trailing space nobody authored. The content is now
-  # balanced instead — 6 cells over 3 rows (406px) against Section B's 464px. The
-  # cells were not invented to fill space: each names one case this page holds.
+  # Six cells over 3 rows, beside Section B's nested stack. The cells were not
+  # invented to fill space: each names one case this page holds.
   - id: section-a
     title: "Values that combine"
     subtitle: "the data the other pages did not need — and the look each combination gets"
@@ -399,10 +395,9 @@ sections:
             description: ["stretched taller than its text"]
 
   # ── ROW 6 · a SIX-COLUMN BAND — the collapse cascade generalises to ANY N ──
-  # A columns:6 leaf grid proves the …→2→1 cascade is not enumerated per column
-  # count (the old per-N rules left a 6+-column grid uncollapsed between ~640 and
-  # 1000px — invariant O). Here it is 6 cells wide above 1000px, folds to 2
-  # columns at medium, and to 1 column at the narrow endpoint.
+  # A columns:6 leaf grid shows the …→2→1 cascade is not enumerated per column
+  # count. Here it is 6 cells wide above 1000px, folds to 2 columns at medium,
+  # and to 1 column at the narrow endpoint.
   - id: section-h
     title: "Six columns written"
     subtitle: "columns: 6 — six across, then two, then one as the screen narrows"
@@ -440,8 +435,8 @@ sections:
   # A compound grid whose section widths FOLLOW the authored weight: "Heavy"
   # carries span:2 so it grows twice as wide as the span:1 "Light", instead of
   # the two splitting the row 50/50. The lone "Card" box is a LEAF sibling of the
-  # sections: it sizes to CONTENT, never ballooning to an equal flex slice. Both
-  # behaviours are hard-guarded by invariant G.
+  # sections: it sizes to CONTENT, never ballooning to an equal flex slice.
+  # check-layout.mjs models both (rowShare).
   - id: section-i
     title: "Weights and a lone box"
     subtitle: "Heavy writes span: 2 and Light span: 1; the Card beside them stays a box"

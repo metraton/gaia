@@ -55,7 +55,7 @@ Nothing new is added here. A schema change is a file in `scripts/migrations/`
 store API in `gaia/store/writer.py`. Each source path has no default: a
 wrapper takes it as its first argument and stops with a usage line without
 it. The shell scripts run under `set -euo pipefail`, and the project is fixed
-to `me` throughout. The scripts' own comments are still in Spanish.
+to `me` throughout. The `.sh` wrappers' progress messages and the line `migrate_02_memory.py` writes into its SQL header are still in Spanish.
 
 ## See also
 

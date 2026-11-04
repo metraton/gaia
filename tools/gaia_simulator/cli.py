@@ -34,11 +34,9 @@ def _find_defaults() -> tuple[Path, Path, Path]:
     Returns:
         (hooks_dir, logs_dir, plugin_root) tuple.
     """
-    # tools/gaia_simulator/cli.py -> tools/gaia_simulator -> tools -> plugin_root
     cli_path = Path(__file__).resolve()
     plugin_root = cli_path.parent.parent.parent
     hooks_dir = plugin_root / "hooks"
-    # Default logs location: the Gaia data home every channel's hooks write to.
     if str(plugin_root) not in sys.path:
         sys.path.insert(0, str(plugin_root))
     from gaia.paths import logs_dir as data_home_logs_dir
@@ -75,7 +73,6 @@ def _handle_simulate_logs(logs_dir: Path, date_filter: str, plugin_root: Path) -
 
     simulator = RoutingSimulator(config_dir=config_dir, agents_dir=agents_dir)
 
-    # Convert ReplayEvents to dicts for simulate_from_log
     event_dicts = []
     for ev in events:
         tool_input = ev.stdin_payload.get("tool_input", {})
@@ -215,7 +212,6 @@ def main(argv: list[str] | None = None) -> int:
         default="text",
         help="Emit text for humans or JSON for machines",
     )
-    # New routing/skills commands
     parser.add_argument(
         "--simulate",
         type=str,
@@ -241,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    # Handle routing/skills commands first (they don't need logs/hooks validation)
+    # These modes never run hooks, so they return before the hooks-directory check.
     if args.simulate is not None:
         return _handle_simulate(args.simulate, plugin_root)
 
@@ -261,7 +257,6 @@ def main(argv: list[str] | None = None) -> int:
         target = sys.stderr if args.report_format == "json" else sys.stdout
         print(message, file=target)
 
-    # Validate paths
     if not args.logs_dir.is_dir():
         print("Error: Logs directory not found: " + str(args.logs_dir), file=sys.stderr)
         return 2
@@ -275,7 +270,6 @@ def main(argv: list[str] | None = None) -> int:
     from gaia_simulator.runner import HookRunner
     from gaia_simulator.reporter import ReplayReporter
 
-    # Step 1: Extract events
     extractor = LogExtractor()
     reporter = ReplayReporter()
 
@@ -303,7 +297,6 @@ def main(argv: list[str] | None = None) -> int:
             status("No events found matching the criteria.")
         return 0
 
-    # Extract-only mode
     if args.extract_only:
         if args.report_format == "json":
             print(json.dumps(reporter.events_payload(events), indent=2, default=str))
@@ -322,7 +315,6 @@ def main(argv: list[str] | None = None) -> int:
                       " -> " + ev.expected_decision + " (" + ev.expected_tier + ") | " + detail)
         return 0
 
-    # Step 2: Run hooks
     def progress(current: int, total: int) -> None:
         if total > 10 and current % 10 == 0:
             print("  Replayed " + str(current) + "/" + str(total) + " events...", file=sys.stderr)
@@ -333,7 +325,6 @@ def main(argv: list[str] | None = None) -> int:
     results = runner.run_batch(events, progress_callback=progress)
     status("Replay complete: " + str(len(results)) + " results" + nl)
 
-    # Step 3: Report
     if args.report_format == "json":
         print(json.dumps(reporter.results_payload(results), indent=2, default=str))
     elif args.regressions_only:
@@ -343,12 +334,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(reporter.summary(results))
 
-    # Save JSON if requested
     if args.output:
         reporter.save_json(results, args.output)
         status(nl + "Results saved to: " + str(args.output))
 
-    # Return exit code based on regressions
     has_regressions = any(not r.matched for r in results)
     return 1 if has_regressions else 0
 

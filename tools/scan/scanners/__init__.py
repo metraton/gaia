@@ -1,9 +1,9 @@
 """
 Scanner modules package.
 
-Scanner modules are auto-discovered from this directory. Any .py file that
-exports SCANNER_NAME, SCANNER_VERSION, OWNED_SECTIONS, and scan() is
-registered automatically by ScannerRegistry.
+Scanner modules are auto-discovered from this directory: ScannerRegistry
+registers every concrete BaseScanner subclass found in a module, except in
+base.py and modules whose name starts with "_".
 """
 
 

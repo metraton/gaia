@@ -24,11 +24,6 @@ if str(_TOOLS_DIR) not in sys.path:
 from context.surface_router import classify_surfaces, load_surface_routing_config
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class RoutingResult:
     """Result of simulating a prompt through the routing pipeline."""
@@ -40,21 +35,17 @@ class RoutingResult:
     skills_loaded: list[str]
     context_sections: list[str]
     tokens_estimate: int
-    contracts: dict[str, list[str]]  # {"read": [...], "write": [...]}
+    contracts: dict[str, list[str]]
     confidence: float
     multi_surface: bool
 
-
-# ---------------------------------------------------------------------------
-# Frontmatter parsing
-# ---------------------------------------------------------------------------
 
 _RE_FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
 _RE_SKILLS_LINE = re.compile(r"^\s+-\s+(.+)$", re.MULTILINE)
 
 
 def _parse_frontmatter(content: str) -> dict[str, Any]:
-    """Parse YAML frontmatter from agent .md files."""
+    """Read the top-level scalar keys and the skills list of an agent's frontmatter."""
     if not content.startswith("---"):
         return {}
 
@@ -114,17 +105,14 @@ def _load_agent_skills(agents_dir: Path) -> dict[str, list[str]]:
     return agent_skills
 
 
-# ---------------------------------------------------------------------------
-# RoutingSimulator
-# ---------------------------------------------------------------------------
-
-
 class RoutingSimulator:
     """Simulates the gaia routing pipeline for a given prompt.
 
-    Loads the DB-backed surface routing registry, context-contracts.json, and agent frontmatter
-    to predict: which surfaces activate, which agent handles, what skills and
-    context sections are injected, and what contract permissions apply.
+    Reads the surface_routing table, the agents' frontmatter skills and
+    config/context-contracts.json when that file exists (the repo ships none,
+    so the contracts come out empty) to predict: which surfaces activate, which
+    agent handles, what skills and context sections are injected, and what
+    contract permissions apply.
     """
 
     def __init__(self, config_dir: Path, agents_dir: Path):
@@ -138,19 +126,14 @@ class RoutingSimulator:
         self._config_dir = config_dir
         self._agents_dir = agents_dir
 
-        # Load routing from the surface_routing table seeded from agent
-        # frontmatter. The loader resolves gaia.db via gaia.paths (honoring
-        # GAIA_DATA_DIR), so tests point it at a seeded temp DB.
         self._routing_config = load_surface_routing_config()
 
-        # Load contracts
         contracts_file = config_dir / "context-contracts.json"
         if contracts_file.is_file():
             self._contracts = json.loads(contracts_file.read_text(encoding="utf-8"))
         else:
             self._contracts = {"agents": {}}
 
-        # Load agent skills from frontmatter
         self._agent_skills = _load_agent_skills(agents_dir)
 
     def simulate(self, prompt: str, agent_type: Optional[str] = None) -> RoutingResult:

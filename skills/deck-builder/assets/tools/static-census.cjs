@@ -15,7 +15,7 @@
 // reader is engine/yaml.cjs) so both the ESM and the CJS consumers require it.
 //
 // EVERY ENTRY POINT TAKES A ROOT. The deck root defaults to the parent of this
-// tools/ directory (the normal case), but both functions accept an explicit one
+// tools/ directory (the normal case), but each function accepts an explicit one
 // so a NEGATIVE TEST can point them at a broken fixture in a temp directory
 // outside the repo. A guardrail that can only be run against the one deck that
 // is supposed to pass has never been shown to fail.
@@ -46,8 +46,8 @@ const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
 // human-language title, and the machine name above it. Those are the forms
 // where a token too long for its cell fractures mid-word and reads as a defect;
 // a planner's `TODO`/`DONE` code or a timeline's phase label is short by
-// construction and is not judged. The model's TEXT budget judges the title AND
-// kicker token by it.
+// construction and is not judged. The model's TEXT budget judges the kicker token
+// only on these forms; the title is budgeted on every form.
 const WORDFIT = new Set(['dashboard', 'flow']);
 
 // ── THE TOKENS BOTH GATES COMPUTE WITH ─────────────────────────────────────

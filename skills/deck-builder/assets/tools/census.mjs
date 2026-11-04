@@ -18,8 +18,8 @@
 //           row in a stack
 // A section's `grid` says how its children are laid out: "tracks" (a leaf CSS
 // grid), "root" (the page's section grid), "row" (a nested flex row) or "stack"
-// (`columns: 1` — one child per row at every tier). "root" and "row" also stack
-// at or below the stack breakpoint.
+// (a grid of sections with `columns: 1` — one child per row at every tier).
+// "root" and "row" also stack at or below the stack breakpoint.
 // `variant` is the colour in force: `variant_source` says whether it was
 // "authored" or is the engine's "default" (neutral — the engine never inherits a
 // colour from a section), and "colourless" for a separator or spacer. A chip's

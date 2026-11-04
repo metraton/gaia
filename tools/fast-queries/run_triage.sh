@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Fast-Queries Runner - Simplified version
-# Only runs the 3 essential triages
+# Runs the gitops, terraform and gcp quicktriage scripts (all three by default).
+# The aws and appservices scripts are not wired in.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELECTED="${1:-all}"
 
-# Colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 run_script() {
     local script="$1"

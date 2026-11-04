@@ -60,8 +60,8 @@ function cueAction(c) {
   return c.type !== undefined ? { type: c.type } : { ask: c.ask };
 }
 
-// A sentence's cues in the order they fire: its own show, chip and typing at its
-// start, then its word cues, which must be listed in the order their words are said.
+// A sentence's cues in the order they fire: its own show, chip, type and ask at
+// its start, then its word cues, which must be listed in the order their words are said.
 function sentenceCues(s, at, errors) {
   const fires = [];
   if (s.show && s.show.length) fires.push({ reveal: s.show });

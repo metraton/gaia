@@ -8,13 +8,13 @@ agents receive the necessary context for execution.
 Main functions:
 - load_project_context(): Load project context from JSON
 - get_contract_context(): Get context for an agent based on its contract
-- get_context_update_contract(): Get readable/writable write permissions
+- get_context_update_contract(): Get an agent's readable and writable sections
 - load_provider_contracts(): Load cloud provider-specific contracts
+- classify_surfaces(), build_investigation_brief(), load_surface_routing_config():
+  route a prompt to surfaces (surface_router)
 """
 
 from . import context_provider
-
-# Re-export key functions for convenience
 from .context_provider import (
     load_project_context,
     get_contract_context,
@@ -28,8 +28,7 @@ from .surface_router import (
 )
 
 __all__ = [
-    "context_provider",  # module
-    # Main functions
+    "context_provider",
     "load_project_context",
     "get_contract_context",
     "get_context_update_contract",

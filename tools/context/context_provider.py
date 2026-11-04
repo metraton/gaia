@@ -20,9 +20,8 @@ from typing import Dict, List, Any, Optional
 
 # Ensure the package root is on sys.path so that `gaia.store.reader` resolves
 # when this module is imported in-process by hooks
-# (the dispatch-kernel path in hooks/adapters/claude_code.py) or invoked via
-# the CLI entry point.
-# Pattern: same as hooks/pre_tool_use.py line 22.
+# (e.g. hooks/modules/context/kernel_builder.py) or invoked via the CLI entry
+# point.
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, _PACKAGE_ROOT)
@@ -41,10 +40,6 @@ except ImportError:
     )
 
 
-# ============================================================================
-# DB CONNECTION
-# ============================================================================
-
 def _get_db_path() -> Optional[Path]:
     """Resolve path to ~/.gaia/gaia.db via gaia.paths, or fallback default."""
     try:
@@ -60,10 +55,6 @@ def _db_connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     return con
 
-
-# ============================================================================
-# CLOUD PROVIDER DETECTION
-# ============================================================================
 
 def detect_cloud_provider(sections: Dict[str, Any]) -> str:
     """Detects the cloud provider from the infrastructure contract payload.
@@ -150,15 +141,11 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
         print(f"Warning: DB error reading permissions for '{agent_name}': {exc}", file=sys.stderr)
         rows = []
 
-    # Dedupe defensively; order is deterministic via the query's ORDER BY
-    # contract_name. The row set can carry the same contract_name more than
-    # once -- e.g. a NULL cloud_scope row plus a provider-scoped overlay, or
-    # (observed in the field) accumulated duplicate NULL-scope rows because
-    # SQLite treats NULL as distinct in the composite PRIMARY KEY, so
-    # INSERT OR REPLACE never conflicts on NULL scope. Without this dedupe the
-    # readable/writable lists fan out into thousands of repeated entries, which
-    # the subagent Permissions block renders verbatim (~93% payload bloat
-    # observed). See FIX (c).
+    # The row set can carry the same contract_name more than once: a NULL
+    # cloud_scope row plus a provider-scoped overlay, or duplicate NULL-scope
+    # rows, since NULL is distinct in the composite PRIMARY KEY. Without the
+    # dedupe the readable/writable lists repeat entries, and the subagent
+    # Permissions block renders them verbatim. Order follows the ORDER BY.
     def _dedupe(names: list[str]) -> list[str]:
         seen: set[str] = set()
         out: list[str] = []
@@ -179,10 +166,6 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
         },
     }
 
-
-# ============================================================================
-# DISPATCH KERNEL DATA (no routing, no preloaded context)
-# ============================================================================
 
 def _declared_surface(agent_name: str) -> str:
     """The ``routing.surface`` or top-level ``surface`` in ``agents/<name>.md`` frontmatter, or ""."""
@@ -522,10 +505,6 @@ def dispatch_project_entry(
     return None
 
 
-# ============================================================================
-# CONTEXT EXTRACTION
-# ============================================================================
-
 def get_relevant_sections(
     sections: Dict[str, Any],
     contract_keys: List[str],
@@ -635,10 +614,6 @@ def get_context_update_contract(
         "source": "agent_contract_permissions in ~/.gaia/gaia.db",
     }
 
-
-# ============================================================================
-# EPISODIC MEMORY
-# ============================================================================
 
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters."""
@@ -838,10 +813,6 @@ def load_relevant_episodes(
         print(f"Warning: Could not load episodic memory: {e}", file=sys.stderr)
         return {}
 
-
-# ============================================================================
-# MAIN FUNCTION
-# ============================================================================
 
 def build_context_payload(
     agent_name: str,

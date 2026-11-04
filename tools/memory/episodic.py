@@ -2,18 +2,9 @@
 """
 Episodic Memory System for GAIA
 
-This module provides functionality to store, index, and search episodic memory
-for the workflow system. Episodes capture user interactions, clarifications,
-and enriched prompts for future reference and context enhancement.
-
-Architecture:
-- Episodes stored as individual JSON files with metadata
-- JSONL index for fast keyword-based search
-- Automatic directory creation and management
-- Integration with workflow.py for context enhancement
-
-P0 Enhancement: Outcome tracking (success/failure/partial, duration, commands)
-P1 Enhancement: Simple relationships between episodes (SOLVES, CAUSES, etc.)
+Episodes capture user interactions, clarifications, and enriched prompts.
+``store_episode`` writes to the gaia.db ``episodes`` table; the search, list,
+relationship and cleanup methods operate on the JSON/JSONL file layout.
 """
 
 import json
@@ -30,33 +21,19 @@ from dataclasses import dataclass, asdict, field
 def _ensure_gaia_store_importable() -> None:
     """Ensure ``gaia.store.writer`` is importable from sys.path.
 
-    Background: when this module is copied into ``.claude/tools/memory/``
-    by the npm installer, the copy has no relative path back to the gaia
-    package root (``<root>/gaia/store/writer.py``). The hook subprocess
-    runs Python without a PYTHONPATH that includes the package, so the
-    ``from gaia.store.writer import insert_episode`` statement below
-    raises ``ImportError: No module named 'gaia.store'`` -- which
-    previously was swallowed by a stderr-print-and-return-episode_id
-    branch, masking persistence failures for 26 days (brief
-    ``episodic-workflow-to-db`` T4 silent-failure regression).
+    A copy of this module outside the package (the hook subprocess runs
+    without a PYTHONPATH naming it) has no relative path to
+    ``<root>/gaia/store/writer.py``. Candidate roots, first match wins:
+        1. ``GAIA_PACKAGE_ROOT`` env var.
+        2. Three directories above this file.
+        3. ``node_modules/@jaguilar87/gaia`` walking up from this file and
+           from cwd.
+        4. cwd / 'gaia'.
 
-    Resolution order (first match wins):
-        1. ``GAIA_PACKAGE_ROOT`` env var (explicit override).
-        2. ``__file__.parent.parent.parent`` -- works in the source tree
-           and in the npm package layout where ``tools/memory/episodic.py``
-           sits two directories below the package root.
-        3. ``node_modules/@jaguilar87/gaia`` walking up from ``__file__``
-           and from cwd -- covers the .claude/-copy case.
-        4. cwd / 'gaia' -- last-resort, when running from a workspace
-           that vendors gaia as a subdirectory.
-
-    The first candidate whose ``<root>/gaia/store/writer.py`` exists is
-    prepended to ``sys.path``. If none match the function leaves
-    ``sys.path`` untouched and the caller's import will raise -- which
-    the caller now turns into a loud ``RuntimeError`` instead of a silent
-    pseudo-success.
+    The first whose ``gaia/store/writer.py`` exists is prepended to
+    ``sys.path``. With none, ``sys.path`` is left alone and the import in
+    ``store_episode`` raises.
     """
-    # Fast path: already importable.
     try:
         import gaia.store.writer  # noqa: F401
         return
@@ -70,12 +47,8 @@ def _ensure_gaia_store_importable() -> None:
         candidates.append(Path(env_root))
 
     here = Path(__file__).resolve()
-    # tools/memory/episodic.py -> tools/memory -> tools -> <root>
     candidates.append(here.parent.parent.parent)
 
-    # Walk up looking for node_modules/@jaguilar87/gaia (handles .claude-copy
-    # case where __file__ points at the installed copy with no relation to
-    # the package).
     for anchor in (here, Path.cwd()):
         cursor = anchor
         for _ in range(6):
@@ -87,7 +60,6 @@ def _ensure_gaia_store_importable() -> None:
                 break
             cursor = cursor.parent
 
-    # Last resort: cwd-vendored gaia.
     candidates.append(Path.cwd() / "gaia")
 
     for root in candidates:
@@ -96,30 +68,26 @@ def _ensure_gaia_store_importable() -> None:
             if root_str not in sys.path:
                 sys.path.insert(0, root_str)
             return
-    # Nothing matched -- leave sys.path alone and let the caller's
-    # ImportError surface to the RuntimeError raise in store_episode.
 
 
 _ensure_gaia_store_importable()
 
 
-# Valid relationship types for episode connections
+# SOLVES points problem -> solution, CAUSES action -> consequence, SUPERSEDES
+# marks the episode that replaces another; RELATED_TO is the generic link.
 RELATIONSHIP_TYPES = frozenset([
-    "SOLVES",       # This episode solves another (problem -> solution)
-    "CAUSES",       # This episode caused another (action -> consequence)
-    "DEPENDS_ON",   # This episode depends on another
-    "VALIDATES",    # This episode validates another
-    "SUPERSEDES",   # This episode replaces another
-    "RELATED_TO",   # Generic relation
+    "SOLVES",
+    "CAUSES",
+    "DEPENDS_ON",
+    "VALIDATES",
+    "SUPERSEDES",
+    "RELATED_TO",
 ])
 
-# Valid outcome values
 OUTCOME_VALUES = frozenset(["success", "partial", "failed", "abandoned"])
 
-# Mirrors the ``episodes.plan_status`` CHECK clause (gaia/store/schema.sql) --
-# the canonical enum lives in gaia.state.VALID_PLAN_STATUSES, duplicated here
-# as a frozenset (same pattern as OUTCOME_VALUES above) so this module never
-# depends on gaia.state being importable just to normalize a status string.
+# Must equal gaia.state.VALID_PLAN_STATUSES and the ``episodes.plan_status``
+# CHECK in gaia/store/schema.sql; copied so this module does not import gaia.state.
 VALID_PLAN_STATUSES = frozenset([
     "IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE",
     "BLOCKED", "NEEDS_INPUT", "NEEDS_VERIFICATION",
@@ -140,13 +108,11 @@ class Episode:
     type: Optional[str] = None
     title: Optional[str] = None
     relevance_score: float = 1.0
-    # P0: Outcome tracking fields
-    outcome: Optional[str] = None  # "success", "partial", "failed", "abandoned"
+    outcome: Optional[str] = None
     success: Optional[bool] = None
     duration_seconds: Optional[float] = None
     commands_executed: Optional[List[str]] = None
-    # P1: Simple relationships
-    related_episodes: Optional[List[Dict[str, str]]] = None  # [{"id": "ep_xxx", "type": "SOLVES"}]
+    related_episodes: Optional[List[Dict[str, str]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert episode to dictionary."""
@@ -156,14 +122,11 @@ class Episode:
 
 class EpisodicMemory:
     """
-    Manages episodic memory storage and retrieval.
+    Episodic memory over two stores.
 
-    This class provides methods to:
-    - Store new episodes with automatic indexing
-    - Search episodes by keywords and context
-    - Maintain an efficient index for fast retrieval
-    - Auto-create required directory structures
-    - Track outcomes and relationships between episodes (P0/P1)
+    ``store_episode`` writes the gaia.db ``episodes`` table. Every other method
+    reads or writes the ``index.json`` / ``episodes.jsonl`` / ``episodes/``
+    files under ``base_path``, which nothing here creates.
     """
 
     def __init__(
@@ -175,13 +138,10 @@ class EpisodicMemory:
         Initialize EpisodicMemory with specified or default path.
 
         Args:
-            base_path: Base directory for the legacy episodic-memory filesystem
-                layout. After T6 of brief ``episodic-workflow-to-db`` the
-                constructor no longer creates this directory or any child
-                paths. The parameter is retained for callers that pass an
-                explicit path (e.g. tests, CLI) so that legacy read methods
-                (``get_episode``, ``update_outcome``) still resolve files
-                relative to the right root when those files happen to exist.
+            base_path: Base directory for the filesystem episodic-memory
+                layout. The constructor does not create this directory or any
+                child path; the file-based methods resolve files relative to
+                it when they exist.
             db_path: Optional override for the gaia.db file. When ``None``
                 the writer resolves the canonical path via
                 ``gaia.paths.db_path()``. Test fixtures pass an isolated
@@ -190,12 +150,10 @@ class EpisodicMemory:
         if base_path:
             self.base_path = Path(base_path)
         else:
-            # Try to find the best location
             candidates = [
                 Path(".claude/project-context/episodic-memory"),
             ]
 
-            # Use first existing or first candidate
             for path in candidates:
                 if path.parent.exists():
                     self.base_path = path
@@ -226,14 +184,14 @@ class EpisodicMemory:
                     index["relationships"] = []
                 return index
         except (json.JSONDecodeError, IOError):
-            # Return empty index if file is corrupted
             return {"episodes": [], "relationships": [], "metadata": {}}
 
     def _extract_keywords(self, text: str) -> List[str]:
         """
         Extract keywords from text for indexing.
 
-        Uses simple tokenization and filtering. Can be enhanced with NLP.
+        Lower-cased alphabetic words of three or more letters, minus a stopword
+        list, deduplicated in order, capped at 20.
 
         Args:
             text: Text to extract keywords from
@@ -257,11 +215,10 @@ class EpisodicMemory:
                 seen.add(kw)
                 unique_keywords.append(kw)
 
-        return unique_keywords[:20]  # Limit to 20 keywords
+        return unique_keywords[:20]
 
     def _generate_title(self, prompt: str) -> str:
-        """Generate a short title from the prompt."""
-        # Take first 60 characters or first sentence
+        """The prompt's first sentence, cut to 60 characters."""
         title = prompt.split('.')[0] if '.' in prompt else prompt
         return title[:60] + ('...' if len(title) > 60 else '')
 
@@ -269,7 +226,6 @@ class EpisodicMemory:
         """Determine episode type based on prompt and context."""
         prompt_lower = prompt.lower()
 
-        # Check for common operation types
         if any(word in prompt_lower for word in ['deploy', 'apply', 'push', 'release']):
             return 'deployment'
         elif any(word in prompt_lower for word in ['fix', 'error', 'issue', 'problem', 'debug']):
@@ -293,33 +249,25 @@ class EpisodicMemory:
         context: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         episode_id: Optional[str] = None,
-        # P0: Outcome tracking parameters
         outcome: Optional[str] = None,
         success: Optional[bool] = None,
         duration_seconds: Optional[float] = None,
         commands_executed: Optional[List[str]] = None,
-        # P1: Relationship parameters (deprecated path -- T4 episodic-workflow-to-db)
         related_episodes: Optional[List[Dict[str, str]]] = None,
-        # P3: Workflow metric fields for CLI compatibility
         workflow_metrics: Optional[Dict] = None
     ) -> str:
         """
         Store a new episode in the gaia.db ``episodes`` table.
 
-        T4 of brief ``episodic-workflow-to-db`` migrated this writer from
-        JSONL/JSON file output to a single INSERT into ``episodes`` plus zero
-        or more INSERTs into ``episode_anomalies`` for entries found under
-        ``context["anomalies"]``. The function no longer touches
-        ``episodes.jsonl``, ``episode-<id>.json``, ``index.json``, or
-        ``search.db`` -- the schema's INSERT trigger handles FTS5 indexing
-        automatically. Readers still consult the legacy files until T6
-        finishes its half of the migration.
+        One INSERT into ``episodes`` plus one into ``episode_anomalies`` per
+        entry under ``context["anomalies"]``; the schema's INSERT trigger
+        handles FTS5 indexing. It writes no JSON, JSONL or index files, and
+        raises RuntimeError when the row is not persisted.
 
         Args:
             prompt: Original user prompt.
-            clarifications: Discarded under T4 (drop list in the brief). The
-                parameter is preserved on the signature for caller
-                compatibility but its value is ignored.
+            clarifications: Ignored; kept on the signature for caller
+                compatibility.
             enriched_prompt: Enriched version of the prompt.
             context: Additional context. ``context["anomalies"]`` (list[dict])
                 is extracted into ``episode_anomalies`` rows; the remaining
@@ -328,13 +276,10 @@ class EpisodicMemory:
             episode_id: Optional specific ID (auto-generated when omitted).
             outcome: Episode outcome ("success", "partial", "failed",
                 "abandoned").
-            success: Discarded under T4 (drop list); kept on signature for
-                compatibility.
+            success: Ignored; kept on the signature for compatibility.
             duration_seconds: How long the episode took to complete.
             commands_executed: List of commands executed during the episode.
-            related_episodes: Discarded under T4 (drop list). Kept on
-                signature; T6 will rewire relationships through a dedicated
-                table if needed.
+            related_episodes: Ignored; kept on the signature for compatibility.
             workflow_metrics: Optional workflow metrics dict supplied by the
                 SubagentStop hook. Recognized keys: agent, session_id,
                 task_id, tier, exit_code, plan_status, output_length,
@@ -360,27 +305,12 @@ class EpisodicMemory:
         title = self._generate_title(enriched_prompt or prompt)
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        # tier: prefer explicit workflow_metrics value, fall back to context.
         tier = workflow_metrics.get("tier") or context.get("tier")
 
-        # plan_status: the CHECK on episodes.plan_status accepts NULL or one
-        # of VALID_PLAN_STATUSES -- never the empty string. A turn that closed
-        # with no fenced envelope AND no reconstructable finalized draft has
-        # nothing to report here; store NULL (already a valid, schema-blessed
-        # "unknown") rather than let the empty string reach insert_episode and
-        # fail its CHECK constraint outright, taking the whole row down with it.
-        #
-        # A missing key (no value supplied at all) is the ordinary case --
-        # most callers never set plan_status -- so it stays silent; warning
-        # on every such turn would be noise, not signal. An EXPLICIT but
-        # invalid value is the rare case: today it is always the empty
-        # string from a fenceless close, but a stale enum or a future defect
-        # emitting garbage would land here too, and collapsing all of them
-        # to NULL with no trace makes those distinct causes indistinguishable
-        # after the fact. So, mirroring the outcome-validation precedent
-        # above, an explicit invalid value is both warned (stderr) and
-        # recorded as an episode_anomalies row carrying the original value --
-        # queryable later via ``gaia defects --type invalid_plan_status``.
+        # The CHECK on episodes.plan_status accepts NULL or a valid status,
+        # never the empty string, so an invalid value is stored as NULL. An
+        # absent key is silent; an explicit invalid one is warned and recorded
+        # as an invalid_plan_status anomaly carrying the original value.
         raw_plan_status = workflow_metrics.get("plan_status")
         plan_status = raw_plan_status
         invalid_plan_status = None
@@ -394,8 +324,6 @@ class EpisodicMemory:
             invalid_plan_status = raw_plan_status
             plan_status = None
 
-        # Split off anomalies for the child table; everything else from the
-        # context object lands in context_metrics as a JSON blob.
         anomalies = list(context.get("anomalies", []) or [])
         if invalid_plan_status is not None:
             anomalies.append({
@@ -436,12 +364,6 @@ class EpisodicMemory:
         try:
             from gaia.store.writer import insert_episode, insert_episode_anomaly
         except ImportError as exc:
-            # Fail loud rather than silently masking a persistence outage.
-            # Previously this branch printed to stderr (invisible to the
-            # hook's logger) and returned episode_id, making the caller
-            # believe the row was inserted. The result was 26 days of
-            # ghost episodes before the regression was caught -- see
-            # brief ``episodic-workflow-to-db`` T4 silent-failure post-mortem.
             raise RuntimeError(
                 f"gaia.store.writer not importable -- episode {episode_id} "
                 f"not persisted: {exc}. Set GAIA_PACKAGE_ROOT or install "
@@ -450,16 +372,13 @@ class EpisodicMemory:
 
         result = insert_episode(workspace, episode_id, fields, db_path=self.db_path)
         if result.get("status") != "applied":
-            # Same rationale as the ImportError branch: surface failure
-            # to the caller instead of returning a pseudo-success.
             raise RuntimeError(
                 f"insert_episode rejected for {episode_id}: "
                 f"{result.get('reason', 'unknown')}"
             )
 
-        # Persist each anomaly. Failures are logged but do not abort the
-        # episode write -- the parent row is already in the DB and the FK
-        # CASCADE only kicks in on delete.
+        # An anomaly that fails to persist is logged and does not abort: the
+        # parent row is already in the DB.
         for anomaly in anomalies:
             if not isinstance(anomaly, dict):
                 continue
@@ -616,7 +535,7 @@ class EpisodicMemory:
             for rel in source_data["related_episodes"]:
                 if rel.get("id") == target_episode_id and rel.get("type") == relationship_type:
                     print(f"Relationship already exists: {source_episode_id} --{relationship_type}--> {target_episode_id}", file=sys.stderr)
-                    return True  # Not an error, just already exists
+                    return True
 
             source_data["related_episodes"].append({
                 "id": target_episode_id,
@@ -740,35 +659,29 @@ class EpisodicMemory:
         for episode_meta in index["episodes"]:
             score = 0.0
 
-            # Tag matching (highest weight)
             for tag in episode_meta.get("tags", []):
                 if tag.lower() in query_lower:
                     score += 0.4
 
-            # Keyword matching
             episode_keywords = set(episode_meta.get("keywords", []))
             common_keywords = query_words & episode_keywords
             if common_keywords:
                 score += 0.3 * (len(common_keywords) / max(len(episode_keywords), 1))
 
-            # Title matching
             title_words = set(episode_meta.get("title", "").lower().split())
             common_title = query_words & title_words
             if common_title:
                 score += 0.2 * (len(common_title) / max(len(title_words), 1))
 
-            # Type matching
             if episode_meta.get("type", "") in query_lower:
                 score += 0.1
 
-            # P0: Boost successful episodes slightly
             if episode_meta.get("success") is True:
                 score *= 1.1
             elif episode_meta.get("success") is False:
                 # Don't penalize failed episodes - they're valuable for troubleshooting
                 pass
 
-            # Apply time decay
             try:
                 episode_date = datetime.fromisoformat(episode_meta["timestamp"])
                 if episode_date.tzinfo is None:
@@ -791,12 +704,10 @@ class EpisodicMemory:
             final_score = score * time_factor * episode_meta.get("relevance_score", 1.0)
 
             if final_score >= min_score:
-                # Load full episode if score meets threshold
                 full_episode = self.get_episode(episode_meta["id"])
                 if full_episode:
                     full_episode["match_score"] = final_score
 
-                    # P1: Include relationship summaries if requested
                     if include_relationships:
                         relationships = self.get_related_episodes(episode_meta["id"], direction="both")
                         if relationships:
@@ -808,12 +719,11 @@ class EpisodicMemory:
                                     "direction": r["direction"],
                                     "outcome": r["episode"].get("outcome")
                                 }
-                                for r in relationships[:5]  # Limit to 5 related episodes
+                                for r in relationships[:5]
                             ]
 
                     scored_episodes.append(full_episode)
 
-        # Sort by score and return top N
         scored_episodes.sort(key=lambda x: x["match_score"], reverse=True)
         top_episodes = scored_episodes[:max_results]
 
@@ -895,7 +805,6 @@ class EpisodicMemory:
         index["episodes"] = [ep for ep in index.get("episodes", [])
                            if ep.get("id") != episode_id]
 
-        # Also remove relationships involving this episode
         index["relationships"] = [
             rel for rel in index.get("relationships", [])
             if rel.get("source") != episode_id and rel.get("target") != episode_id
@@ -905,8 +814,7 @@ class EpisodicMemory:
             self._save_index(index)
             deleted = True
 
-        # Note: We don't remove from JSONL as it's append-only for audit trail
-
+        # episodes.jsonl is append-only, so it keeps the deleted episode.
         return deleted
 
     def cleanup_old_episodes(self, days: int = 180) -> int:
@@ -935,7 +843,6 @@ class EpisodicMemory:
                 if episode_date > cutoff_date:
                     episodes_to_keep.append(episode_meta)
                 else:
-                    # Delete old episode file
                     episode_file = self.episodes_dir / f"episode-{episode_meta['id']}.json"
                     if episode_file.exists():
                         episode_file.unlink()
@@ -947,7 +854,6 @@ class EpisodicMemory:
 
         if deleted_count > 0:
             index["episodes"] = episodes_to_keep
-            # Also clean up relationships involving deleted episodes
             index["relationships"] = [
                 rel for rel in index.get("relationships", [])
                 if rel.get("source") not in deleted_ids and rel.get("target") not in deleted_ids
@@ -983,7 +889,6 @@ class EpisodicMemory:
             ep_type = ep.get("type", "unknown")
             type_counts[ep_type] = type_counts.get(ep_type, 0) + 1
 
-        # P0: Count by outcome
         outcome_counts = {"success": 0, "partial": 0, "failed": 0, "abandoned": 0, "unknown": 0}
         for ep in episodes:
             outcome = ep.get("outcome", "unknown")
@@ -992,7 +897,6 @@ class EpisodicMemory:
             else:
                 outcome_counts["unknown"] += 1
 
-        # P1: Count relationships by type
         relationship_counts = {}
         for rel in index.get("relationships", []):
             rel_type = rel.get("type", "unknown")
@@ -1035,8 +939,6 @@ class EpisodicMemory:
         """
         Capture current git state as part of episode context.
 
-        Migrated from session system to provide git context for episodes.
-
         Args:
             repo_path: Path to git repository. Defaults to current working directory.
 
@@ -1059,7 +961,6 @@ class EpisodicMemory:
         }
 
         try:
-            # Check if it is a git repo
             result = subprocess.run(
                 ["git", "rev-parse", "--git-dir"],
                 cwd=repo_path,
@@ -1072,7 +973,6 @@ class EpisodicMemory:
 
             git_state["is_git_repo"] = True
 
-            # Get current branch
             result = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=repo_path,
@@ -1083,7 +983,6 @@ class EpisodicMemory:
             if result.returncode == 0:
                 git_state["branch"] = result.stdout.strip()
 
-            # Get current commit
             result = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_path,
@@ -1094,7 +993,6 @@ class EpisodicMemory:
             if result.returncode == 0:
                 git_state["commit"] = result.stdout.strip()[:12]
 
-            # Get status (modified files)
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
                 cwd=repo_path,
@@ -1105,7 +1003,6 @@ class EpisodicMemory:
             if result.returncode == 0 and result.stdout.strip():
                 git_state["status"] = result.stdout.strip().split("\n")
 
-            # Get recent commits
             result = subprocess.run(
                 ["git", "log", "--oneline", "-5", "--pretty=format:%H|%s|%ai"],
                 cwd=repo_path,
@@ -1148,12 +1045,11 @@ class EpisodicMemory:
         return total_size
 
 
-# Compatibility function for direct use in workflow.py
 def search_episodic_memory(user_prompt: str, max_results: int = 3) -> List[Dict[str, Any]]:
     """
-    Compatibility function for workflow.py integration.
+    Search the default episodic memory without instantiating EpisodicMemory.
 
-    This function can be imported and used directly without instantiating EpisodicMemory.
+    Returns an empty list when the search raises.
 
     Args:
         user_prompt: User's request to search for
@@ -1170,14 +1066,12 @@ def search_episodic_memory(user_prompt: str, max_results: int = 3) -> List[Dict[
         return []
 
 
-# CLI interface for testing and management
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Episodic Memory Management")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
-    # Store command
     store_parser = subparsers.add_parser("store", help="Store a new episode")
     store_parser.add_argument("prompt", help="User prompt")
     store_parser.add_argument("--enriched", help="Enriched prompt")
@@ -1185,36 +1079,29 @@ if __name__ == "__main__":
     store_parser.add_argument("--outcome", choices=["success", "partial", "failed", "abandoned"], help="Episode outcome")
     store_parser.add_argument("--duration", type=float, help="Duration in seconds")
 
-    # Search command
     search_parser = subparsers.add_parser("search", help="Search episodes")
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("--limit", type=int, default=5, help="Max results")
     search_parser.add_argument("--include-relationships", action="store_true", help="Include related episodes")
 
-    # List command
     list_parser = subparsers.add_parser("list", help="List recent episodes")
     list_parser.add_argument("--limit", type=int, default=10, help="Number to show")
 
-    # Stats command
     stats_parser = subparsers.add_parser("stats", help="Show statistics")
 
-    # Cleanup command
     cleanup_parser = subparsers.add_parser("cleanup", help="Clean old episodes")
     cleanup_parser.add_argument("--days", type=int, default=180, help="Days to keep")
 
-    # Update outcome command
     outcome_parser = subparsers.add_parser("update-outcome", help="Update episode outcome")
     outcome_parser.add_argument("episode_id", help="Episode ID")
     outcome_parser.add_argument("outcome", choices=["success", "partial", "failed", "abandoned"], help="Outcome")
     outcome_parser.add_argument("--duration", type=float, help="Duration in seconds")
 
-    # Add relationship command
     rel_parser = subparsers.add_parser("add-relationship", help="Add relationship between episodes")
     rel_parser.add_argument("source", help="Source episode ID")
     rel_parser.add_argument("target", help="Target episode ID")
     rel_parser.add_argument("type", choices=list(RELATIONSHIP_TYPES), help="Relationship type")
 
-    # Get related command
     related_parser = subparsers.add_parser("get-related", help="Get related episodes")
     related_parser.add_argument("episode_id", help="Episode ID")
     related_parser.add_argument("--type", help="Filter by relationship type")

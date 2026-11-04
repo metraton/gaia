@@ -4,8 +4,6 @@ Orchestration Scanner
 Detects Kubernetes, GitOps, Helm, Kustomize, and service mesh indicators
 from project filesystem. Only produces output when orchestration tooling
 is detected -- returns empty dict for projects with no orchestration files.
-
-Contract: specs/002-gaia-scan/data-model.md section 2.8
 """
 
 import logging
@@ -19,7 +17,6 @@ from tools.scan.walk import walk_project, walk_project_named
 
 logger = logging.getLogger(__name__)
 
-# Kubernetes manifest kinds that indicate orchestration
 _K8S_KINDS = frozenset({
     "Deployment",
     "Service",
@@ -45,7 +42,6 @@ _K8S_KINDS = frozenset({
     "NetworkPolicy",
 })
 
-# GitOps API groups
 _FLUX_API_GROUPS = frozenset({
     "toolkit.fluxcd.io",
     "source.toolkit.fluxcd.io",
@@ -59,14 +55,12 @@ _ARGOCD_API_GROUPS = frozenset({
     "argoproj.io",
 })
 
-# Flux directory conventions
 _FLUX_DIR_CONVENTIONS = frozenset({
     "clusters",
     "infrastructure",
     "apps",
 })
 
-# Service mesh annotation prefixes
 _ISTIO_INDICATORS = frozenset({
     "sidecar.istio.io",
     "istio.io",
@@ -88,8 +82,7 @@ _CONSUL_INDICATORS = frozenset({
 # Maximum number of YAML files to scan to stay within performance budget
 _MAX_YAML_FILES = 500
 
-# Maximum file size (bytes) to read for YAML scanning
-_MAX_YAML_SIZE = 256 * 1024  # 256 KB
+_MAX_YAML_SIZE = 256 * 1024
 
 
 class OrchestrationScanner(BaseScanner):
@@ -100,7 +93,7 @@ class OrchestrationScanner(BaseScanner):
 
     Pure Function Contract:
     - No file writes
-    - No state modification
+    - No state modification beyond the per-instance YAML file list cache
     - No network calls
     - No command execution
     - Only filesystem reads
@@ -138,7 +131,6 @@ class OrchestrationScanner(BaseScanner):
             kustomize = self._detect_kustomize(root, warnings)
             service_mesh = self._detect_service_mesh(root, warnings)
 
-            # Only produce section when at least one indicator is found
             has_indicators = (
                 kubernetes["detected"]
                 or gitops["tool"] is not None
@@ -179,10 +171,6 @@ class OrchestrationScanner(BaseScanner):
                 duration_ms=elapsed,
             )
 
-    # ------------------------------------------------------------------ #
-    # Kubernetes Detection
-    # ------------------------------------------------------------------ #
-
     def _detect_kubernetes(
         self, root: Path, warnings: List[str]
     ) -> Dict[str, Any]:
@@ -190,13 +178,11 @@ class OrchestrationScanner(BaseScanner):
         indicators: List[str] = []
         manifest_patterns: List[str] = []
 
-        # Check YAML manifests for Kubernetes kinds
         yaml_kinds = self._scan_yaml_for_kinds(root, warnings)
         if yaml_kinds:
             indicators.append("kubernetes manifests found")
             manifest_patterns.extend(sorted(yaml_kinds))
 
-        # Check kubeconfig
         kubeconfig_path = self._find_kubeconfig()
         if kubeconfig_path:
             indicators.append(f"kubeconfig: {kubeconfig_path}")
@@ -234,23 +220,17 @@ class OrchestrationScanner(BaseScanner):
 
     def _find_kubeconfig(self) -> Optional[str]:
         """Check for kubeconfig presence via env var or default path."""
-        # Check KUBECONFIG env var
         kubeconfig_env = os.environ.get("KUBECONFIG")
         if kubeconfig_env:
             for kc_path in kubeconfig_env.split(os.pathsep):
                 if Path(kc_path).is_file():
                     return kc_path
 
-        # Check default location
         default_kc = Path.home() / ".kube" / "config"
         if default_kc.is_file():
             return str(default_kc)
 
         return None
-
-    # ------------------------------------------------------------------ #
-    # GitOps Detection
-    # ------------------------------------------------------------------ #
 
     def _detect_gitops(
         self, root: Path, warnings: List[str]
@@ -260,7 +240,6 @@ class OrchestrationScanner(BaseScanner):
         tool: Optional[str] = None
         config_path: Optional[str] = None
 
-        # Scan YAML files for API groups
         flux_groups, argocd_groups = self._scan_yaml_for_api_groups(
             root, warnings
         )
@@ -268,23 +247,18 @@ class OrchestrationScanner(BaseScanner):
         if flux_groups:
             tool = "flux"
             api_groups.extend(sorted(flux_groups))
-            # Look for Flux config path
             config_path = self._find_flux_config_path(root)
         elif argocd_groups:
             tool = "argocd"
             api_groups.extend(sorted(argocd_groups))
-            # Look for ArgoCD config path
             config_path = self._find_argocd_config_path(root)
 
-        # Check Flux directory conventions if no API groups found
         if tool is None:
             flux_dir = self._check_flux_directory_conventions(root)
             if flux_dir:
                 tool = "flux"
                 config_path = flux_dir
 
-        # If tool is detected but config_path is still None, derive from
-        # kustomize file paths (e.g., qxo-monorepo/gitops/base/kustomization.yaml)
         if tool is not None and config_path is None:
             config_path = self._derive_config_path_from_kustomize(root)
 
@@ -298,6 +272,8 @@ class OrchestrationScanner(BaseScanner):
         self, root: Path, warnings: List[str]
     ) -> tuple:
         """Scan YAML files for Flux and ArgoCD API groups.
+
+        A group counts when its name appears as a substring of any line.
 
         Returns:
             Tuple of (flux_groups, argocd_groups) sets.
@@ -316,12 +292,10 @@ class OrchestrationScanner(BaseScanner):
                 for line in content.splitlines():
                     stripped = line.strip()
 
-                    # Check apiVersion lines for Flux
                     for fg in _FLUX_API_GROUPS:
                         if fg in stripped:
                             flux_groups.add(fg)
 
-                    # Check apiVersion lines for ArgoCD
                     for ag in _ARGOCD_API_GROUPS:
                         if ag in stripped:
                             argocd_groups.add(ag)
@@ -338,13 +312,11 @@ class OrchestrationScanner(BaseScanner):
         """
         candidates = ["clusters", "flux-system", "gitops"]
 
-        # Check root-level directories
         for candidate in candidates:
             candidate_path = root / candidate
             if candidate_path.is_dir():
                 return candidate
 
-        # Check one level deeper (e.g., monorepo-root/gitops/)
         try:
             for entry in sorted(root.iterdir()):
                 if not entry.is_dir() or entry.name.startswith("."):
@@ -378,7 +350,6 @@ class OrchestrationScanner(BaseScanner):
             if (root / dirname).is_dir():
                 matched_dirs.append(dirname)
 
-        # Require at least 2 of the 3 convention directories
         if len(matched_dirs) >= 2:
             return "clusters" if (root / "clusters").is_dir() else matched_dirs[0]
 
@@ -387,8 +358,9 @@ class OrchestrationScanner(BaseScanner):
     def _derive_config_path_from_kustomize(self, root: Path) -> Optional[str]:
         """Derive gitops config_path from detected kustomize file locations.
 
-        Finds kustomization.yaml files and returns the highest common
-        gitops-related ancestor directory.
+        Returns the first directory named gitops, flux, argocd, deploy or k8s
+        found on the path of a kustomization file, in walk order; None when
+        there is none.
         """
         gitops_dirs: List[str] = []
 
@@ -397,7 +369,6 @@ class OrchestrationScanner(BaseScanner):
                 root, ["kustomization.yaml", "kustomization.yml", "Kustomization"]
             ):
                 rel = kust_file.relative_to(root)
-                # Walk up the path parts looking for a gitops-related directory name
                 parts = rel.parent.parts
                 for i, part in enumerate(parts):
                     if part.lower() in ("gitops", "flux", "argocd", "deploy", "k8s"):
@@ -411,10 +382,6 @@ class OrchestrationScanner(BaseScanner):
         if gitops_dirs:
             return gitops_dirs[0]
         return None
-
-    # ------------------------------------------------------------------ #
-    # Helm Detection
-    # ------------------------------------------------------------------ #
 
     def _detect_helm(
         self, root: Path, warnings: List[str]
@@ -433,10 +400,6 @@ class OrchestrationScanner(BaseScanner):
             "detected": len(charts) > 0,
             "charts": sorted(charts),
         }
-
-    # ------------------------------------------------------------------ #
-    # Kustomize Detection
-    # ------------------------------------------------------------------ #
 
     def _detect_kustomize(
         self, root: Path, warnings: List[str]
@@ -457,14 +420,13 @@ class OrchestrationScanner(BaseScanner):
             "files": sorted(files),
         }
 
-    # ------------------------------------------------------------------ #
-    # Service Mesh Detection
-    # ------------------------------------------------------------------ #
-
     def _detect_service_mesh(
         self, root: Path, warnings: List[str]
     ) -> Dict[str, Any]:
-        """Detect Istio, Linkerd, or Consul Connect from annotations."""
+        """Detect Istio, Linkerd, or Consul Connect from marker strings in YAML lines.
+
+        When several meshes are found the priority is istio, linkerd, consul.
+        """
         tool: Optional[str] = None
         indicators: List[str] = []
 
@@ -483,7 +445,6 @@ class OrchestrationScanner(BaseScanner):
                 for line in content.splitlines():
                     stripped = line.strip()
 
-                    # Istio
                     for prefix in _ISTIO_INDICATORS:
                         if prefix in stripped:
                             istio_found = True
@@ -491,7 +452,6 @@ class OrchestrationScanner(BaseScanner):
                             if indicator not in indicators:
                                 indicators.append(indicator)
 
-                    # Linkerd
                     for prefix in _LINKERD_INDICATORS:
                         if prefix in stripped:
                             linkerd_found = True
@@ -499,7 +459,6 @@ class OrchestrationScanner(BaseScanner):
                             if indicator not in indicators:
                                 indicators.append(indicator)
 
-                    # Consul Connect
                     for prefix in _CONSUL_INDICATORS:
                         if prefix in stripped:
                             consul_found = True
@@ -509,7 +468,6 @@ class OrchestrationScanner(BaseScanner):
             except Exception:
                 continue
 
-        # Determine primary tool (first detected wins)
         if istio_found:
             tool = "istio"
         elif linkerd_found:
@@ -522,18 +480,14 @@ class OrchestrationScanner(BaseScanner):
             "indicators": sorted(indicators),
         }
 
-    # ------------------------------------------------------------------ #
-    # Utility Methods
-    # ------------------------------------------------------------------ #
-
     def _find_yaml_files(self, root: Path) -> List[Path]:
         """Find YAML files in the project, respecting scan limits.
 
         Uses walk_project for filtered os.walk (skips node_modules, .git, etc.)
         instead of rglob which traverses all directories.
 
-        Caches results on the instance for reuse across detection methods
-        within the same scan() call.
+        Caches the list on the instance, keyed by ``root``, so the detection
+        methods share one walk.
         """
         cache_attr = "_yaml_files_cache"
         cache_root_attr = "_yaml_files_root"
@@ -556,7 +510,6 @@ class OrchestrationScanner(BaseScanner):
         except Exception:
             pass
 
-        # Cache on instance
         object.__setattr__(self, cache_attr, yaml_files)
         object.__setattr__(self, cache_root_attr, root)
 
@@ -585,7 +538,6 @@ class OrchestrationScanner(BaseScanner):
         return False
 
 
-# Module-level convenience function (matches task verify pattern)
 def scan(root: Path) -> Dict[str, Any]:
     """Convenience function: instantiate OrchestrationScanner and run scan.
 

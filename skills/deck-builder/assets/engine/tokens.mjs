@@ -45,8 +45,8 @@ export const DEFAULT_TOKENS = freeze({
 });
 
 // One entry per leaf path. `min` is a HARD bound, never a suggestion: the
-// floors on type sizes, `cell_min_w` and `row.cell_h` are the legibility floor
-// (principle 8), so a deck cannot tune its way below readable text.
+// floors on type sizes, `cell_min_w` and `row.cell_h` are the legibility floor,
+// so a deck cannot tune its way below readable text.
 const px = (min, max, int = false) => ({ type: int ? 'int' : 'number', unit: 'px', min, max });
 const em = (min, max) => ({ type: 'number', unit: 'em', min, max });
 const num = (min, max, unit = '') => ({ type: 'number', unit, min, max });

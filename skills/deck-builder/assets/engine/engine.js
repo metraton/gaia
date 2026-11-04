@@ -20,32 +20,8 @@
 //   • The page/root is itself a section: `page.columns` = root columns and
 //     `page.sections` = the root's children.
 //   • A component (leaf) dispatches on its `type`: box (default) | separator |
-//     rail. Absent/"box" renders the standard box.
-// There is NO envelope / subsection / wraps / layout.row and NO JS layout or
-// measurement pass. The layout is a FILLED, CAPPED grid of uniform-height
-// cells: a leaf grid divides its section width into `columns` EQUAL `fr` tracks
-// that STRETCH to fill (equal width within a grid, fixed --cell-h height), and
-// the plane fills the canvas up to a centered 1280px cap. Responsive behaviour
-// is pure CSS (stage container queries in index.html): a leaf grid's column
-// count cascades …→2→1 as width tightens (2-column "two-table" is the
-// intermediate step; 1 column is the endpoint, where the whole page is a single
-// vertical stack). A `span` merges cells (Excel-style); `span == columns` is a
-// full-width band that takes its own row. Columns COLLAPSE before a cell
-// degrades below its readable floor — so nothing scrolls sideways at the
-// stacked tiers. The engine tags each grid `sec-c{N}` (authored
-// column count) and `sec-compound` (holds nested sections) so the CSS can step
-// each grid by its real width need; it emits `--cols` + `--span` and never a
-// literal grid-column (the container queries own the collapse). The row heights
-// that are not --cell-h are the THIN ROWS: a row whose only occupants are thin
-// leaves (a horizontal separator, a horizontal no-rowspan rail, a declared
-// hole) is reduced — to --sep-row-h for separators and holes, to its own
-// content height for a row that holds a rail — emitted as a per-tier
-// `grid-auto-rows` track list (see applyRowTracks). The leaf stays a cell,
-// only its row shrinks.
-//
-// Stable ids + order are preserved end-to-end so a future edit mode can
-// overlay a localStorage {id: order} map without touching this engine or
-// the YAML — see orderedChildren. NOT implemented here.
+//     rail | spacer. Absent/"box" renders the standard box.
+// The grid model, the thin rows and the collapse tiers (data/breakpoints.generated.css) are in README.md and at buildGrid below.
 // ─────────────────────────────────────────────────────────────────────────
 (function () {
   'use strict';
@@ -155,7 +131,7 @@
   // is the small mark above the title — it names no state, it is just the mark.)
   function buildBox(comp, detailRegistry) {
     const box = el('div', componentClasses(comp), { 'data-k': comp.id });
-    applyVars(box, comp.css_vars);   // a per-box clamp override (tokens: on the component)
+    applyVars(box, comp.css_vars);
     if (comp.kicker) { const k = el('div', 'k'); k.textContent = comp.kicker; box.appendChild(k); }
     const t = el('div', 't'); t.textContent = comp.title || ''; box.appendChild(t);
     const rawDesc = comp.description;
@@ -224,17 +200,12 @@
     try { document.execCommand('copy'); } finally { ta.remove(); }
   }
 
-  // Build a `separator` component (a leaf, `type: separator`): a minimal divider
-  // LINE — NOT a box (no border/padding). Props: `orientation`
-  // (horizontal|vertical, default horizontal), `style` (solid|dotted, default
-  // solid), optional `text`. A horizontal separator is a thin full-width rule
-  // across its grid cell(s); with `text` the label renders centered/inline on
-  // the line (muted, small). A vertical separator is a thin vertical rule. Span
-  // is honored by the caller (buildGrid) exactly like any component. Not
-  // clickable — no detail registry entry.
+  // Build a `separator` component (a leaf, `type: separator`): a divider LINE,
+  // not a box. The `vertical` treatment makes it a vertical rule, otherwise it
+  // is a horizontal one across its grid cell(s); `style` is solid|dotted
+  // (default solid) and `text` labels a horizontal rule inline. Span is honored
+  // by the caller (buildGrid). Not clickable: no detail registry entry.
   function buildSeparator(sep) {
-    // Orientation comes from the `vertical` TREATMENT (the old `orientation:`
-    // field was the same switch under a second name — one axis, one spelling).
     const orient = hasTreatment(sep, 'vertical') ? 'v' : 'h';
     const style = sep.style === 'dotted' ? 'dotted' : 'solid';
     const node = el('div', `sep sep-${orient} sep-${style}`);
@@ -248,17 +219,14 @@
 
   // Build a `rail` component (a leaf, `type: rail`): a swimlane-style LABEL,
   // styled like a component/box but carrying ONLY a `title` (no
-  // kicker/description/detail). `orientation: vertical` renders the title
-  // rotated (vertical text) for swimlane labeling; default horizontal is a slim
+  // kicker/description/detail). The `vertical` treatment renders the title
+  // rotated (vertical text) for swimlane labeling; otherwise it is a slim
   // title-only box. Span is honored by the caller. Not clickable, but it can be
   // a chip member: `data-filters` is what setFlow lights, on a rail as on a box.
   function buildRail(rail) {
-    // Orientation comes from the `vertical` TREATMENT — see buildSeparator.
     const orient = hasTreatment(rail, 'vertical') ? 'v' : 'h';
     const node = el('div', `rail rail-${orient}`);
     if (rail.id) node.setAttribute('data-cid', rail.id);
-    // `centered` is the one other treatment a rail draws; its absence means
-    // start-aligned, exactly as on a box (index.html `.rail.centered`).
     if (hasTreatment(rail, 'centered')) node.classList.add('centered');
     const v = COMPONENT_VARIANT[rail.variant] ?? '';
     if (v) node.classList.add(v);
@@ -277,7 +245,7 @@
   // occupies its grid cell exactly like any other leaf — `span` and `rowspan` are
   // honored by the caller — and draws nothing at all: no frame, no ink, no text,
   // no click. That is what lets a rectangle close without inventing content for
-  // the cell (principle 9: an unmeant hole is closed, a meant one is declared).
+  // the cell (SKILL.md principle 3: a hole is closed or declared).
   // It carries no payload BY SCHEMA (SPACER_FIELDS in build-data.mjs), so there is
   // nothing here to read off the node.
   function buildSpacer() { return el('div', 'spacer'); }
@@ -285,8 +253,7 @@
   // ── THE THIN ROW (the third row-height family) ──────────────────────────
   // A `separator` is a leaf COMPONENT, so it occupies a whole cell: it drew one
   // pixel of ink and was charged the full --cell-h. The fix is NOT to stop it
-  // being a cell (principle 1 — everything visible is a merged cell — stands):
-  // a row whose ONLY occupants are thin leaves gets a REDUCED TRACK HEIGHT,
+  // being a cell: a row whose ONLY occupants are thin leaves gets a REDUCED TRACK HEIGHT,
   // emitted below as a `grid-auto-rows` track list.
   //
   // A HORIZONTAL rail with no `rowspan` is thin for the separator's own reason:
@@ -331,7 +298,7 @@
   // grid shapes. Change the model here and that test tells you the gate drifted.
 
   // How many TRACKS a slot occupies at a given tier, mirroring the CSS in
-  // index.html: `.msp` (span == cols) is grid-column:1/-1 at every tier, while
+  // index.html and data/breakpoints.generated.css: `.msp` (span == cols) is grid-column:1/-1 at every tier, while
   // `.mspan` keeps its PROPORTION — span var(--span) at the authored tier,
   // var(--span2) = round(span/cols·2) at the 2-track tier, and 1/-1 at the
   // 1-track endpoint.
@@ -379,7 +346,7 @@
         let r = cc > 0 ? cr + 1 : cr; guard = 0;
         while (!free(r, 0, tracks, h) && guard++ < 10000) r++;
         fill(r, 0, tracks, h, it.node);
-        cr = r; cc = tracks;                   // the row is full: the next wraps
+        cr = r; cc = tracks;
         continue;
       }
       if (cc + w > tracks) { cr++; cc = 0; }
@@ -398,11 +365,8 @@
   // --cell-h by default, and where the row's only occupants are thin leaves,
   // --sep-row-h for a row of separators / declared holes or `auto` for a row
   // that holds a rail. `auto` and not `minmax(--sep-row-h, auto)` because a
-  // rail is a BORDERED BOX whose content is the row: a one-line rail is 33px,
-  // and flooring a stack of them at 40px costs 7px each — measured, that floor
-  // alone overflowed the stack a rail column was authored for (496px against a
-  // 482px ceiling, while content height closed at 461). A two-line rail (48px)
-  // is what `auto` exists to hold: a fixed --sep-row-h track clips it. Returns
+  // rail is a BORDERED BOX whose content is the row: a --sep-row-h floor adds
+  // height to a one-line rail and a fixed track clips a two-line one. Returns
   // null when NO row is thin, so a grid without one is left on the plain
   // fixed-row default (no inline style). A row with NO occupant at all (an
   // UNdeclared interior hole — RECT/HOLE in `npm run model` owns that defect)
@@ -447,7 +411,7 @@
     });
     const tiers = [['--row-tracks', cols], ['--row-tracks-2', 2], ['--row-tracks-1', 1]];
     for (const [prop, tracks] of tiers) {
-      if (tracks > cols) continue;                 // no tier widens a grid
+      if (tracks > cols) continue;
       const list = rowTrackList(at(tracks), tracks);
       if (list) grid.style.setProperty(prop, list);
     }
@@ -462,8 +426,8 @@
   }
 
   // Build the .sec-grid for a set of children with N columns. `columns` is the
-  // authored track count; the CSS container queries in index.html do the only
-  // responsive stepping (…→2→1 as width tightens). A child that is a SECTION
+  // authored track count; the container queries in data/breakpoints.generated.css
+  // do the only responsive stepping (…→2→1). A child that is a SECTION
   // (has `children`) recurses through buildSection; a leaf goes to buildBox. A
   // child may declare `span` to occupy M columns; span is clamped to the
   // section's own columns. span == columns is a full-width BAND (.msp,
@@ -474,14 +438,12 @@
   // by CSS so the container queries can cap them per tier.
   function buildGrid(children, columns, reg) {
     let cols = Math.max(1, Number.isInteger(columns) && columns > 0 ? columns : DEFAULT_SECTION_COLUMNS);
-    // `sec-c{N}` (authored column count) lets CSS step each grid's own collapse
-    // threshold by how many tracks it actually has to fit, instead of one
-    // blanket breakpoint for every grid. `sec-compound` marks a grid that holds
-    // at least one NESTED section (a child with its own `children`) rather than
-    // only leaf components — a compound grid's cell has to fit a WHOLE nested
-    // grid, not just one box, so it is a flex-wrap row of sections while a leaf
-    // grid is a row of equal `fr` tracks. This is structural (derived from the data),
-    // not hardcoded to any id, so it stays true if the content changes.
+    // `sec-c{N}` records the clamped column count; the stylesheets read only
+    // `sec-c1`, which keeps a one-column grid from stepping to 2 tracks.
+    // `sec-compound` marks a grid that holds at least one NESTED section (a
+    // child with its own `children`): its cell has to fit a WHOLE nested grid,
+    // so it is a flex-wrap row of sections while a leaf grid is a row of equal
+    // `fr` tracks.
     const kids = children || [];
     const isCompound = kids.some(c => Array.isArray(c.children));
 
@@ -490,11 +452,9 @@
     // leaves are wrapped in ONE `.half-slot`, which is what actually occupies the
     // grid cell: the slot keeps the full --cell-h and the two components split it
     // vertically. That is the whole point of the design: the rectangle stays FULL
-    // (no half-empty cell, no hole), the grid's row geometry is untouched, and
-    // every row/column invariant (E, L, P, M) keeps measuring one slot per cell
-    // exactly as before. The only invariant that has to move is U, which now
-    // asserts the height of the SLOT rather than of the component (a half
-    // component is legitimately ~half of --cell-h).
+    // (no half-empty cell, no hole) and the grid's row geometry is untouched, so
+    // the layout model keeps counting one slot per cell. A half component is
+    // legitimately ~half of --cell-h; the slot holds the full height.
     //
     // Pairing is by ADJACENCY in render order, so the author chooses the partner
     // by placement. An odd run and a span disagreement are both rejected at build
@@ -503,7 +463,7 @@
     //
     // COMPUTED BEFORE the column clamp below ON PURPOSE: a pair is ONE slot, so
     // counting the two halves as two fillable cells would let an over-authored
-    // `columns` reserve a dead track (invariant E). The clamp counts SLOTS.
+    // `columns` reserve a dead track (the model's TRACK check). The clamp counts SLOTS.
     const ordered = orderedChildren(children);
     const slots = [];
     for (let i = 0; i < ordered.length; i++) {
@@ -518,19 +478,18 @@
     // `fr` tracks, so an authored column count LARGER than the content needs
     // would reserve empty tracks on the right (a "column vacia"). Clamp a leaf
     // grid's effective column count to what its children can actually fill: the
-    // number of single-cell children (each fills one track) OR the widest band's
-    // span (a band must keep its declared width), whichever is larger — never
+    // number of single-cell children (each fills one track) OR the widest span
+    // of any merged child (it must keep its declared width), whichever is larger — never
     // above the authored count, never below 1. So a section authored columns:3
     // with only 2 single-cell children grows to just 2 tracks (no empty 3rd),
     // while a columns:2 grid whose content includes a full-width band keeps its 2
     // tracks. A COMPOUND grid is a flex-wrap row (no fixed tracks) so it never
     // reserves an empty track and is left at its authored count. Bands and the
-    // sec-c{N} collapse class both derive from this clamped count, so the whole
-    // grid stays self-consistent as it cascades …→2→1.
+    // sec-c{N} class both derive from this clamped count.
     if (!isCompound && slots.length) {
       let singleCells = 0, maxSpan = 1;
       for (const slot of slots) {
-        const c = slot.pair ? slot.pair[0] : slot.child;   // a pair is ONE slot
+        const c = slot.pair ? slot.pair[0] : slot.child;
         const s = Math.max(1, Math.min(c.span || 1, cols));
         if (s === 1) singleCells++; else if (s > maxSpan) maxSpan = s;
       }
@@ -587,9 +546,9 @@
       if (span > 1) {
         node.style.setProperty('--span', String(span));
         if (span >= cols) {
-          node.classList.add('msp');                 // full-width band
+          node.classList.add('msp');
         } else {
-          node.classList.add('mspan');               // partial horizontal merge
+          node.classList.add('mspan');
           node.style.setProperty('--span2', String(Math.max(1, Math.min(2, Math.round(span / cols * 2)))));
         }
       }
@@ -617,7 +576,7 @@
     const zone = el('section', classes.filter(Boolean).join(' '), { 'data-zone': sec.id });
     // A section override (tokens: on the section, or the `compact` preset) is
     // set inline and inherits down the subtree like the property it is.
-    // data-cell-h DECLARES the override row, which validate U holds the grid to.
+    // data-cell-h records the override row height on the zone.
     applyVars(zone, sec.css_vars);
     if (sec.tokens && sec.tokens.row && sec.tokens.row.cell_h) zone.setAttribute('data-cell-h', String(sec.tokens.row.cell_h));
     // Titleless container: draw no header when the section declares no
@@ -628,7 +587,6 @@
     return zone;
   }
 
-  // ── build the whole page ──
   function buildPage(page, pageIndex) {
     const detailRegistry = {};
     const filters = page.filters || [];
@@ -685,7 +643,6 @@
     canvas.appendChild(plane);
     stage.appendChild(canvas);
 
-    // shared detail/flow panel
     const panel = el('div', 'panel'); panel.setAttribute('data-panel', '');
     const phead = el('div', 'p-head');
     const pk = el('span', 'p-kicker'); pk.setAttribute('data-pkicker', ''); phead.appendChild(pk);
@@ -701,7 +658,6 @@
     return { act, detailRegistry, filters };
   }
 
-  // ── wiring (detail on box click, flow highlight on chip click) ──
   function wireAct(act, detailRegistry, filters, widestRootColumns) {
     const stage = act.querySelector('[data-stage]');
     const nodes = act.querySelectorAll('[data-k]');
@@ -815,12 +771,10 @@
       clearLit();
       if (key === 'all') { stage.classList.remove('flowing'); closePanel(); return; }
       stage.classList.add('flowing');
-      // A LINEAR SCAN, on purpose: every member in the act re-reads and splits its
-      // own data-filters on each click. Measured on a 1968-box deck that scan is
-      // 0.6ms of an ~80ms click — the remaining ~76ms is the browser restyling
-      // opacity across the deck — so a prebuilt filter→nodes index would buy
-      // nothing. A box lights up because IT declares the filter; a zone lights
-      // up derivatively, because one of its boxes did.
+      // A LINEAR SCAN, on purpose: re-reading each member's data-filters on a
+      // click costs far less than the browser restyling opacity across the deck,
+      // so a prebuilt filter→nodes index would buy nothing. A zone lights up
+      // derivatively, because one of its members did.
       const litZones = new Set();
       members.forEach(n => {
         const fs = n.getAttribute('data-filters').split(/\s+/).filter(Boolean);
@@ -838,7 +792,6 @@
     chips.forEach(c => c.addEventListener('click', () => setFlow(c.dataset.flow)));
     nodes.forEach(n => n.addEventListener('click', () => showDetail(n)));
 
-    // ── grab & pan (drag-to-scroll the canvas) ──
     // .canvas is the overflow:auto scroll container (index.html). Wheel/
     // trackpad already scroll it; this adds click-and-drag panning on top,
     // scoped to THIS act's canvas only — chips (in .actbar, outside .canvas)
@@ -866,7 +819,7 @@
       }, true);
 
       canvas.addEventListener('pointerdown', e => {
-        if (e.button !== 0) return; // left button / touch / pen primary only
+        if (e.button !== 0) return;
         dragging = true; moved = false;
         startX = e.clientX; startY = e.clientY;
         startLeft = canvas.scrollLeft; startTop = canvas.scrollTop;
@@ -899,7 +852,7 @@
       const endDrag = e => {
         if (!dragging) return;
         dragging = false;
-        if (moved) suppressClick = true; // this was a pan, not a click on a box
+        if (moved) suppressClick = true;
         canvas.classList.remove('dragging');
         moved = false;
         if (captured && e && e.pointerId !== null && e.pointerId !== undefined) { try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ } }
@@ -912,7 +865,6 @@
     return { setFlow, closePanel };
   }
 
-  // ── mount ──
   const barTitle = document.querySelector('.bar h1');
   const barSub = document.querySelector('.bar .sub');
   const barVer = document.querySelector('.bar .ver');
@@ -926,8 +878,8 @@
 
   const deck = document.getElementById('deck');
 
-  // renderable = manifest pages already filtered (visible:false dropped) and
-  // ordered by `order` in the build step; here we only drop unsupported layouts.
+  // The build already dropped visible:false pages and sorted by `order`; only
+  // unsupported layouts are dropped here.
   const renderable = doc.pages.filter(p => {
     const ok = (p.layout || 'grid') === 'grid';
     if (!ok) console.warn('[engine] skipping page with unsupported layout:', p.id, p.layout);
@@ -946,24 +898,20 @@
   const widestRootColumns = Math.max(1, ...renderable.map(p => p.columns || 1));
   const wired = built.map(b => wireAct(b.act, b.detailRegistry, b.filters, widestRootColumns));
 
-  // ── page navigator ──
-  // Page names render as VISIBLE tabs in `order`; the current one is
-  // highlighted, the rest dimmed but legible. Click a tab or use the arrows.
-  // For 3+ pages a sliding WINDOW (max 3) centered on the selection shows the
-  // current page and its neighbours, so the bar never crowds with many tabs.
+  // With more than WINDOW pages, only a sliding window of tabs centered on the
+  // current page is shown, so the bar never crowds.
   const acts = built.map(b => b.act);
   const nameOf = i => (built[i] && (built[i].page.name || built[i].page.id)) || '';
   const pagetabs = document.getElementById('pagetabs');
   const prev = document.getElementById('prev');
   const next = document.getElementById('next');
   const multi = acts.length > 1;
-  const WINDOW = 3; // max tabs shown at once
+  const WINDOW = 3;
   let current = 0;
 
   function renderTabs() {
     if (!pagetabs) return;
     pagetabs.innerHTML = '';
-    // compute the sliding window [start, end) centered on current
     let start = 0, end = acts.length;
     if (acts.length > WINDOW) {
       start = Math.max(0, Math.min(current - Math.floor(WINDOW / 2), acts.length - WINDOW));
@@ -1013,7 +961,6 @@
     };
   }
 
-  // theme toggle
   const themeToggle = document.getElementById('themeToggle');
   if (themeToggle) themeToggle.addEventListener('click', () => {
     const dark = !document.documentElement.classList.contains('dark');
@@ -1021,8 +968,7 @@
     localStorage.setItem('theme', dark ? 'dark' : 'light');
   });
 
-  // ── help / tutorial HUD ──
-  // A global, static modal (authored in index.html) that explains the diagram's
+  // The help HUD is a global, static modal (authored in index.html) that explains the diagram's
   // vocabulary. It lives OUTSIDE .deck/.stage/.canvas. Toggled by the H key or
   // the "?" button; Esc / backdrop / × close it. While it is open the ←/→ page
   // navigation is suppressed (see the arrow handler above).
@@ -1050,8 +996,6 @@
       }
     });
 
-    // Auto-open once, on the first visit only (localStorage flag); thereafter
-    // the HUD opens only on demand (H / "?").
     try {
       if (!localStorage.getItem('help-seen')) { openHelp(); localStorage.setItem('help-seen', '1'); }
     } catch (_) { /* localStorage blocked (e.g. file:// hardening) — skip auto-open */ }

@@ -16,9 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-# The reconnaissance agent is a single global default (it never varied per
-# surface in the retired config/surface-routing.json), so it lives here as a
-# constant rather than a DB row.
+# The reconnaissance agent is a single global default that does not vary per
+# surface, so it is a constant here rather than a DB row.
 DEFAULT_RECONNAISSANCE_AGENT = "developer"
 
 EVIDENCE_REPORT_FIELDS = [
@@ -57,8 +56,7 @@ def _resolve_db_path(db_path: Optional[Path]) -> Path:
 def _degraded_config() -> Dict[str, Any]:
     """Return the empty/degraded config used when the DB is unavailable.
 
-    Mirrors the prior JSON-missing behavior: routing falls back to the
-    reconnaissance agent.
+    With no surfaces, routing falls back to the reconnaissance agent.
     """
     return {
         "version": "missing",
