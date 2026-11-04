@@ -33,6 +33,12 @@ LAUNCHED = {
     "lone-poweroff": "xvfb-run poweroff",
     "lone-shutdown": "/opt/tools/bg-run shutdown",
     "lone-after-options": "xvfb-run -a --server-num 5 --auth-file /tmp/xa --error-file /tmp/xe reboot",
+    "subst-unquoted": "firejail $(cat /tmp/cmd)",
+    "backtick": "firejail `cat /tmp/cmd`",
+    "systemd-backtick": "systemd-run --user `cat /tmp/cmd`",
+    "backtick-args": "firejail `cat /tmp/cmd` {S} VACUUM",
+    "trap-backtick": "trap `cat /tmp/cb` EXIT",
+    "mapfile-backtick": "mapfile -C `cat /tmp/cb` lines < /tmp/f",
     "mapfile-callback": "mapfile -C \"$c\" lines < f",
     "readarray-callback": "readarray -C \"$c\" lines < f",
 }
@@ -43,6 +49,7 @@ READ_ONLY = {
     "launcher-ls": "systemd-run --user ls /tmp",
     "make-target": "make -C /tmp test",
     "trap-echo": "trap 'echo bye' EXIT",
+    "trap-single-quoted-variable": "trap 'echo $HOME' EXIT",
     "program-mention": "ldd /usr/bin/ls",
     "lone-read-only": "xvfb-run ls",
 }

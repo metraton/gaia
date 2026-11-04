@@ -5367,7 +5367,34 @@ def _check_executor_payload(
     )
 
 
-_WHOLE_EXPANSION_RE = re.compile(r"\$\w+|\$\{[^}]*\}|\$\(.*\)|`.*`", re.DOTALL)
+_EXPANSION_START_RE = re.compile(r"`|\$(?:[({@*#?!$\-]|\w)")
+
+
+def _unquoted_expansion(text: str) -> "Optional[str]":
+    """Return the first substitution or parameter expansion the shell performs in *text*, or None."""
+    index, in_double = 0, False
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == '"':
+            in_double = not in_double
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            closing = text.find("'", index + 1)
+            index = len(text) if closing == -1 else closing + 1
+            continue
+        if char == "$" and not in_double and text[index + 1:index + 2] == "'":
+            closing = text.find("'", index + 2)
+            index = len(text) if closing == -1 else closing + 1
+            continue
+        match = _EXPANSION_START_RE.match(text, index)
+        if match:
+            return text[index:index + 24]
+        index += 1
+    return None
 
 
 def _names_a_program(word: str) -> bool:
@@ -5393,19 +5420,21 @@ def _check_launched_payload(
         or (_is_capability_verb is not None and _is_capability_verb(base_cmd))
     ):
         return None
+    raw = semantics.raw_command.strip()
+    expansion = _unquoted_expansion(raw[_consume_shell_word(raw, 0):])
+    if expansion is not None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="launched-dynamic-word",
+            cli_family=base_cmd,
+            reason=f"'{base_cmd}' has no grammar here and the expansion {expansion!r} could be the command it runs",
+            rule="unknown.dynamic-span",
+        )
     args = list(semantics.tokens[1:])
     payloads: List[str] = []
     for index, word in enumerate(args):
         text = _unquote_single_word(word)
-        if _WHOLE_EXPANSION_RE.fullmatch(text):
-            return MutativeResult(
-                is_mutative=True,
-                category=CATEGORY_UNKNOWN,
-                verb="launched-dynamic-word",
-                cli_family=base_cmd,
-                reason=f"'{base_cmd}' has no grammar here and {word!r} could be the command it runs",
-                rule="unknown.dynamic-span",
-            )
         words = text.split()
         if len(words) > 1:
             if _names_a_program(words[0]):
