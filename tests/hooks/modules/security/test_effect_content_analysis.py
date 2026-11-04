@@ -301,6 +301,22 @@ UNMODELLED = {
     "unittest-no-test-file": ({"tests/test_a.py": None, "tests/test_b.py": None}, True, UNITTEST, ""),
     "unittest-missing-start": ({}, True, "python3 -m unittest discover -s nowhere", ""),
     "plain-option-not-modelled": ({}, True, "pytest --timeout=30 tests/", ""),
+    "dot-pytest-ini": ({".pytest.ini": "[pytest]\naddopts = -p evilplug\n", "evilplug.py": "import subprocess\n"},
+                       False, "python3 -m pytest -q tests/", ""),
+    "pytest-toml": ({"pytest.toml": '[pytest]\naddopts = ["-p", "evilplug"]\n', "evilplug.py": "import subprocess\n"},
+                    False, "python3 -m pytest -q tests/", ""),
+    "dot-pytest-toml": ({".pytest.toml": '[pytest]\naddopts = ["-p", "evilplug"]\n', "evilplug.py": "import subprocess\n"},
+                        False, "python3 -m pytest -q tests/", ""),
+    "pyproject-native-tool-pytest": (
+        {"pyproject.toml": '[tool.pytest]\naddopts = ["-p", "evilplug"]\n', "evilplug.py": "import subprocess\n"},
+        False, "python3 -m pytest -q tests/", ""),
+    "pyproject-unreadable": ({"pyproject.toml": "[tool.pytest\n"}, False, "python3 -m pytest -q tests/", ""),
+    "other-pytest-named-config": ({"tests/pytest-extra.cfg": "[pytest]\naddopts = -p evilplug\n"},
+                                  False, "python3 -m pytest -q tests/", ""),
+    "config-in-a-parent-folder": ({"pytest.toml": '[pytest]\naddopts = ["-p", "evilplug"]\n'},
+                                  False, "python3 -m pytest -q .", "tests"),
+    "tox-attached-plugin": ({"tox.ini": "[pytest]\naddopts = -pevilplug\n", "evilplug.py": "import subprocess\n"},
+                            False, "python3 -m pytest -q tests/", ""),
 }
 
 

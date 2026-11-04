@@ -593,6 +593,35 @@ def _entry_point_plugins(rootdir: Path) -> List[str]:
             if not _is_library(point.value.split(":")[0], rootdir, installed_only=True)]
 
 
+def _unparsed_config(starts: Sequence[Path]) -> List[str]:
+    """Files in the ancestor chains of *starts* that some pytest version may read as config and _ini_settings does not parse."""
+    found: List[str] = []
+    directories = dict.fromkeys(each for start in starts
+                                for each in [start if start.is_dir() else start.parent, *start.parents])
+    for directory in directories:
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for name in names:
+            lowered = name.lower()
+            if "pytest" in lowered and lowered.endswith((".ini", ".toml", ".cfg")) and name != "pytest.ini":
+                found.append(f"config file {directory / name}")
+            elif name == "pyproject.toml" and not _pyproject_parsed(directory / name):
+                found.append(f"config table [tool.pytest] in {directory / name}")
+    return found
+
+
+def _pyproject_parsed(path: Path) -> bool:
+    import tomllib
+
+    try:
+        table = tomllib.loads(path.read_text(encoding="utf-8")).get("tool", {}).get("pytest", {})
+    except (OSError, UnicodeDecodeError, ValueError, AttributeError):
+        return False
+    return isinstance(table, dict) and set(table) <= {"ini_options"}
+
+
 def judge_pytest(args: Sequence[str], invocation_dir: Path, rootdir: Path) -> Finding:
     """Judge a pytest run by its files; whatever of its arguments or ini the analysis does not model keeps it from running free."""
     import glob
@@ -617,6 +646,7 @@ def judge_pytest(args: Sequence[str], invocation_dir: Path, rootdir: Path) -> Fi
     roots = roots or [base]
     unmodelled += [f"argument {each} resolves to no file" for each in roots if not each.exists()]
     unmodelled += _entry_point_plugins(rootdir)
+    unmodelled += _unparsed_config([base, *roots])
     patterns = None if doctest or addopts_doctest else (settings.get("python_files") or PYTEST_FILES)
     pythonpath = [Path(ini_dir or base, entry) for entry in settings.get("pythonpath", [])]
     return _judge_closure(roots, rootdir, [base, *pythonpath], patterns, unmodelled)
