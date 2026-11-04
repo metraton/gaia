@@ -5,23 +5,19 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+from hooks.modules.agents import state_tracker
 from hooks.modules.agents.state_tracker import (
     TransitionResult,
     track_transition,
     get_agent_state,
     clear_agent_state,
-    _STATE_FILE,
 )
 
 
 @pytest.fixture(autouse=True)
-def clean_state_file():
-    """Ensure the state file is clean before and after each test."""
-    if _STATE_FILE.exists():
-        _STATE_FILE.unlink()
-    yield
-    if _STATE_FILE.exists():
-        _STATE_FILE.unlink()
+def clean_state_file(tmp_path, monkeypatch):
+    """Give each test its own empty state file, so no xdist worker reads or deletes another's."""
+    monkeypatch.setattr(state_tracker, "_STATE_FILE", tmp_path / "gaia-agent-states.json")
 
 
 class TestFirstTransition:

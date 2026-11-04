@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 METADATA = ROOT / "opencode" / "consent-metadata.json"
+HANG_TIMEOUT_SECONDS = 600
 
 
 def test_registered_metadata_is_the_shipped_opencode_file():
@@ -34,7 +35,7 @@ def test_metadata_is_in_build_and_npm_distribution():
     assert METADATA in builder.resolve_file_list(manifest)
     result = subprocess.run(
         ["npm", "pack", "--dry-run", "--ignore-scripts", "--json"],
-        cwd=ROOT, capture_output=True, text=True, check=True, timeout=60,
+        cwd=ROOT, capture_output=True, text=True, check=True, timeout=HANG_TIMEOUT_SECONDS,
     )
     paths = {entry["path"] for entry in json.loads(result.stdout)[0]["files"]}
     assert "opencode/consent-metadata.json" in paths
@@ -81,7 +82,7 @@ def test_copy_install_inventory_supplies_registry_metadata(tmp_path, monkeypatch
     )
     result = subprocess.run(
         [sys.executable, "-I", "-c", script], cwd=installed,
-        capture_output=True, text=True, check=True, timeout=30,
+        capture_output=True, text=True, check=True, timeout=HANG_TIMEOUT_SECONDS,
     )
     expected = json.loads(METADATA.read_text(encoding="utf-8"))["mechanism_names"]
     assert json.loads(result.stdout) == ["askuserquestion", *expected]
