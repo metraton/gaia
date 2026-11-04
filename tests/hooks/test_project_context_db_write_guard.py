@@ -399,6 +399,17 @@ def test_a_sqlite3_cd_the_guard_cannot_resolve_leaves_later_relative_operands_un
     "busybox env -C {d} sqlite3 s.db 'VACUUM'",
     "ls; sqlite3 s.db 'VACUUM'",
     "sqlite3 /tmp/o.db 'SELECT 1'; sqlite3 s.db 'VACUUM'",
+    "sqlite3 s.db 'VACUUM'; cd {d}; sqlite3 s.db 'VACUUM'",
+    "sqlite3 s.db VACUUM && cd {d} && sqlite3 s.db VACUUM",
+    "sqlite3 s.db VACUUM\ncd {d}\nsqlite3 s.db VACUUM",
+    "sqlite3 s.db VACUUM; pushd {d}; sqlite3 s.db VACUUM",
+    "sqlite3 s.db VACUUM & cd {d}; sqlite3 s.db VACUUM",
+    "sqlite3 s.db VACUUM || (cd {d} && sqlite3 s.db VACUUM)",
+    "sqlite3 hl.db 'PRAGMA journal_mode=DELETE'; cd {d}; sqlite3 hl.db 'PRAGMA journal_mode=DELETE'",
+    "sqlite3 s.db VACUUM; 'cd' {d}; sqlite3 s.db VACUUM",
+    "cd {d}\nsqlite3 s.db VACUUM",
+    "(cd {d}; sqlite3 s.db VACUUM)",
+    "{{ cd {d}; sqlite3 s.db VACUUM; }}",
 ])
 def test_a_relative_database_with_anything_before_sqlite3_on_the_line_is_unproven(cd_folder, command):
     os.symlink(cd_folder / "hl.db", cd_folder / "s.db")
