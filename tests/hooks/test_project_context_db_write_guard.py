@@ -314,6 +314,62 @@ def test_every_file_sqlite3_is_made_to_read_meets_the_checks_of_a_redirected_one
         assert sqlite_unproven_effect(unproven, None) == guard.SIGN_GUIDANCE
 
 
+@pytest.fixture()
+def cd_folder(tmp_path, monkeypatch):
+    store = tmp_path / "store.sqlite"
+    store.write_bytes(b"")
+    monkeypatch.setenv("GAIA_DB", str(store))
+    folder = tmp_path / "d"
+    folder.mkdir()
+    os.link(store, folder / "hl.db")
+    (folder / "evil.sql").write_text(".shell rm -rf /\n")
+    (folder / "cd.sql").write_text(f".cd {README.parent}\n.once README.md\nSELECT 1;\n")
+    return folder
+
+
+@pytest.mark.parametrize("command", [
+    "sqlite3 {o} '.cd {d}' '.open hl.db' 'PRAGMA journal_mode=DELETE'",
+    "sqlite3 -cmd '.cd {d}' -cmd '.open hl.db' {o}",
+    "sqlite3 {o} '.cd {d}/..' '.cd d' '.open hl.db'",
+    "sqlite3 {o} <<'EOF'\n.cd {d}\n.open hl.db\nEOF",
+    "printf '.cd {d}\\n.open hl.db\\n' | sqlite3 {o}",
+    "sqlite3 {o} '.cd {d}' \"ATTACH 'hl.db' AS g\"",
+    "sqlite3 {o} '.cd {d}' '.save hl.db'",
+    "sqlite3 {o} '.cd {d}' '.import hl.db t'",
+])
+def test_a_relative_operand_after_a_literal_sqlite3_cd_reaching_the_store_is_refused(cd_folder, command):
+    _refused_as_store(command.format(o=OTHER, d=cd_folder), cwd="/tmp")
+
+
+@pytest.mark.parametrize("command", [
+    "sqlite3 -cmd '.cd {d}' -cmd '.read evil.sql' {o}",
+    "sqlite3 {o} '.cd {d}' '.read evil.sql'",
+    "sqlite3 {o} '.cd {repo}' '.once README.md' \"SELECT 'x'\"",
+    "sqlite3 -cmd '.cd {repo}' -cmd '.output README.md' {o} 'SELECT 1'",
+    "sqlite3 {o} '.cd {repo}' '.log README.md' 'SELECT 1'",
+    "sqlite3 {o} '.cd {repo}' '.shell cp /etc/hosts README.md'",
+    "sqlite3 {o} '.read {d}/cd.sql'",
+    "sqlite3 {o} '.cd {d}' '.read cd.sql'",
+])
+def test_a_relative_operand_after_a_literal_sqlite3_cd_meets_the_shell_floors_there(cd_folder, command):
+    command = command.format(o=OTHER, d=cd_folder, repo=README.parent)
+    allowed, reason = check(command, "/tmp")
+    assert allowed is False and reason.startswith(guard.REACH_REJECTION_PREFIX), (command, reason)
+    assert check(f"sqlite3 {OTHER} '.cd {cd_folder}' '.open fresh.db' '.once out.txt'", "/tmp") == (True, None)
+
+
+@pytest.mark.parametrize("command,cwd", [
+    (f"sqlite3 {OTHER} '.cd $D' '.open hl.db'", "/tmp"),
+    (f"sqlite3 {OTHER} '.cd $D' '.once README.md' 'SELECT 1'", "/tmp"),
+    (f"sqlite3 -cmd '.cd /tmp/*' -cmd '.read evil.sql' {OTHER}", "/tmp"),
+    (f"sqlite3 {OTHER} '.cd sub' '.output out.txt'", None),
+    (f"echo '.cd `pwd`' | sqlite3 {OTHER} '.import data.csv t'", "/tmp"),
+])
+def test_a_sqlite3_cd_the_guard_cannot_resolve_leaves_later_relative_operands_unproven(command, cwd):
+    _refused_unproven(command, cwd)
+    assert check(f"sqlite3 {OTHER} '.cd $D' 'SELECT 1'", "/tmp") == (True, None)
+
+
 @pytest.mark.parametrize("command", [
     f"echo .shell touch /tmp/pwn | sqlite3 {OTHER}",
     f"printf '.%s kubectl delete ns prod\\n' shell | sqlite3 {OTHER}",
