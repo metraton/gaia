@@ -9401,7 +9401,28 @@ def _pytest_outside_effect(
                 return _foreign_code_result(f"pytest {name} {value} puts a directory outside the repository on sys.path")
             if key.strip() == "cache_dir" and not _pytest_may_write(top, base, setting.strip()):
                 return _pytest_write_result(f"pytest {name} {value}")
+            if key.strip() == "addopts":
+                effect = _pytest_addopts_effect(setting, top, base)
+                if effect is not None:
+                    return effect
     return None
+
+
+def _pytest_addopts_effect(value: str, top: "Optional[Path]", base: Path) -> "Optional[MutativeResult]":
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return _foreign_code_result(f"pytest addopts {value} cannot be read")
+    return _pytest_outside_effect(_pytest_options(words)[0], top, base, read_config=False)
+
+
+def _pytest_environment_effect(name: str, value: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    base = Path(cwd or Path.cwd())
+    if name == "PYTEST_ADDOPTS":
+        return _pytest_addopts_effect(value, _repository_top(base), base)
+    if all(_DOTTED_NAME_RE.fullmatch(each.strip()) for each in value.split(",")):
+        return None
+    return _foreign_code_result(f"PYTEST_PLUGINS={value} is not a list of plugin module names")
 
 
 def _pytest_config_outside_effect(path: Path, top: "Optional[Path]", base: Path) -> "Optional[MutativeResult]":
@@ -9457,9 +9478,11 @@ def _check_pytest_run(
     effect = _pytest_outside_effect(options, top, base)
     if effect is not None:
         return effect
-    if not known or top is None or any(
+    if top is not None and any(
         _inside_repository(top, base, positional.split("::")[0]) is None for positional in positionals
     ):
+        return _foreign_code_result("pytest collects tests from outside the repository")
+    if not known or top is None:
         return None
     return MutativeResult(
         is_mutative=False,
@@ -9504,6 +9527,7 @@ _CODE_INJECTING_ENVIRONMENT: "Dict[str, Tuple[re.Pattern[str], re.Pattern[str]]]
     "lua": (_LUA_PROGRAM_RE, re.compile(r"LUA_INIT(?:_\d+_\d+)?")),
     "r": (re.compile(r"r|rscript"), re.compile(r"R_(?:PROFILE|ENVIRON)(?:_USER)?")),
     "awk": (re.compile("|".join(map(re.escape, sorted(AWK_PROGRAMS)))), re.compile(r"AWKPATH")),
+    "pytest": (re.compile(r"pytest|py\.test"), re.compile(r"PYTEST_ADDOPTS|PYTEST_PLUGINS")),
     "git": (
         re.compile(r"git"),
         re.compile(r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|EXTERNAL_DIFF|ASKPASS|PROXY_COMMAND)"),
@@ -9547,8 +9571,15 @@ def runs_under_injected_environment(
             runs_pytest = runs_pytest or _pytest_arguments(program_identity(words[0]).lower(), words[1:]) is not None
     for program, name, value in assignments:
         pattern = _CODE_INJECTING_ENVIRONMENT[program][0]
-        reached = any(pattern.fullmatch(candidate) for candidate in programs) or (name == "PYTHONPATH" and runs_pytest)
+        reached = any(pattern.fullmatch(candidate) for candidate in programs) or (
+            runs_pytest and (name == "PYTHONPATH" or program == "pytest")
+        )
         if not value or not reached:
+            continue
+        if program == "pytest":
+            effect = _pytest_environment_effect(name, value, cwd)
+            if effect is not None:
+                return effect
             continue
         if program == "git":
             if value.lower() in _GIT_HARMLESS_CODE_VALUES:

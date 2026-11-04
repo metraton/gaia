@@ -25,12 +25,66 @@ REPO_FILES = {
     "points_out.toml": '[tool.pytest.ini_options]\npythonpath = ["../outside"]\n',
     "addopts_out.ini": "[pytest]\naddopts = --confcutdir=/\n",
     "cache_out.ini": "[pytest]\ncache_dir = ../outside/c\n",
+    "bt_out.ini": "[pytest]\naddopts = --basetemp=/etc/x\n",
+    "bt_rel.ini": "[pytest]\naddopts = --basetemp=../outside/bt\n",
+    "bt_in_repo.ini": "[pytest]\naddopts = --basetemp=.bt\n",
+    "bt_temp.ini": "[pytest]\naddopts = --basetemp={systmp}/bt\n",
+    "plug_out.ini": "[pytest]\naddopts = -p evil\npythonpath = ../outside\n",
     "hooks/helper.py": "VALUE = 1\n",
 }
 OUTSIDE_FILES = {
     "pytest.ini": "[pytest]\npythonpath = .\n",
     "evil.py": "import shutil\nshutil.rmtree('build')\n",
+    "test_x.py": "def test_x():\n    assert True\n",
 }
+
+# The verifier's probe set (handoff 36818): (command, runs free).
+PROBES = [
+    ("pytest -c ../outside/pytest.ini tests/", False),
+    ("python3 -m pytest -c ../x tests/", False),
+    ("PYTHONPATH={outside} pytest -p evil.sub tests/", False),
+    ("python3 -m pytest -o pythonpath={outside} -p evil.sub tests/", False),
+    ("python3 -m pytest -o pythonpath=../outside -p evil tests/", False),
+    ("pytest -o pythonpath=/ tests/", False),
+    ("pytest --rootdir=/ tests/", False),
+    ("python3 -m pytest --rootdir=/ tests/", False),
+    ("pytest --rootdir=.. tests/", False),
+    ("pytest -c bt_out.ini tests/", False),
+    ("python3 -m pytest -c bt_out.ini tests/", False),
+    ("pytest -c bt_rel.ini tests/", False),
+    ("pytest -c bt_in_repo.ini tests/", False),
+    ("pytest -c bt_temp.ini tests/", True),
+    ("pytest -c plug_out.ini tests/", False),
+    ("pytest -o addopts=--basetemp=/etc/x tests/", False),
+    ("pytest -o addopts='--basetemp={outside}/b' tests/", False),
+    ("python3 -m pytest -o addopts=--junitxml=/etc/r tests/", False),
+    ("pytest -o addopts='--basetemp={systmp}/b' tests/", True),
+    ("pytest --basetemp=../outside/b tests/", False),
+    ("pytest --basetemp={systmp}/../outside/b tests/", False),
+    ("pytest --basetemp=/tmp tests/", False),
+    ("pytest --basetemp=. tests/", False),
+    ("pytest --basetemp={systmp}/ok tests/", True),
+    ("pytest -k x --basetemp={outside} tests/", False),
+    ("pytest --basetemp {outside} -k x tests/", False),
+    ("pytest --confcutdir=.. tests/", False),
+    ("pytest --junitxml=../r.xml tests/", False),
+    ("pytest -o cache_dir=../c tests/", False),
+    ("PYTHONPATH={outside} pytest --pdbcls=evil:C tests/", False),
+    ("PYTEST_PLUGINS=evil PYTHONPATH={outside} pytest tests/", False),
+    ("PYTEST_PLUGINS=../outside/evil.py pytest tests/", False),
+    ("PYTEST_ADDOPTS=--basetemp=/etc/x pytest tests/", False),
+    ("PYTEST_ADDOPTS=--junitxml={outside}/r pytest tests/", False),
+    ("PYTEST_ADDOPTS='-p no:cacheprovider -q' pytest tests/", True),
+    ("export PYTEST_ADDOPTS=--basetemp=/etc/x && pytest tests/", False),
+    ("pytest {outside}/test_x.py", False),
+    ("pytest ../outside/test_x.py", False),
+    ("pytest tests/ --rootdir . -p no:cacheprovider -c pyproject.toml -k a", True),
+    ("python3 -m pytest -c pyproject.toml -p no:cacheprovider -k 'a' tests/", True),
+    ("PYTHONPATH={repo}/tests pytest tests/", True),
+    ("PYTHONPATH={repo}/../outside pytest tests/", False),
+    ("PYTHONPATH={repo}/tests:/ pytest tests/", False),
+    ("PYTHONPATH=../outside python3 -m pytest tests/", False),
+]
 
 FREE = {
     "config-in-repo": "python3 -m pytest -c {repo}/pyproject.toml tests/test_a.py",
@@ -83,7 +137,7 @@ def layout(tmp_path, monkeypatch):
     for root, files in ((repo, REPO_FILES), (outside, OUTSIDE_FILES)):
         for name, body in files.items():
             (root / name).parent.mkdir(parents=True, exist_ok=True)
-            (root / name).write_text(body, encoding="utf-8")
+            (root / name).write_text(_fill(body, repo, outside), encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     (tmp_path / "systmp").mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "systmp"))
@@ -96,16 +150,27 @@ def _fill(template: str, repo: Path, outside: Path) -> str:
     return re.sub(r"\{(repo|outside|systmp)\}", lambda m: str(places[m.group(1)]), template)
 
 
-@pytest.mark.parametrize("case", sorted(FREE))
-def test_pytest_options_inside_the_repo_run_free(case, layout):
-    repo, outside = layout
+def _validate(command: str, repo: Path):
     detect_mutative_command.cache_clear()
     tiers_module._classify_command_tier_cached.cache_clear()
     payload = {"cwd": str(repo), "tool_use_id": "t-1", "session_id": "s-1", "agent_id": "apytest01", "agent_type": "developer"}
-    result = BashValidator().validate(
-        _fill(FREE[case], repo, outside), is_subagent=True, session_id="s-1", agent_type="developer", hook_payload=payload,
+    return BashValidator().validate(
+        command, is_subagent=True, session_id="s-1", agent_type="developer", hook_payload=payload,
     )
+
+
+@pytest.mark.parametrize("case", sorted(FREE))
+def test_pytest_options_inside_the_repo_run_free(case, layout):
+    repo, outside = layout
+    result = _validate(_fill(FREE[case], repo, outside), repo)
     assert result.allowed, result.rule
+
+
+@pytest.mark.parametrize(("command", "free"), PROBES)
+def test_verifier_probes(command, free, layout):
+    repo, outside = layout
+    result = _validate(_fill(command, repo, outside), repo)
+    assert bool(result.allowed) is free, result.rule
 
 
 @pytest.mark.parametrize("case", sorted(ASKS))
