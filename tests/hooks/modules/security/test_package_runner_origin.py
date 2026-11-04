@@ -44,6 +44,8 @@ def project(tmp_path):
         '[project]\nname = "demo"\nversion = "0.1.0"\n'
         'dependencies = ["ruff>=0.5"]\n'
     )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
     return tmp_path
 
 
@@ -278,6 +280,7 @@ def test_uv_directory_is_where_the_payload_runs(project, tmp_path_factory, comma
     (project / "tool.py").write_text("print(1)\n")
     (project / "deploy.py").write_text("import shutil\nshutil.rmtree('/srv/data')\n")
     elsewhere = tmp_path_factory.mktemp("elsewhere")
+    (elsewhere / "test_ok.py").write_text("def test_ok():\n    assert True\n")
     result = detect_mutative_command(command.format(p=project), cwd=str(elsewhere))
     assert result.is_mutative is signed
 

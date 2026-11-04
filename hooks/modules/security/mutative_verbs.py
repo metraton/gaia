@@ -9589,27 +9589,9 @@ def _check_pytest_run(
             confidence="medium",
             reason="pytest runs the test suite of the repository it starts in and loads no code from outside it",
         )
-    plugins = [value for name, value in options if name == "-p" and value and not value.startswith("no:")]
-    roots = [Path(base, positional.split("::")[0]) for positional in positionals] or [base]
-    overrides = [(value or "").partition("=") for name, value in options if name in ("-o", "--override-ini")]
-    import_roots = [base] + [Path(base, entry) for key, _, setting in overrides
-                             if key.strip() == "pythonpath" for entry in setting.split()]
-    doctest = any(name == "--doctest-modules" for name, _ in options)
-    return _suite_result("pytest", _judge_suite(
-        roots, top or base, plugins, import_roots, patterns=None if doctest else _PYTEST_FILES,
-    ))
+    from .effect_content import judge_pytest
 
-
-_PYTEST_FILES = ("test_*.py", "*_test.py")
-
-
-def _judge_suite(
-    roots: "List[Path]", rootdir: Path, plugins: "List[str]", import_roots: "List[Path]",
-    patterns: "Optional[Tuple[str, ...]]", pytest_config: bool = True,
-):
-    from .effect_content import judge_suite
-
-    return judge_suite(roots, rootdir, plugins, import_roots, patterns, pytest_config)
+    return _suite_result("pytest", judge_pytest(args, base, top or base))
 
 
 _SUITE_MARKER_RULES = {
@@ -9677,22 +9659,22 @@ def _check_unittest_run(
             return _suite_unplaced_result(f"unittest option {token} is not one the screen models")
         elif not token.startswith("-"):
             positionals.append(token)
+    from .effect_content import judge_unittest
+
     top = _repository_top(base)
     if discover or not positionals:
         start = options.get("-s") or options.get("--start-directory") or (positionals[0] if positionals else ".")
         level = options.get("-t") or options.get("--top-level-directory") or (positionals[2] if len(positionals) > 2 else None)
         imports = [base] + ([Path(base, level)] if level else [Path(base, start)])
         pattern = options.get("-p") or options.get("--pattern") or (positionals[1] if len(positionals) > 1 else "test*.py")
-        return _suite_result("unittest", _judge_suite(
-            [Path(base, start)], top or base, [], imports, patterns=(pattern,), pytest_config=False,
-        ))
+        return _suite_result("unittest", judge_unittest([Path(base, start)], top or base, imports, (pattern,)))
     roots = []
     for target in positionals:
         located = _unittest_target(base, target)
         if located is None:
             return _suite_unplaced_result(f"unittest target {target} is not a file or module under {base}")
         roots.append(located)
-    return _suite_result("unittest", _judge_suite(roots, top or base, [], [base], patterns=None, pytest_config=False))
+    return _suite_result("unittest", judge_unittest(roots, top or base, [base], None))
 
 
 def _unittest_target(base: Path, target: str) -> "Optional[Path]":

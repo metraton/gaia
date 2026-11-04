@@ -2663,7 +2663,9 @@ class TestScriptFileEvasion:
         """``python3 -m pytest tests/x.py``: -m consumes the module name and
         means there is no script-file positional, so the command defers to
         ordinary scanning and is not flagged as an unreadable script."""
-        result = detect_mutative_command("python3 -m pytest tests/x.py")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "x.py").write_text("def test_x():\n    assert True\n")
+        result = detect_mutative_command("python3 -m pytest tests/x.py", cwd=str(tmp_path))
         assert result.is_mutative is False
 
 
@@ -4325,6 +4327,7 @@ class TestPythonModulePipReDispatch:
     def test_python3_m_pytest_not_mutative(self, tmp_path):
         """``python3 -m pytest`` runs the test suite -- it is NOT a package
         install and must not be re-dispatched into a mutative verb."""
+        (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n")
         result = detect_mutative_command("python3 -m pytest", cwd=str(tmp_path))
         assert result.is_mutative is False
 
@@ -4332,10 +4335,12 @@ class TestPythonModulePipReDispatch:
         result = detect_mutative_command("python3 -m http.server")
         assert result.is_mutative is False
 
-    def test_python3_script_file_path_not_rerouted(self):
+    def test_python3_script_file_path_not_rerouted(self, tmp_path):
         """A script-file invocation (no ``-m``) must keep going through the
         script-file lane, not the module re-dispatch."""
-        result = detect_mutative_command("python3 -m pytest tests/x.py")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "x.py").write_text("def test_x():\n    assert True\n")
+        result = detect_mutative_command("python3 -m pytest tests/x.py", cwd=str(tmp_path))
         assert result.is_mutative is False
 
 

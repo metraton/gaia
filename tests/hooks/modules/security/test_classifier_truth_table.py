@@ -34,6 +34,14 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security.mutative_verbs import detect_mutative_command
 from modules.security.tiers import SecurityTier, classify_command_tier
+from modules.security import tiers as _tiers
+
+
+@pytest.fixture(autouse=True)
+def _repository_cwd(monkeypatch):
+    monkeypatch.chdir(HOOKS_DIR.parent)
+    detect_mutative_command.cache_clear()
+    _tiers._classify_command_tier_cached.cache_clear()
 
 OPEN = "open"
 GATED = "gated"

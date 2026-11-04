@@ -1793,7 +1793,7 @@ class TestCheckPythonModuleRunner:
         assert "re-dispatched as" not in r.reason
 
     # --- L1745 `module is None or module_idx is None` guard ------------------
-    def test_non_package_module_returns_none_not_redispatched(self):
+    def test_non_package_module_returns_none_not_redispatched(self, tmp_path):
         # `python3 -m pytest tests/` finds module = "pytest", which is NOT in
         # _PY_MODULE_PACKAGE_MANAGERS, so the helper returns None at L1747 and
         # the command is classified by the ordinary lanes -- never carrying a
@@ -1801,7 +1801,9 @@ class TestCheckPythonModuleRunner:
         # the L1745 None-guard: any of them that lets a None module / module_idx
         # through reaches the `module.lower()` at L1747 and raises, or routes a
         # non-package module into the rewrite.
-        r = detect_mutative_command("python3 -m pytest tests/")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+        r = detect_mutative_command("python3 -m pytest tests/", cwd=str(tmp_path))
         assert "re-dispatched as" not in r.reason
         assert r.is_mutative is False
 

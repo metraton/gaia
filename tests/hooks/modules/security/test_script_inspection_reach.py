@@ -111,6 +111,8 @@ class TestPrefixRunnerReDispatch:
         bin_dir.mkdir(parents=True)
         for name in ("tsc", "eslint"):
             (bin_dir / name).write_text("#!/usr/bin/env node\n")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
         assert detect_mutative_command(command, cwd=str(tmp_path)).is_mutative is False
 
     @pytest.mark.parametrize("command", ["uv pip list", "poetry show", "uv run", "npx"])
@@ -148,6 +150,8 @@ class TestPythonModuleWidening:
     def test_benign_module_invocations_are_not_relabelled(self, command, tmp_path):
         # The widening is escalate-only: a non-mutative rewrite is discarded so
         # ordinary detection classifies the command untouched.
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n")
         result = detect_mutative_command(command, cwd=str(tmp_path))
         assert result.is_mutative is False
         assert "re-dispatched" not in result.reason

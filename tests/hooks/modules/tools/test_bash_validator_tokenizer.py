@@ -33,6 +33,12 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.mutative_verbs import detect_mutative_command
 
 
+@pytest.fixture(autouse=True)
+def _repository_cwd(monkeypatch):
+    monkeypatch.chdir(HOOKS_DIR.parent)
+    detect_mutative_command.cache_clear()
+
+
 # ---------------------------------------------------------------------------
 # False-positive corpus
 #

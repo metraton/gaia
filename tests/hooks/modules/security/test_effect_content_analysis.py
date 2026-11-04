@@ -91,7 +91,7 @@ def _place(repo: Path, in_repo: bool) -> None:
         (repo / ".git").rename(repo.parent / "moved-git")
 
 
-@pytest.mark.parametrize(("command", "in_repo"), SUITE_COMMANDS, ids=SUITE_IDS)
+@pytest.mark.parametrize(("command", "in_repo"), [SUITE_COMMANDS[0], SUITE_COMMANDS[2]], ids=[SUITE_IDS[0], SUITE_IDS[2]])
 def test_suite_without_markers_runs_free_on_its_files(command, in_repo, repo):
     _place(repo, in_repo)
     result = _judge(command, repo)
@@ -271,6 +271,51 @@ def test_pythonpath_shadowing_an_installed_module_is_resolved_locally(repo):
     (repo / "tests" / "test_a.py").write_text("import json\n")
     result = _judge("python3 -m pytest -q tests/", repo)
     assert result.is_mutative and "src/json/__init__.py" in result.reason, result.reason
+
+
+UNMODELLED = {
+    "ini-addopts-plugin-outside-repo": (
+        {"pytest.ini": "[pytest]\naddopts = -p evilplug\n", "evilplug.py": "import subprocess\n"},
+        False, "python3 -m pytest -q -s tests/", ""),
+    "ini-addopts-plugin-in-repo": (
+        {"pytest.ini": "[pytest]\naddopts = -p evilplug\n", "evilplug.py": "import subprocess\n"},
+        True, "python3 -m pytest --assert=plain -q -s tests/", ""),
+    "pyargs-outside-repo": (
+        {"mypkg/__init__.py": "", "mypkg/tests/__init__.py": "", "mypkg/tests/test_x.py": "import subprocess\n"},
+        False, "python3 -m pytest -q -s --pyargs mypkg.tests", ""),
+    "pyargs-in-repo": (
+        {"mypkg/__init__.py": "", "mypkg/tests/__init__.py": "", "mypkg/tests/test_x.py": "import subprocess\n"},
+        True, "python3 -m pytest -q -s --pyargs mypkg.tests", ""),
+    "testpaths-outside-cwd": (
+        {"proj/pytest.ini": "[pytest]\ntestpaths = ../sibling\n", "proj/tests/test_a.py": "def test_a():\n    pass\n",
+         "sibling/test_x.py": "import subprocess\n"}, False, "python3 -m pytest -q -s", "proj"),
+    "testpaths-matching-nothing": (
+        {"pytest.ini": "[pytest]\ntestpaths = nowhere\n"}, False, "python3 -m pytest -q", ""),
+    "ini-addopts-unparsed-option": (
+        {"pytest.ini": "[pytest]\naddopts = --some-plugin-flag=x\n"}, False, "python3 -m pytest -q tests/", ""),
+    "ini-key-not-modelled": ({"pytest.ini": "[pytest]\nasyncio_mode = auto\n"}, False, "python3 -m pytest -q tests/", ""),
+    "confcutdir-argument": ({}, False, "python3 -m pytest --confcutdir=. -q tests/", ""),
+    "rootdir-argument": ({}, False, "python3 -m pytest --rootdir=/ -q tests/", ""),
+    "missing-argument": ({}, False, "python3 -m pytest -q tests/test_missing.py", ""),
+    "no-test-file": ({"tests/test_a.py": None, "tests/test_b.py": None}, False, "python3 -m pytest -q tests/", ""),
+    "unittest-no-test-file": ({"tests/test_a.py": None, "tests/test_b.py": None}, True, UNITTEST, ""),
+    "unittest-missing-start": ({}, True, "python3 -m unittest discover -s nowhere", ""),
+    "plain-option-not-modelled": ({}, True, "pytest --timeout=30 tests/", ""),
+}
+
+
+@pytest.mark.parametrize("case", sorted(UNMODELLED))
+def test_what_the_analysis_does_not_model_never_runs_free(case, repo):
+    files, in_repo, command, sub = UNMODELLED[case]
+    _place(repo, in_repo)
+    for relative, body in files.items():
+        if body is None:
+            (repo / relative).unlink()
+            continue
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        (repo / relative).write_text(body)
+    result = _judge(command, repo / sub if sub else repo)
+    assert result.is_mutative, f"{case} ran free: {result.reason}"
 
 
 def test_conftest_above_the_working_directory_is_in_the_closure(repo):

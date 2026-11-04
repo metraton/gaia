@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -500,8 +501,8 @@ def _parse(content: bytes) -> ast.AST:
     return ast.parse(content)
 
 
-def _ini_settings(start: Path) -> Dict[str, List[str]]:
-    """``pythonpath``, ``python_files`` and ``addopts`` of the ini governing *start*; ValueError if it cannot be read."""
+def _ini_settings(start: Path) -> Tuple[Optional[Path], Dict[str, List[str]]]:
+    """The directory and every key of the pytest ini governing *start*, values split; ValueError if unreadable."""
     import configparser
 
     for directory in [start, *start.parents]:
@@ -523,19 +524,109 @@ def _ini_settings(start: Path) -> Dict[str, List[str]]:
                     parser.read_string(text)
                     if not parser.has_section(section):
                         if name == "pytest.ini":
-                            return {"pythonpath": [], "python_files": [], "addopts": []}
+                            return directory, {}
                         continue
                     options = dict(parser[section])
                 settings = {
-                    key: value.split() if isinstance(value, str) else [str(each) for each in value]
-                    for key in ("pythonpath", "python_files", "addopts")
-                    for value in [options.get(key, [])]
+                    key: (shlex.split(value) if key == "addopts" else value.split()) if isinstance(value, str)
+                    else [str(each) for each in value] if isinstance(value, list) else [str(value)]
+                    for key, value in options.items()
                 }
             except (OSError, UnicodeDecodeError, ValueError, AttributeError, ImportError, configparser.Error) as error:
                 raise ValueError(f"{path} cannot be read") from error
-            settings["pythonpath"] = [os.path.realpath(directory / entry) for entry in settings["pythonpath"]]
-            return settings
-    return {"pythonpath": [], "python_files": [], "addopts": []}
+            return directory, settings
+    return None, {}
+
+
+_MODELLED_SWITCHES = frozenset({
+    "-q", "-v", "-x", "-s", "-l", "--quiet", "--verbose", "--exitfirst", "--showlocals", "--lf", "--last-failed",
+    "--ff", "--failed-first", "--nf", "--new-first", "--sw", "--stepwise", "--co", "--collect-only",
+    "--strict-markers", "--strict-config", "--no-header", "--no-summary", "--disable-warnings", "--setup-show",
+    "--runxfail", "--doctest-modules", "--cache-clear",
+})
+_MODELLED_VALUE_OPTIONS = frozenset({
+    "-k", "-m", "-r", "-n", "-W", "-p", "--tb", "--maxfail", "--durations", "--color", "--capture", "--deselect",
+    "--ignore", "--ignore-glob", "--pythonwarnings", "--import-mode",
+})
+_MODELLED_INI_KEYS = frozenset({
+    "pythonpath", "python_files", "python_classes", "python_functions", "testpaths", "addopts", "markers",
+    "filterwarnings", "minversion", "norecursedirs", "xfail_strict", "console_output_style", "log_level",
+    "log_cli", "log_cli_level", "log_format", "log_date_format", "log_cli_format", "log_cli_date_format",
+    "empty_parameter_set_mark", "doctest_optionflags", "junit_family", "required_plugins", "usefixtures",
+})
+
+
+def _pytest_words(words: Sequence[str], source: str) -> Tuple[List[str], List[str], bool]:
+    positionals: List[str] = []
+    unmodelled: List[str] = []
+    doctest = False
+    tokens = iter(words)
+    for token in tokens:
+        if token == "--":
+            positionals.extend(tokens)
+        elif not token.startswith("-") or token == "-":
+            positionals.append(token)
+        elif token.startswith("--"):
+            name, equals, value = token.partition("=")
+            if name in _MODELLED_VALUE_OPTIONS:
+                value = value if equals else next(tokens, "")
+            elif name not in _MODELLED_SWITCHES or equals:
+                unmodelled.append(f"{source} {token}")
+            doctest = doctest or name == "--doctest-modules"
+        elif token[:2] in _MODELLED_VALUE_OPTIONS:
+            value = token[2:] or next(tokens, "")
+            if token[:2] == "-p" and not value.startswith("no:"):
+                unmodelled.append(f"{source} -p {value} loads a plugin")
+        elif not all(f"-{letter}" in _MODELLED_SWITCHES for letter in token[1:]):
+            unmodelled.append(f"{source} {token}")
+    return positionals, unmodelled, doctest
+
+
+def _entry_point_plugins(rootdir: Path) -> List[str]:
+    from importlib import metadata
+
+    try:
+        points = metadata.entry_points(group="pytest11")
+    except Exception:
+        return ["pytest11 entry points cannot be listed"]
+    return [f"plugin entry point {point.name} ({point.value})" for point in points
+            if not _is_library(point.value.split(":")[0], rootdir, installed_only=True)]
+
+
+def judge_pytest(args: Sequence[str], invocation_dir: Path, rootdir: Path) -> Finding:
+    """Judge a pytest run by its files; whatever of its arguments or ini the analysis does not model keeps it from running free."""
+    import glob
+
+    base = Path(os.path.realpath(invocation_dir))
+    rootdir = Path(os.path.realpath(rootdir))
+    try:
+        ini_dir, settings = _ini_settings(base)
+    except ValueError as error:
+        return Finding(CANNOT, str(base), 0, str(error))
+    positionals, unmodelled, doctest = _pytest_words(args, "argument")
+    addopts, addopts_unmodelled, addopts_doctest = _pytest_words(settings.get("addopts", []), "ini addopts")
+    unmodelled += addopts_unmodelled + [f"ini addopts argument {each}" for each in addopts]
+    unmodelled += [f"ini key {key}" for key in settings if key not in _MODELLED_INI_KEYS]
+    roots = [Path(base, each.split("::")[0]) for each in positionals]
+    if not roots and ini_dir == base and settings.get("testpaths"):
+        for entry in settings["testpaths"]:
+            matches = sorted(glob.glob(str(ini_dir / entry)))
+            roots.extend(Path(each) for each in matches)
+            if not matches:
+                unmodelled.append(f"ini testpaths {entry} matches nothing")
+    roots = roots or [base]
+    unmodelled += [f"argument {each} resolves to no file" for each in roots if not each.exists()]
+    unmodelled += _entry_point_plugins(rootdir)
+    patterns = None if doctest or addopts_doctest else (settings.get("python_files") or PYTEST_FILES)
+    pythonpath = [Path(ini_dir or base, entry) for entry in settings.get("pythonpath", [])]
+    return _judge_closure(roots, rootdir, [base, *pythonpath], patterns, unmodelled)
+
+
+def judge_unittest(roots: Sequence[Path], rootdir: Path, import_roots: Sequence[Path],
+                   patterns: Optional[Sequence[str]]) -> Finding:
+    """Judge a ``python -m unittest`` run by the modules it would import."""
+    missing = [f"argument {each} resolves to no file" for each in roots if not Path(each).exists()]
+    return _judge_closure(roots, rootdir, import_roots, patterns, missing)
 
 
 def _module_files(name: str, roots: Sequence[Path]) -> Optional[List[Path]]:
@@ -567,9 +658,9 @@ def _module_files(name: str, roots: Sequence[Path]) -> Optional[List[Path]]:
     return None
 
 
-def _is_library(name: str, rootdir: Path) -> bool:
+def _is_library(name: str, rootdir: Path, installed_only: bool = False) -> bool:
     top = name.split(".")[0]
-    if top in sys.stdlib_module_names or top in ("pytest", "_pytest", "pluggy"):
+    if not installed_only and (top in sys.stdlib_module_names or top in ("pytest", "_pytest", "pluggy")):
         return True
     try:
         import importlib.util
@@ -593,8 +684,8 @@ def _search_roots(path: Path, rootdir: Path, extra: Sequence[Path]) -> List[Path
 
 def collect(
     roots: Iterable[Path], rootdir: Path, patterns: Optional[Sequence[str]],
-) -> Tuple[List[Path], Optional[Finding]]:
-    """The .py files under the roots whose names match *patterns* (None: all), plus conftest and __init__ chains."""
+) -> Tuple[List[Path], int, Optional[Finding]]:
+    """Test files under the roots matching *patterns* (None: all .py), their count, plus conftest and __init__ chains."""
     import fnmatch
 
     files: List[Path] = []
@@ -605,11 +696,12 @@ def collect(
                 files.extend(Path(directory, name) for name in sorted(names) if name.endswith(".py") and (
                     patterns is None or any(fnmatch.fnmatch(name, pattern) for pattern in patterns)))
                 if len(files) > MAX_FILES:
-                    return [], Finding(CANNOT, str(root), 0, f"more than {MAX_FILES} Python files")
+                    return [], 0, Finding(CANNOT, str(root), 0, f"more than {MAX_FILES} Python files")
         elif root.is_file():
             files.append(root)
         elif root.exists():
-            return [], Finding(CANNOT, str(root), 0, "the path is neither a file nor a directory")
+            return [], 0, Finding(CANNOT, str(root), 0, "the path is neither a file nor a directory")
+    tests = len(files)
     files.extend(candidate for candidate in (rootdir / "conftest.py",) if candidate.is_file())
     chain: List[Path] = []
     for directory in dict.fromkeys(each.parent for each in files):
@@ -617,36 +709,22 @@ def collect(
         while (directory / "__init__.py").is_file():
             chain.append(directory / "__init__.py")
             directory = directory.parent
-    return list(dict.fromkeys(files + chain)), None
+    return list(dict.fromkeys(files + chain)), tests, None
 
 
 PYTEST_FILES = ("test_*.py", "*_test.py")
 
 
-def judge_suite(
-    roots: Sequence[Path], rootdir: Path, plugins: Sequence[str] = (), import_roots: Sequence[Path] = (),
-    patterns: Optional[Sequence[str]] = PYTEST_FILES, pytest_config: bool = True,
+def _judge_closure(
+    roots: Sequence[Path], rootdir: Path, import_roots: Sequence[Path], patterns: Optional[Sequence[str]],
+    unmodelled: Sequence[str],
 ) -> Finding:
-    """First effect marker in the closure of the suite under *roots*, or a free Finding counting its files."""
+    """First marker in the closure under *roots*; a closure with no marker is free only if nothing went unmodelled and a test file was found."""
     rootdir = Path(os.path.realpath(rootdir))
-    try:
-        settings = _ini_settings(rootdir) if pytest_config else {"pythonpath": [], "python_files": [], "addopts": []}
-    except ValueError as error:
-        return Finding(CANNOT, str(rootdir), 0, str(error))
-    if patterns is not None and any("doctest-modules" in each for each in settings["addopts"]):
-        patterns = None
-    elif patterns is not None and settings["python_files"]:
-        patterns = list(settings["python_files"])
-    extra = [Path(os.path.realpath(each)) for each in [*import_roots, *settings["pythonpath"]]]
-    queue, early = collect([Path(os.path.realpath(each)) for each in roots], rootdir, patterns)
+    extra = [Path(os.path.realpath(each)) for each in import_roots]
+    queue, tests, early = collect([Path(os.path.realpath(each)) for each in roots], rootdir, patterns)
     if early is not None:
         return early
-    for plugin in plugins:
-        located = _module_files(plugin, [rootdir])
-        if located:
-            queue.extend(located)
-        elif not _is_library(plugin, rootdir):
-            return Finding(CANNOT, str(rootdir), 0, f"plugin {plugin} cannot be placed")
     seen: Dict[Path, dict] = {}
     findings: List[Finding] = []
     while queue:
@@ -684,6 +762,10 @@ def judge_suite(
     if findings:
         first = min(findings, key=lambda each: (each.kind == CANNOT, each.path, each.line))
         return Finding(first.kind, first.path, first.line, first.detail, len(seen))
+    if unmodelled:
+        return Finding(CANNOT, str(rootdir), 0, "not modelled by the analysis: " + "; ".join(unmodelled), len(seen))
+    if not tests:
+        return Finding(CANNOT, str(rootdir), 0, "the analysis found no test file to run", len(seen))
     return Finding(None, files=len(seen))
 
 
