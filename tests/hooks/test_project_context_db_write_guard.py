@@ -371,6 +371,21 @@ def test_a_sqlite3_cd_the_guard_cannot_resolve_leaves_later_relative_operands_un
 
 
 @pytest.mark.parametrize("command", [
+    "env -C {d} sqlite3 s.db 'PRAGMA journal_mode=DELETE'",
+    "env --chdir={d} sqlite3 hl.db 'VACUUM'",
+    "sudo -D {d} sqlite3 s.db 'REINDEX'",
+    "find {d}/sub -maxdepth 0 -execdir sqlite3 s.db 'PRAGMA journal_mode=DELETE' ;",
+    "echo x | xargs -I{{}} env -C {d} sqlite3 hl.db 'VACUUM'",
+    "nice sqlite3 s.db 'VACUUM'",
+])
+def test_a_relative_database_run_by_a_program_that_may_move_the_folder_is_unproven(cd_folder, command):
+    os.symlink(cd_folder / "hl.db", cd_folder / "s.db")
+    (cd_folder / "sub").mkdir()
+    _refused_unproven(command.format(d=cd_folder), cwd="/tmp")
+    assert check(f"env -C {cd_folder} sqlite3 {OTHER} 'SELECT 1'", "/tmp") == (True, None)
+
+
+@pytest.mark.parametrize("command", [
     f"echo .shell touch /tmp/pwn | sqlite3 {OTHER}",
     f"printf '.%s kubectl delete ns prod\\n' shell | sqlite3 {OTHER}",
     f"sqlite3 {OTHER} \"SELECT \\\"edit\\\"('x', 'touch /tmp/pwn')\"",
