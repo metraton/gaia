@@ -31,7 +31,7 @@ That one idea decides both whether something is kept and how it is written:
 - **A row carries the difference alone,** never the context Gaia already has,
   which is what keeps it short.
 - **A decision goes to its home when it is made;** the conversation is only a
-  cache of it (orchestrator identity, principle 8).
+  cache of it (When to save, below).
 
 ## The three floors
 

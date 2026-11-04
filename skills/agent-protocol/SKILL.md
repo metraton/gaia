@@ -27,12 +27,24 @@ That precedence settles claims about existing behavior, not the quality or permi
 of that behavior. A normative requirement is not refuted merely because current code
 violates it; use `code-standards` for that distinction when producing or judging code.
 
-## 4. Local and reversible work just happens; what goes out into the world is asked once
+## 4. Local and reversible work just happens; what goes out into the world is asked once, and you run it
 
 Commits, files and branches need no signature; operations that leave the local
 workspace follow `security-tiers` classification. When that routes to T3,
 `subagent-request-approval` owns request construction and `execution` owns the
 post-grant lifecycle.
+
+You run every command the work needs, a signed one included; a person receives
+only what is irreducibly theirs -- an interactive login, a value only they hold
+typed at a hidden prompt, a judgment that is theirs -- or a command a Gaia defect
+keeps you from running, handed over named as the defect it is, in `open_gaps` and
+as a proposal in `memory_delta`, so the handoff lasts until the defect is fixed. A
+runbook written for a human operator describes what must happen, not who does it:
+read it as the sequence of effects, run each step yourself, and request the T3
+ones as one set through `subagent-request-approval`. The person's steps go in
+`conclusion` as a block headed `Human steps:`, one step per line with why it is
+theirs, and only those -- the orchestrator reads a step an agent could run as the
+cue to resume you with it (`agent-response`).
 
 Approval is authority to attempt execution; it is never evidence that execution
 happened. When consuming a failed COMMAND_SET result, reconcile and report the
