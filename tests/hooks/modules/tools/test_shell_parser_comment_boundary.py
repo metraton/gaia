@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """A comment ends where bash ends it, and text the tokeniser cannot place is judged, never dropped."""
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import require_tool
 
 HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
@@ -100,9 +101,8 @@ def test_a_real_trailing_comment_stays_free(command, cwd):
     assert result.allowed is True, result.reason
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash as the oracle")
 @pytest.mark.parametrize("command", BASH_CASES)
 def test_strip_comment_keeps_every_word_bash_executes(command, tmp_path):
-    ran = subprocess.run(["bash", "-c", command], cwd=tmp_path, capture_output=True, text=True)
+    ran = subprocess.run([require_tool("bash"), "-c", command], cwd=tmp_path, capture_output=True, text=True)
     executed = "MARK" in ran.stdout
     assert ("MARK" in strip_comment(command)) or not executed, ran.stdout
