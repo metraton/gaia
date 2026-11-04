@@ -28,7 +28,7 @@ LAUNCHED = {
     "coproc": "coproc sqlite3 {S} VACUUM",
     "dbus-run-session": "dbus-run-session -- sqlite3 {S} VACUUM",
     "renamed-copy": "/opt/tools/launch-it --quiet sqlite3 {S} VACUUM",
-    "computed-payload": "systemd-run --user \"$RUN\" {S}",
+    "computed-payload": "systemd-run --user \"$(cat /tmp/cmd)\" {S}",
     "lone-reboot": "xvfb-run reboot",
     "lone-poweroff": "xvfb-run poweroff",
     "lone-shutdown": "/opt/tools/bg-run shutdown",
@@ -52,6 +52,7 @@ READ_ONLY = {
     "trap-single-quoted-variable": "trap 'echo $HOME' EXIT",
     "program-mention": "ldd /usr/bin/ls",
     "lone-read-only": "xvfb-run ls",
+    "variable-payload-accepted-residual": "systemd-run --user \"$RUN\"",
 }
 
 

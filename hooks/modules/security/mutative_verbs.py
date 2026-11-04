@@ -5367,11 +5367,13 @@ def _check_executor_payload(
     )
 
 
+_SUBSTITUTION_START_RE = re.compile(r"`|\$\(")
 _EXPANSION_START_RE = re.compile(r"`|\$(?:[({@*#?!$\-]|\w)")
+_CALLBACK_BUILTINS: FrozenSet[str] = frozenset({"mapfile", "readarray"})
 
 
-def _unquoted_expansion(text: str) -> "Optional[str]":
-    """Return the first substitution or parameter expansion the shell performs in *text*, or None."""
+def _unquoted_expansion(text: str, pattern: "re.Pattern[str]" = _EXPANSION_START_RE) -> "Optional[str]":
+    """Return the first expansion *pattern* matches where the shell performs it in *text*, or None."""
     index, in_double = 0, False
     while index < len(text):
         char = text[index]
@@ -5390,7 +5392,7 @@ def _unquoted_expansion(text: str) -> "Optional[str]":
             closing = text.find("'", index + 2)
             index = len(text) if closing == -1 else closing + 1
             continue
-        match = _EXPANSION_START_RE.match(text, index)
+        match = pattern.match(text, index)
         if match:
             return text[index:index + 24]
         index += 1
@@ -5414,7 +5416,7 @@ def _check_launched_payload(
     base_cmd: str, semantics: "CommandSemantics", *,
     cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
-    """Adopt the mutative verdict of any command a program with no grammar here could be handed in its arguments; a whole-expansion word signs."""
+    """Adopt the mutative verdict of any command a program with no grammar here could be handed in its arguments; a command substitution, or any expansion in a mapfile callback, signs."""
     if base_cmd not in _COMMAND_EXECUTORS and (
         _classifier_rule_names(base_cmd)
         or base_cmd in _EXPRESSION_FIRST_TOOLS
@@ -5423,7 +5425,11 @@ def _check_launched_payload(
     ):
         return None
     raw = semantics.raw_command.strip()
-    expansion = _unquoted_expansion(raw[_consume_shell_word(raw, 0):])
+    names_a_callback = base_cmd in _CALLBACK_BUILTINS and any(
+        token.startswith("-") and not token.startswith("--") and "C" in token for token in semantics.tokens[1:]
+    )
+    pattern = _EXPANSION_START_RE if names_a_callback else _SUBSTITUTION_START_RE
+    expansion = _unquoted_expansion(raw[_consume_shell_word(raw, 0):], pattern)
     if expansion is not None:
         return MutativeResult(
             is_mutative=True,
