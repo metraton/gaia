@@ -365,9 +365,13 @@ def test_a_relative_operand_after_a_literal_sqlite3_cd_meets_the_shell_floors_th
     (f"sqlite3 {OTHER} '.cd sub' '.output out.txt'", None),
     (f"echo '.cd `pwd`' | sqlite3 {OTHER} '.import data.csv t'", "/tmp"),
 ])
-def test_a_sqlite3_cd_the_guard_cannot_resolve_leaves_later_relative_operands_unproven(command, cwd):
-    _refused_unproven(command, cwd)
-    assert check(f"sqlite3 {OTHER} '.cd $D' 'SELECT 1'", "/tmp") == (True, None)
+def test_a_sqlite3_cd_the_guard_cannot_resolve_leaves_later_relative_operands_unproven(
+    command, cwd, tmp_path, monkeypatch,
+):
+    for process_folder in (README.parent, tmp_path):
+        monkeypatch.chdir(process_folder)
+        _refused_unproven(command, cwd)
+        assert check(f"sqlite3 {OTHER} '.cd $D' 'SELECT 1'", "/tmp") == (True, None)
 
 
 @pytest.mark.parametrize("command", [
@@ -377,10 +381,29 @@ def test_a_sqlite3_cd_the_guard_cannot_resolve_leaves_later_relative_operands_un
     "find {d}/sub -maxdepth 0 -execdir sqlite3 s.db 'PRAGMA journal_mode=DELETE' ;",
     "echo x | xargs -I{{}} env -C {d} sqlite3 hl.db 'VACUUM'",
     "nice sqlite3 s.db 'VACUUM'",
+    "'cd' {d}; sqlite3 s.db 'VACUUM'",
+    "\"cd\" {d} && sqlite3 s.db 'VACUUM'",
+    "\\cd {d}; sqlite3 s.db 'VACUUM'",
+    "c''d {d}; sqlite3 s.db 'VACUUM'",
+    "source {d}/cd.sh; sqlite3 s.db 'VACUUM'",
+    ". {d}/cd.sh; sqlite3 s.db 'VACUUM'",
+    "source {d}/cd.sh && echo VACUUM | xargs sqlite3 s.db",
+    "timeout 5 env -C {d} sqlite3 s.db 'VACUUM'",
+    "env --chdir {d} sqlite3 s.db 'VACUUM'",
+    "env -C{d} sqlite3 s.db 'VACUUM'",
+    "sudo --chdir={d} sqlite3 s.db 'VACUUM'",
+    "flock /tmp/l env -C {d} sqlite3 s.db 'VACUUM'",
+    "nohup setsid env -C {d} sqlite3 s.db 'VACUUM'",
+    "stdbuf -o0 nice -n 5 env -C {d} sqlite3 s.db 'VACUUM'",
+    "script -q -c \"env -C {d} sqlite3 s.db VACUUM\" /dev/null",
+    "busybox env -C {d} sqlite3 s.db 'VACUUM'",
+    "ls; sqlite3 s.db 'VACUUM'",
+    "sqlite3 /tmp/o.db 'SELECT 1'; sqlite3 s.db 'VACUUM'",
 ])
-def test_a_relative_database_run_by_a_program_that_may_move_the_folder_is_unproven(cd_folder, command):
+def test_a_relative_database_with_anything_before_sqlite3_on_the_line_is_unproven(cd_folder, command):
     os.symlink(cd_folder / "hl.db", cd_folder / "s.db")
     (cd_folder / "sub").mkdir()
+    (cd_folder / "cd.sh").write_text(f"cd {cd_folder}\n")
     _refused_unproven(command.format(d=cd_folder), cwd="/tmp")
     assert check(f"env -C {cd_folder} sqlite3 {OTHER} 'SELECT 1'", "/tmp") == (True, None)
 
