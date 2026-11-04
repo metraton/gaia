@@ -350,18 +350,35 @@ _ARGV_PASSIVE_KEYWORDS: FrozenSet[str] = frozenset({
 })
 
 
-def _literal_argv(call: ast.Call) -> Optional[Tuple[str, ...]]:
+def _literal_argv(call: ast.Call, bindings: Dict[str, ast.AST]) -> Optional[Tuple[str, ...]]:
     """Return the argv of a process call when it is provably literal, else None."""
     if len(call.args) != 1 or not isinstance(call.args[0], (ast.List, ast.Tuple)):
         return None
     if any(kw.arg not in _ARGV_PASSIVE_KEYWORDS for kw in call.keywords):
         return None
-    argv = call.args[0].elts
-    if not argv or not all(
-        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in argv
-    ):
+    argv = [_literal_string(item, bindings) for item in call.args[0].elts]
+    if not argv or None in argv:
         return None
-    return tuple(item.value for item in argv)
+    return tuple(argv)
+
+
+def _literal_string(node: ast.AST, bindings: Dict[str, ast.AST], depth: int = 0) -> Optional[str]:
+    if depth > 8:
+        return None
+    if _is_str_literal(node):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in bindings:
+        return _literal_string(bindings[node.id], bindings, depth + 1)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parts = [node.left, node.right]
+    elif isinstance(node, ast.JoinedStr):
+        parts = [value.value if isinstance(value, ast.FormattedValue) else value for value in node.values]
+        if any(isinstance(v, ast.FormattedValue) and (v.conversion != -1 or v.format_spec) for v in node.values):
+            return None
+    else:
+        return None
+    strings = [_literal_string(part, bindings, depth + 1) for part in parts]
+    return None if None in strings else "".join(strings)
 
 
 _URLOPEN = "urllib.request.urlopen"
@@ -499,6 +516,7 @@ def analyze_python_inline(
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     provenance = _RequestProvenance(tree, alias_map)
+    bindings = _single_bindings(tree, alias_map)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -516,7 +534,7 @@ def analyze_python_inline(
         if dotted == _URLOPEN and _urlopen_is_read(node, provenance):
             continue
         if argv_is_mutative is not None and dotted in _ARGV_PROCESS_CALLS:
-            argv = _literal_argv(node)
+            argv = _literal_argv(node, bindings)
             if argv is not None and not argv_is_mutative(argv):
                 continue
 
@@ -659,7 +677,7 @@ def uncatalogued_effect(tree: ast.AST) -> str:
     alias_map.collect(tree)
     if _environment_reaches_a_process(tree, alias_map):
         return "env"
-    bindings = _single_bindings(tree)
+    bindings = _single_bindings(tree, alias_map)
     sql = _ReadOnlyChecker()
     receivers = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     receivers |= {
@@ -686,7 +704,7 @@ def uncatalogued_effect(tree: ast.AST) -> str:
         if isinstance(node, ast.Subscript) and alias_map.resolve_call(node.value) == "sys.modules":
             if not _is_str_literal(node.slice):
                 return "call"
-        if _reaches_interpreter_internals(node):
+        if _reaches_interpreter_internals(node) or _reaches_a_namespace(node, alias_map):
             return "call"
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and _is_path_value(node.left, alias_map):
             if not _provable_path(node.right, alias_map, bindings):
@@ -784,6 +802,37 @@ def _reaches_interpreter_internals(node: ast.AST) -> bool:
     return attr.startswith("__") and attr.endswith("__") and attr not in _INERT_DUNDERS
 
 
+_NAMESPACE_MODULES: FrozenSet[str] = frozenset({"__main__", "builtins"})
+_NAMESPACE_CALLS: FrozenSet[str] = frozenset({
+    "globals", "locals", "sys._getframe", "sys._current_frames", "inspect.currentframe", "inspect.stack",
+    "inspect.trace", "inspect.getouterframes", "inspect.getinnerframes", "gc.get_objects", "gc.get_referrers",
+    "gc.get_referents",
+})
+_FRAME_ATTRIBUTES: FrozenSet[str] = frozenset({
+    "f_globals", "f_locals", "f_builtins", "f_back", "tb_frame", "gi_frame", "cr_frame", "ag_frame",
+})
+
+
+def _reaches_a_namespace(node: ast.AST, alias_map: "_AliasResolver") -> bool:
+    """True when *node* obtains a module namespace or a frame, through which code rebinds names no assignment shows."""
+    if isinstance(node, ast.Attribute):
+        return node.attr in _FRAME_ATTRIBUTES
+    if isinstance(node, ast.Import):
+        modules = [alias.name for alias in node.names]
+    elif isinstance(node, ast.ImportFrom):
+        modules = [node.module or ""]
+    elif isinstance(node, ast.Subscript) and alias_map.resolve_call(node.value) == "sys.modules":
+        modules = [node.slice.value if _is_str_literal(node.slice) else "__main__"]
+    elif isinstance(node, ast.Call):
+        dotted = alias_map.resolve_call(node.func)
+        if dotted in _NAMESPACE_CALLS or (dotted == "vars" and not node.args):
+            return True
+        modules = [_imported_module(node, dotted) or ""]
+    else:
+        return False
+    return any(module.split(".")[0] in _NAMESPACE_MODULES for module in modules)
+
+
 # The secret-read floor reads only literals, so every path argument here must be one ``_provable_path`` proves.
 _PATH_CALLS: Dict[str, int] = {name: 1 for name in (
     "open", "builtins.open", "io.open", "io.FileIO", "codecs.open", "os.open", "pathlib.Path",
@@ -822,14 +871,39 @@ def _path_arguments(call: ast.Call, dotted: str) -> list:
     return call.args[:count] + keywords
 
 
-def _single_bindings(tree: ast.AST) -> Dict[str, ast.AST]:
-    """Names bound exactly once in *tree*, by a plain ``name = value``, mapped to that value."""
+_NAMED_BINDERS = (
+    ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler, ast.MatchAs, ast.MatchStar,
+    ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple,
+)
+
+
+def _single_bindings(tree: ast.AST, alias_map: "_AliasResolver") -> Dict[str, ast.AST]:
+    """Names bound exactly once in *tree*, by a plain ``name = value``, mapped to that value; none when a name can be rebound unseen."""
     stores: Dict[str, int] = {}
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+            return {}
+        if isinstance(node, ast.Call) and alias_map.resolve_call(node.func) in _CODE_STRING_CALLS:
+            return {}
+        if _reaches_a_namespace(node, alias_map):
+            return {}
         if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
-            stores[node.id] = stores.get(node.id, 0) + 1
+            names = [(node.id, 1)]
         elif isinstance(node, ast.arg):
-            stores[node.arg] = stores.get(node.arg, 0) + 2
+            names = [(node.arg, 2)]
+        elif isinstance(node, ast.alias):
+            names = [(node.asname or node.name.split(".")[0], 2)]
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names = [(name, 2) for name in node.names]
+        elif isinstance(node, ast.MatchMapping):
+            names = [(node.rest, 2)]
+        elif isinstance(node, _NAMED_BINDERS):
+            names = [(node.name, 2)]
+        else:
+            names = []
+        for name, weight in names:
+            if name:
+                stores[name] = stores.get(name, 0) + weight
     return {
         node.targets[0].id: node.value for node in ast.walk(tree)
         if isinstance(node, ast.Assign) and len(node.targets) == 1

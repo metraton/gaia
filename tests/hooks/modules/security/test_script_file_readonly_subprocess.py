@@ -7,6 +7,7 @@ that does mutate or cannot be read statically, and the ``cp`` into scratch the
 same session paid for.
 """
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -63,11 +64,7 @@ ASKING_TWINS = {
         TOKEN_CALL,
         'subprocess.run(ARGV, capture_output=True, text=True, check=True)',
     ).replace("BASE = ", 'ARGV = ["gcloud", "auth", "print-access-token"]\nBASE = '),
-    "argv-element-from-variable": HELPER_SHAPE.replace(
-        TOKEN_CALL,
-        'subprocess.run(["gcloud", "auth", VERB], capture_output=True, text=True, check=True)',
-    ).replace("BASE = ", 'VERB = "print-access-token"\nBASE = '),
-    "shell-true": HELPER_SHAPE.replace(
+    "shell-true":HELPER_SHAPE.replace(
         TOKEN_CALL,
         'subprocess.run("gcloud auth print-access-token", shell=True, capture_output=True, text=True, check=True)',
     ),
@@ -163,6 +160,87 @@ def test_twin_that_mutates_or_hides_its_argv_still_asks(validator, scratch, twin
     verdict = _validate(validator, f"python3 {script} --window a=x/y")
     assert not verdict.allowed
     assert verdict.tier == SecurityTier.T3_BLOCKED
+
+
+BOUND_ONCE = '''\
+import subprocess
+import sys
+
+WT = "/repo/worktree"
+BASE = "origin/main"
+print(subprocess.run(["git", "-C", WT, "diff", BASE + ".." + "HEAD"], capture_output=True, text=True).stdout)
+'''
+DIFF_ARGV = '["git", "-C", WT, "diff", BASE + ".." + "HEAD"]'
+
+BOUND_ONCE_FREE = {
+    "concatenated": BOUND_ONCE,
+    "f-string": BOUND_ONCE.replace('BASE + ".." + "HEAD"', 'f"{BASE}..HEAD"'),
+    "helper-verb": HELPER_SHAPE.replace(
+        TOKEN_CALL, 'subprocess.run(["gcloud", "auth", VERB], capture_output=True, text=True, check=True)',
+    ).replace("BASE = ", 'VERB = "print-access-token"\nBASE = '),
+}
+
+BOUND_NAME_TWINS = {
+    "reassigned": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nBASE = "origin/dev"'),
+    "augmented": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nBASE += "~1"'),
+    "input-built": BOUND_ONCE.replace('BASE = "origin/main"', "BASE = input()"),
+    "argv-built": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/" + sys.argv[1]'),
+    "loop-target": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nfor BASE in sys.argv:\n    pass'),
+    "imported-over": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nfrom settings import BASE'),
+    "global-in-function": BOUND_ONCE.replace(
+        'BASE = "origin/main"', 'def setup():\n    global BASE\n    BASE = "origin/main"\n\n\nsetup()',
+    ),
+    "globals-write": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nglobals()["BASE"] = "x"'),
+    "builtins-fallback": BOUND_ONCE.replace(
+        'BASE = "origin/main"', 'import builtins\nbuiltins.BASE = "x"\n\n\ndef unused():\n    BASE = "origin/main"',
+    ),
+    "resolves-to-kubectl-delete": BOUND_ONCE.replace(
+        DIFF_ARGV, '["kubectl", VERB, "pod", WT]',
+    ).replace('BASE = "origin/main"', 'VERB = "delete"'),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(BOUND_ONCE_FREE))
+def test_argv_names_bound_once_to_literals_run_free(validator, scratch, shape):
+    script = _write(scratch, f"{shape}.py", BOUND_ONCE_FREE[shape])
+
+    verdict = _validate(validator, f"python3 {script}")
+
+    assert verdict.allowed, verdict.reason
+    assert verdict.tier == SecurityTier.T0_READ_ONLY
+
+
+@pytest.mark.parametrize("twin", sorted(BOUND_NAME_TWINS))
+def test_argv_name_not_provably_bound_to_a_literal_still_asks(validator, scratch, twin):
+    script = _write(scratch, f"{twin}.py", BOUND_NAME_TWINS[twin])
+
+    assert detect_mutative_command(f"python3 {script}").is_mutative
+    assert _validate(validator, f"python3 {script}").tier == SecurityTier.T3_BLOCKED
+
+
+def test_name_rewritten_by_an_imported_local_module_still_asks(validator, scratch):
+    _write(scratch, "retarget.py", 'import __main__\n__main__.BASE = "x"\n')
+    script = _write(scratch, "main.py", BOUND_ONCE.replace("print(", "import retarget\nprint("))
+
+    assert _validate(validator, f"python3 {script}").tier == SecurityTier.T3_BLOCKED
+
+
+def _inline(body):
+    return "python3 -c " + shlex.quote("; ".join(body.strip().splitlines()))
+
+
+def test_inline_argv_names_bound_once_run_free(validator, scratch):
+    verdict = _validate(validator, _inline(BOUND_ONCE.replace("\n\n", "\n")))
+
+    assert verdict.allowed, verdict.reason
+    assert verdict.tier == SecurityTier.T0_READ_ONLY
+
+
+@pytest.mark.parametrize("rebinding", ['exec("BASE = 1")', 'BASE = "origin/dev"'])
+def test_inline_argv_name_rebound_still_asks(validator, scratch, rebinding):
+    body = BOUND_ONCE.replace("\n\n", "\n").replace('BASE = "origin/main"', f'BASE = "origin/main"\n{rebinding}')
+
+    assert _validate(validator, _inline(body)).tier == SecurityTier.T3_BLOCKED
 
 
 def test_cp_into_scratch_runs_free(validator, scratch, tmp_path):
