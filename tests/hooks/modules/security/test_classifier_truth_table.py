@@ -614,7 +614,7 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "friction_residual_pytest_packed_report_flag_free",
         FREE,
-        "python3 -m pytest tests/hooks/modules/security/ -q -rf",
+        "python3 -m pytest tests/hooks/modules/security/no_suite_here/ -q -rf",
         False,
         T0,
     ),

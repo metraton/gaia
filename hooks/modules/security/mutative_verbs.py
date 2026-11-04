@@ -6165,7 +6165,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
     # --- Step 1c-py: ``python -m <module>`` re-dispatched as that module's CLI ---
     # Only a mutative verdict is adopted for a non-package-manager module.
-    pytest_result = _check_pytest_run(base_cmd, semantics, cwd)
+    pytest_result = _check_pytest_run(base_cmd, semantics, cwd) or _check_unittest_run(base_cmd, semantics, cwd)
     if pytest_result is not None:
         return pytest_result
     py_module_result = _check_python_module_runner(base_cmd, semantics, cwd=cwd, _depth=_depth)
@@ -9580,16 +9580,111 @@ def _check_pytest_run(
         _inside_repository(top, base, positional.split("::")[0]) is None for positional in positionals
     ):
         return _foreign_code_result("pytest collects tests from outside the repository")
-    if not known or top is None:
-        return None
+    if not known:
+        unknown = [name for name, value in options if value is None and name not in _PYTEST_SWITCHES]
+        return _suite_unplaced_result(f"pytest option {' '.join(unknown) or 'cluster'} is not one the screen models")
+    plugins = [value for name, value in options if name == "-p" and value and not value.startswith("no:")]
+    roots = [Path(base, positional.split("::")[0]) for positional in positionals] or [base]
+    return _suite_result("pytest", _judge_suite(roots, top or base, plugins, [base]))
+
+
+def _judge_suite(roots: "List[Path]", rootdir: Path, plugins: "List[str]", import_roots: "List[Path]"):
+    from .effect_content import judge_suite
+
+    return judge_suite(roots, rootdir, plugins, import_roots)
+
+
+_SUITE_MARKER_RULES = {
+    "network": "sign.speaks", "secret": "sign.speaks", "subprocess": "sign.foreign-code",
+    "database": "sign.lands", "write outside tmp or scratch": "sign.destroys",
+}
+
+
+def _suite_unplaced_result(reason: str) -> MutativeResult:
     return MutativeResult(
-        is_mutative=False,
-        category=CATEGORY_READ_ONLY,
-        verb="pytest-run",
-        cli_family="linter",
-        confidence="medium",
-        reason="pytest runs the test suite of the repository it starts in and loads no code from outside it",
+        is_mutative=True, category=CATEGORY_MUTATIVE, verb="suite-content-unknown", cli_family="linter",
+        confidence="high", reason=f"test suite cannot be analysed: {reason}", rule="unknown.dynamic-span",
     )
+
+
+def _suite_result(runner: str, finding) -> MutativeResult:
+    """The verdict of a test-suite run decided from its files: free with the file count, else the first marker."""
+    if finding.free:
+        return MutativeResult(
+            is_mutative=False, category=CATEGORY_READ_ONLY, verb="suite-content-free", cli_family="linter",
+            confidence="high",
+            reason=f"{runner} suite: no effect marker in the {finding.files} files it loads (tests, conftest, local imports)",
+        )
+    where = f"{finding.path}:{finding.line}" if finding.line else finding.path
+    if finding.kind not in _SUITE_MARKER_RULES:
+        return _suite_unplaced_result(f"{where} ({finding.detail})")
+    return MutativeResult(
+        is_mutative=True, category=CATEGORY_MUTATIVE, verb=f"suite-{finding.kind.split()[0]}", cli_family="linter",
+        confidence="high", reason=f"{runner} suite: {finding.kind} marker at {where} ({finding.detail})",
+        rule=_SUITE_MARKER_RULES[finding.kind],
+    )
+
+
+_UNITTEST_SWITCHES: FrozenSet[str] = frozenset({"-v", "-q", "-f", "-c", "-b", "--verbose", "--quiet", "--failfast",
+                                                "--catch", "--buffer", "--locals"})
+_UNITTEST_VALUE_OPTIONS: FrozenSet[str] = frozenset({"-k", "--durations", "-s", "--start-directory", "-p",
+                                                     "--pattern", "-t", "--top-level-directory"})
+
+
+def _check_unittest_run(
+    base_cmd: str, semantics: "CommandSemantics", cwd: "Optional[str]",
+) -> "Optional[MutativeResult]":
+    """Judge ``python -m unittest`` by the files it loads; None when the command is not that run."""
+    if base_cmd not in _PYTHON_INTERPRETERS:
+        return None
+    args = list(semantics.tokens[1:])
+    kind, index = _python_program(args)
+    if kind != "-m":
+        return None
+    attached = args[index][2:]
+    module, rest = (attached, index + 1) if attached else (args[index + 1] if index + 1 < len(args) else "", index + 2)
+    if module != "unittest":
+        return None
+    base = Path(cwd or Path.cwd())
+    words = args[rest:]
+    discover = bool(words) and words[0] == "discover"
+    options: "Dict[str, str]" = {}
+    positionals: "List[str]" = []
+    tokens = iter(words[1:] if discover else words)
+    for token in tokens:
+        name, equals, value = token.partition("=")
+        if name in _UNITTEST_VALUE_OPTIONS:
+            options[name] = value if equals else (next(tokens, None) or "")
+        elif token.startswith("-") and token not in _UNITTEST_SWITCHES:
+            return _suite_unplaced_result(f"unittest option {token} is not one the screen models")
+        elif not token.startswith("-"):
+            positionals.append(token)
+    top = _repository_top(base)
+    if discover or not positionals:
+        start = options.get("-s") or options.get("--start-directory") or (positionals[0] if positionals else ".")
+        level = options.get("-t") or options.get("--top-level-directory") or (positionals[2] if len(positionals) > 2 else None)
+        imports = [base] + ([Path(base, level)] if level else [Path(base, start)])
+        return _suite_result("unittest", _judge_suite([Path(base, start)], top or base, [], imports))
+    roots = []
+    for target in positionals:
+        located = _unittest_target(base, target)
+        if located is None:
+            return _suite_unplaced_result(f"unittest target {target} is not a file or module under {base}")
+        roots.append(located)
+    return _suite_result("unittest", _judge_suite(roots, top or base, [], [base]))
+
+
+def _unittest_target(base: Path, target: str) -> "Optional[Path]":
+    if target.endswith(".py") or "/" in target:
+        path = Path(base, target)
+        return path if path.exists() else None
+    parts = target.split(".")
+    for length in range(len(parts), 0, -1):
+        stem = Path(base, *parts[:length])
+        for candidate in (stem.with_suffix(".py"), stem):
+            if candidate.exists():
+                return candidate
+    return None
 
 
 def _python_foreign_module(
@@ -9769,6 +9864,40 @@ def _is_node_test_suite_run(args: "List[str]", cwd: "Optional[str]") -> bool:
     )
 
 
+_NODE_SUITE_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"})
+_NODE_SUITE_MAX_FILES = 500
+
+
+def _node_suite_result(args: "List[str]", cwd: "Optional[str]", _depth: int) -> MutativeResult:
+    """Judge ``node --test <dirs|globs>`` by every source file it may run, each through the node script lane."""
+    import glob
+
+    base = Path(cwd or Path.cwd())
+    files: "List[Path]" = []
+    for token in (each for each in args if not each.startswith("-")):
+        if re.search(r"[*?\[]", token):
+            files.extend(Path(base, each) for each in sorted(glob.glob(token, root_dir=base, recursive=True)))
+            continue
+        for directory, subdirs, names in os.walk(Path(base, Path(token).expanduser())):
+            subdirs[:] = sorted(each for each in subdirs if each not in ("node_modules", ".git"))
+            files.extend(Path(directory, name) for name in sorted(names))
+    files = [each for each in files if each.suffix in _NODE_SUITE_SUFFIXES and each.is_file()]
+    if len(files) > _NODE_SUITE_MAX_FILES:
+        return _suite_unplaced_result(f"more than {_NODE_SUITE_MAX_FILES} node test files")
+    for path in files:
+        verdict = detect_mutative_command(f"node {shlex.quote(str(path))}", cwd=str(base), _depth=_depth + 1)
+        if verdict.is_mutative:
+            return MutativeResult(
+                is_mutative=True, category=CATEGORY_MUTATIVE, verb=verdict.verb, cli_family="linter",
+                confidence=verdict.confidence, reason=f"node --test suite: {path.relative_to(base)}: {verdict.reason}",
+                rule=verdict.rule,
+            )
+    return MutativeResult(
+        is_mutative=False, category=CATEGORY_READ_ONLY, verb="suite-content-free", cli_family="linter",
+        confidence="high", reason=f"node --test suite: no effect marker in the {len(files)} files it may run",
+    )
+
+
 _NODE_OPTIONS_ASSIGNMENT_RE = re.compile(r"(?<![\w-])NODE_OPTIONS=")
 
 
@@ -9910,14 +10039,7 @@ def _check_script_file(
                 )
 
     if base_cmd == "node" and _is_node_test_suite_run(semantics.tokens[1:], cwd):
-        return MutativeResult(
-            is_mutative=False,
-            category=CATEGORY_READ_ONLY,
-            verb="node-test-runner",
-            cli_family=family,
-            confidence="medium",
-            reason=f"node --test runs the test suite under '{script_path}'",
-        )
+        return _node_suite_result(semantics.tokens[1:], cwd, _depth)
 
     content = _read_script_content(script_path, cwd=cwd)
     if content is None:
