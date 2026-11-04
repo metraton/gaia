@@ -41,7 +41,7 @@ from .mutative_verbs import (
 )
 from .shell_substitution import extract_substitutions
 from .shell_write_guard import _split_components, _tokenize, _writer_targets, downloader_paths
-from .sqlite_subset import DOT_COMMANDS, script_outside_subset
+from .sqlite_subset import DOT_COMMANDS, argument_outside_subset, script_outside_subset
 
 STORE_REJECTION_MESSAGE = (
     "The sqlite3 CLI is refused on gaia.db, whatever the SQL. Read the store with "
@@ -451,7 +451,7 @@ def _assigns_before_sqlite(reading: str) -> bool:
     return False
 
 
-def _invocation_part(invocation: "_Invocation", scripts: List[str]) -> Optional[str]:
+def _invocation_part(invocation: "_Invocation", arguments: List[str], scripts: List[str]) -> Optional[str]:
     database, index, args = None, 0, invocation.args
     while index < len(args):
         word = args[index]
@@ -470,7 +470,7 @@ def _invocation_part(invocation: "_Invocation", scripts: List[str]) -> Optional[
         if not word.startswith("-") and database is None:
             database = word
         elif not word.startswith("-"):
-            scripts.append(word)
+            arguments.append(word)
         index += 1
     path = os.path.expanduser(database or ":memory:")
     if path.lower().startswith("file:"):
@@ -495,8 +495,10 @@ def _outside_subset(
 ) -> Optional[str]:
     if any(_assigns_before_sqlite(r) for r in _readings(command) if _sqlite_args(r) is not None):
         return "an environment assignment"
+    arguments: List[str] = []
     scripts: List[str] = []
-    part = next(filter(None, (_invocation_part(inv, scripts) for inv in invocations)), None)
+    part = next(filter(None, (_invocation_part(inv, arguments, scripts) for inv in invocations)), None)
+    part = part or next(filter(None, map(argument_outside_subset, arguments)), None)
     if part:
         return part
     rc_files = [os.path.expanduser("~/.sqliterc"), os.path.expanduser("~/.config/sqlite3/sqliterc")]

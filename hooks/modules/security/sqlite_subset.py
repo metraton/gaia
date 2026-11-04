@@ -95,8 +95,8 @@ def _statement_part(statement: List[Tuple[str, str]]) -> Optional[str]:
         if kind not in _CREATED:
             return f"the statement `{head} {kind}`"
     if head == "PRAGMA":
-        names = [_name(t).lower() for t in statement[1:] if t[0] in ("word", "quoted")]
-        pragma = names[-1] if len(statement) > 2 and statement[2][1] == "." else (names[0] if names else "")
+        position = 3 if len(statement) > 2 and statement[2][1] == "." else 1
+        pragma = _name(statement[position]).lower() if len(statement) > position else ""
         has_argument = any(text == "(" for _, text in statement)
         if any(text == "=" for _, text in statement) or pragma not in _PRAGMA_READS or (
             has_argument and pragma not in _PRAGMA_ARGUMENT_READS
@@ -159,15 +159,39 @@ def sql_outside_allowlist(sql: str) -> Optional[str]:
     return None
 
 
+def _dot_command_part(line: str) -> Optional[str]:
+    name = re.match(r"\.(\S*)", line).group(1)
+    return None if name in DOT_COMMANDS else f"the dot-command `.{name}`"
+
+
+def _state(sql: str) -> Tuple[bool, bool]:
+    tokens, unplaced = _tokens(sql)
+    open_literal = bool(unplaced) or any(kind == "unclosed" for kind, _ in tokens)
+    return open_literal, open_literal or bool(tokens and tokens[-1][1] != ";")
+
+
+def argument_outside_subset(argument: str) -> Optional[str]:
+    """The first part of one sqlite3 argument outside the read subset: a dot-command line or one whole SQL text."""
+    if argument.startswith("."):
+        return "a dot-command argument spanning lines" if "\n" in argument else _dot_command_part(argument)
+    return sql_outside_allowlist(argument)
+
+
 def script_outside_subset(script: str) -> Optional[str]:
-    """The first dot-command or SQL in a sqlite3 script outside the read subset, or None."""
+    """The first dot-command or SQL in a sqlite3 script outside the read subset, read line by line as the shell reads it."""
     sql: List[str] = []
     for line in script.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("."):
-            name = re.match(r"\.(\S*)", stripped).group(1)
-            if name not in DOT_COMMANDS:
-                return f"the dot-command `.{name}`"
+        open_literal, pending = _state("\n".join(sql))
+        if line.strip().lower() in ("go", "/") and not open_literal:
+            sql.append(";")
+        elif not pending and line.startswith("."):
+            part = _dot_command_part(line)
+            if part:
+                return part
+        elif not pending and line.startswith("#"):
+            continue
+        elif line.strip().startswith("."):
+            return f"the line `{line.strip()[:40]}`, which the shell may read as SQL or as a dot-command"
         else:
             sql.append(line)
     return sql_outside_allowlist("\n".join(sql))
