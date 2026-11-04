@@ -127,12 +127,15 @@ The effect the command's content proves decides the signature. A form that
 shows the gate where it reads and writes runs free; reach for these first
 (each is asserted free by the test named after it):
 
-- Run a project tool in its folder with `uv --directory /abs/repo run pytest`
-  or `uv --project /abs/repo run ...`, a literal cwd option
+- Run a project tool in its folder with `uv --directory /abs/repo run pytest`:
+  a literal `--directory` is the folder uv runs in, and the payload is judged
+  there. A literal `--project` only locates the project, so a script it runs
+  is still judged in the caller's folder
   (`tests/hooks/modules/security/test_package_runner_origin.py::test_uv_directory_is_where_the_payload_runs`).
 - Read a file at a revision with `git -C /repo show <rev>:<path>`, which prints
-  it and writes nothing (no test asserts this form free; `show` is a read verb
-  and the command runs unsigned). A `git ... --output`/`-o` file runs free only
+  it and writes nothing
+  (`tests/hooks/modules/security/test_mutative_verbs.py::TestDetectMutativeCommand::test_git_local_commands_not_mutative`,
+  case `show-rev-path`). A `git ... --output`/`-o` file runs free only
   inside your own scratch entry
   (`tests/hooks/modules/security/test_own_scratch_relief_real_shape.py::test_own_scratch_relief_under_the_real_payload`,
   case `archive-output-own-file`).
