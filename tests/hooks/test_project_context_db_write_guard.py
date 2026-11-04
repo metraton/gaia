@@ -473,6 +473,30 @@ def test_sqlite3_input_the_guard_cannot_read_in_full_is_unproven(opener, command
 
 
 @pytest.mark.parametrize("command", [
+    "sqlite3 {o} \"$(head {d}/open.sql)\"",
+    "sqlite3 {o} \"$SQL\"",
+    "sqlite3 {o} \"SELECT $X\"",
+    "sqlite3 {o} `cat {d}/open.sql`",
+    "env -C /tmp sqlite3 {o} \"$SQL\"",
+    "sqlite3 {o} <<EOF\n$SQL\nEOF",
+    "HOME=$PWD sqlite3 {o} 'SELECT 1'",
+    "cd {d} && sqlite3 {o} \"SELECT readfile('hl.db')\"",
+    "cd {d} && sqlite3 {o} \"SELECT \\\"writefile\\\"('x.db', 1)\"",
+    "cd {d} && sqlite3 -A -x -f /tmp/a.sqlar",
+    "cd {d} && sqlite3 -Axf /tmp/a.sqlar",
+    "cd {d} && sqlite3 {o} '.ar -x'",
+])
+def test_sqlite3_text_the_shell_computes_or_a_relative_file_function_is_unproven(opener, command):
+    _refused_unproven(command.format(d=opener, o=OTHER), cwd="/tmp")
+    for free in (
+        f"sqlite3 {OTHER} '.cd $D' \"SELECT readfile('/tmp/x')\"",
+        f"sqlite3 {OTHER} <<'EOF'\nSELECT '$SQL';\nEOF",
+        f"sqlite3 -A -x -f /tmp/a.sqlar",
+    ):
+        assert check(free, "/tmp") == (True, None), free
+
+
+@pytest.mark.parametrize("command", [
     f"echo .shell touch /tmp/pwn | sqlite3 {OTHER}",
     f"printf '.%s kubectl delete ns prod\\n' shell | sqlite3 {OTHER}",
     f"sqlite3 {OTHER} \"SELECT \\\"edit\\\"('x', 'touch /tmp/pwn')\"",
