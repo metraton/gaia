@@ -430,13 +430,14 @@ def _collect(
     if depth > _MAX_NESTING_DEPTH:
         return False
     truncated = False
+    if not heredoc_body:
+        from ..tools.shell_parser import strip_comment
+
+        command = strip_comment(command)
 
     i = 0
     length = len(command)
     quote = _Q_NONE
-    # A ``#`` starts a comment only at the beginning of a word. ``foo#bar`` and
-    # ``http://x/#frag`` are not comments, and treating them as such would blind
-    # the scan to whatever followed on the line.
     at_word_start = True
     # Heredocs declared on the current line, in declaration order. Their bodies
     # do not start where the ``<<`` appears -- they start after the newline, and
@@ -527,13 +528,6 @@ def _collect(
                 quote = _Q_DOUBLE
                 i += 1
                 at_word_start = False
-                continue
-            if ch == "#" and at_word_start:
-                newline = command.find("\n", i)
-                if newline == -1:
-                    return
-                i = newline + 1
-                at_word_start = True
                 continue
             if command.startswith("<<<", i):
                 # A here-string, not a heredoc: its word EXPANDS and there is no
