@@ -114,6 +114,18 @@ class StageDecomposer:
 
         return DecomposedCommand(raw=command, stages=stages, substitutions=substitutions)
 
+    def pipe_feeders(self, command: str, components: List[str]) -> List[Optional[str]]:
+        """Per component, the stage that alone starts the pipe into it; all None when *command*'s stages differ from *components*."""
+        stages = self.decompose(command).stages
+        feeders: List[Optional[str]] = [None] * len(components)
+        if [stage.command for stage in stages] != [component.strip() for component in components]:
+            return feeders
+        for index in range(1, len(stages)):
+            starts_pipe = index == 1 or stages[index - 2].operator != "|"
+            if stages[index - 1].operator == "|" and starts_pipe:
+                feeders[index] = stages[index - 1].command
+        return feeders
+
     def _split_with_operators(self, command: str) -> List[tuple]:
         """
         Walk *command* and return a list of (segment, operator_or_None) tuples.

@@ -34,6 +34,7 @@ except ImportError:
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
 from .cli_aliases import as_wrapped_cli, declared_wrapper
+from .flag_classifiers import AWK_PROGRAMS
 from .forge_shapes import change_request_action
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
@@ -9279,6 +9280,7 @@ _CODE_INJECTING_ENVIRONMENT: "Dict[str, Tuple[re.Pattern[str], re.Pattern[str]]]
     "python": (re.compile(r"python[\d.]*"), re.compile(r"PYTHONSTARTUP|PYTHONPATH")),
     "lua": (_LUA_PROGRAM_RE, re.compile(r"LUA_INIT(?:_\d+_\d+)?")),
     "r": (re.compile(r"r|rscript"), re.compile(r"R_(?:PROFILE|ENVIRON)(?:_USER)?")),
+    "awk": (re.compile("|".join(map(re.escape, sorted(AWK_PROGRAMS)))), re.compile(r"AWKPATH")),
     "git": (
         re.compile(r"git"),
         re.compile(r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|EXTERNAL_DIFF|ASKPASS|PROXY_COMMAND)"),

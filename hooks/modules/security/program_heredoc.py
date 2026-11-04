@@ -50,8 +50,12 @@ def _reads_program_from_stdin(interpreter: str, args: List[str]) -> bool:
 
     A code interpreter takes no positional or a final ``-``; a shell takes no
     positional. Neither may carry an inline-code flag, whose program is its
-    argument instead.
+    argument instead. awk names stdin as a program or include file.
     """
+    from .flag_classifiers import AWK_PROGRAMS, awk_reads_program_from_stdin
+
+    if interpreter in AWK_PROGRAMS:
+        return awk_reads_program_from_stdin(args)
     positionals = [arg for arg in args if not arg.startswith("-") or arg == _STDIN_SENTINEL]
     if interpreter in CODE_INTERPRETERS:
         if _CODE_INLINE_FLAGS.intersection(args):

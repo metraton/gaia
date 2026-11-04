@@ -1478,8 +1478,9 @@ class BashValidator:
         cwd: Optional[str] = None,
         tool_use_id: str = "",
         caller: Optional[LocalWorkCaller] = None,
+        piped_from: Optional[str] = None,
     ) -> BashValidationResult:
-        """Validate a single command (no operators); *caller* is what the local-work relief needs.
+        """Validate a single command (no operators); *caller* is what the local-work relief needs, *piped_from* the stage feeding its stdin.
 
         Simplified pipeline:
         0. Indirect execution detection (for compound command components)
@@ -1632,7 +1633,7 @@ class BashValidator:
         # "sed -i" is). Git is excluded from the MUTATIVE path, since
         # detect_mutative_command() handles git deliberately; a git BLOCKED
         # result still stops the command.
-        flag_result = classify_by_flags(command, caller)
+        flag_result = classify_by_flags(command, caller, piped_from=piped_from)
         if flag_result is not None:
             if flag_result.outcome == FLAG_BLOCKED:
                 return BashValidationResult(
@@ -1796,7 +1797,8 @@ class BashValidator:
         line_naming = naming_variables_on_line(command or "\n".join(components))
         tripped, tripped_command = None, command
         callers = local_work_callers(command, components, cwd, agent_id)
-        for comp, caller in zip(components, callers):
+        feeders = self._decomposer.pipe_feeders(command or "", components)
+        for comp, caller, feeder in zip(components, callers, feeders):
             detected = detect_mutative_command(comp, cwd=scan_cwd, caller=caller)
             if package_inputs_rewritten and runs_package_script(comp):
                 has_t3 = True
@@ -1814,7 +1816,7 @@ class BashValidator:
             if not detected.is_mutative:
                 detected = target_under_line(comp, line_targets, cwd=scan_cwd) or detected
             detected = production_target_verdict(comp, detected, cwd=scan_cwd, inherited=line_naming) or detected
-            flagged = classify_by_flags(comp, caller)
+            flagged = classify_by_flags(comp, caller, piped_from=feeder)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (
                 flagged is not None
@@ -1859,7 +1861,7 @@ class BashValidator:
             # and must never be reserved as one component of a chain.
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type, cwd=running_cwd, caller=callers[i - 1],
+                agent_type=agent_type, cwd=running_cwd, caller=callers[i - 1], piped_from=feeders[i - 1],
             )
             # Advance the cwd AFTER classifying this component, so a `cd` only
             # affects subsequent components (POSIX chain semantics).

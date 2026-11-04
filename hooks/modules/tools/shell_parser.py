@@ -31,6 +31,8 @@ _WORD_START_BEFORE = " \t\n;&|()"
 # target attached (`2>/dev/null`, `<in`, `2>&1`).
 _REDIRECT_OPERATOR = re.compile(r"^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<)$")
 _REDIRECT_ATTACHED = re.compile(r"^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<).+$")
+_HEREDOC_OPERATOR = re.compile(r"<<(?!<)")
+_GROUP_OPENER = re.compile(r"(?:[{}](?=\s|$)|\((?!\())\s*")
 
 
 def strip_comment(command: str) -> str:
@@ -63,6 +65,47 @@ def strip_comment(command: str) -> str:
         out.append(ch)
         i += 1
     return "".join(out)
+
+
+def strip_comment_before_heredoc(command: str) -> str:
+    """*command* without comments, except in a heredoc body, whose `#` is data the reader receives."""
+    first, newline, rest = command.partition("\n")
+    first = strip_comment(first)
+    if _HEREDOC_OPERATOR.search(first):
+        return first + newline + rest
+    return strip_comment(command)
+
+
+def strip_grouping(command: str) -> str:
+    """*command* without the `{`, `}`, `(` and `)` words that group it with others, which no program receives."""
+    text = command.strip()
+    while True:
+        opener = _GROUP_OPENER.match(text)
+        if opener is None:
+            break
+        text = text[opener.end():]
+    depth = 0
+    for char in _outside_quotes(text):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+    while depth < 0 and text.endswith(")"):
+        text, depth = text[:-1].rstrip(), depth + 1
+    return text
+
+
+def _outside_quotes(text: str) -> str:
+    kept, quote, escaped = [], "", False
+    for char in text:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        else:
+            kept.append(char)
+    return "".join(kept)
 
 
 def is_lone_ampersand(command: str, i: int) -> bool:

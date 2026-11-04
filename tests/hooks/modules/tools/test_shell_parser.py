@@ -13,7 +13,6 @@ import sys
 import pytest
 from pathlib import Path
 
-# Add hooks to path
 HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
@@ -23,7 +22,34 @@ from modules.tools.shell_parser import (
     get_shell_parser,
     parse_command,
     is_compound_command,
+    strip_comment_before_heredoc,
+    strip_grouping,
 )
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("{ awk -f - data.txt", "awk -f - data.txt"),
+    ("}", ""),
+    ("( ( awk x )", "awk x"),
+    ("(cd /tmp", "cd /tmp"),
+    ("make)", "make"),
+    ("echo $(date)", "echo $(date)"),
+    ("echo ')'", "echo ')'"),
+    ("((n++))", "((n++))"),
+    ("{a,b}", "{a,b}"),
+    ("find . -exec ls {} ;", "find . -exec ls {} ;"),
+])
+def test_strip_grouping_removes_only_the_words_that_group_commands(command, expected):
+    assert strip_grouping(command) == expected
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("awk -f - data.txt # < ro.awk", "awk -f - data.txt "),
+    ("echo 'a # b' a#b", "echo 'a # b' a#b"),
+    ("awk -f - <<'EOF' # c\n$0 ~ / #x/ { system(\"y\") }\nEOF", "awk -f - <<'EOF' \n$0 ~ / #x/ { system(\"y\") }\nEOF"),
+])
+def test_strip_comment_before_heredoc_keeps_the_body_as_data(command, expected):
+    assert strip_comment_before_heredoc(command) == expected
 
 
 class TestShellCommandParser:

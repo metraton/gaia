@@ -24,6 +24,7 @@ Dependencies: Python stdlib only.
 
 from __future__ import annotations
 
+import posixpath
 import re
 import shlex
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from .mutative_verbs import LocalWorkCaller
+    from .program_heredoc import HeredocProgram
 
 
 OUTCOME_READ_ONLY = "READ_ONLY"
@@ -397,53 +399,331 @@ def _classify_sed(tokens: List[str]) -> Optional[FlagClassifierResult]:
     )
 
 
-_AWK_MUTATIVE_PATTERNS = re.compile(
-    r"""
-    system\s*\(        # system("cmd")
-    | \|\s*getline     # pipe into getline
-    | print\s.*>       # print expr > file (redirect)
-    | print\s.*>>      # print expr >> file (append)
-    | close\s*\(       # close(file/pipe) implies file I/O
-    | \|&              # two-way pipe (gawk)
-    """,
-    re.VERBOSE,
-)
+_AWK_EFFECT_TOKENS = (">", "|", "system", "@", "/inet")
+AWK_PROGRAMS = frozenset({
+    "awk", "gawk", "mawk", "nawk", "goawk", "original-awk", "onetrue-awk", "bwk-awk",
+})
+_AWK_NAMES_GAWK_CAN_HOLD = frozenset({"awk", "gawk", "nawk"})
+_AWK_STDIN_PATHS = frozenset({"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
+_AWK_STDIN_PROGRAM_OPTIONS = frozenset({"f", "E", "i"})
+_AWK_VALUE_LETTERS = frozenset("FvfEeilW")
+_AWK_ATTACHED_VALUE_LETTERS = frozenset("dDLopm")
+_AWK_LONG_OPTIONS = {
+    "--assign": "v", "--bignum": "M", "--characters-as-bytes": "b", "--copyright": "C", "--csv": "k",
+    "--debug": "D", "--dump-variables": "d", "--exec": "E", "--field-separator": "F", "--file": "f",
+    "--gen-pot": "g", "--help": "h", "--include": "i", "--lint": "L", "--lint-old": "t", "--load": "l",
+    "--no-optimize": "s", "--non-decimal-data": "n", "--optimize": "O", "--posix": "P",
+    "--pretty-print": "o", "--profile": "p", "--re-interval": "r", "--sandbox": "S", "--source": "e",
+    "--trace": "I", "--traditional": "c", "--use-lc-numeric": "N", "--version": "V",
+}
+_AWK_UNPROVEN_OPTIONS = {
+    "d": "writes a variable dump file", "o": "writes a pretty-printed program file",
+    "p": "writes a profile file", "D": "runs the gawk debugger, whose commands can run anything",
+    "W": "takes a -W option the classifier does not model", "?": "takes a long option gawk would not resolve",
+    "i": "includes a source file whose code is not proven read-only",
+    "l": "loads an extension whose code is not proven read-only",
+    "E": "runs a program file through -E, which is not proven read-only",
+}
+_UNPROVEN_WORD = "\0"
+_SHELL_COMPUTED = re.compile(r"[$`\\*?\[{()]")
+_STDIN_REDIRECT = re.compile(r"(\d*)(<<<|<<-?|<&|<>|<)(.*)", re.S)
+_PRINTF_PIECES = re.compile(r"(%%|%s)")
 
 
-def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
-    if not tokens or tokens[0] not in ("awk", "gawk", "mawk", "nawk"):
-        return None
+def _awk_long_option(name: str) -> str:
+    """The letter of the long option getopt_long resolves *name* to, exact or unique prefix; "?" when it would not."""
+    if name in _AWK_LONG_OPTIONS:
+        return _AWK_LONG_OPTIONS[name]
+    candidates = [letter for option, letter in _AWK_LONG_OPTIONS.items() if option.startswith(name)]
+    return candidates[0] if len(candidates) == 1 else "?"
 
-    args = tokens[1:]
+
+def _awk_options(args: List[str]) -> Tuple[List[Tuple[str, str]], List[str]]:
+    options: List[Tuple[str, str]] = []
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("-F", "-v", "-f", "-i", "-l", "-M", "-m", "-o"):
-            i += 2
-            continue
-        if a.startswith("-") and not a.startswith("--"):
-            i += 1
-            continue
+        i += 1
         if a == "--":
-            i += 1
             break
-        program = a
-        m = _AWK_MUTATIVE_PATTERNS.search(program)
-        if m:
-            matched = m.group().strip()
-            return FlagClassifierResult(
-                outcome=OUTCOME_MUTATIVE,
-                reason=f"awk program contains side-effecting construct: {matched!r}",
-                matched_pattern=matched,
-                command_family="awk",
+        if a.startswith("--"):
+            name, eq, value = a.partition("=")
+            letter = _awk_long_option(name)
+            if letter in _AWK_VALUE_LETTERS and not eq and i < len(args):
+                value, i = args[i], i + 1
+            options.append((letter, value))
+        elif a.startswith("-") and len(a) > 1:
+            for j, letter in enumerate(a[1:], 2):
+                if letter in _AWK_VALUE_LETTERS or letter in _AWK_ATTACHED_VALUE_LETTERS:
+                    value = a[j:]
+                    if not value and letter in _AWK_VALUE_LETTERS and i < len(args):
+                        value, i = args[i], i + 1
+                    options.append((letter, value))
+                    break
+                options.append((letter, ""))
+        else:
+            i -= 1
+            break
+    return options, args[i:]
+
+
+def awk_reads_program_from_stdin(args: List[str]) -> bool:
+    """True when awk *args* (program name excluded) take a program or include file from stdin."""
+    from ..tools.shell_parser import drop_redirections
+
+    options, _ = _awk_options(drop_redirections(args))
+    return any(option in _AWK_STDIN_PROGRAM_OPTIONS and value in _AWK_STDIN_PATHS for option, value in options)
+
+
+def _tilde_expands(line: str, value: str) -> Optional[bool]:
+    """Whether bash expands the leading ``~`` of program path *value*; None when *line* cannot be read word by word.
+
+    Bash expands it only when a word starts with it and nothing before its first slash is quoted.
+    """
+    if not value.startswith("~"):
+        return False
+    words = _raw_words(line)
+    if words is None:
+        return None
+    return any(
+        word.startswith("~") and not set(word.split("/", 1)[0]) & set("'\"") and _literal_word(word) == value
+        for word in words
+    )
+
+
+def _awk_program_file(
+    path: str, caller: "Optional[LocalWorkCaller]", expand_tilde: bool = True,
+) -> Optional[str]:
+    """Return the text of the program file awk would read, or None when that file cannot be proven and read whole.
+
+    A path under /dev or /proc names one of the hook's own descriptors, not the shell's.
+    """
+    import os
+    from .mutative_verbs import _MAX_SCRIPT_READ_BYTES, _read_script_content
+
+    expanded = os.path.expanduser(path) if expand_tilde else path
+    cwd = caller.cwd if caller is not None else None
+    if not os.path.isabs(expanded) and cwd is None:
+        return None
+    absolute = os.path.normpath(os.path.join(cwd or "/", expanded))
+    if any(p.startswith(("/dev/", "/proc/")) for p in (absolute, os.path.realpath(absolute))):
+        return None
+    text = _read_script_content(absolute, cwd)
+    if text is None or len(text) >= _MAX_SCRIPT_READ_BYTES:
+        return None
+    return text
+
+
+def _unquoted_index(word: str, chars: str) -> int:
+    quote = ""
+    for index, char in enumerate(word):
+        if quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in chars:
+            return index
+    return -1
+
+
+def _raw_words(text: str) -> Optional[List[str]]:
+    words, current, quote, escaped = [], "", "", False
+    for char in text:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in " \t":
+            if current:
+                words.append(current)
+            current = ""
+            continue
+        current += char
+    if quote or escaped:
+        return None
+    return words + [current] if current else words
+
+
+def _outside_single_quotes(word: str) -> str:
+    kept, quote = [], ""
+    for char in word:
+        if quote == "'" or (quote and char == quote):
+            quote = "" if char == quote else quote
+        elif not quote and char in "'\"":
+            quote = char
+        else:
+            kept.append(char)
+    return "".join(kept)
+
+
+def _literal_word(word: str) -> Optional[str]:
+    """The value bash gives raw *word*, or None when expansion, escaping or globbing could make it differ."""
+    from ..tools.shell_parser import shell_split
+
+    if _SHELL_COMPUTED.search(_outside_single_quotes(word)) or word.startswith(("'~", '"~')):
+        return None
+    try:
+        values = shell_split(word)
+    except ValueError:
+        return None
+    return values[0] if len(values) == 1 else None
+
+
+def _stdin_redirects(words: List[str]) -> Optional[List[Tuple[str, str]]]:
+    redirects: List[Tuple[str, str]] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        at = _unquoted_index(word, "<")
+        if at == -1:
+            continue
+        match = _STDIN_REDIRECT.fullmatch(word)
+        if match is None or at != len(match.group(1)):
+            return None
+        fd, operator, target = match.groups()
+        if fd not in ("", "0"):
+            continue
+        if operator not in ("<", "<<<"):
+            return None
+        if not target:
+            if index >= len(words):
+                return None
+            target, index = words[index], index + 1
+        value = _literal_word(target)
+        if value is None:
+            return None
+        redirects.append((operator, value))
+    return redirects
+
+
+def _printf_output(form: str, args: List[str]) -> Optional[str]:
+    pieces = [piece for piece in _PRINTF_PIECES.split(form) if piece]
+    if "\\" in form or any(piece not in ("%s", "%%") and "%" in piece for piece in pieces):
+        return None
+    slots = pieces.count("%s")
+    out: List[str] = []
+    remaining = list(args)
+    while True:
+        for piece in pieces:
+            out.append((remaining.pop(0) if remaining else "") if piece == "%s" else piece.replace("%%", "%"))
+        if not slots or not remaining:
+            return "".join(out)
+
+
+def _piped_program(stage: str, caller: "Optional[LocalWorkCaller]") -> Optional[str]:
+    """What *stage* writes when its text proves it: literal echo or printf no escape can rewrite, or cat of readable files."""
+    words = _raw_words(stage)
+    if not words or any(_unquoted_index(word, "<>&|;") != -1 for word in words):
+        return None
+    values = [_literal_word(word) for word in words]
+    if any(value is None for value in values):
+        return None
+    head, args = values[0], values[1:]
+    if head == "echo":
+        flags = ""
+        while args and re.fullmatch(r"-[neE]+", args[0]):
+            flags += args.pop(0)
+        if "e" in flags or any("\\" in arg for arg in args):
+            return None
+        return " ".join(args) + ("" if "n" in flags else "\n")
+    if head == "printf" and args and not args[0].startswith("-"):
+        return _printf_output(args[0], args[1:])
+    if head == "cat" and args and not any(arg.startswith("-") for arg in args):
+        texts = [_awk_program_file(arg, caller) for arg in args]
+        return None if any(text is None for text in texts) else "".join(texts)
+    return None
+
+
+def _awk_stdin_program(
+    command: str, heredoc: "Optional[HeredocProgram]", caller: "Optional[LocalWorkCaller]", piped_from: Optional[str],
+) -> Optional[str]:
+    """The program awk reads from stdin, when exactly one source the command shows proves it; else None."""
+    if heredoc is not None:
+        return None if heredoc.expands or piped_from is not None else heredoc.body + "\n"
+    words = _raw_words(command)
+    redirects = _stdin_redirects(words) if words is not None and "\n" not in command else None
+    if redirects is None or len(redirects) + (piped_from is not None) != 1:
+        return None
+    if piped_from is not None:
+        return _piped_program(piped_from, caller)
+    operator, value = redirects[0]
+    return value + "\n" if operator == "<<<" else _awk_program_file(value, caller)
+
+
+def _awk_signs(reason: str, matched_pattern: str) -> FlagClassifierResult:
+    return FlagClassifierResult(
+        outcome=OUTCOME_MUTATIVE, reason=reason, matched_pattern=matched_pattern, command_family="awk",
+    )
+
+
+def _classify_awk(
+    command: str, caller: "Optional[LocalWorkCaller]" = None, piped_from: Optional[str] = None,
+) -> Optional[FlagClassifierResult]:
+    """awk runs free only when every program text is proven verbatim and holds none of _AWK_EFFECT_TOKENS."""
+    from ..tools.shell_parser import drop_redirections
+    from .program_heredoc import heredoc_program
+
+    heredoc = heredoc_program(command)
+    if heredoc is not None and heredoc.interpreter not in AWK_PROGRAMS:
+        heredoc = None
+    declaring_line = command.split("\n", 1)[0] if heredoc is not None else command
+    tokens = drop_redirections(_tokenize(declaring_line))
+    if not tokens or posixpath.basename(tokens[0]) not in AWK_PROGRAMS:
+        return None
+    words = _raw_words(declaring_line)
+    if words is None:
+        return _awk_signs("awk line cannot be read word by word, so its program is unproven", "awk")
+
+    values = [_literal_word(word) for word in drop_redirections(words)[1:]]
+    options, operands = _awk_options([_UNPROVEN_WORD if value is None else value for value in values])
+    for option, _ in options:
+        if option in _AWK_UNPROVEN_OPTIONS:
+            return _awk_signs(f"awk -{option} {_AWK_UNPROVEN_OPTIONS[option]}", f"-{option}")
+
+    programs = [value for option, value in options if option == "e"]
+    reads_stdin = False
+    for option, value in options:
+        if option != "f":
+            continue
+        if value in _AWK_STDIN_PATHS:
+            reads_stdin = True
+            continue
+        if "/" not in value and posixpath.basename(tokens[0]) in _AWK_NAMES_GAWK_CAN_HOLD:
+            return _awk_signs(f"gawk looks awk program file {value!r} up through AWKPATH, unproven", f"-f {value}")
+        expands = None if value == _UNPROVEN_WORD else _tilde_expands(declaring_line, value)
+        text = None if expands is None else _awk_program_file(value, caller, expands)
+        if text is None:
+            return _awk_signs(f"awk program file {value!r} cannot be read, so its effect is unproven", f"-f {value}")
+        programs.append(text)
+    if reads_stdin:
+        text = _awk_stdin_program(command, heredoc, caller, piped_from)
+        if text is None:
+            return _awk_signs(
+                "awk reads its program from stdin, and no single literal or readable source on the line proves it",
+                "stdin program",
             )
+        programs.append(text)
+    if not programs:
+        programs = operands[:1]
+
+    for program in programs:
+        if program == _UNPROVEN_WORD:
+            return _awk_signs("awk program text is not proven verbatim by the command line", "unproven program")
+        token = next((token for token in _AWK_EFFECT_TOKENS if token in program), None)
+        if token is not None:
+            return _awk_signs(f"awk program contains effect-capable token {token!r}", token)
+    if programs:
         return FlagClassifierResult(
             outcome=OUTCOME_READ_ONLY,
-            reason="awk program does not contain file/system side-effects",
+            reason="awk program is proven verbatim and holds no effect-capable token",
             matched_pattern="awk",
             command_family="awk",
         )
-
     return FlagClassifierResult(
         outcome=OUTCOME_READ_ONLY,
         reason="awk with no identifiable program text is read-only",
@@ -952,10 +1232,7 @@ def _classify_git_dispatch(tokens: List[str]) -> Optional[FlagClassifierResult]:
 _CLASSIFIER_REGISTRY: Dict[str, Callable[[List[str]], Optional[FlagClassifierResult]]] = {
     "git": _classify_git_dispatch,
     "sed": _classify_sed,
-    "awk": _classify_awk,
-    "gawk": _classify_awk,
-    "mawk": _classify_awk,
-    "nawk": _classify_awk,
+    **{name: _classify_awk for name in AWK_PROGRAMS},
     "tar": _classify_tar,
     "find": _classify_find,
     "curl": _classify_curl,
@@ -967,6 +1244,7 @@ _CLASSIFIER_REGISTRY: Dict[str, Callable[[List[str]], Optional[FlagClassifierRes
 
 def classify_by_flags(
     command: str, caller: "Optional[LocalWorkCaller]" = None, wrapped: bool = False,
+    piped_from: Optional[str] = None,
 ) -> Optional[FlagClassifierResult]:
     """Classify a command based on flags and sub-commands.
 
@@ -978,22 +1256,26 @@ def classify_by_flags(
         command: The full shell command string.  Behind a transparent wrapper
             (``sudo``, ``env -C``) each wrapped reading is classified with no
             caller, and only a blocked or mutative verdict is adopted.
-        caller: Who runs the command and from where; tar's local-work relief
-            needs it.
+        caller: Who runs it and from where; tar's relief and relative awk files need it.
         wrapped: The command is a reading peeled from behind a wrapper, so no
             relief that needs the bare line applies (curl -G).
+        piped_from: The stage whose output alone is piped into *command*; awk
+            judges a program it reads from stdin by what that stage writes.
 
     Returns:
-        FlagClassifierResult if the command belongs to a known family, else None.
+        FlagClassifierResult if the program's base name (``/usr/bin/sed`` is sed) is a known family, else None.
     """
+    from ..tools.shell_parser import strip_comment_before_heredoc, strip_grouping
+
     if not command or not command.strip():
         return None
+    command = strip_grouping(strip_comment_before_heredoc(command))
     tokens = _tokenize(command)
     if not tokens:
         return None
 
-    base_cmd = tokens[0]
-    classifier = _CLASSIFIER_REGISTRY.get(base_cmd)
+    tokens[0] = posixpath.basename(tokens[0])
+    classifier = _CLASSIFIER_REGISTRY.get(tokens[0])
     if classifier is None:
         from .mutative_verbs import _peel_wrapper_readings
         readings, peeled = _peel_wrapper_readings(command)
@@ -1003,6 +1285,8 @@ def classify_by_flags(
                 if result is not None and result.outcome == outcome:
                     return result
         return None
+    if classifier is _classify_awk:
+        return _classify_awk(command, caller, piped_from)
     if classifier is _classify_tar:
         return _classify_tar(tokens, caller)
     if classifier is _classify_curl:

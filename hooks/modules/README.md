@@ -253,9 +253,21 @@ Every other reader makes the body code, and the heredoc fails closed (`_fail_clo
 
 - Each body line is read as a shell command.
 - A reading that hits a floor blocks the command. A mutative reading signs it, with the rule of its strongest effect.
-- With neither, the command asks as UNKNOWN (`unknown.dynamic-span`). Gaia does not parse another language: an awk program, or Python behind `timeout` or `nice`, is code it cannot read.
+- With neither, the command asks as UNKNOWN (`unknown.dynamic-span`). Gaia does not parse another language: Python behind `timeout` or `nice` is code it cannot read.
 
 One reader is read in full: an interpreter that takes its program from the heredoc with nothing before it (`python3 -`, `node -`, `bash -s`, bare `sh`; `security/program_heredoc.py`). Its body goes through the inline-code or script lanes like a script file, wherever the heredoc sits on the line (`_heredoc_as_program`). That holds only while the body is the program that runs. An unquoted delimiter whose body carries `$` or a backtick lets the shell rewrite the body first, so it asks as UNKNOWN too.
+
+awk (`awk`, `gawk`, `mawk`, `nawk`, `goawk`, `original-awk`, `onetrue-awk`, `bwk-awk`; `AWK_PROGRAMS`) runs free only when its whole program is proven read-only by construction (`security/flag_classifiers.py::_classify_awk`). Every program text must be proven verbatim by the line, and none may contain `>`, `|`, `system`, `@` or `/inet` anywhere, line breaks ignored (`_AWK_EFFECT_TOKENS`). Anything else signs.
+
+- **Sources.** The program can come from an inline word or `-e` that is a literal word: no expansion, no ANSI-C `$'...'`, no backslash outside single quotes, no `$` even inside double quotes (`_literal_word`). It can also come from a `-f` file that reads whole, or from stdin (`-f` naming `-`, `/dev/stdin`, `/dev/fd/0` or `/proc/self/fd/0`) through the one source the line proves (`_awk_stdin_program`). That source is a quoted heredoc body, a literal here-string, a readable `< file`, or the single stage piped into awk (`_piped_program`). A piped stage counts only as an `echo` with no `-e` flag and no backslash, a `printf` whose format holds no backslash and no directive but `%s` and `%%`, or a `cat` of readable files.
+- **Tokens.** `|` also covers `cmd | getline` and `|&`. `@` covers `@include`, `@load` and gawk's indirect call `@f()`, which reaches `system()` without naming it. A `>` or `||` used as an operator, and the word `system` in a string, sign too, an accepted over-ask.
+- **Options.** `-i`, `-l` and `-E` (and `--include`, `--load`, `--exec`) always sign, as do `-d`, `-o`, `-p`, `-D`, `-W` and a long option gawk would not resolve (`_AWK_UNPROVEN_OPTIONS`).
+- **Program lookup.** gawk looks a `-f` name with no slash up through `AWKPATH`, so under `awk`, `gawk` or `nawk` (names a gawk install can take; `_AWK_NAMES_GAWK_CAN_HOLD`) such a name signs and only `./prog.awk` or an absolute path is read. An `AWKPATH` assigned or exported anywhere earlier on the line signs every later awk (`mutative_verbs.py::_CODE_INJECTING_ENVIRONMENT`). An `AWKPATH` inherited from the tool's environment is not visible to the line.
+- **What signs.** An unreadable `-f` file, an unquoted heredoc, an inherited stdin, more than one source, and a line that cannot be read word by word all sign. `close()` alone runs free, since it has no effect by itself.
+
+The flag classifiers read a stage as bash runs it (`classify_by_flags`): words after an unquoted `#` that starts a word are dropped outside a heredoc body (`shell_parser.strip_comment_before_heredoc`), and the `{`, `}`, `(` and `)` that group the stage with others are not its words (`shell_parser.strip_grouping`), so `{ awk ...; }` and `( awk ... )` are judged as awk, and the first stage of a `{ ... }` group fed by a pipe keeps that feeder.
+
+The flag classifier keys every program it knows by base name (`classify_by_flags`), so `/usr/bin/gawk`, `/bin/tar` or `./sed` is judged as the bare name. A `~` in an awk `-f` path is expanded only where bash expands it: an unquoted leading `~` of its own word, never `'~/x'`, `~'/x'` or `--file=~/x`.
 
 The list is short on purpose. A reader left off it over-asks, which is the cost of failing closed. A reader wrongly on it would run a body nobody classified.
 
