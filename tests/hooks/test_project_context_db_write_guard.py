@@ -435,6 +435,45 @@ def test_a_relative_file_sqlite3_reads_from_an_unproven_folder_is_unproven(cd_fo
     assert check(f"cd {cd_folder} && sqlite3 -init {cd_folder}/ok.sql {OTHER}", "/tmp") == (True, None)
 
 
+@pytest.fixture()
+def opener(cd_folder):
+    (cd_folder / "open.sql").write_text(f".open {os.environ['GAIA_DB']}\nPRAGMA user_version=9;\n")
+    (cd_folder / "ok.sql").write_text("SELECT 1;\n")
+    return cd_folder
+
+
+@pytest.mark.parametrize("command", [
+    "< {d}/open.sql sqlite3 {o}",
+    "0< {d}/open.sql sqlite3 {o}",
+    "0<{d}/open.sql sqlite3 {o}",
+    "X=1 < {d}/open.sql sqlite3 {o}",
+    "2>/dev/null < {d}/open.sql sqlite3 {o}",
+    "{{ sqlite3 {o}; }} < {d}/open.sql",
+    "exec < {d}/open.sql; sqlite3 {o}",
+    "cat -- {d}/open.sql | sqlite3 {o}",
+])
+def test_sqlite3_stdin_from_any_redirect_or_proven_feeder_is_judged_by_its_content(opener, command):
+    _refused_as_store(command.format(d=opener, o=OTHER), cwd="/tmp")
+
+
+@pytest.mark.parametrize("command", [
+    "cd {d} && < open.sql sqlite3 {o}",
+    "head -n 99 {d}/open.sql | sqlite3 {o}",
+    "python3 /tmp/emit.py | sqlite3 {o}",
+    "sqlite3 {o} <&3",
+    "sqlite3 {o} < {d}/absent.sql",
+    "sqlite3 {o} < <(cat {d}/open.sql)",
+    "sqlite3 {o} \".read '|head {d}/open.sql'\"",
+    "cd {d} && sqlite3 {o} '.load ./ext'",
+    "cd {d} && sqlite3 {o} \"SELECT load_extension('./ext')\"",
+])
+def test_sqlite3_input_the_guard_cannot_read_in_full_is_unproven(opener, command):
+    _refused_unproven(command.format(d=opener, o=OTHER), cwd="/tmp")
+    for free in (f"< {opener}/ok.sql sqlite3 {OTHER}", f"echo 'SELECT 1;' | sqlite3 {OTHER}"):
+        assert check(free, "/tmp") == (True, None), free
+        assert sqlite_unproven_effect(free, "/tmp") == guard.SIGN_GUIDANCE
+
+
 @pytest.mark.parametrize("command", [
     f"echo .shell touch /tmp/pwn | sqlite3 {OTHER}",
     f"printf '.%s kubectl delete ns prod\\n' shell | sqlite3 {OTHER}",
