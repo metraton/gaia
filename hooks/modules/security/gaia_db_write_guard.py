@@ -274,10 +274,16 @@ def _invocations(command: str) -> List[_Invocation]:
 
 
 def _starts_in_shell_folder(command: str) -> bool:
-    """Whether sqlite3 is the line's first command and its only sqlite3 run, so nothing before it can move its folder."""
+    """Whether the line holds exactly one sqlite3 run and it is the first command, so nothing before it can move its folder."""
     components = [c for c in map(str.strip, _split_components(command)) if c]
-    head = _sqlite_args(components[0]) if components else None
-    return head is not None and all(args in (None, head) for args in map(_sqlite_args, _readings(command)))
+    if not components or _sqlite_args(components[0]) is None:
+        return False
+    runs = sum(
+        any(_sqlite_args(reading) is not None for reading in _readings(component))
+        for body in [command, *extract_substitutions(command)]
+        for component in filter(None, map(str.strip, _split_components(body)))
+    )
+    return runs == 1
 
 
 def _read_fed_file(path: str, cwd: Optional[str]) -> str:
