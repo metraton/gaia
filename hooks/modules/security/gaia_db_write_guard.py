@@ -10,7 +10,8 @@ reads as SQL whose path and content are literal: a `<` or `-init` file, a
 `.read` target, the sqliterc under a HOME or XDG_CONFIG_HOME the line assigns,
 and the files a `cat` on the line prints, followed through `.read` recursively.
 A literal sqlite3 `.cd` target is one more folder every relative path is judged
-in; one the guard cannot resolve leaves every relative file operand unproven.
+in; one the guard cannot resolve leaves every relative file operand unproven,
+as a shell cd or any program that starts sqlite3 (env, sudo, -execdir) does.
 Reads go through `gaia context query`. A shell command or file a sqlite3 call
 names in a readable payload -- `.shell`, `.system`, any dot-command operand
 starting with `|`, edit()'s editor, a VISUAL or EDITOR the line assigns --
@@ -251,23 +252,37 @@ def _readings(text: str, depth: int = 0) -> Iterator[str]:
                     yield from _readings(inner, depth + 1)
 
 
-def _invocations(command: str) -> List[_Invocation]:
+def _sqlite_args(reading: str) -> Optional[List[str]]:
+    """The argument words of *reading* when sqlite3 is its program, else None."""
     from ..tools.shell_parser import shell_split
 
+    try:
+        words = shell_split(reading)
+    except ValueError:
+        words = _tokenize(reading)
+    head = 0
+    while head < len(words) and _ASSIGNMENT.match(words[head]):
+        head += 1
+    if head < len(words) and command_name(words[head]) in _SQLITE_PROGRAMS:
+        return words[head + 1:]
+    return None
+
+
+def _invocations(command: str) -> List[_Invocation]:
     if "sqlite" not in re.sub(r"[\\'\"]", "", command).lower():
         return []
-    found: List[_Invocation] = []
-    for reading in _readings(command):
-        try:
-            words = shell_split(reading)
-        except ValueError:
-            words = _tokenize(reading)
-        head = 0
-        while head < len(words) and _ASSIGNMENT.match(words[head]):
-            head += 1
-        if head < len(words) and command_name(words[head]) in _SQLITE_PROGRAMS:
-            found.append(_Invocation(words[head + 1:]))
-    return found
+    return [_Invocation(args) for args in map(_sqlite_args, _readings(command)) if args is not None]
+
+
+def _starts_in_shell_folder(command: str) -> bool:
+    """Whether every sqlite3 run heads a component of *command*, so no program before it can move its folder."""
+    for component in filter(None, map(str.strip, _split_components(command))):
+        head = _sqlite_args(component)
+        for reading in _readings(component):
+            args = _sqlite_args(reading)
+            if args is not None and args != head:
+                return False
+    return True
 
 
 def _read_fed_file(path: str, cwd: Optional[str]) -> str:
@@ -466,7 +481,9 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     paths += [os.path.join(value, *_SQLITERC[name]) for name, value in assigned if name in _SQLITERC and value]
     paths += [path for reading in _readings(command) for path in _proven_output_files(reading)]
     sources = [command, *(word for inv in invocations for word in inv.args)]
-    folders, texts, folder_unproven = _folders(sources, paths, None if _SHELL_CD.search(command) else cwd)
+    if _SHELL_CD.search(command) or not _starts_in_shell_folder(command):
+        cwd = None
+    folders, texts, folder_unproven = _folders(sources, paths, cwd)
     verdict = next((v for f in folders if (v := _folder_refusal(invocations, texts, line_words, assigned, f))), None)
     if verdict:
         return verdict
