@@ -16,8 +16,8 @@ Reads go through `gaia context query`. A shell command or file a sqlite3 call
 names in a readable payload -- `.shell`, `.system`, any dot-command operand
 starting with `|`, edit()'s editor, a VISUAL or EDITOR the line assigns --
 meets the floors a plain Bash line meets and is refused when they refuse it.
-Every other sqlite3 call signs (``sqlite_unproven_effect``): no
-form is provably read-only, since `-safe` still reads files through fsdir().
+Any other call must stay in a read subset (OUTSIDE_SUBSET_MESSAGE lists it) and
+then signs (``sqlite_unproven_effect``): `-safe` still reads files via fsdir().
 Shell writers whose destination is the store file are refused. The refusals are
 categorical, with no approval_id.
 """
@@ -71,6 +71,20 @@ UNPROVEN_INPUT_MESSAGE = (
     "`gaia context query`."
 )
 
+UNPROVEN_START_MESSAGE = (
+    "sqlite3 is not the first and only command on this line, or no working folder "
+    "was given, so this guard could not prove where a relative file operand lands. "
+    "Name the file by an absolute path; read gaia.db with `gaia context query`."
+)
+
+OUTSIDE_SUBSET_MESSAGE = (
+    "sqlite3 runs only in a provable read subset: an absolute database other than "
+    "gaia.db, SQL given literally or as a literal file read in full, no environment "
+    "assignment, the options {options} and the dot-commands {dots}. This call uses "
+    "{part}, so this guard could not prove it leaves gaia.db alone. Read gaia.db "
+    "with `gaia context query`."
+)
+
 SIGN_GUIDANCE = (
     "Every sqlite3 call asks for a signature: even `sqlite3 -readonly -safe` reads "
     "any file through fsdir(), so no form of it is provably read-only. Read gaia.db "
@@ -104,6 +118,22 @@ _INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php"})
 
 _SQLITE_PROGRAMS = frozenset({"sqlite3", "sqlite"})
 _LEAD_WORDS = frozenset({"{", "(", "!", "if", "then", "else", "elif", "do", "while", "until", "time"})
+_SUBSET_OPTIONS = frozenset({
+    "ascii", "bail", "batch", "box", "column", "csv", "echo", "header", "noheader", "help",
+    "html", "json", "line", "list", "markdown", "nofollow", "quote", "readonly", "safe",
+    "table", "tabs", "version",
+})
+_SUBSET_VALUE_OPTIONS = frozenset({"separator", "newline", "nullvalue"})
+_SUBSET_DOT_COMMANDS = frozenset({
+    "tables", "schema", "fullschema", "headers", "mode", "indexes", "indices", "dump",
+    "databases", "show", "print", "width", "nullvalue", "separator", "timer", "changes",
+    "stats", "help", "quit", "exit", "echo", "eqp", "explain", "bail",
+})
+_OUTSIDE_SQL = re.compile(
+    r"\bATTACH\b|\bVACUUM\b[^;]*\bINTO\b|[\"\[`]?\b(?:readfile|writefile|edit|load_extension|fsdir|zipfile"
+    r"|sqlar_compress|sqlar_uncompress|sqlite_dbpage)\b(?:\\?[\"\]`])?(?:\s|/\*.*?\*/|--[^\n]*\n)*\(",
+    re.I | re.S,
+)
 _VALUE_OPTIONS = frozenset({
     "init", "cmd", "separator", "newline", "nullvalue", "vfs", "mmap", "maxsize",
     "heap", "nonce", "escape",
@@ -129,7 +159,7 @@ _PATH_FUNCTION = re.compile(
     re.I | re.S,
 )
 _UNQUOTED_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*[A-Za-z_]")
-_EXPANSION = re.compile(r"\$[A-Za-z_{(0-9@*#?!$-]|`")
+_EXPANSION = re.compile(r"\$[A-Za-z_{(0-9@*#?!$'\"-]|`")
 _SQL_CALL = re.compile(
     rf"[\"\[`]?\b(?P<fn>edit|writefile)\b(?:\\?[\"\]`])?{_SQL_GAP}\({_SQL_GAP}(?P<first>'(?:[^']|'')*')"
     rf"(?:{_SQL_GAP},{_SQL_GAP}(?P<second>'(?:[^']|'')*'))?",
@@ -414,6 +444,67 @@ def _computes_sqlite_text(command: str) -> bool:
     return False
 
 
+def _assigns_before_sqlite(reading: str) -> bool:
+    from ..tools.shell_parser import shell_split
+
+    try:
+        words = shell_split(reading)
+    except ValueError:
+        return True
+    for word in words:
+        if command_name(word.lstrip("(")) in _SQLITE_PROGRAMS:
+            return False
+        if _ASSIGNMENT.match(word):
+            return True
+    return False
+
+
+def _invocation_part(invocation: "_Invocation") -> Optional[str]:
+    database, index, args = None, 0, invocation.args
+    while index < len(args):
+        word = args[index]
+        redirect = _REDIRECT_WORD.match(word)
+        name = word.lstrip("-").lower()
+        if redirect:
+            index += 1 if word[redirect.end():] else 2
+            continue
+        if word.startswith("-") and name in _SUBSET_VALUE_OPTIONS:
+            index += 2
+            continue
+        if word.startswith("-") and name not in _SUBSET_OPTIONS:
+            return f"the option `{word}`"
+        if not word.startswith("-") and database is None:
+            database = word
+        index += 1
+    path = os.path.expanduser(database or ":memory:")
+    if path.lower().startswith("file:"):
+        return f"the URI database `{database}`"
+    if path not in ("", ":memory:") and not os.path.isabs(path):
+        return f"the relative database `{database}`"
+    return None
+
+
+def _outside_subset(command: str, invocations: List["_Invocation"], texts: List[str]) -> Optional[str]:
+    if any(_assigns_before_sqlite(r) for r in _readings(command) if _sqlite_args(r) is not None):
+        return "an environment assignment"
+    part = next(filter(None, map(_invocation_part, invocations)), None)
+    if part:
+        return part
+    rc_files = [os.path.expanduser("~/.sqliterc"), os.path.expanduser("~/.config/sqlite3/sqliterc")]
+    present = [path for path in rc_files if os.path.lexists(path)]
+    if not all(_read_in_full(path, None) for path in present):
+        return "an init file it could not read"
+    corpus = texts + [_read_fed_file(path, None) for path in present]
+    for text in corpus:
+        for typed, _ in _dot_commands(text):
+            if typed not in _SUBSET_DOT_COMMANDS:
+                return f"the dot-command `.{typed}`"
+        found = _OUTSIDE_SQL.search(text)
+        if found:
+            return f"`{found.group(0).strip()}`"
+    return None
+
+
 def _literal_printer(command: str) -> bool:
     from ..tools.shell_parser import shell_split
 
@@ -634,24 +725,28 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     sources = [command, *(word for inv in invocations for word in inv.args)]
     start = cwd if _starts_in_shell_folder(command) else None
     folders, texts, folder_unproven = _folders(sources, paths, start)
+    folder_message = UNPROVEN_FOLDER_MESSAGE if any(True for _ in _cd_targets(texts)) else UNPROVEN_START_MESSAGE
     verdicts = [v for f in folders if (v := _folder_refusal(invocations, texts, line_words, assigned, f))]
     if verdicts:
-        return STORE_REJECTION_MESSAGE if STORE_REJECTION_MESSAGE in verdicts else verdicts[0]
+        verdict = STORE_REJECTION_MESSAGE if STORE_REJECTION_MESSAGE in verdicts else verdicts[0]
+        return folder_message if verdict == UNPROVEN_FOLDER_MESSAGE else verdict
     read_as_sql = stdin + fed + [p for inv in invocations for p in inv.read_files()]
     read_as_sql += [path for text in texts for path in _read_targets(text)]
     inputs = paths + read_as_sql + [path for text in texts for _, path in _file_operands(text)]
     inputs += [m[1].replace("''", "'") for text in texts for m in _PATH_FUNCTION.finditer(text)]
-    archive = any(w.startswith("-A") or w == "--archive" for inv in invocations for w in inv.args) or any(
-        typed in ("ar", "archive") for text in texts for typed, _ in _dot_commands(text)
-    )
-    if (folder_unproven or start is None) and (archive or any(
-        p and _relative(p) and not p.startswith(("<(", "(")) for p in inputs
-    )):
-        return UNPROVEN_FOLDER_MESSAGE
+    if (folder_unproven or start is None) and any(p and _relative(p) and not p.startswith(("<(", "(")) for p in inputs):
+        return folder_message
     if unproven_feed or _computes_sqlite_text(command) or not all(
         _read_in_full(p, f) for p in read_as_sql for f in folders
     ):
         return UNPROVEN_INPUT_MESSAGE
+    part = _outside_subset(command, invocations, texts)
+    if part:
+        return OUTSIDE_SUBSET_MESSAGE.format(
+            options=", ".join(f"-{o}" for o in sorted(_SUBSET_OPTIONS | _SUBSET_VALUE_OPTIONS)),
+            dots=", ".join(f".{d}" for d in sorted(_SUBSET_DOT_COMMANDS)),
+            part=part,
+        )
     return None
 
 

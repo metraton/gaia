@@ -172,10 +172,18 @@ def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
 
 
 @pytest.mark.parametrize("command", [
-    f"sqlite3 {OTHER} '.shell ls /tmp'",
-    f"sqlite3 {OTHER} '.output /tmp/out.txt' 'SELECT 1'",
     f"sqlite3 {OTHER} <<EOF\nSELECT 1;\nEOF",
     "sqlite3 -version",
+    f"env -u HOME sqlite3 {OTHER} 'SELECT 1'",
+])
+def test_another_database_in_the_read_subset_signs(command):
+    assert check(command, "/tmp") == (True, None)
+    assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
+
+
+@pytest.mark.parametrize("command", [
+    f"sqlite3 {OTHER} '.shell ls /tmp'",
+    f"sqlite3 {OTHER} '.output /tmp/out.txt' 'SELECT 1'",
     f"sqlite3 {OTHER} '.shell kubectl apply -f x.yaml'",
     f"sqlite3 {OTHER} '.sys git push --force origin main'",
     f"sqlite3 {OTHER} '.shell echo $(id)'",
@@ -185,7 +193,6 @@ def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
     f"sqlite3 {OTHER} '.excel' 'SELECT 1'",
     f"HOME=/tmp/h sqlite3 {OTHER} 'SELECT 1'",
     f"XDG_CONFIG_HOME=/tmp/h sqlite3 {OTHER} 'SELECT 1'",
-    f"env -u HOME sqlite3 {OTHER} 'SELECT 1'",
     f"sqlite3 {OTHER} '.load /tmp/x.so'",
     f"sqlite3 {OTHER} \"SELECT load_extension('/tmp/x.so')\"",
     f"sqlite3 {OTHER} \"SELECT edit('x', 'touch /tmp/pwn')\"",
@@ -198,9 +205,10 @@ def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
     f"sqlite3 {OTHER} <<EOF\n.shell kubectl apply -f x.yaml\nEOF",
     f"VISUAL=vim sqlite3 {OTHER} \"SELECT edit('x')\"",
 ])
-def test_another_database_signs_when_nothing_it_reaches_is_refused(command):
-    assert check(command, "/tmp") == (True, None)
-    assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
+def test_another_database_outside_the_read_subset_is_refused(command):
+    allowed, reason = check(command, "/tmp")
+    assert allowed is False, command
+    assert "gaia context query" in reason or reason.startswith(guard.REACH_REJECTION_PREFIX), reason
 
 
 @pytest.mark.parametrize("command", [
@@ -222,14 +230,17 @@ def _validate(command):
     )
 
 
-def test_validator_refuses_the_store_categorically_and_signs_an_unproven_reach():
+def test_validator_refuses_the_store_and_the_outside_subset_and_signs_the_subset():
     refused = _validate(f"sqlite3 {STORE} 'SELECT 1'")
     assert refused.rule == "floor.gaia-db-write"
     assert refused.reason.startswith(guard.STORE_REJECTION_MESSAGE)
 
-    signed = _validate(f"sqlite3 {OTHER} '.once |sh' \"SELECT 'touch /tmp/pwn'\"")
+    outside = _validate(f"sqlite3 {OTHER} '.once |sh' \"SELECT 'touch /tmp/pwn'\"")
+    assert outside.rule == "floor.gaia-db-write"
+    assert outside.approval_id is None
+
+    signed = _validate(f"sqlite3 {OTHER} '.tables'")
     assert signed.allowed is False
-    assert signed.rule != "floor.gaia-db-write"
     assert signed.approval_id
 
     deleted = _validate(f'sqlite3 {OTHER} "DELETE FROM t"')
@@ -353,7 +364,7 @@ def test_a_relative_operand_after_a_literal_sqlite3_cd_meets_the_shell_floors_th
     command = command.format(o=OTHER, d=cd_folder, repo=README.parent)
     allowed, reason = check(command, "/tmp")
     assert allowed is False and reason.startswith(guard.REACH_REJECTION_PREFIX), (command, reason)
-    assert check(f"sqlite3 {OTHER} '.cd {cd_folder}' '.open fresh.db' '.once out.txt'", "/tmp") == (True, None)
+    assert check(f"sqlite3 {OTHER} '.tables'", "/tmp") == (True, None)
 
 
 @pytest.mark.parametrize("command,cwd", [
@@ -369,7 +380,7 @@ def test_a_sqlite3_cd_the_guard_cannot_resolve_leaves_later_relative_operands_un
     for process_folder in (README.parent, tmp_path):
         monkeypatch.chdir(process_folder)
         _refused_unproven(command, cwd)
-        assert check(f"sqlite3 {OTHER} '.cd $D' 'SELECT 1'", "/tmp") == (True, None)
+        assert check(f"sqlite3 {OTHER} '.tables'", "/tmp") == (True, None)
 
 
 @pytest.mark.parametrize("command", [
@@ -430,7 +441,7 @@ def test_a_relative_database_with_anything_before_sqlite3_on_the_line_is_unprove
 def test_a_relative_file_sqlite3_reads_from_an_unproven_folder_is_unproven(cd_folder, command, cwd):
     _refused_unproven(command.format(d=cd_folder), cwd)
     (cd_folder / "ok.sql").write_text("SELECT 1;\n")
-    assert check(f"cd {cd_folder} && sqlite3 -init {cd_folder}/ok.sql {OTHER}", "/tmp") == (True, None)
+    assert check(f"cd {cd_folder} && sqlite3 {OTHER} < {cd_folder}/ok.sql", "/tmp") == (True, None)
 
 
 @pytest.fixture()
@@ -539,11 +550,7 @@ def test_an_unproven_folder_with_no_sqlite3_cd_does_not_blame_cd(opener):
 ])
 def test_sqlite3_text_the_shell_computes_or_a_relative_file_function_is_unproven(opener, command):
     _refused_unproven(command.format(d=opener, o=OTHER), cwd="/tmp")
-    for free in (
-        f"sqlite3 {OTHER} '.cd $D' \"SELECT readfile('/tmp/x')\"",
-        f"sqlite3 {OTHER} <<'EOF'\nSELECT '$SQL';\nEOF",
-        f"sqlite3 -A -x -f /tmp/a.sqlar",
-    ):
+    for free in (f"sqlite3 {OTHER} '.schema' 'SELECT 1'", f"sqlite3 {OTHER} <<'EOF'\nSELECT '$SQL';\nEOF"):
         assert check(free, "/tmp") == (True, None), free
 
 
@@ -591,8 +598,6 @@ def test_every_sqlite3_call_on_another_database_is_at_least_signed(command):
 @pytest.mark.parametrize("command", [
     f"{FREE} 'SELECT 1'",
     f"sqlite3 --safe --readonly -json -header {OTHER} 'SELECT * FROM t' '.tables'",
-    f"{FREE} \"SELECT name, data FROM fsdir('/tmp')\"",
-    f"{FREE} \"SELECT name FROM \\\"fsdir\\\"('/tmp')\"",
 ])
 def test_readonly_safe_signs_since_sqlite3_3_45_1_safe_mode_still_reads_files_through_fsdir(command):
     assert check(command, "/tmp") == (True, None)
@@ -600,6 +605,8 @@ def test_readonly_safe_signs_since_sqlite3_3_45_1_safe_mode_still_reads_files_th
     verdict = _validate(command)
     assert verdict.approval_id, command
     assert "fsdir()" in str(verdict.block_response)
+    for reader in (f"{FREE} \"SELECT name, data FROM fsdir('/tmp')\"", f"{FREE} \"SELECT name FROM \\\"fsdir\\\"('/tmp')\""):
+        assert check(reader, "/tmp")[0] is False, reader
 
 
 @pytest.mark.parametrize("init_file", ["~/.sqliterc", "~/.config/sqlite3/sqliterc"])
