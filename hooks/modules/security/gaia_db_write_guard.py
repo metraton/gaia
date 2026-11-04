@@ -11,7 +11,7 @@ reads as SQL whose path and content are literal: a `<` or `-init` file, a
 and the files a `cat` on the line prints, followed through `.read` recursively.
 A literal sqlite3 `.cd` target is one more folder every relative path is judged
 in; one the guard cannot resolve leaves every relative file operand unproven,
-as a shell cd or any program that starts sqlite3 (env, sudo, -execdir) does.
+as does anything on the line before sqlite3, which must be its first command.
 Reads go through `gaia context query`. A shell command or file a sqlite3 call
 names in a readable payload -- `.shell`, `.system`, any dot-command operand
 starting with `|`, edit()'s editor, a VISUAL or EDITOR the line assigns --
@@ -103,7 +103,6 @@ _PAIR_OPTIONS = frozenset({"lookaside", "pagecache"})
 _REDIRECT_WORD = re.compile(r"^\d*(?:<<<|<<-?|<>|<&|>>|>&|>\||&>>|&>|<|>)")
 _NOT_LITERAL = re.compile(r"[$`*?\[\]{}]|^~(?!/|$)")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_SHELL_CD = re.compile(r"(?:^|[;&|(\s])(?:cd|pushd|popd)\b")
 _DOT_COMMAND = re.compile(
     r"(?:(?P<quote>[\"'])|(?<!\S))[ \t]*\.(?P<name>[a-z]+)\b"
     r"(?P<rest>(?(quote)(?:(?!(?P=quote))[^\n])*|[^\n|;&]*))",
@@ -275,14 +274,10 @@ def _invocations(command: str) -> List[_Invocation]:
 
 
 def _starts_in_shell_folder(command: str) -> bool:
-    """Whether every sqlite3 run heads a component of *command*, so no program before it can move its folder."""
-    for component in filter(None, map(str.strip, _split_components(command))):
-        head = _sqlite_args(component)
-        for reading in _readings(component):
-            args = _sqlite_args(reading)
-            if args is not None and args != head:
-                return False
-    return True
+    """Whether sqlite3 is the line's first command and its only sqlite3 run, so nothing before it can move its folder."""
+    components = [c for c in map(str.strip, _split_components(command)) if c]
+    head = _sqlite_args(components[0]) if components else None
+    return head is not None and all(args in (None, head) for args in map(_sqlite_args, _readings(command)))
 
 
 def _read_fed_file(path: str, cwd: Optional[str]) -> str:
@@ -436,6 +431,8 @@ def _file_refusal(path: str, cwd: Optional[str]) -> Optional[str]:
         return STORE_REJECTION_MESSAGE
     if not path or _NOT_LITERAL.search(path) or path.lower() in _OUTPUT_SPECIALS:
         return None
+    if cwd is None and not os.path.isabs(os.path.expanduser(path)):
+        return UNPROVEN_FOLDER_MESSAGE
     for guard in (protected_path_guard.check, shell_write_guard.check):
         allowed, reason = guard(f"echo > {shlex.quote(path)}", cwd)
         if not allowed:
@@ -481,13 +478,12 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     paths += [os.path.join(value, *_SQLITERC[name]) for name, value in assigned if name in _SQLITERC and value]
     paths += [path for reading in _readings(command) for path in _proven_output_files(reading)]
     sources = [command, *(word for inv in invocations for word in inv.args)]
-    if _SHELL_CD.search(command) or not _starts_in_shell_folder(command):
-        cwd = None
-    folders, texts, folder_unproven = _folders(sources, paths, cwd)
-    verdict = next((v for f in folders if (v := _folder_refusal(invocations, texts, line_words, assigned, f))), None)
-    if verdict:
-        return verdict
-    if folder_unproven and any(_relative(path) for text in texts for _, path in _file_operands(text)):
+    moved = not _starts_in_shell_folder(command)
+    folders, texts, folder_unproven = _folders(sources, paths, None if moved else cwd)
+    verdicts = [v for f in folders if (v := _folder_refusal(invocations, texts, line_words, assigned, f))]
+    if verdicts:
+        return STORE_REJECTION_MESSAGE if STORE_REJECTION_MESSAGE in verdicts else verdicts[0]
+    if (folder_unproven or moved) and any(_relative(path) for text in texts for _, path in _file_operands(text)):
         return UNPROVEN_FOLDER_MESSAGE
     return None
 
