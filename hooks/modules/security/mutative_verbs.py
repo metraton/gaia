@@ -172,7 +172,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Lifecycle
     "start", "restart", "reboot", "reload", "refresh", "resume",
     "uncordon", "unsuspend", "enable", "disable", "suspend", "pause",
-    "stop", "shutdown", "halt", "abort", "up", "seal", "unseal",
+    "stop", "shutdown", "halt", "poweroff", "abort", "up", "seal", "unseal",
     # Movement / transfer
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
@@ -5367,6 +5367,91 @@ def _check_executor_payload(
     )
 
 
+_EXPANSION_START_RE = re.compile(r"`|\$(?:[({@*#?!$\-]|\w)")
+
+
+def _unquoted_expansion(text: str) -> "Optional[str]":
+    """Return the first substitution or parameter expansion the shell performs in *text*, or None."""
+    index, in_double = 0, False
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == '"':
+            in_double = not in_double
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            closing = text.find("'", index + 1)
+            index = len(text) if closing == -1 else closing + 1
+            continue
+        if char == "$" and not in_double and text[index + 1:index + 2] == "'":
+            closing = text.find("'", index + 2)
+            index = len(text) if closing == -1 else closing + 1
+            continue
+        match = _EXPANSION_START_RE.match(text, index)
+        if match:
+            return text[index:index + 24]
+        index += 1
+    return None
+
+
+def _names_a_program(word: str) -> bool:
+    if not word or word[0] in "-+:{" or "=" in word:
+        return False
+    name = program_identity(word)
+    if not name:
+        return False
+    if _is_capability_verb is not None and _is_capability_verb(name):
+        return True
+    return name == name.lower() and (
+        name in _NEVER_INHERITING_PROGRAMS or _classifier_rule_names(name, programs_only=True)
+    )
+
+
+def _check_launched_payload(
+    base_cmd: str, semantics: "CommandSemantics", *,
+    cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Adopt the mutative verdict of any command a program with no grammar here could be handed in its arguments; a whole-expansion word signs."""
+    if base_cmd not in _COMMAND_EXECUTORS and (
+        _classifier_rule_names(base_cmd)
+        or (_is_capability_verb is not None and _is_capability_verb(base_cmd))
+    ):
+        return None
+    raw = semantics.raw_command.strip()
+    expansion = _unquoted_expansion(raw[_consume_shell_word(raw, 0):])
+    if expansion is not None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="launched-dynamic-word",
+            cli_family=base_cmd,
+            reason=f"'{base_cmd}' has no grammar here and the expansion {expansion!r} could be the command it runs",
+            rule="unknown.dynamic-span",
+        )
+    args = list(semantics.tokens[1:])
+    payloads: List[str] = []
+    for index, word in enumerate(args):
+        text = _unquote_single_word(word)
+        words = text.split()
+        if len(words) > 1:
+            if _names_a_program(words[0]):
+                payloads.append(text)
+        elif _names_a_program(text):
+            payloads.append(" ".join(args[index:]))
+    if not payloads:
+        return None
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("launched payload")
+    for payload in payloads:
+        inner = _strictest_component(payload, cwd=cwd, _depth=_depth + 1)
+        if inner.is_mutative:
+            return replace(inner, reason=f"'{base_cmd}' runs the command {payload!r} it is handed: {inner.reason}")
+    return None
+
+
 def _check_command_substitutions(
     command: str, *, cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
@@ -5466,15 +5551,20 @@ _NEVER_INHERITING_PROGRAMS: FrozenSet[str] = frozenset({
 
 def _is_unmodelled_cli(name: str) -> bool:
     """True when no rule of the classifier, nor its destructive-program list, names the program *name*."""
+    return not _classifier_rule_names(name) and name not in _NEVER_INHERITING_PROGRAMS
+
+
+def _classifier_rule_names(name: str, *, programs_only: bool = False) -> bool:
+    """True when a rule of the classifier keys on the program *name*: a table, a PowerShell verb, an uppercase spelling; ``programs_only`` leaves out the verb tables."""
     from .flag_classifiers import _CLASSIFIER_REGISTRY
     from .shell_unwrapper import _SHELLS
     from .command_semantics import LONG_VALUE_FLAGS
 
     base = name.lower()
     if base != name or base.startswith("mkfs"):
-        return False
+        return True
     if "-" in base and base.split("-", 1)[0] in _PS_ALL_VERBS:
-        return False
+        return True
     name_keyed_tables = (
         CLI_FAMILY_LOOKUP, COMMAND_ALIASES, READ_ONLY_BASE_CMDS,
         _SCRIPT_FILE_INTERPRETERS, _INLINE_CODE_MAP, _POWERSHELL_INTERPRETERS,
@@ -5486,10 +5576,11 @@ def _is_unmodelled_cli(name: str) -> bool:
         R_FLAG_MEANS_RECURSIVE_DELETE, D_FLAG_MEANS_FORCE_DELETE,
         M_FLAG_MEANS_FORCE_MOVE, DELETE_FLAG_IS_DESTRUCTIVE,
         HARD_FLAG_IS_DESTRUCTIVE, BOOLEAN_SHORT_FLAGS, LONG_VALUE_FLAGS,
-        MUTATIVE_VERBS, SIMULATION_VERBS, READ_ONLY_VERBS,
-        _CLASSIFIER_REGISTRY, _SHELLS, _NEVER_INHERITING_PROGRAMS,
+        _CLASSIFIER_REGISTRY, _SHELLS,
     )
-    return not any(base in table for table in name_keyed_tables)
+    if not programs_only:
+        name_keyed_tables += (MUTATIVE_VERBS, SIMULATION_VERBS, READ_ONLY_VERBS)
+    return any(base in table for table in name_keyed_tables)
 
 
 def _absorbing_form(command: str) -> "Optional[str]":
@@ -5972,6 +6063,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     )
     if executor_result is not None:
         return executor_result
+
+    launched_result = _check_launched_payload(base_cmd, semantics, cwd=cwd, _depth=_depth)
+    if launched_result is not None:
+        return launched_result
 
     # --- Step 1b: Read-only base command fast-path ---
     # When the base_cmd is a known read-only inspection tool (grep, find, ls,

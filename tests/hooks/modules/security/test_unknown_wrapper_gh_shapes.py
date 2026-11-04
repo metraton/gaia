@@ -104,7 +104,7 @@ class TestUnknownWrapperMutationsAreSigned:
         "helm status ready",
         "systemctl status ready",
         "ghx api graphql -f query=query{viewer{login}}",
-        "ghx api graphql -F query=query($n:Int!){viewer{login}} -F n=1",
+        "ghx api graphql -F 'query=query($n:Int!){viewer{login}}' -F n=1",
     ])
     def test_generic_shape_read_is_free(self, command):
         assert classify_command_tier(command) == T0, command
