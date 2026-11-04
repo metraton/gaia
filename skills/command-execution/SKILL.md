@@ -121,6 +121,34 @@ For git, choose the canonical form once:
 `git -C /absolute/repository <verb> <fixed arguments>`. A post-grant retry must
 be byte-identical to the approved command.
 
+## Forms whose content proves a local effect
+
+The effect the command's content proves decides the signature. A form that
+shows the gate where it reads and writes runs free; reach for these first
+(each is asserted free by the test named after it):
+
+- Run a project tool in its folder with `uv --directory /abs/repo run pytest`:
+  a literal `--directory` is the folder uv runs in, and the payload is judged
+  there. A literal `--project` only locates the project, so a script it runs
+  is still judged in the caller's folder
+  (`tests/hooks/modules/security/test_package_runner_origin.py::test_uv_directory_is_where_the_payload_runs`).
+- Read a file at a revision with `git -C /repo show <rev>:<path>`, which prints
+  it and writes nothing
+  (`tests/hooks/modules/security/test_mutative_verbs.py::TestDetectMutativeCommand::test_git_local_commands_not_mutative`,
+  case `show-rev-path`). A `git ... --output`/`-o` file runs free only
+  inside your own scratch entry
+  (`tests/hooks/modules/security/test_own_scratch_relief_real_shape.py::test_own_scratch_relief_under_the_real_payload`,
+  case `archive-output-own-file`).
+- Run pytest from the repository with every `-c`, `--rootdir` and
+  `PYTHONPATH` inside it, and `--basetemp` only under the system temp dir
+  (`tests/hooks/modules/security/test_pytest_runner_options.py::test_pytest_options_inside_the_repo_run_free`).
+- Copy, move or remove inside a scratch entry named by your `contract_id`
+  (`tests/hooks/modules/security/test_own_scratch_relief_real_shape.py::test_own_scratch_relief_under_the_real_payload`,
+  cases `cp-into-own-entry`, `mv-in-own-entry`, `rm-in-own-entry`).
+- Keep a Python probe's argv literal: names bound once to literals and passed
+  to `subprocess.run` are judged as the command they spell
+  (`tests/hooks/modules/security/test_script_file_readonly_subprocess.py::test_argv_names_bound_once_to_literals_run_free`).
+
 ## Examples
 
 - Use `kubectl get pods -o json` instead of a filtering pipe.

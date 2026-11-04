@@ -26,7 +26,7 @@ kubectl apply -f manifest.yaml
 
 ## Rule 6: Files Over Inline Data
 
-Inline JSON/YAML/HCL creates shell quoting fragility. Write to a file under the canonical Gaia scratch directory (`~/.gaia/scratch`, printed by `gaia paths`), reference by path: `helm upgrade app chart -f ~/.gaia/scratch/values.yaml` instead of `--set "config={key: value}"`.
+Inline JSON/YAML/HCL creates shell quoting fragility. Write to a file in your own entry of the canonical Gaia scratch directory (`~/.gaia/scratch`, printed by `gaia paths`), the entry named by your `contract_id`, and reference it by path: `helm upgrade app chart -f ~/.gaia/scratch/<contract_id>/values.yaml` instead of `--set "config={key: value}"`. Copying, moving and removing inside that entry runs free; the same act in an entry named otherwise asks for a signature.
 
 ## Cloud CLI Examples
 
@@ -44,7 +44,7 @@ Inline JSON/YAML/HCL creates shell quoting fragility. Write to a file under the 
 # GOOD: run each separately, verify each exit code
 terraform init
 terraform validate
-terraform plan -out=~/.gaia/scratch/tfplan
+terraform plan -out=~/.gaia/scratch/<contract_id>/tfplan
 ```
 
 ### No Indirect-Execution Wrappers (Rule 2b)
@@ -81,7 +81,7 @@ The exit code is reported by the Bash tool itself: a non-zero code comes back as
 
 - *"It won't hang"* -- Timeouts: apply it anyway
 - *"Dry-run passed, I can apply"* -- Rule 5: dry-run, then diff, then apply -- three required steps
-- *"Simple value, I'll inline it"* -- Rule 6: write to temp file first
+- *"Simple value, I'll inline it"* -- Rule 6: write it to a file in your scratch entry first
 
 ## Rationalization Table
 

@@ -47,7 +47,7 @@ modules/
 │   ├── targets.py        # Where a command lands: context, project, account, branch; production detection
 │   ├── canonical_path.py # One canonical form of a path for every path guard (Windows spellings included)
 │   ├── gaia_cli_only_guard.py # The orchestrator's Bash lane: the trusted gaia binary and an allowlist of verbs
-│   ├── gaia_db_write_guard.py # Refuses sqlite3 on gaia.db and shell writes to it (categorical); signs every other sqlite3 call
+│   ├── gaia_db_write_guard.py # Runs sqlite3 only in an allowlisted subset (sqlite_subset.py; writes to another database included) and signs it; refuses gaia.db, shell writes to it, and a relative operand unless sqlite3 is the line's first command and only sqlite3 run ("could not prove"; absolute paths as written)
 │   ├── subagent_memory_write_guard.py # Refuses `gaia memory` writes from subagents
 │   ├── memory_skill_guard.py # Refuses the main session's memory writes until Skill('memory') is loaded
 │   ├── subagent_resume_point_guard.py # Classifies `gaia session` per verb; refuses a subagent's session writes
