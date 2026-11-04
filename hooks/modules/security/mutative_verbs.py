@@ -9566,7 +9566,7 @@ def _pytest_config_outside_effect(path: Path, top: "Optional[Path]", base: Path)
 def _check_pytest_run(
     base_cmd: str, semantics: "CommandSemantics", cwd: "Optional[str]",
 ) -> "Optional[MutativeResult]":
-    """Free a known-shape pytest run inside its repository; ask when it loads or writes outside it; else None."""
+    """Free a known-shape pytest run inside its repository, ask when it reaches outside it, else judge its files."""
     args = _pytest_arguments(base_cmd, list(semantics.tokens[1:]))
     if args is None:
         return None
@@ -9580,9 +9580,15 @@ def _check_pytest_run(
         _inside_repository(top, base, positional.split("::")[0]) is None for positional in positionals
     ):
         return _foreign_code_result("pytest collects tests from outside the repository")
-    if not known:
-        unknown = [name for name, value in options if value is None and name not in _PYTEST_SWITCHES]
-        return _suite_unplaced_result(f"pytest option {' '.join(unknown) or 'cluster'} is not one the screen models")
+    if known and top is not None:
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="pytest-run",
+            cli_family="linter",
+            confidence="medium",
+            reason="pytest runs the test suite of the repository it starts in and loads no code from outside it",
+        )
     plugins = [value for name, value in options if name == "-p" and value and not value.startswith("no:")]
     roots = [Path(base, positional.split("::")[0]) for positional in positionals] or [base]
     return _suite_result("pytest", _judge_suite(roots, top or base, plugins, [base]))

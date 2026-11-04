@@ -145,10 +145,10 @@ class TestPythonModuleWidening:
         "python3 -m json.tool /tmp/x.json",
         "python3 -m unittest discover -s tests",
     ])
-    def test_benign_module_invocations_are_not_relabelled(self, command):
+    def test_benign_module_invocations_are_not_relabelled(self, command, tmp_path):
         # The widening is escalate-only: a non-mutative rewrite is discarded so
         # ordinary detection classifies the command untouched.
-        result = detect_mutative_command(command)
+        result = detect_mutative_command(command, cwd=str(tmp_path))
         assert result.is_mutative is False
         assert "re-dispatched" not in result.reason
 

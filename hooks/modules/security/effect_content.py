@@ -75,16 +75,21 @@ class Finding:
         return self.kind is None
 
 
-def cache_entry_path(content: bytes) -> Optional[Path]:
-    """The cache file holding the facts of a file with this exact content, or None when no data home resolves."""
+def cache_dir() -> Path:
+    """The directory of cached file facts; protected_paths refuses every writer but this module."""
     try:
         from ..core.paths import get_data_home
 
         home = get_data_home()
     except Exception:
         home = Path(os.environ.get("GAIA_DATA_DIR") or Path.home() / ".gaia")
+    return Path(home) / "cache" / "effect-analysis"
+
+
+def cache_entry_path(content: bytes) -> Optional[Path]:
+    """The cache file holding the facts of a file with this exact content."""
     digest = hashlib.sha256(MARKER_SET_VERSION.encode() + b"\0" + content).hexdigest()
-    return Path(home) / "cache" / "effect-analysis" / f"{digest}.json"
+    return cache_dir() / f"{digest}.json"
 
 
 def _cached_facts(content: bytes) -> Optional[dict]:

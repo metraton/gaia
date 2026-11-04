@@ -259,21 +259,26 @@ def resolved_write_target(path_str: str) -> str:
 
 
 def is_read_spool_path(path_str: str, cwd: Optional[str] = None) -> bool:
-    """True iff `path_str` lies in the harness read spool, which only the PreToolUse recorder writes, in process.
+    """True iff `path_str` lies in a directory only the hooks write, in process: the read spool or the effect cache.
 
-    A line written there by any tool would return as an unmarked files_checked
-    entry, so every surface refuses it for every role, with no signature.
+    A line written to the spool by any tool would return as an unmarked
+    files_checked entry, and a forged effect-cache entry would free a test
+    suite, so every surface refuses both for every role, with no signature.
     `$HOME`, `${HOME}` and `~` expand, and a relative path anchors at `cwd`.
     """
     if not path_str:
         return False
     from gaia.contract.read_spool import spool_dir
 
+    from .effect_content import cache_dir
+
     spelled = expand_home(path_str)
     if cwd and not os.path.isabs(spelled) and not spelled.startswith("~"):
         spelled = os.path.join(cwd, spelled)
-    root = Path(os.path.abspath(spool_dir()))
-    roots = {root, root.resolve()}
+    roots = set()
+    for directory in (spool_dir(), cache_dir()):
+        root = Path(os.path.abspath(directory))
+        roots |= {root, root.resolve()}
     return any(
         candidate == r or r in candidate.parents
         for candidate in _candidates(spelled)

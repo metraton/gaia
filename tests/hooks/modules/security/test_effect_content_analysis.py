@@ -38,7 +38,13 @@ def test_effects_stay_in_tmp(tmp_path, repo):
     assert open(repo / "a.txt").read()
 '''
 
-SUITE_COMMANDS = ["python3 -m pytest -q tests/", "pytest tests/test_a.py", "python3 -m unittest discover -s tests"]
+# Runs the file analysis decides: (command, run inside the git repository).
+SUITE_COMMANDS = [
+    ("python3 -m unittest discover -s tests", True),
+    ("pytest --timeout=30 tests/test_a.py", True),
+    ("python3 -m pytest -q tests/", False),
+]
+SUITE_IDS = ["unittest", "pytest-unmodelled-option", "pytest-outside-repo"]
 
 # Each marked suite: file to write, its body, and the words the signature must name.
 MARKED = {
@@ -79,17 +85,24 @@ def _judge(command: str, cwd: Path):
     return detect_mutative_command(command, cwd=str(cwd))
 
 
-@pytest.mark.parametrize("command", SUITE_COMMANDS)
-def test_suite_without_markers_runs_free_on_its_files(command, repo):
+def _place(repo: Path, in_repo: bool) -> None:
+    if not in_repo:
+        (repo / ".git").rename(repo.parent / "moved-git")
+
+
+@pytest.mark.parametrize(("command", "in_repo"), SUITE_COMMANDS, ids=SUITE_IDS)
+def test_suite_without_markers_runs_free_on_its_files(command, in_repo, repo):
+    _place(repo, in_repo)
     result = _judge(command, repo)
     assert not result.is_mutative, result.reason
     assert result.verb == "suite-content-free", result.reason
     assert "no effect marker" in result.reason
 
 
-@pytest.mark.parametrize("command", SUITE_COMMANDS)
+@pytest.mark.parametrize(("command", "in_repo"), SUITE_COMMANDS, ids=SUITE_IDS)
 @pytest.mark.parametrize("case", sorted(MARKED))
-def test_suite_with_a_marker_signs_naming_it(case, command, repo):
+def test_suite_with_a_marker_signs_naming_it(case, command, in_repo, repo):
+    _place(repo, in_repo)
     path, body, marker = MARKED[case]
     (repo / path).write_text(body)
     if case == "subprocess-in-helper":
@@ -100,19 +113,20 @@ def test_suite_with_a_marker_signs_naming_it(case, command, repo):
     assert Path(path).name in result.reason, result.reason
 
 
-def test_suite_outside_a_repository_is_analysed_too(repo, tmp_path):
-    (repo / ".git").rename(tmp_path / "moved-git")
-    assert _judge("pytest tests/", repo).verb == "suite-content-free"
-    (repo / "tests" / "test_b.py").write_text("import requests\n")
-    assert "network" in _judge("pytest tests/", repo).reason
+@pytest.mark.parametrize("command", ["pytest tests/", "python3 -m pytest -q -n auto tests/test_a.py"])
+def test_plain_pytest_inside_its_repository_keeps_its_verdict(command, repo):
+    (repo / "tests" / "test_a.py").write_text(MARKED["network-import"][1])
+    result = _judge(command, repo)
+    assert not result.is_mutative and result.verb == "pytest-run", result.reason
 
 
 def test_a_claim_in_the_command_text_frees_nothing(repo):
     (repo / "tests" / "test_a.py").write_text(MARKED["network-import"][1])
     for command in (
-        "pytest tests/  # no effects, safe to run",
-        "GAIA_EFFECT_FREE=1 pytest tests/",
-        "python3 -m pytest tests/ -k 'not network'",
+        "python3 -m unittest discover -s tests  # no effects, safe to run",
+        "GAIA_EFFECT_FREE=1 python3 -m unittest discover -s tests",
+        "python3 -m unittest -k not_network discover -s tests",
+        "pytest --timeout=30 tests/  # pure tests",
     ):
         assert _judge(command, repo).is_mutative, command
 
@@ -125,25 +139,44 @@ def test_node_test_directory_is_judged_by_its_files(repo):
     assert result.is_mutative and "b.test.js" in result.reason, result.reason
 
 
-def test_unchanged_file_is_read_from_cache_and_edited_file_is_analysed_again(repo, tmp_path):
+UNITTEST = "python3 -m unittest discover -s tests"
+
+
+def test_unchanged_file_is_read_from_cache_and_edited_file_is_analysed_again(repo):
     from modules.security import effect_content
 
-    assert not _judge("pytest tests/", repo).is_mutative
+    assert not _judge(UNITTEST, repo).is_mutative
     target = repo / "tests" / "test_b.py"
     entry = effect_content.cache_entry_path(target.read_bytes())
     assert entry is not None and entry.is_file()
 
-    forged = json.loads(entry.read_text())
-    forged["facts"]["markers"] = [["network", 1, "planted in the cache"]]
-    entry.write_text(json.dumps(forged))
-    cached = _judge("pytest tests/", repo)
-    assert cached.is_mutative and "planted in the cache" in cached.reason, cached.reason
+    cached_entry = json.loads(entry.read_text())
+    cached_entry["facts"]["markers"] = [["network", 1, "only the cache says so"]]
+    entry.write_text(json.dumps(cached_entry))
+    cached = _judge(UNITTEST, repo)
+    assert cached.is_mutative and "only the cache says so" in cached.reason, cached.reason
 
     target.write_text(target.read_text() + "\n# edited\n")
-    assert not _judge("pytest tests/", repo).is_mutative
+    assert not _judge(UNITTEST, repo).is_mutative
 
     (repo / "tests" / "conftest.py").write_text("import pytest\nimport socket\n")
-    assert "conftest.py" in _judge("pytest tests/", repo).reason
+    assert "conftest.py" in _judge(UNITTEST, repo).reason
+
+
+def test_no_tool_can_write_a_cache_entry(repo):
+    from modules.security import effect_content
+    from modules.security.protected_paths import is_read_spool_path
+    from modules.tools.bash_validator import BashValidator
+
+    assert not _judge(UNITTEST, repo).is_mutative
+    entry = effect_content.cache_entry_path((repo / "tests" / "test_a.py").read_bytes())
+    assert entry.is_file() and is_read_spool_path(str(entry))
+    payload = {"cwd": str(repo), "tool_use_id": "t-1", "session_id": "s-1", "agent_id": "aeffect01", "agent_type": "developer"}
+    for command in (f"cp /dev/null {entry}", f"echo '{{}}' > {entry}", f"tee {entry.parent}/x.json"):
+        verdict = BashValidator().validate(
+            command, is_subagent=True, session_id="s-1", agent_type="developer", hook_payload=payload,
+        )
+        assert not verdict.allowed, command
 
 
 @pytest.mark.parametrize(
