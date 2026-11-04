@@ -1,12 +1,4 @@
-"""Decide a Python test suite's effect from the files it loads: free only when none carries an effect marker.
-
-A suite's closure is every file it collects, the conftest.py chain up to the
-root, the plugins it names and every module those files import from disk.
-Each file is parsed once per content hash and its facts are cached under the
-Gaia data home, so an edited file, conftest or helper is analysed again. What
-the parse cannot place -- dynamic imports, computed attributes, a changed
-``sys.path``, an unreadable or unparseable file -- is a marker too.
-"""
+"""Decide a Python test suite's effect from the files it loads: free only when none carries an effect marker."""
 
 from __future__ import annotations
 
@@ -528,11 +520,7 @@ def collect(roots: Iterable[Path], rootdir: Path) -> Tuple[List[Path], Optional[
 def judge_suite(
     roots: Sequence[Path], rootdir: Path, plugins: Sequence[str] = (), import_roots: Sequence[Path] = (),
 ) -> Finding:
-    """First effect marker in the closure of the suite under *roots*, or a free Finding counting its files.
-
-    *import_roots* are the extra directories the runner puts on ``sys.path``
-    (the working directory for ``python -m``); imports resolve there as well.
-    """
+    """First effect marker in the closure of the suite under *roots*, or a free Finding counting its files."""
     rootdir = Path(os.path.realpath(rootdir))
     extra = [Path(os.path.realpath(each)) for each in import_roots]
     queue, early = collect([Path(os.path.realpath(each)) for each in roots], rootdir)
@@ -597,12 +585,7 @@ def _site_findings(seen: Dict[Path, dict], rootdir: Path) -> List[Finding]:
 
 
 def _is_tmp(root: Optional[str], assigns: dict, fixtures: dict, visiting: frozenset) -> Optional[bool]:
-    """True when every binding *root* can take is a temp-dir or scratch location, fixtures followed by name.
-
-    A binding that refers back to a name being resolved (``p = p / "x"``) is
-    neutral: it only joins relative segments to locations the other bindings
-    already decide, so at least one non-circular binding must exist.
-    """
+    """True when every non-circular binding of *root* is a temp or scratch location; None for a circular one."""
     if root is None:
         return False
     if root == _TMP:
