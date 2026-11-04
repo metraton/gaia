@@ -20,6 +20,15 @@ REACHED_PROCESS_CALLS = {
     "print-rebound": f"import subprocess\nprint = subprocess.run\nprint({PUSH})\n",
     "partial": f"import functools\nimport subprocess\nfunctools.partial(subprocess.run, {PUSH})()\n",
     "star-import": f"from subprocess import *\nrun({PUSH})\n",
+    "posix-system": "import posix\nposix.system('git push origin HEAD')\n",
+    "from-posix-import-system": "from posix import system\nsystem('git push origin HEAD')\n",
+    "posix-execv": f"import posix\nposix.execv('/usr/bin/git', {PUSH})\n",
+    "tempfile-private-os": "import tempfile\ntempfile._os.system('git push origin HEAD')\n",
+    "posixpath-os": "import posixpath\nposixpath.os.system('git push origin HEAD')\n",
+    "glob-os": "import glob\nglob.os.system('git push origin HEAD')\n",
+    "from-glob-import-os": "from glob import os as g\ng.system('git push origin HEAD')\n",
+    "posixsubprocess": "import _posixsubprocess\nprint(_posixsubprocess)\n",
+    "platform-subprocess": f"import platform\nplatform.subprocess.run({PUSH})\n",
 }
 
 UTF7_HIDDEN = {

@@ -859,9 +859,12 @@ _PROCESS_CALLS: FrozenSet[str] = frozenset(
     dotted for dotted, _, category in _DANGEROUS_CALLS if category == "PROCESS_EXECUTION"
 )
 _PROCESS_FAMILIES: Tuple[str, ...] = tuple(p for p in _PROCESS_LAUNCH_PREFIXES if not p.endswith("."))
+# os re-exports its platform module, and these extension modules exist only to start processes.
+_OS_IMPLEMENTATIONS: FrozenSet[str] = frozenset({"posix", "nt"})
+_LAUNCHER_MODULES: FrozenSet[str] = frozenset({"_posixsubprocess", "_winapi"})
 _PROCESS_MODULES: FrozenSet[str] = frozenset(
     name.split(".")[0] for name in (*_PROCESS_CALLS, *_PROCESS_FAMILIES)
-)
+) | _OS_IMPLEMENTATIONS | _LAUNCHER_MODULES
 # A standard-library module may import os, and nothing short of reading it proves it does not.
 _REACHING_MODULES: FrozenSet[str] = _PROCESS_MODULES | frozenset(getattr(sys, "stdlib_module_names", ()))
 _NAMESPACE_CALLS: FrozenSet[str] = frozenset({
@@ -871,12 +874,22 @@ _NAMESPACE_CALLS: FrozenSet[str] = frozenset({
 
 def _process_launcher(dotted: str) -> Optional[str]:
     """The process launcher *dotted* names, also through a module that re-exports it (``shutil.os.system``), else None."""
-    parts = dotted.split(".")
+    parts = [_module_identity(part) for part in dotted.split(".")]
     for start in range(len(parts) - 1):
         suffix = ".".join(parts[start:])
-        if suffix in _PROCESS_CALLS or (suffix.count(".") == 1 and suffix.startswith(_PROCESS_FAMILIES)):
+        if suffix in _PROCESS_CALLS:
+            return suffix
+        if suffix.count(".") == 1 and (suffix.startswith(_PROCESS_FAMILIES) or parts[start] in _LAUNCHER_MODULES):
             return suffix
     return None
+
+
+def _module_identity(name: str) -> str:
+    """The process module *name* is another spelling of (``posix`` and ``nt`` are ``os``, ``_os`` is ``os``), else *name*."""
+    if name in _OS_IMPLEMENTATIONS:
+        return "os"
+    bare = name.lstrip("_")
+    return bare if bare != name and bare in _PROCESS_MODULES else name
 
 
 def _escaped_process_reference(tree: ast.AST, alias_map: "_AliasResolver") -> str:
@@ -919,7 +932,7 @@ def _process_reach(node: ast.AST, alias_map: "_AliasResolver") -> str:
         return "callable"
     if dotted == "sys.modules":
         return "registry"
-    if dotted.rpartition(".")[2] in _PROCESS_MODULES:
+    if _module_identity(dotted.rpartition(".")[2]) in _PROCESS_MODULES:
         return "module"
     if alias_map.is_module(node) and dotted.split(".")[0] in _REACHING_MODULES:
         return "module"
