@@ -308,10 +308,10 @@ def test_every_file_sqlite3_is_made_to_read_meets_the_checks_of_a_redirected_one
         f"sqlite3 -init {tmp_path}/absent.sql {OTHER}",
         f"sqlite3 {OTHER} '.read {tmp_path}'",
         f"sqlite3 {OTHER} < <(cat {tmp_path}/*.sql)",
-        f"sqlite3 {OTHER} '.read nested.sql'",
     ):
         assert check(unproven, None) == (True, None), unproven
         assert sqlite_unproven_effect(unproven, None) == guard.SIGN_GUIDANCE
+    _refused_unproven(f"sqlite3 {OTHER} '.read nested.sql'", None)
 
 
 @pytest.fixture()
@@ -431,7 +431,8 @@ def test_a_relative_database_with_anything_before_sqlite3_on_the_line_is_unprove
 ])
 def test_a_relative_file_sqlite3_reads_from_an_unproven_folder_is_unproven(cd_folder, command, cwd):
     _refused_unproven(command.format(d=cd_folder), cwd)
-    assert check(f"sqlite3 -init {cd_folder}/cd.sql {OTHER}", None)[1] != guard.UNPROVEN_FOLDER_MESSAGE
+    (cd_folder / "ok.sql").write_text("SELECT 1;\n")
+    assert check(f"cd {cd_folder} && sqlite3 -init {cd_folder}/ok.sql {OTHER}", "/tmp") == (True, None)
 
 
 @pytest.mark.parametrize("command", [

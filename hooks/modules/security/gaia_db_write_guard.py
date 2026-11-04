@@ -332,7 +332,7 @@ def _file_operands(text: str) -> Iterator[Tuple[str, str]]:
 
 def _relative(path: str) -> bool:
     path = _uri_path(path)
-    return path not in ("", ":memory:") and not os.path.isabs(path)
+    return path not in ("", ":memory:") and not os.path.isabs(os.path.expanduser(path))
 
 
 def _moved_folder(target: str, folder: Optional[str]) -> Optional[str]:
@@ -484,12 +484,13 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     paths += [os.path.join(value, *_SQLITERC[name]) for name, value in assigned if name in _SQLITERC and value]
     paths += [path for reading in _readings(command) for path in _proven_output_files(reading)]
     sources = [command, *(word for inv in invocations for word in inv.args)]
-    moved = not _starts_in_shell_folder(command)
-    folders, texts, folder_unproven = _folders(sources, paths, None if moved else cwd)
+    start = cwd if _starts_in_shell_folder(command) else None
+    folders, texts, folder_unproven = _folders(sources, paths, start)
     verdicts = [v for f in folders if (v := _folder_refusal(invocations, texts, line_words, assigned, f))]
     if verdicts:
         return STORE_REJECTION_MESSAGE if STORE_REJECTION_MESSAGE in verdicts else verdicts[0]
-    if (folder_unproven or moved) and any(_relative(path) for text in texts for _, path in _file_operands(text)):
+    inputs = paths + [path for text in texts for path in (*_read_targets(text), *(p for _, p in _file_operands(text)))]
+    if (folder_unproven or start is None) and any(_relative(p) and not p.startswith(("<(", "(")) for p in inputs):
         return UNPROVEN_FOLDER_MESSAGE
     return None
 
