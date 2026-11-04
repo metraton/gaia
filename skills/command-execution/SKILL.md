@@ -131,8 +131,9 @@ shows the gate where it reads and writes runs free; reach for these first
   or `uv --project /abs/repo run ...`, a literal cwd option
   (`tests/hooks/modules/security/test_package_runner_origin.py::test_uv_directory_is_where_the_payload_runs`).
 - Read a file at a revision with `git -C /repo show <rev>:<path>`, which prints
-  it; a `git ... --output`/`-o` file runs free only inside your own scratch
-  entry
+  it and writes nothing (no test asserts this form free; `show` is a read verb
+  and the command runs unsigned). A `git ... --output`/`-o` file runs free only
+  inside your own scratch entry
   (`tests/hooks/modules/security/test_own_scratch_relief_real_shape.py::test_own_scratch_relief_under_the_real_payload`,
   case `archive-output-own-file`).
 - Run pytest from the repository with every `-c`, `--rootdir` and
