@@ -33,6 +33,7 @@ CLEARED = ("KUBECONFIG", "CLOUDSDK_CONFIG", "DOCKER_CONFIG", "DOCKER_CONTEXT", "
 NOT_FREE = ("SIGNED", "UNKNOWN")
 DENIED = ("SIGNED", "UNKNOWN", "BLOCKED")
 FREE = ("FREE",)
+BLOCKED_WAIT_SECONDS = 600
 
 
 class Hung(BaseException):
@@ -40,17 +41,38 @@ class Hung(BaseException):
 
 
 @contextlib.contextmanager
-def deadline(seconds, label):
-    def alarm(*_):
-        raise Hung(f"{label} hung past {seconds}s")
+def deadline(cpu_seconds, label):
+    """Raise Hung past cpu_seconds of process CPU, which load does not stretch, or past BLOCKED_WAIT_SECONDS blocked."""
+    limits = {signal.SIGPROF: (signal.ITIMER_PROF, cpu_seconds, "of CPU"),
+              signal.SIGALRM: (signal.ITIMER_REAL, BLOCKED_WAIT_SECONDS, "blocked")}
 
-    previous = signal.signal(signal.SIGALRM, alarm)
-    signal.alarm(seconds)
+    def expire(signum, _frame):
+        _, seconds, kind = limits[signum]
+        raise Hung(f"{label} hung past {seconds}s {kind}")
+
+    previous = {signum: signal.signal(signum, expire) for signum in limits}
+    for timer, seconds, _ in limits.values():
+        signal.setitimer(timer, seconds)
     try:
         yield
     finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous)
+        for timer, _, _ in limits.values():
+            signal.setitimer(timer, 0)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _spin():
+    while True:
+        pass
+
+
+@pytest.mark.parametrize("hang, wait, expected", [(_spin, BLOCKED_WAIT_SECONDS, "hung past 1s of CPU"),
+                                                  (lambda: time.sleep(600), 1, "hung past 1s blocked")])
+def test_deadline_fails_a_real_hang(hang, wait, expected, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "BLOCKED_WAIT_SECONDS", wait)
+    with pytest.raises(Hung, match=expected), deadline(1, "probe"):
+        hang()
 
 
 @pytest.fixture

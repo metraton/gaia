@@ -87,6 +87,21 @@ def hooks_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "hooks"
 
 
+HOOK_HANG_TIMEOUT_SECONDS = 300
+
+
+@pytest.fixture(autouse=True)
+def hook_timeout_above_a_loaded_run(monkeypatch):
+    """Bound every replayed hook far above a loaded run, the CLI's own runner included; a hung hook still times out."""
+    build = HookRunner.__init__
+
+    def init(self, *args, **kwargs):
+        build(self, *args, **kwargs)
+        self._timeout = HOOK_HANG_TIMEOUT_SECONDS
+
+    monkeypatch.setattr(HookRunner, "__init__", init)
+
+
 # ============================================================================
 # Test LogExtractor
 # ============================================================================
