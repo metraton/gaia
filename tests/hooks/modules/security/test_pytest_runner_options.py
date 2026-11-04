@@ -41,7 +41,7 @@ FREE = {
     "pythonpath-in-repo": "PYTHONPATH={repo}/hooks python3 -m pytest -q tests/",
     "env-pythonpath-in-repo": "env PYTHONPATH={repo}:{repo}/hooks python3 -m pytest -c pyproject.toml tests/",
     "bare-pytest-same-options": "pytest -c {repo}/pyproject.toml --rootdir {repo} -p no:cacheprovider -k 'delete' tests/",
-    "outputs-in-repo": "pytest --basetemp={repo}/.bt --junitxml={repo}/r.xml --log-file {repo}/log.txt --cache-clear tests/",
+    "outputs-in-repo": "pytest --junitxml={repo}/r.xml --log-file {repo}/log.txt --cache-clear tests/",
     "outputs-in-temp-dir": "python3 -m pytest --basetemp {systmp}/bt --junit-xml={systmp}/r.xml -o cache_dir={systmp}/c tests/",
     "bare-pytest-pythonpath-in-repo": "PYTHONPATH={repo}/hooks pytest -q tests/",
 }
@@ -65,6 +65,8 @@ ASKS = {
     "bare-basetemp-outside": "pytest --basetemp {outside}/bt tests/",
     "basetemp-is-temp-dir": "pytest --basetemp={systmp} tests/",
     "basetemp-is-repo": "pytest --basetemp={repo} tests/",
+    "basetemp-inside-repo": "python3 -m pytest --basetemp={repo}/.bt tests/",
+    "bare-basetemp-inside-repo": "pytest --basetemp tests/.bt tests/",
     "junitxml-outside": "pytest --junitxml={outside}/r.xml tests/",
     "junit-xml-outside": "python3 -m pytest --junit-xml {outside}/r.xml tests/",
     "log-file-outside": "pytest --log-file={outside}/log.txt tests/",

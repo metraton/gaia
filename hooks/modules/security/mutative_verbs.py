@@ -9388,7 +9388,7 @@ def _pytest_outside_effect(
                 if effect is not None:
                     return effect
         elif name in _PYTEST_WRITE_OPTIONS:
-            if not _pytest_may_write(top, base, value):
+            if not _pytest_may_write(None if name == "--basetemp" else top, base, value):
                 return _pytest_write_result(f"pytest {name} {value}")
         elif name == "-p":
             if not value or not (value.startswith("no:") or _DOTTED_NAME_RE.fullmatch(value)):
