@@ -1644,6 +1644,9 @@ _RUNNER_PACKAGE_FLAGS: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
 # value-taking ones are part of the resolver's uv value table, so the command it
 # finds is the one this shape was checked up to.
 _UV_RUN_WITH_FLAGS: FrozenSet[str] = frozenset({"--with", "-w"})
+# ``--directory`` moves where uv runs the command, ``--project`` only where it
+# looks for the project; neither is the program nor adds code.
+_UV_RUN_CWD_FLAGS: FrozenSet[str] = frozenset({"--directory", "--project"})
 _UV_RUN_SAFE_VALUE_FLAGS: FrozenSet[str] = frozenset({
     "--extra", "--no-extra", "--group", "--no-group", "--only-group", "--package",
     "--color",
@@ -7319,11 +7322,14 @@ def _installed_runner_fetch_reason(
     return f"it would fetch {payload}: not a local path or installed under {project_dir}"
 
 
-def _uv_run_fetch_reason(tokens: "Tuple[str, ...]", payload_index: int) -> "Optional[str]":
-    """Why ``uv run`` may add code beyond the project's lockfile, or ``None`` when
-    every option before the command is in ``_UV_RUN_SAFE_FLAGS`` or
-    ``_UV_RUN_SAFE_VALUE_FLAGS`` and every comma-separated ``--with`` item is a
-    local path."""
+def _uv_run_shape(
+    tokens: "Tuple[str, ...]", payload_index: int,
+) -> "Tuple[Optional[str], Optional[str]]":
+    """``(fetch_reason, directory)``: why ``uv run`` may add code beyond the
+    lockfile (``None`` when every option before the command is a safe flag, a
+    cwd flag with a literal value or a local ``--with``), and the last
+    ``--directory`` value, where uv runs the command."""
+    directory: "Optional[str]" = None
     i = 1
     while i < payload_index:
         token = tokens[i]
@@ -7331,21 +7337,26 @@ def _uv_run_fetch_reason(tokens: "Tuple[str, ...]", payload_index: int) -> "Opti
             i += 1
             continue
         flag, sep, inline = token.partition("=")
-        if flag in _UV_RUN_WITH_FLAGS or flag in _UV_RUN_SAFE_VALUE_FLAGS:
+        if flag in _UV_RUN_WITH_FLAGS or flag in _UV_RUN_SAFE_VALUE_FLAGS or flag in _UV_RUN_CWD_FLAGS:
             value = inline if sep else (tokens[i + 1] if i + 1 < len(tokens) else "")
             i += 1 if sep else 2
-            if flag in _UV_RUN_WITH_FLAGS:
+            if flag in _UV_RUN_CWD_FLAGS:
+                if not value or any(c in value for c in "$`*?[{"):
+                    return f"its {flag} value is not a literal directory", None
+                if flag == "--directory":
+                    directory = value
+            elif flag in _UV_RUN_WITH_FLAGS:
                 fetched = [
                     item for item in value.split(",")
                     if not _runner_package_is_local("project", item, "")
                 ]
                 if fetched:
-                    return f"--with would fetch {', '.join(fetched)} from a registry"
+                    return f"--with would fetch {', '.join(fetched)} from a registry", None
             continue
         if sep or flag not in _UV_RUN_SAFE_FLAGS:
-            return f"option '{flag}' is outside the shape known to add no code"
+            return f"option '{flag}' is outside the shape known to add no code", None
         i += 1
-    return None
+    return None, directory
 
 
 _PEP723_SCRIPT_BLOCK_RE = _re.compile(r"^# /// script[ \t]*$(.*?)^# ///[ \t]*$", _re.M | _re.S)
@@ -7403,7 +7414,7 @@ def _check_prefix_runner(
     A runner listed in ``_RUNNER_CODE_ORIGIN`` whose payload is not itself
     mutative is unsigned only when the whole command fits the shape that
     provably runs the project's code (``_installed_runner_fetch_reason``,
-    ``_uv_run_fetch_reason``); anything outside that shape is signed, rather
+    ``_uv_run_shape``); anything outside that shape is signed, rather
     than signed only when a known danger is found.  A "registry" runner is
     signed whenever a package it needs is not a path.  A spec that pins a
     version cannot be shown to be the local copy, so it counts as fetched.
@@ -7451,18 +7462,24 @@ def _check_prefix_runner(
     tokens = (payload, *rest) if interpreter is None else (interpreter, payload, *rest)
     rewritten = " ".join(shlex.quote(t) for t in tokens)
 
-    inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
     origin = _RUNNER_CODE_ORIGIN.get((base_cmd, subcommand))
+    payload_index = len(semantics.tokens) - len(rest) - 1
+    payload_cwd = cwd
+    if origin == "project":
+        uv_reason, directory = _uv_run_shape(semantics.tokens, payload_index)
+        if directory is not None:
+            payload_cwd = _resolve_dir_against_cwd(cwd, directory)
+
+    inner = detect_mutative_command(rewritten, cwd=payload_cwd, _depth=_depth + 1)
     if not inner.is_mutative and origin is not None:
-        payload_index = len(semantics.tokens) - len(rest) - 1
         if origin == "installed":
             fetch_reason = _installed_runner_fetch_reason(
                 base_cmd, semantics.tokens, payload_index, cwd,
             )
         elif origin == "project":
-            fetch_reason = _uv_run_fetch_reason(semantics.tokens, payload_index)
+            fetch_reason = uv_reason
             if fetch_reason is None and lowered.endswith(".py") and (
-                _script_declares_inline_dependencies(payload, cwd)
+                _script_declares_inline_dependencies(payload, payload_cwd)
             ):
                 fetch_reason = f"{payload} declares inline dependencies (PEP 723)"
         elif unknown_option:
