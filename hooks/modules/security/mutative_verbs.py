@@ -5417,7 +5417,9 @@ def _check_launched_payload(
     """Adopt the mutative verdict of any command a program with no grammar here could be handed in its arguments; a whole-expansion word signs."""
     if base_cmd not in _COMMAND_EXECUTORS and (
         _classifier_rule_names(base_cmd)
+        or base_cmd in _EXPRESSION_FIRST_TOOLS
         or (_is_capability_verb is not None and _is_capability_verb(base_cmd))
+        or _is_windows_native_token(base_cmd, semantics)
     ):
         return None
     raw = semantics.raw_command.strip()
@@ -8828,6 +8830,24 @@ def _check_powershell_command(
     )
 
 
+def _is_windows_native_token(base_cmd: str, semantics: "CommandSemantics") -> bool:
+    """True when *base_cmd* is a cmd.exe builtin, a PowerShell alias or invoker, or a Verb-Noun cmdlet: the Windows lane owns it."""
+    raw_base = semantics.semantic_head_tokens_raw[0] if semantics.semantic_head_tokens_raw else base_cmd
+    cmdlet_shape = bool(_PS_CMDLET_RE.fullmatch(base_cmd))
+    is_bare_cmdlet = cmdlet_shape and (
+        base_cmd.split("-", 1)[0] in _PS_ALL_VERBS or bool(_PS_PASCAL_CMDLET_RE.match(raw_base))
+    )
+    return (
+        base_cmd in _CMD_SUBCOMMAND_BUILTINS
+        or base_cmd in _CMD_MUTATIVE_BUILTINS
+        or base_cmd in _CMD_READ_BUILTINS
+        or base_cmd in _PS_ALIASES
+        or base_cmd in _PS_BARE_OBFUSCATION_ALIASES
+        or base_cmd in _PS_SCRIPTBLOCK_INVOKERS
+        or is_bare_cmdlet
+    )
+
+
 def _check_windows_native_command(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -8854,30 +8874,7 @@ def _check_windows_native_command(
     tokens = list(semantics.tokens)
     non_flags = semantics.non_flag_tokens
     first_sub = non_flags[0] if non_flags else ""
-    raw_base = (
-        semantics.semantic_head_tokens_raw[0]
-        if semantics.semantic_head_tokens_raw else base_cmd
-    )
-
-    # Is base_cmd a PowerShell cmdlet?  A lowercase Verb-Noun token counts only
-    # when its verb is a real PS verb (excludes docker-compose / pre-commit); a
-    # PascalCase token is a cmdlet by casing alone (Remove-Item / Frobnicate-X).
-    cmdlet_shape = bool(_PS_CMDLET_RE.fullmatch(base_cmd))
-    verb_lc = base_cmd.split("-", 1)[0] if cmdlet_shape else ""
-    is_bare_cmdlet = cmdlet_shape and (
-        verb_lc in _PS_ALL_VERBS or bool(_PS_PASCAL_CMDLET_RE.match(raw_base))
-    )
-
-    recognized = (
-        base_cmd in _CMD_SUBCOMMAND_BUILTINS
-        or base_cmd in _CMD_MUTATIVE_BUILTINS
-        or base_cmd in _CMD_READ_BUILTINS
-        or base_cmd in _PS_ALIASES
-        or base_cmd in _PS_BARE_OBFUSCATION_ALIASES
-        or base_cmd in _PS_SCRIPTBLOCK_INVOKERS
-        or is_bare_cmdlet
-    )
-    if not recognized:
+    if not _is_windows_native_token(base_cmd, semantics):
         return None  # not a Windows-native token -- POSIX classification owns it
 
     def _change(verb: str, reason: str) -> MutativeResult:
