@@ -347,7 +347,7 @@ def test_a_relative_operand_after_a_literal_sqlite3_cd_reaching_the_store_is_ref
     "sqlite3 {o} '.cd {repo}' '.once README.md' \"SELECT 'x'\"",
     "sqlite3 -cmd '.cd {repo}' -cmd '.output README.md' {o} 'SELECT 1'",
     "sqlite3 {o} '.cd {repo}' '.log README.md' 'SELECT 1'",
-    "sqlite3 {o} '.cd {repo}' '.shell cp /etc/hosts README.md'",
+    "sqlite3 {o} '.cd {repo}' '.shell echo x > README.md'",
     "sqlite3 {o} '.read {d}/cd.sql'",
     "sqlite3 {o} '.cd {d}' '.read cd.sql'",
 ])

@@ -9,6 +9,8 @@ is its operands, a pipe's producers, a heredoc, a here-string, and every file it
 reads as SQL whose path and content are literal: a `<` or `-init` file, a
 `.read` target, the sqliterc under a HOME or XDG_CONFIG_HOME the line assigns,
 and the files a `cat` on the line prints, followed through `.read` recursively.
+A literal sqlite3 `.cd` target is one more folder every relative path is judged
+in; one the guard cannot resolve leaves every relative file operand unproven.
 Reads go through `gaia context query`. A shell command or file a sqlite3 call
 names in a readable payload -- `.shell`, `.system`, any dot-command operand
 starting with `|`, edit()'s editor, a VISUAL or EDITOR the line assigns --
@@ -50,6 +52,14 @@ UNPROVEN_DATABASE_MESSAGE = (
     "glob, variable, substitution, or a relative path from an unknown directory), "
     "so it could not prove it is not gaia.db. Name the database by a literal path; "
     "read gaia.db with `gaia context query`."
+)
+
+UNPROVEN_FOLDER_MESSAGE = (
+    "sqlite3 moves its folder with `.cd` to a target this guard could not resolve to "
+    "a literal path (a variable, glob, substitution, or a relative path from an "
+    "unknown directory), so it could not prove where a later relative file operand "
+    "lands. Name the folder or the file by a literal path; read gaia.db with "
+    "`gaia context query`."
 )
 
 SIGN_GUIDANCE = (
@@ -112,6 +122,14 @@ _SQL_CALL = re.compile(
 )
 _WORD = re.compile(r"[^\s'\"`(),;|<>=]+")
 _OUTPUT_SPECIALS = frozenset({"off", "stdout", "stderr"})
+_FILE_OPERAND_INDEX = {
+    "open": -1, "read": 0, "once": 0, "output": 0, "import": 0, "log": 0,
+    "save": -1, "backup": -1, "restore": -1,
+}
+_WRITTEN_FILE_COMMANDS = frozenset({"once", "output", "log", "save", "backup"})
+_DOT_VALUE_OPTIONS = frozenset({"skip", "schema", "maxsize"})
+_UNREAD_FOLDER = re.compile(r"^~|[%\\]")
+_MAX_FOLDERS = 16
 _MAX_DEPTH = 4
 
 
@@ -265,10 +283,11 @@ def _read_fed_file(path: str, cwd: Optional[str]) -> str:
 
 
 def _dot_commands(text: str) -> Iterator[Tuple[str, str]]:
-    """Each dot-command in *text* as ``(name, arguments)``, read as shell text and as a sqlite3 script."""
-    for pattern in (_DOT_COMMAND, _SCRIPT_DOT_COMMAND):
-        for match in pattern.finditer(text):
-            yield match["name"].lower(), match["rest"]
+    """Each dot-command in *text* as ``(name, arguments)``, read as shell text and as a sqlite3 script, with ``\\n`` also read as a line break."""
+    for body in dict.fromkeys((text, text.replace("\\n", "\n"))):
+        for pattern in (_DOT_COMMAND, _SCRIPT_DOT_COMMAND):
+            for match in pattern.finditer(body):
+                yield match["name"].lower(), match["rest"]
 
 
 def _dot_operands(arguments: str) -> List[str]:
@@ -276,6 +295,45 @@ def _dot_operands(arguments: str) -> List[str]:
         return shlex.split(arguments)
     except ValueError:
         return [word.strip("'\"") for word in arguments.split()]
+
+
+def _file_operands(text: str) -> Iterator[Tuple[str, str]]:
+    """Each ``(dot-command, path)`` a file dot-command in *text* names, read up to a ``|`` command."""
+    for typed, arguments in _dot_commands(text):
+        names = [name for name in _FILE_OPERAND_INDEX if name.startswith(typed)]
+        operands: List[str] = []
+        skip_value = False
+        for word in _dot_operands(arguments) if names else ():
+            if word.startswith("|"):
+                break
+            if not (skip_value or word.startswith("-")):
+                operands.append(word)
+            skip_value = word.lstrip("-").lower() in _DOT_VALUE_OPTIONS
+        for name in names:
+            if operands and operands[_FILE_OPERAND_INDEX[name]].lower() not in _OUTPUT_SPECIALS:
+                yield name, operands[_FILE_OPERAND_INDEX[name]]
+
+
+def _relative(path: str) -> bool:
+    path = _uri_path(path)
+    return path not in ("", ":memory:") and not os.path.isabs(path)
+
+
+def _moved_folder(target: str, folder: Optional[str]) -> Optional[str]:
+    """The folder a sqlite3 ``.cd`` to *target* enters from *folder*, or None when the guard cannot resolve it."""
+    if not target or _NOT_LITERAL.search(target) or _UNREAD_FOLDER.search(target):
+        return None
+    if folder is None and not os.path.isabs(target):
+        return None
+    return os.path.realpath(os.path.join(folder or "", target))
+
+
+def _cd_targets(texts: List[str]) -> Iterator[str]:
+    for text in texts:
+        for typed, arguments in _dot_commands(text):
+            operands = _dot_operands(arguments)
+            if typed == "cd" and operands:
+                yield operands[0] if len(operands) == 1 else ""
 
 
 def _proven_output_files(command: str) -> List[str]:
@@ -380,9 +438,9 @@ def _payload_refusals(text: str, cwd: Optional[str]) -> Iterator[Optional[str]]:
         for index, operand in enumerate(operands):
             if operand.startswith("|"):
                 yield _command_refusal(" ".join(operands[index:])[1:].strip(), cwd)
-        target = next((w for w in operands if not w.startswith("-")), "")
-        if any(name.startswith(typed) for name in ("once", "output")) and not target.startswith("|"):
-            yield _file_refusal(target, cwd)
+    for name, path in _file_operands(text):
+        if name in _WRITTEN_FILE_COMMANDS:
+            yield _file_refusal(path, cwd)
     for match in _SQL_CALL.finditer(text):
         if match["fn"].lower() == "writefile":
             yield _file_refusal(match["first"][1:-1].replace("''", "'"), cwd)
@@ -397,12 +455,6 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     invocations = _invocations(command)
     if not invocations:
         return None
-    cwd = None if _SHELL_CD.search(command) else cwd
-    for invocation in invocations:
-        database = invocation.database()
-        verdict = database is not None and _database_verdict(database, cwd)
-        if verdict:
-            return verdict
     line_words: List[str] = []
     for reading in _readings(command):
         try:
@@ -414,10 +466,58 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     paths += [os.path.join(value, *_SQLITERC[name]) for name, value in assigned if name in _SQLITERC and value]
     paths += [path for reading in _readings(command) for path in _proven_output_files(reading)]
     sources = [command, *(word for inv in invocations for word in inv.args)]
-    texts = sources + _fed_texts(sources, paths, cwd)
+    folders, texts, folder_unproven = _folders(sources, paths, None if _SHELL_CD.search(command) else cwd)
+    verdict = next((v for f in folders if (v := _folder_refusal(invocations, texts, line_words, assigned, f))), None)
+    if verdict:
+        return verdict
+    if folder_unproven and any(_relative(path) for text in texts for _, path in _file_operands(text)):
+        return UNPROVEN_FOLDER_MESSAGE
+    return None
+
+
+def _folders(
+    sources: List[str], paths: List[str], cwd: Optional[str],
+) -> Tuple[List[Optional[str]], List[str], bool]:
+    """Every folder sqlite3's ``.cd`` can make current, every text it reads as SQL from any of them, and whether a target was unresolvable.
+
+    Every text is judged in every folder, so a ``.cd`` anywhere stands for one
+    before each relative operand; None among the folders is an unknown one.
+    """
+    folders: List[Optional[str]] = [cwd]
+    texts, unproven = list(sources), False
+    for _ in range(_MAX_DEPTH):
+        known = (len(folders), len(texts), unproven)
+        for folder in list(folders):
+            texts += [text for text in _fed_texts(texts, paths, folder) if text not in texts]
+        for target in list(_cd_targets(texts)):
+            for folder in list(folders):
+                moved = _moved_folder(target, folder)
+                if moved is None or (moved not in folders and len(folders) >= _MAX_FOLDERS):
+                    unproven = True
+                elif moved not in folders:
+                    folders.append(moved)
+        if unproven and None not in folders:
+            folders.append(None)
+        if known == (len(folders), len(texts), unproven):
+            return folders, texts, unproven
+    return folders + ([] if None in folders else [None]), texts, True
+
+
+def _folder_refusal(
+    invocations: List[_Invocation], texts: List[str], line_words: List[str],
+    assigned: List[Tuple[str, str]], cwd: Optional[str],
+) -> Optional[str]:
+    """Why the sqlite3 runs reading *texts* refuse when relative paths resolve against *cwd*, or None."""
+    for invocation in invocations:
+        database = invocation.database()
+        verdict = database is not None and _database_verdict(database, cwd)
+        if verdict:
+            return verdict
     words = line_words + [w for text in texts for w in _WORD.findall(text)]
     words += [s.replace("''", "'") for text in texts for s in _SQL_STRING.findall(text)]
-    if any(_names_store(word, cwd) for word in words):
+    if any(_names_store(word, cwd) for word in words) or any(
+        _relative(path) and _resolves_to_store(_uri_path(path), cwd) for text in texts for _, path in _file_operands(text)
+    ):
         return STORE_REJECTION_MESSAGE
     editors = (_command_refusal(value, cwd) for name, value in assigned if name in ("VISUAL", "EDITOR"))
     return next((v for text in texts for v in _target_verdicts(text, cwd) if v), None) or next(
