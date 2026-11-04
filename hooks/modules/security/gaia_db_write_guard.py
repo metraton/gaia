@@ -41,6 +41,7 @@ from .mutative_verbs import (
 )
 from .shell_substitution import extract_substitutions
 from .shell_write_guard import _split_components, _tokenize, _writer_targets, downloader_paths
+from .sqlite_subset import DOT_COMMANDS, script_outside_subset
 
 STORE_REJECTION_MESSAGE = (
     "The sqlite3 CLI is refused on gaia.db, whatever the SQL. Read the store with "
@@ -124,16 +125,7 @@ _SUBSET_OPTIONS = frozenset({
     "table", "tabs", "version",
 })
 _SUBSET_VALUE_OPTIONS = frozenset({"separator", "newline", "nullvalue"})
-_SUBSET_DOT_COMMANDS = frozenset({
-    "tables", "schema", "fullschema", "headers", "mode", "indexes", "indices", "dump",
-    "databases", "show", "print", "width", "nullvalue", "separator", "timer", "changes",
-    "stats", "help", "quit", "exit", "echo", "eqp", "explain", "bail",
-})
-_OUTSIDE_SQL = re.compile(
-    r"\bATTACH\b|\bVACUUM\b[^;]*\bINTO\b|[\"\[`]?\b(?:readfile|writefile|edit|load_extension|fsdir|zipfile"
-    r"|sqlar_compress|sqlar_uncompress|sqlite_dbpage)\b(?:\\?[\"\]`])?(?:\s|/\*.*?\*/|--[^\n]*\n)*\(",
-    re.I | re.S,
-)
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_]\w*)\2[^\n]*\n")
 _VALUE_OPTIONS = frozenset({
     "init", "cmd", "separator", "newline", "nullvalue", "vfs", "mmap", "maxsize",
     "heap", "nonce", "escape",
@@ -459,13 +451,15 @@ def _assigns_before_sqlite(reading: str) -> bool:
     return False
 
 
-def _invocation_part(invocation: "_Invocation") -> Optional[str]:
+def _invocation_part(invocation: "_Invocation", scripts: List[str]) -> Optional[str]:
     database, index, args = None, 0, invocation.args
     while index < len(args):
         word = args[index]
         redirect = _REDIRECT_WORD.match(word)
         name = word.lstrip("-").lower()
         if redirect:
+            target = word[redirect.end():] or (args[index + 1] if index + 1 < len(args) else "")
+            scripts += [target] if redirect["op"] == "<<<" else []
             index += 1 if word[redirect.end():] else 2
             continue
         if word.startswith("-") and name in _SUBSET_VALUE_OPTIONS:
@@ -475,6 +469,8 @@ def _invocation_part(invocation: "_Invocation") -> Optional[str]:
             return f"the option `{word}`"
         if not word.startswith("-") and database is None:
             database = word
+        elif not word.startswith("-"):
+            scripts.append(word)
         index += 1
     path = os.path.expanduser(database or ":memory:")
     if path.lower().startswith("file:"):
@@ -484,25 +480,32 @@ def _invocation_part(invocation: "_Invocation") -> Optional[str]:
     return None
 
 
-def _outside_subset(command: str, invocations: List["_Invocation"], texts: List[str]) -> Optional[str]:
+def _heredoc_bodies(command: str) -> Iterator[str]:
+    for match in _HEREDOC.finditer(command):
+        body: List[str] = []
+        for line in command[match.end():].split("\n"):
+            if (line.lstrip("\t") if match[1] else line) == match[3]:
+                break
+            body.append(line)
+        yield "\n".join(body)
+
+
+def _outside_subset(
+    command: str, invocations: List["_Invocation"], fed_texts: List[str], printed: List[str],
+) -> Optional[str]:
     if any(_assigns_before_sqlite(r) for r in _readings(command) if _sqlite_args(r) is not None):
         return "an environment assignment"
-    part = next(filter(None, map(_invocation_part, invocations)), None)
+    scripts: List[str] = []
+    part = next(filter(None, (_invocation_part(inv, scripts) for inv in invocations)), None)
     if part:
         return part
     rc_files = [os.path.expanduser("~/.sqliterc"), os.path.expanduser("~/.config/sqlite3/sqliterc")]
     present = [path for path in rc_files if os.path.lexists(path)]
     if not all(_read_in_full(path, None) for path in present):
         return "an init file it could not read"
-    corpus = texts + [_read_fed_file(path, None) for path in present]
-    for text in corpus:
-        for typed, _ in _dot_commands(text):
-            if typed not in _SUBSET_DOT_COMMANDS:
-                return f"the dot-command `.{typed}`"
-        found = _OUTSIDE_SQL.search(text)
-        if found:
-            return f"`{found.group(0).strip()}`"
-    return None
+    scripts += [*_heredoc_bodies(command), *printed, *fed_texts]
+    scripts += [_read_fed_file(path, None) for path in present]
+    return next(filter(None, map(script_outside_subset, scripts)), None)
 
 
 def _literal_printer(command: str) -> bool:
@@ -517,21 +520,24 @@ def _literal_printer(command: str) -> bool:
     return not any(w.startswith("-") or _NOT_LITERAL.search(w) or "%" in w for w in words[1:])
 
 
-def _feeds(command: str) -> Tuple[List[str], bool]:
-    """The files a proven feeder pipes into a sqlite3 run on the line, and whether any feeder is unproven."""
+def _feeds(command: str) -> Tuple[List[str], List[str], bool]:
+    """The files and printed text proven feeders pipe into a sqlite3 run on the line, and whether any feeder is unproven."""
+    from ..tools.shell_parser import shell_split
     from .shell_unwrapper import shell_command_string
 
     texts = [command, *extract_substitutions(command)]
     for reading in _readings(command):
         texts += [*_executor_floor_payloads(reading), shell_command_string(reading) or ""]
-    files, unproven = [], False
+    files, printed, unproven = [], [], False
     for text in filter(None, texts):
         for producer, consumer in _pipes(text):
             if any(_sqlite_args(r) is not None for r in _readings(consumer)):
-                printed = _proven_output_files(producer.strip())
-                files += printed
-                unproven = unproven or not (printed or _literal_printer(producer.strip()))
-    return files, unproven
+                catted = _proven_output_files(producer.strip())
+                files += catted
+                if not catted and _literal_printer(producer.strip()):
+                    printed.append(" ".join(shell_split(producer.strip())[1:]))
+                unproven = unproven or not (catted or _literal_printer(producer.strip()))
+    return files, printed, unproven
 
 
 def _dot_commands(text: str) -> Iterator[Tuple[str, str]]:
@@ -719,7 +725,7 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     paths = [path for inv in invocations for path in inv.read_files()]
     paths += [os.path.join(value, *_SQLITERC[name]) for name, value in assigned if name in _SQLITERC and value]
     paths += [path for reading in _readings(command) for path in _proven_output_files(reading)]
-    fed, unproven_feed = _feeds(command)
+    fed, printed, unproven_feed = _feeds(command)
     stdin = [source for reading in _readings(command) for source in _stdin_sources(reading)]
     paths += fed + [source for source in stdin if source]
     sources = [command, *(word for inv in invocations for word in inv.args)]
@@ -740,11 +746,11 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
         _read_in_full(p, f) for p in read_as_sql for f in folders
     ):
         return UNPROVEN_INPUT_MESSAGE
-    part = _outside_subset(command, invocations, texts)
+    part = _outside_subset(command, invocations, texts[len(sources):], printed)
     if part:
         return OUTSIDE_SUBSET_MESSAGE.format(
             options=", ".join(f"-{o}" for o in sorted(_SUBSET_OPTIONS | _SUBSET_VALUE_OPTIONS)),
-            dots=", ".join(f".{d}" for d in sorted(_SUBSET_DOT_COMMANDS)),
+            dots=", ".join(f".{d}" for d in sorted(DOT_COMMANDS)),
             part=part,
         )
     return None
