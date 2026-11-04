@@ -64,7 +64,11 @@ ASKING_TWINS = {
         TOKEN_CALL,
         'subprocess.run(ARGV, capture_output=True, text=True, check=True)',
     ).replace("BASE = ", 'ARGV = ["gcloud", "auth", "print-access-token"]\nBASE = '),
-    "shell-true":HELPER_SHAPE.replace(
+    "argv-element-from-variable": HELPER_SHAPE.replace(
+        TOKEN_CALL,
+        'subprocess.run(["gcloud", "auth", VERB], capture_output=True, text=True, check=True)',
+    ).replace("BASE = ", 'VERB = "print-access-token"\nBASE = '),
+    "shell-true": HELPER_SHAPE.replace(
         TOKEN_CALL,
         'subprocess.run("gcloud auth print-access-token", shell=True, capture_output=True, text=True, check=True)',
     ),
@@ -175,10 +179,12 @@ DIFF_ARGV = '["git", "-C", WT, "diff", BASE + ".." + "HEAD"]'
 BOUND_ONCE_FREE = {
     "concatenated": BOUND_ONCE,
     "f-string": BOUND_ONCE.replace('BASE + ".." + "HEAD"', 'f"{BASE}..HEAD"'),
-    "helper-verb": HELPER_SHAPE.replace(
-        TOKEN_CALL, 'subprocess.run(["gcloud", "auth", VERB], capture_output=True, text=True, check=True)',
-    ).replace("BASE = ", 'VERB = "print-access-token"\nBASE = '),
 }
+BASE_LINE = 'BASE = "origin/main"'
+
+
+def _rebind(extra):
+    return BOUND_ONCE.replace(BASE_LINE, BASE_LINE + "\n" + extra)
 
 BOUND_NAME_TWINS = {
     "reassigned": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nBASE = "origin/dev"'),
@@ -197,6 +203,28 @@ BOUND_NAME_TWINS = {
     "resolves-to-kubectl-delete": BOUND_ONCE.replace(
         DIFF_ARGV, '["kubectl", VERB, "pod", WT]',
     ).replace('BASE = "origin/main"', 'VERB = "delete"'),
+    "cprofile-run": _rebind('import cProfile\ncProfile.run("BASE = input()")'),
+    "profile-run": _rebind('import profile\nprofile.run("BASE = input()")'),
+    "pdb-run": _rebind('import pdb\npdb.run("BASE = input()")'),
+    "trace-run": _rebind('import trace\ntrace.Trace().run("BASE = input()")'),
+    "sys-modules-get": _rebind('sys.modules.get("__main__").BASE = input()'),
+    "import-module-computed": _rebind(
+        'import importlib\nm = importlib.import_module("__ma" + "in__")\nsetattr(m, "BASE", input())',
+    ),
+    "globals-alias": _rebind('g = globals\ng()["BASE"] = input()'),
+    "exec-alias": _rebind('e = exec\ne("BASE = input()")'),
+    "builtins-computed": BOUND_ONCE.replace(
+        BASE_LINE, 'm = __import__("built" + "ins")\nsetattr(m, "BASE", input())\n\n\ndef unused():\n    ' + BASE_LINE,
+    ),
+    "walrus-only": BOUND_ONCE.replace(BASE_LINE, "(BASE := input())"),
+    "module-doc-pushes": '"""push"""\n' + BOUND_ONCE.replace(
+        BASE_LINE, 'def unused():\n    __doc__ = "status"\n',
+    ).replace(DIFF_ARGV, '["git", "-C", WT, __doc__, "origin", "HEAD"]'),
+    "class-qualname-pushes": BOUND_ONCE.replace(
+        BASE_LINE, 'def unused():\n    __qualname__ = "status"\n',
+    ).replace("print(subprocess.run(", "class push:\n    print(subprocess.run(").replace(
+        DIFF_ARGV, '["git", "-C", WT, __qualname__, "origin", "HEAD"]',
+    ),
 }
 
 
@@ -225,22 +253,18 @@ def test_name_rewritten_by_an_imported_local_module_still_asks(validator, scratc
     assert _validate(validator, f"python3 {script}").tier == SecurityTier.T3_BLOCKED
 
 
-def _inline(body):
-    return "python3 -c " + shlex.quote("; ".join(body.strip().splitlines()))
-
-
 def test_inline_argv_names_bound_once_run_free(validator, scratch):
-    verdict = _validate(validator, _inline(BOUND_ONCE.replace("\n\n", "\n")))
+    verdict = _validate(validator, "python3 -c " + shlex.quote(BOUND_ONCE))
 
     assert verdict.allowed, verdict.reason
     assert verdict.tier == SecurityTier.T0_READ_ONLY
 
 
-@pytest.mark.parametrize("rebinding", ['exec("BASE = 1")', 'BASE = "origin/dev"'])
-def test_inline_argv_name_rebound_still_asks(validator, scratch, rebinding):
-    body = BOUND_ONCE.replace("\n\n", "\n").replace('BASE = "origin/main"', f'BASE = "origin/main"\n{rebinding}')
+@pytest.mark.parametrize("twin", sorted(BOUND_NAME_TWINS) + ["exec-literal"])
+def test_inline_argv_name_not_provably_bound_still_asks(validator, scratch, twin):
+    body = BOUND_NAME_TWINS.get(twin) or _rebind('exec("BASE = 1")')
 
-    assert _validate(validator, _inline(body)).tier == SecurityTier.T3_BLOCKED
+    assert _validate(validator, "python3 -c " + shlex.quote(body)).tier == SecurityTier.T3_BLOCKED
 
 
 def test_cp_into_scratch_runs_free(validator, scratch, tmp_path):

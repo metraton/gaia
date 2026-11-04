@@ -381,6 +381,53 @@ def _literal_string(node: ast.AST, bindings: Dict[str, ast.AST], depth: int = 0)
     return None if None in strings else "".join(strings)
 
 
+# ``sys`` is built into the interpreter, so no file can stand in for it.
+_ARGV_PROGRAM_IMPORTS: FrozenSet[str] = frozenset({"subprocess", "sys"})
+_ARGV_PROGRAM_NODES = (
+    ast.Module, ast.Assign, ast.Expr, ast.Import, ast.ImportFrom, ast.alias, ast.Name, ast.Load,
+    ast.Store, ast.Constant, ast.BinOp, ast.Add, ast.JoinedStr, ast.FormattedValue, ast.List, ast.Tuple,
+    ast.Call, ast.keyword, ast.Attribute,
+)
+_ARGV_PROGRAM_ATTRIBUTES: FrozenSet[str] = frozenset(
+    {name.rpartition(".")[2] for name in _ARGV_PROCESS_CALLS}
+    | {"stdout", "stderr", "returncode", "PIPE", "DEVNULL", "STDOUT"}
+)
+
+
+def _argv_bindings(tree: ast.AST, alias_map: "_AliasResolver") -> Dict[str, ast.AST]:
+    """Names an argv may resolve: none unless the whole program is literal assignments, fixed imports and process or print calls."""
+    bound, loaded = [], set()
+    for node in ast.walk(tree):
+        if not isinstance(node, _ARGV_PROGRAM_NODES):
+            return {}
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module if not node.level else ""]
+        else:
+            modules = []
+        if any(module not in _ARGV_PROGRAM_IMPORTS for module in modules):
+            return {}
+        if isinstance(node, ast.alias):
+            bound.append(node.asname or node.name)
+        elif isinstance(node, ast.Assign):
+            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                return {}
+            bound.append(node.targets[0].id)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            loaded.add(node.id)
+        elif isinstance(node, ast.Attribute) and node.attr not in _ARGV_PROGRAM_ATTRIBUTES:
+            return {}
+        elif isinstance(node, ast.Call) and alias_map.resolve_call(node.func) not in _ARGV_PROCESS_CALLS | {"print"}:
+            return {}
+    names = set(bound) | loaded
+    if len(bound) != len(set(bound)) or "*" in names or any(name.startswith("__") for name in names):
+        return {}
+    if not loaded <= set(bound) | {"print"}:
+        return {}
+    return {node.targets[0].id: node.value for node in tree.body if isinstance(node, ast.Assign)}
+
+
 _URLOPEN = "urllib.request.urlopen"
 _URL_REQUEST = "urllib.request.Request"
 _READ_HTTP_METHODS: FrozenSet[Optional[str]] = frozenset({None, "GET", "HEAD"})
@@ -516,7 +563,7 @@ def analyze_python_inline(
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     provenance = _RequestProvenance(tree, alias_map)
-    bindings = _single_bindings(tree, alias_map)
+    bindings = _argv_bindings(tree, alias_map)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -677,7 +724,7 @@ def uncatalogued_effect(tree: ast.AST) -> str:
     alias_map.collect(tree)
     if _environment_reaches_a_process(tree, alias_map):
         return "env"
-    bindings = _single_bindings(tree, alias_map)
+    bindings = _single_bindings(tree)
     sql = _ReadOnlyChecker()
     receivers = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     receivers |= {
@@ -704,7 +751,7 @@ def uncatalogued_effect(tree: ast.AST) -> str:
         if isinstance(node, ast.Subscript) and alias_map.resolve_call(node.value) == "sys.modules":
             if not _is_str_literal(node.slice):
                 return "call"
-        if _reaches_interpreter_internals(node) or _reaches_a_namespace(node, alias_map):
+        if _reaches_interpreter_internals(node):
             return "call"
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and _is_path_value(node.left, alias_map):
             if not _provable_path(node.right, alias_map, bindings):
@@ -802,37 +849,6 @@ def _reaches_interpreter_internals(node: ast.AST) -> bool:
     return attr.startswith("__") and attr.endswith("__") and attr not in _INERT_DUNDERS
 
 
-_NAMESPACE_MODULES: FrozenSet[str] = frozenset({"__main__", "builtins"})
-_NAMESPACE_CALLS: FrozenSet[str] = frozenset({
-    "globals", "locals", "sys._getframe", "sys._current_frames", "inspect.currentframe", "inspect.stack",
-    "inspect.trace", "inspect.getouterframes", "inspect.getinnerframes", "gc.get_objects", "gc.get_referrers",
-    "gc.get_referents",
-})
-_FRAME_ATTRIBUTES: FrozenSet[str] = frozenset({
-    "f_globals", "f_locals", "f_builtins", "f_back", "tb_frame", "gi_frame", "cr_frame", "ag_frame",
-})
-
-
-def _reaches_a_namespace(node: ast.AST, alias_map: "_AliasResolver") -> bool:
-    """True when *node* obtains a module namespace or a frame, through which code rebinds names no assignment shows."""
-    if isinstance(node, ast.Attribute):
-        return node.attr in _FRAME_ATTRIBUTES
-    if isinstance(node, ast.Import):
-        modules = [alias.name for alias in node.names]
-    elif isinstance(node, ast.ImportFrom):
-        modules = [node.module or ""]
-    elif isinstance(node, ast.Subscript) and alias_map.resolve_call(node.value) == "sys.modules":
-        modules = [node.slice.value if _is_str_literal(node.slice) else "__main__"]
-    elif isinstance(node, ast.Call):
-        dotted = alias_map.resolve_call(node.func)
-        if dotted in _NAMESPACE_CALLS or (dotted == "vars" and not node.args):
-            return True
-        modules = [_imported_module(node, dotted) or ""]
-    else:
-        return False
-    return any(module.split(".")[0] in _NAMESPACE_MODULES for module in modules)
-
-
 # The secret-read floor reads only literals, so every path argument here must be one ``_provable_path`` proves.
 _PATH_CALLS: Dict[str, int] = {name: 1 for name in (
     "open", "builtins.open", "io.open", "io.FileIO", "codecs.open", "os.open", "pathlib.Path",
@@ -871,39 +887,14 @@ def _path_arguments(call: ast.Call, dotted: str) -> list:
     return call.args[:count] + keywords
 
 
-_NAMED_BINDERS = (
-    ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler, ast.MatchAs, ast.MatchStar,
-    ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple,
-)
-
-
-def _single_bindings(tree: ast.AST, alias_map: "_AliasResolver") -> Dict[str, ast.AST]:
-    """Names bound exactly once in *tree*, by a plain ``name = value``, mapped to that value; none when a name can be rebound unseen."""
+def _single_bindings(tree: ast.AST) -> Dict[str, ast.AST]:
+    """Names bound exactly once in *tree*, by a plain ``name = value``, mapped to that value."""
     stores: Dict[str, int] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
-            return {}
-        if isinstance(node, ast.Call) and alias_map.resolve_call(node.func) in _CODE_STRING_CALLS:
-            return {}
-        if _reaches_a_namespace(node, alias_map):
-            return {}
         if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
-            names = [(node.id, 1)]
+            stores[node.id] = stores.get(node.id, 0) + 1
         elif isinstance(node, ast.arg):
-            names = [(node.arg, 2)]
-        elif isinstance(node, ast.alias):
-            names = [(node.asname or node.name.split(".")[0], 2)]
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            names = [(name, 2) for name in node.names]
-        elif isinstance(node, ast.MatchMapping):
-            names = [(node.rest, 2)]
-        elif isinstance(node, _NAMED_BINDERS):
-            names = [(node.name, 2)]
-        else:
-            names = []
-        for name, weight in names:
-            if name:
-                stores[name] = stores.get(name, 0) + weight
+            stores[node.arg] = stores.get(node.arg, 0) + 2
     return {
         node.targets[0].id: node.value for node in ast.walk(tree)
         if isinstance(node, ast.Assign) and len(node.targets) == 1
