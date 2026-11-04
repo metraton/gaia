@@ -528,6 +528,53 @@ def test_sqlite3_inside_the_read_subset_signs(opener, command):
     assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
 
 
+@pytest.mark.parametrize("sql", [
+    "SELECT sha3_query('SELECT write'||'file(''/tmp/gaia'||'.db'',''x'')')",
+    "SELECT sha3_query('AT'||'TACH ''/tmp/gaia'||char(46)||'db'' AS s')",
+    "CREATE VIRTUAL TABLE temp.z USING 'zipfile'('/tmp/new.zip')",
+    "CREATE VIRTUAL TABLE temp.z USING zipfile('/tmp/new.zip')",
+    "SELECT name, length(data) FROM fsdir WHERE path = '/tmp'",
+    "SELECT name FROM 'fsdir'('/tmp')",
+    "SELECT * FROM generate_series(1, 3)",
+    "SELECT * FROM json_each('[1]')",
+    "SELECT * FROM pragma_table_info('t')",
+    "VACUUM /*;*/ INTO '/tmp/vac.db'",
+    "VACUUM",
+    "ATTACH '/tmp/x.db' AS s",
+    "ANALYZE",
+    "CREATE TRIGGER g AFTER INSERT ON t BEGIN SELECT 1; END",
+    "CREATE TEMP TABLE x (a)",
+    "PRAGMA user_version = 9",
+    "PRAGMA user_version(9)",
+    "PRAGMA writable_schema",
+    "SELECT \"edit\"('x')",
+    "SELECT ?1",
+    "SELECT 1 /* open",
+    "INSERT INTO 'ttt' VALUES (1)",
+    "SELECT * FROM a, 'fsdir'",
+])
+def test_sql_outside_the_allowlist_is_refused(sql):
+    allowed, reason = check(f"sqlite3 {OTHER} \"{sql}\"" if '"' not in sql else f"sqlite3 {OTHER} '{sql}'", "/tmp")
+    assert allowed is False, sql
+    assert "gaia context query" in reason
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT 'gaia'||char(46)||'db'",
+    "SELECT a, count(*) FROM t JOIN u ON t.id = u.id WHERE x IN (1, 2) GROUP BY a ORDER BY a LIMIT 3",
+    "WITH c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3) SELECT sum(n) FROM c",
+    "INSERT INTO t(a, b) VALUES (1, 'x'); UPDATE t SET a = 2 WHERE b = 'x'; DELETE FROM t",
+    "CREATE TABLE IF NOT EXISTS t (a INTEGER PRIMARY KEY, b TEXT DEFAULT 'x' CHECK (length(b) < 9))",
+    "CREATE UNIQUE INDEX i ON t(b); CREATE VIEW v(a) AS SELECT a FROM t; DROP VIEW v",
+    "PRAGMA table_info(t); PRAGMA user_version; BEGIN; COMMIT",
+    "SELECT CAST(a AS TEXT), coalesce(b, 'n'), replace(b, 'a', 'b') FROM t -- trailing",
+])
+def test_sql_inside_the_allowlist_signs(sql):
+    command = f"sqlite3 {OTHER} \"{sql}\""
+    assert check(command, "/tmp") == (True, None), sql
+    assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
+
+
 def test_an_unproven_folder_with_no_sqlite3_cd_does_not_blame_cd(opener):
     allowed, reason = check(f"ls; sqlite3 {OTHER} < ok.sql", str(opener))
     assert allowed is False and "could not prove" in reason
