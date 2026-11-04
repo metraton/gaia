@@ -2,13 +2,18 @@
 gaia_db_write_guard.py -- PreToolUse Bash hook keeping the shell out of gaia.db.
 
 The sqlite3 CLI never opens the store: a database argument, or any word of what
-the line feeds sqlite3 (its operands, a pipe's producers, a heredoc, a
-here-string, a redirected file), that is gaia.db by name, realpath or inode is
-refused, and a database target (the argument, `.open`, ATTACH, VACUUM INTO) the
-guard cannot resolve to a literal path is refused as "could not prove". Reads go
-through `gaia context query`. A shell command or file a sqlite3 call names in a
-readable payload meets the floors a plain Bash line meets and is refused when
-they refuse it. Every other sqlite3 call signs (``sqlite_unproven_effect``): no
+the line feeds sqlite3, that is gaia.db by name, realpath or inode is refused,
+and a database target (the argument, `.open`, ATTACH, VACUUM INTO) the guard
+cannot resolve to a literal path is refused as "could not prove". What it feeds
+is its operands, a pipe's producers, a heredoc, a here-string, and every file it
+reads as SQL whose path and content are literal: a `<` or `-init` file, a
+`.read` target, the sqliterc under a HOME or XDG_CONFIG_HOME the line assigns,
+and the files a `cat` on the line prints, followed through `.read` recursively.
+Reads go through `gaia context query`. A shell command or file a sqlite3 call
+names in a readable payload -- `.shell`, `.system`, any dot-command operand
+starting with `|`, edit()'s editor, a VISUAL or EDITOR the line assigns --
+meets the floors a plain Bash line meets and is refused when they refuse it.
+Every other sqlite3 call signs (``sqlite_unproven_effect``): no
 form is provably read-only, since `-safe` still reads files through fsdir().
 Shell writers whose destination is the store file are refused. The refusals are
 categorical, with no approval_id.
@@ -93,6 +98,9 @@ _DOT_COMMAND = re.compile(
     r"(?P<rest>(?(quote)(?:(?!(?P=quote))[^\n])*|[^\n|;&]*))",
     re.IGNORECASE,
 )
+_SCRIPT_DOT_COMMAND = re.compile(r"^[ \t]*\.(?P<name>[a-z]+)\b(?P<rest>[^\n]*)", re.IGNORECASE | re.MULTILINE)
+_LINE_ASSIGNMENT = re.compile(r"^(?P<name>VISUAL|EDITOR|HOME|XDG_CONFIG_HOME)=(?P<value>.*)$", re.DOTALL)
+_SQLITERC = {"HOME": (".sqliterc",), "XDG_CONFIG_HOME": ("sqlite3", "sqliterc")}
 _SQL_GAP = r"(?:\s|/\*.*?\*/|--[^\n]*\n)*"
 _ATTACH = re.compile(rf"\bATTACH\b(?:{_SQL_GAP}DATABASE\b)?{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}AS\b))?", re.I | re.S)
 _VACUUM_INTO = re.compile(rf"\bVACUUM\b[^;]*?\bINTO\b{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}(?:;|$|[\"'])))?", re.I | re.S)
@@ -103,9 +111,7 @@ _SQL_CALL = re.compile(
     re.I | re.S,
 )
 _WORD = re.compile(r"[^\s'\"`(),;|<>=]+")
-_LEADING_OPTIONS = re.compile(r"^(?:-\S*\s+)*")
 _OUTPUT_SPECIALS = frozenset({"off", "stdout", "stderr"})
-_READ_LIMIT = 1 << 20
 _MAX_DEPTH = 4
 
 
@@ -192,13 +198,17 @@ class _Invocation:
                 return word
         return None
 
-    def redirected_files(self) -> Iterator[str]:
+    def read_files(self) -> Iterator[str]:
+        """The files named on the line that sqlite3 reads as SQL: a ``<`` redirect and the ``-init`` file."""
         for index, word in enumerate(self.args):
+            following = self.args[index + 1] if index + 1 < len(self.args) else ""
             redirect = _REDIRECT_WORD.match(word)
             if redirect and redirect.group(0).lstrip("0123456789") in ("<", "<>"):
-                target = word[redirect.end():] or (self.args[index + 1] if index + 1 < len(self.args) else "")
+                target = word[redirect.end():] or following
                 if target:
                     yield target
+            elif word.lstrip("-").lower() == "init" and word.startswith("-") and following:
+                yield following
 
 
 def _readings(text: str, depth: int = 0) -> Iterator[str]:
@@ -243,20 +253,80 @@ def _invocations(command: str) -> List[_Invocation]:
 
 
 def _read_fed_file(path: str, cwd: Optional[str]) -> str:
+    """The text of a literal regular file, or "" when its path or content cannot be proven."""
+    from pathlib import Path
+
+    from .targets import _read_file
+
     path = os.path.expanduser(path)
-    if _NOT_LITERAL.search(path) or (not os.path.isabs(path) and cwd is None):
+    if not path or _NOT_LITERAL.search(path) or (not os.path.isabs(path) and cwd is None):
         return ""
+    return _read_file(Path(cwd or "", path))[1] or ""
+
+
+def _dot_commands(text: str) -> Iterator[Tuple[str, str]]:
+    """Each dot-command in *text* as ``(name, arguments)``, read as shell text and as a sqlite3 script."""
+    for pattern in (_DOT_COMMAND, _SCRIPT_DOT_COMMAND):
+        for match in pattern.finditer(text):
+            yield match["name"].lower(), match["rest"]
+
+
+def _dot_operands(arguments: str) -> List[str]:
     try:
-        with open(os.path.join(cwd or "", path), "r", errors="replace") as handle:
-            return handle.read(_READ_LIMIT)
-    except OSError:
-        return ""
+        return shlex.split(arguments)
+    except ValueError:
+        return [word.strip("'\"") for word in arguments.split()]
+
+
+def _proven_output_files(command: str) -> List[str]:
+    """The files a ``cat`` of literal paths prints; empty for any other command."""
+    from ..tools.shell_parser import shell_split
+
+    try:
+        words = shell_split(command)
+    except ValueError:
+        return []
+    operands = words[1:]
+    if not operands or command_name(words[0]) != "cat":
+        return []
+    if any(word.startswith("-") or _NOT_LITERAL.search(word) for word in operands):
+        return []
+    return operands
+
+
+def _read_targets(text: str) -> Iterator[str]:
+    for typed, arguments in _dot_commands(text):
+        operands = _dot_operands(arguments)
+        if operands and "read".startswith(typed):
+            if operands[0].startswith("|"):
+                yield from _proven_output_files(" ".join(operands)[1:])
+            else:
+                yield operands[0]
+
+
+def _fed_texts(sources: List[str], paths: List[str], cwd: Optional[str]) -> List[str]:
+    """The text of every file sqlite3 reads as SQL, from *paths* and the ``.read`` targets of *sources*, recursively.
+
+    A file whose path or content cannot be proven contributes nothing, so its
+    call is left to the signature rather than refused.
+    """
+    pending = [(path, 0) for path in paths] + [(path, 0) for text in sources for path in _read_targets(text)]
+    seen, texts = set(), []
+    while pending:
+        path, depth = pending.pop()
+        if depth > _MAX_DEPTH or path in seen:
+            continue
+        seen.add(path)
+        text = _read_fed_file(path, cwd)
+        if text:
+            texts.append(text)
+            pending += [(target, depth + 1) for target in _read_targets(text)]
+    return texts
 
 
 def _target_verdicts(text: str, cwd: Optional[str]) -> Iterator[Optional[str]]:
-    for match in _DOT_COMMAND.finditer(text):
-        typed = match["name"].lower()
-        operands = [w.strip("'\"") for w in match["rest"].split() if not w.startswith("-")]
+    for typed, arguments in _dot_commands(text):
+        operands = [w for w in _dot_operands(arguments) if not w.startswith("-")]
         if len(typed) >= 2 and "open".startswith(typed) and operands:
             yield _database_verdict(operands[-1], cwd)
     for pattern in (_ATTACH, _VACUUM_INTO):
@@ -302,16 +372,17 @@ def _file_refusal(path: str, cwd: Optional[str]) -> Optional[str]:
 
 def _payload_refusals(text: str, cwd: Optional[str]) -> Iterator[Optional[str]]:
     """Judge each readable shell command and written file in *text* as the shell would."""
-    for match in _DOT_COMMAND.finditer(text):
-        typed, rest = match["name"].lower(), match["rest"].strip().strip("'\"")
+    for typed, arguments in _dot_commands(text):
         if "shell".startswith(typed) or "system".startswith(typed):
-            yield _command_refusal(rest, cwd)
-        if any(name.startswith(typed) for name in ("once", "output", "import")):
-            target = _LEADING_OPTIONS.sub("", rest).strip("'\"")
-            if target.startswith("|"):
-                yield _command_refusal(target[1:].strip().strip("'\""), cwd)
-            elif not "import".startswith(typed) and target:
-                yield _file_refusal(target.split()[0], cwd)
+            yield _command_refusal(arguments.strip().strip("'\""), cwd)
+            continue
+        operands = _dot_operands(arguments)
+        for index, operand in enumerate(operands):
+            if operand.startswith("|"):
+                yield _command_refusal(" ".join(operands[index:])[1:].strip(), cwd)
+        target = next((w for w in operands if not w.startswith("-")), "")
+        if any(name.startswith(typed) for name in ("once", "output")) and not target.startswith("|"):
+            yield _file_refusal(target, cwd)
     for match in _SQL_CALL.finditer(text):
         if match["fn"].lower() == "writefile":
             yield _file_refusal(match["first"][1:-1].replace("''", "'"), cwd)
@@ -332,20 +403,26 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
         verdict = database is not None and _database_verdict(database, cwd)
         if verdict:
             return verdict
-    fed = [_read_fed_file(path, cwd) for inv in invocations for path in inv.redirected_files()]
-    texts = [command, *fed]
-    words = [w for text in texts for w in _WORD.findall(text)]
-    words += [s.replace("''", "'") for text in texts for s in _SQL_STRING.findall(text)]
-    for component in _split_components(command):
+    line_words: List[str] = []
+    for reading in _readings(command):
         try:
-            words += shell_split(component)
+            line_words += shell_split(reading)
         except ValueError:
             continue
+    assigned = [(m["name"], m["value"]) for m in map(_LINE_ASSIGNMENT.match, line_words) if m]
+    paths = [path for inv in invocations for path in inv.read_files()]
+    paths += [os.path.join(value, *_SQLITERC[name]) for name, value in assigned if name in _SQLITERC and value]
+    paths += [path for reading in _readings(command) for path in _proven_output_files(reading)]
+    sources = [command, *(word for inv in invocations for word in inv.args)]
+    texts = sources + _fed_texts(sources, paths, cwd)
+    words = line_words + [w for text in texts for w in _WORD.findall(text)]
+    words += [s.replace("''", "'") for text in texts for s in _SQL_STRING.findall(text)]
     if any(_names_store(word, cwd) for word in words):
         return STORE_REJECTION_MESSAGE
+    editors = (_command_refusal(value, cwd) for name, value in assigned if name in ("VISUAL", "EDITOR"))
     return next((v for text in texts for v in _target_verdicts(text, cwd) if v), None) or next(
-        (v for text in texts for v in _payload_refusals(text, cwd) if v), None
-    )
+        (v for v in editors if v), None
+    ) or next((v for text in texts for v in _payload_refusals(text, cwd) if v), None)
 
 
 def _component_writes_db(component: str) -> bool:

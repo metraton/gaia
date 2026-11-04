@@ -154,6 +154,15 @@ README = Path(__file__).resolve().parents[2] / "README.md"
     f"sqlite3 {OTHER} \"SELECT \\\"edit\\\"('x', 'rm -rf /')\"",
     f"sqlite3 {OTHER} '.output {README}' 'SELECT 1'",
     f"sqlite3 {OTHER} \"SELECT [writefile]('{README}', 'x')\"",
+    f"sqlite3 {OTHER} \".read '|rm -rf /'\"",
+    f"sqlite3 {OTHER} \".READ '|rm -rf /'\"",
+    f"sqlite3 {OTHER} \".re '|cat ~/.ssh/id_rsa'\"",
+    f"sqlite3 -cmd \".log '|rm -rf /'\" {OTHER}",
+    f"sqlite3 {OTHER} <<'EOF'\n.read '|rm -rf /'\nEOF",
+    f"sqlite3 {OTHER} \".read '|sed -i s/a/b/ {README}'\"",
+    f"VISUAL='rm -rf /' sqlite3 {OTHER} \"SELECT edit('x')\"",
+    f"env EDITOR='cat ~/.ssh/id_rsa' sqlite3 {OTHER} \"SELECT edit('x')\"",
+    f"VISUAL='rm -rf /' sqlite3 {OTHER} '.once -e' 'SELECT 1'",
 ])
 def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
     allowed, reason = check(command, "/tmp")
@@ -192,6 +201,8 @@ def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
     f"sqlite3 -A -x -f /tmp/a.sqlar",
     f"sqlite3 {OTHER} '.ar -x'",
     f"sqlite3 {OTHER} <<EOF\n.shell kubectl apply -f x.yaml\nEOF",
+    f"VISUAL=vim sqlite3 {OTHER} \"SELECT edit('x')\"",
+    f"sqlite3 {OTHER} \".read '|cat /tmp/absent-1097.sql'\"",
 ])
 def test_another_database_signs_when_nothing_it_reaches_is_refused(command):
     assert check(command, "/tmp") == (True, None)
@@ -266,6 +277,41 @@ def test_the_store_in_fed_content_is_found_by_inode_and_in_a_redirected_file(tmp
     script.write_text(f".open {tmp_path}/hard.db\n")
     _refused_as_store(f"printf '.open %s\\n' {tmp_path}/hard.db | sqlite3 {OTHER}", cwd="/tmp")
     _refused_as_store(f"sqlite3 {OTHER} < {script}", cwd="/tmp")
+
+
+def test_every_file_sqlite3_is_made_to_read_meets_the_checks_of_a_redirected_one(tmp_path):
+    opener = tmp_path / "open.sql"
+    opener.write_text(f".open {STORE}\nPRAGMA journal_mode=DELETE;\n")
+    (tmp_path / "nested.sql").write_text(f"SELECT 1;\n.read '|cat {opener}'\n")
+    (tmp_path / "h").mkdir()
+    (tmp_path / "h" / ".sqliterc").write_text(".read nested.sql\n")
+    (tmp_path / "x" / "sqlite3").mkdir(parents=True)
+    (tmp_path / "x" / "sqlite3" / "sqliterc").write_text(opener.read_text())
+    (tmp_path / "shell.sql").write_text(".shell rm -rf /\n")
+    for command in (
+        f"sqlite3 {OTHER} < {opener}",
+        f"sqlite3 -init {opener} {OTHER} 'SELECT 1'",
+        f"sqlite3 {OTHER} '.read {opener}'",
+        f"sqlite3 -cmd '.read {opener}' {OTHER}",
+        f"sqlite3 {OTHER} '.read nested.sql'",
+        f"sqlite3 {OTHER} \".read '|cat {opener}'\"",
+        f"sqlite3 {OTHER} < <(cat {opener})",
+        f"cat {opener} | sqlite3 {OTHER}",
+        f"HOME={tmp_path}/h sqlite3 {OTHER} 'SELECT 1'",
+        f"env XDG_CONFIG_HOME={tmp_path}/x sqlite3 {OTHER} 'SELECT 1'",
+    ):
+        _refused_as_store(command, cwd=str(tmp_path))
+    allowed, reason = check(f"sqlite3 -init {tmp_path}/shell.sql {OTHER}", "/tmp")
+    assert allowed is False and reason.startswith(guard.REACH_REJECTION_PREFIX), reason
+    assert _validate(f"sqlite3 -init {opener} {OTHER} 'SELECT 1'").approval_id is None
+    for unproven in (
+        f"sqlite3 -init {tmp_path}/absent.sql {OTHER}",
+        f"sqlite3 {OTHER} '.read {tmp_path}'",
+        f"sqlite3 {OTHER} < <(cat {tmp_path}/*.sql)",
+        f"sqlite3 {OTHER} '.read nested.sql'",
+    ):
+        assert check(unproven, None) == (True, None), unproven
+        assert sqlite_unproven_effect(unproven, None) == guard.SIGN_GUIDANCE
 
 
 @pytest.mark.parametrize("command", [
