@@ -83,7 +83,7 @@ CASES = [
     ("twin-db-mentioned-in-quoted-text",
      f"echo 'never run: cp /tmp/x.db {_DB}'", FREE),
     ("twin-db-listing", f"ls -l {_DB}", FREE),
-    ("twin-db-select", f"sqlite3 {_DB} \"SELECT count(*) FROM handoffs\"", FREE),
+    ("db-sqlite3-select", f"sqlite3 {_DB} \"SELECT count(*) FROM handoffs\"", FLOOR),
     ("twin-db-copied-out", f"cp {_DB} /tmp/snapshot.db", CONSENT),
     # -- Executors whose payload travels quoted ------------------------------
     ("xargs-sh-c-push", "xargs sh -c 'git push origin main'", DENIED),

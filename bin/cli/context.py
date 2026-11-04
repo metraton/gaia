@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -992,8 +993,8 @@ def _cmd_query(args) -> int:
     """Handle `gaia context query "<SQL>"`.
 
     Runs the statement when its first word is select, with, explain or pragma
-    (`_SELECT_VERBS`); any other first word exits 2. Only that first word is
-    checked.
+    (`_SELECT_VERBS`); any other first word exits 2. The connection is read-only,
+    so a write past that word (``WITH ... DELETE``) exits 1 and changes nothing.
     """
     sql = (getattr(args, "sql", "") or "").strip()
     if not sql:
@@ -1009,12 +1010,18 @@ def _cmd_query(args) -> int:
         return 2
 
     try:
-        from gaia.store.writer import _connect as _store_connect
+        from gaia.store.writer import _db_path
     except Exception as exc:
         print(f"gaia context query: failed to import store: {exc}", file=sys.stderr)
         return 1
 
-    con = _store_connect()
+    db = _db_path()
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        print(f"gaia context query: cannot open {db} read-only: {exc}", file=sys.stderr)
+        return 1
+    con.row_factory = sqlite3.Row
     try:
         try:
             cur = con.execute(sql)
@@ -1022,7 +1029,6 @@ def _cmd_query(args) -> int:
             print(f"gaia context query: SQL error: {exc}", file=sys.stderr)
             return 1
         rows = cur.fetchall()
-        # Print as JSON list of dicts for machine-readability
         out = [dict(r) for r in rows]
         print(json.dumps(out, indent=2, default=str))
     finally:

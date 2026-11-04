@@ -96,7 +96,7 @@ from ..security.program_heredoc import heredoc_program
 from ..security.shell_substitution import (
     _read_heredoc_opener, extract_substitutions, extract_substitutions_truncated,
 )
-from ..security.gaia_db_write_guard import check as check_gaia_db_write
+from ..security.gaia_db_write_guard import check as check_gaia_db_write, sqlite_unproven_effect
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
 from ..security.memory_skill_guard import check as check_memory_skill_loaded
@@ -965,7 +965,7 @@ class BashValidator:
 
         # The guards from here to the sensitive-read check run before
         # unwrap/decompose so wrappers and heredocs are inspected intact.
-        db_write_allowed, db_write_reason = check_gaia_db_write(write_guard_scope)
+        db_write_allowed, db_write_reason = check_gaia_db_write(write_guard_scope, cwd)
         if not db_write_allowed:
             logger.warning("BLOCKED gaia.db direct write: %s", command[:100])
             return BashValidationResult(
@@ -1126,6 +1126,18 @@ class BashValidator:
                 has_orchestrator_above=is_subagent,
                 session_id=session_id,
                 agent_type=agent_type,
+            )
+
+        sqlite_guidance = sqlite_unproven_effect(write_guard_scope, cwd)
+        if sqlite_guidance:
+            return decide_t3_outcome(
+                command,
+                verb="sqlite-reach",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+                guidance=sqlite_guidance,
             )
 
         # A file fed by redirect into a sender, or copied to another host, leaves the
