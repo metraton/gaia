@@ -69,10 +69,13 @@ is not yet vendored.  The caller continues to handle bash payloads through
 from __future__ import annotations
 
 import ast
+import io
 import logging
 import re
+import sys
+import tokenize
 from dataclasses import dataclass
-from typing import Callable, FrozenSet, Optional, Set, Tuple
+from typing import Callable, Dict, FrozenSet, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -555,13 +558,46 @@ def analyze_python_inline(
     if not code or not code.strip():
         return InlineAstResult()
 
-    try:
-        tree = ast.parse(code, mode="exec")
-    except SyntaxError:
+    trees = _python_views(code)
+    if trees is None:
         return InlineAstResult(parse_failed=True)
+    for tree in trees:
+        result = _analyze_tree(tree, argv_is_mutative)
+        if result.is_dangerous:
+            return result
+    return InlineAstResult()
 
+
+def _python_views(code: str) -> Optional[Tuple[ast.Module, ...]]:
+    """Trees of *code* as a str (``-c``, cookie ignored) and as a file's bytes (BOM, cookie); None if one fails."""
+    text = code[1:] if code.startswith("\N{ZERO WIDTH NO-BREAK SPACE}") else code
+    try:
+        trees = [ast.parse(text, mode="exec")]
+    except SyntaxError:
+        return None
+    if text is code and "coding" not in "\n".join(code.split("\n", 2)[:2]):
+        return tuple(trees)
+    try:
+        raw = code.encode("utf-8", "surrogateescape")
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+        if "\N{REPLACEMENT CHARACTER}" in code and encoding not in ("utf-8", "utf-8-sig"):
+            return None
+        trees.append(ast.parse(raw, mode="exec"))
+    except (SyntaxError, UnicodeError, ValueError, LookupError):
+        return None
+    return tuple(trees)
+
+
+def _analyze_tree(
+    tree: ast.Module, argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]],
+) -> InlineAstResult:
     alias_map = _AliasResolver()
     alias_map.collect(tree)
+    escaped = _escaped_process_reference(tree, alias_map)
+    if escaped:
+        return InlineAstResult(
+            is_dangerous=True, label="process-reference", category="PROCESS_EXECUTION", detail=escaped,
+        )
     provenance = _RequestProvenance(tree, alias_map)
     bindings = _argv_bindings(tree, alias_map)
 
@@ -572,6 +608,13 @@ def analyze_python_inline(
         dotted = alias_map.resolve_call(node.func)
         if dotted is None:
             continue
+        launcher = _process_launcher(dotted)
+        if launcher is not None:
+            dotted = launcher
+            if dotted not in _DANGEROUS_BY_DOTTED:
+                return InlineAstResult(
+                    is_dangerous=True, label="process-launch", category="PROCESS_EXECUTION", detail=dotted,
+                )
 
         if dotted in _DYNAMIC_CODE_CALLS:
             result = _dynamic_code_result(node, dotted, argv_is_mutative)
@@ -622,10 +665,16 @@ def analyze_python_inline(
 
 def loaded_modules(code: str) -> Tuple[FrozenSet[str], bool]:
     """Return the modules *code* loads by literal name, and whether it loads code no name proves (relative import, ``runpy.run_path``, a site directory, a ``sys.path`` change in code that imports)."""
-    try:
-        tree = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return frozenset(), False
+    names: Set[str] = set()
+    unnamed = False
+    for tree in _python_views(code) or ():
+        tree_names, tree_unnamed = _loaded_modules_in(tree)
+        names |= tree_names
+        unnamed = unnamed or tree_unnamed
+    return frozenset(names), unnamed
+
+
+def _loaded_modules_in(tree: ast.Module) -> Tuple[FrozenSet[str], bool]:
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     names, unnamed, path_changed = set(), False, False
@@ -709,13 +758,10 @@ def parse_finds_no_effect(
     """True when ``code`` parses and neither the catalog nor the uncatalogued-effect screen finds an effect."""
     if not code or not code.strip():
         return False
-    try:
-        tree = ast.parse(code, mode="exec")
-    except SyntaxError:
+    trees = _python_views(code)
+    if trees is None or analyze_python_inline(code, argv_is_mutative).is_dangerous:
         return False
-    if analyze_python_inline(code, argv_is_mutative).is_dangerous:
-        return False
-    return not uncatalogued_effect(tree)
+    return not any(uncatalogued_effect(tree) for tree in trees)
 
 
 def uncatalogued_effect(tree: ast.AST) -> str:
@@ -809,6 +855,88 @@ _PROCESS_LAUNCH_PREFIXES: Tuple[str, ...] = (
     "subprocess.", "os.exec", "os.spawn", "os.posix_spawn", "os.system", "os.popen", "pty.spawn",
     "asyncio.create_subprocess",
 )
+_PROCESS_CALLS: FrozenSet[str] = frozenset(
+    dotted for dotted, _, category in _DANGEROUS_CALLS if category == "PROCESS_EXECUTION"
+)
+_PROCESS_FAMILIES: Tuple[str, ...] = tuple(p for p in _PROCESS_LAUNCH_PREFIXES if not p.endswith("."))
+# os re-exports its platform module, and these extension modules exist only to start processes.
+_OS_IMPLEMENTATIONS: FrozenSet[str] = frozenset({"posix", "nt"})
+_LAUNCHER_MODULES: FrozenSet[str] = frozenset({"_posixsubprocess", "_winapi"})
+_PROCESS_MODULES: FrozenSet[str] = frozenset(
+    name.split(".")[0] for name in (*_PROCESS_CALLS, *_PROCESS_FAMILIES)
+) | _OS_IMPLEMENTATIONS | _LAUNCHER_MODULES
+# A standard-library module may import os, and nothing short of reading it proves it does not.
+_REACHING_MODULES: FrozenSet[str] = _PROCESS_MODULES | frozenset(getattr(sys, "stdlib_module_names", ()))
+_NAMESPACE_CALLS: FrozenSet[str] = frozenset({
+    "globals", "locals", "vars", "builtins.globals", "builtins.locals", "builtins.vars",
+})
+
+
+def _process_launcher(dotted: str) -> Optional[str]:
+    """The process launcher *dotted* names, also through a module that re-exports it (``shutil.os.system``), else None."""
+    parts = [_module_identity(part) for part in dotted.split(".")]
+    for start in range(len(parts) - 1):
+        suffix = ".".join(parts[start:])
+        if suffix in _PROCESS_CALLS:
+            return suffix
+        if suffix.count(".") == 1 and (suffix.startswith(_PROCESS_FAMILIES) or parts[start] in _LAUNCHER_MODULES):
+            return suffix
+    return None
+
+
+def _module_identity(name: str) -> str:
+    """The process module *name* is another spelling of (``posix`` and ``nt`` are ``os``, ``_os`` is ``os``), else *name*."""
+    if name in _OS_IMPLEMENTATIONS:
+        return "os"
+    bare = name.lstrip("_")
+    return bare if bare != name and bare in _PROCESS_MODULES else name
+
+
+def _escaped_process_reference(tree: ast.AST, alias_map: "_AliasResolver") -> str:
+    """The first reference that can reach a process used other than directly (called, read, indexed), else ""."""
+    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+            return f"from {node.module} import *"
+        kind = _process_reach(node, alias_map)
+        if not kind:
+            continue
+        parent = parents.get(id(node))
+        if kind == "callable":
+            direct = isinstance(parent, ast.Call) and parent.func is node
+        elif kind == "module":
+            direct = isinstance(parent, ast.Attribute) and parent.value is node or (
+                isinstance(parent, ast.Call) and alias_map.getattr_name(parent) is not None
+                and parent.args[0] is node
+            )
+        elif kind == "registry":
+            direct = isinstance(parent, ast.Subscript) and parent.value is node and _is_str_literal(parent.slice)
+            direct = direct and isinstance(parent.ctx, ast.Load)
+        else:
+            direct = False
+        if not direct:
+            return alias_map.denotes(node) or kind
+    return ""
+
+
+def _process_reach(node: ast.AST, alias_map: "_AliasResolver") -> str:
+    if isinstance(node, (ast.Name, ast.Attribute)) and not isinstance(node.ctx, ast.Load):
+        return ""
+    if isinstance(node, ast.Call) and not node.args and not node.keywords:
+        if alias_map.resolve_call(node.func) in _NAMESPACE_CALLS:
+            return "namespace"
+    dotted = alias_map.denotes(node)
+    if dotted is None:
+        return ""
+    if dotted in _DYNAMIC_CODE_CALLS or _process_launcher(dotted):
+        return "callable"
+    if dotted == "sys.modules":
+        return "registry"
+    if _module_identity(dotted.rpartition(".")[2]) in _PROCESS_MODULES:
+        return "module"
+    if alias_map.is_module(node) and dotted.split(".")[0] in _REACHING_MODULES:
+        return "module"
+    return ""
 
 
 def _environment_reaches_a_process(tree: ast.AST, alias_map: "_AliasResolver") -> bool:
@@ -967,16 +1095,15 @@ def _names_home(node: ast.AST) -> bool:
 
 def runs_code_string(code: str) -> bool:
     """True when *code* parses and hands a string to ``eval``/``exec``/``compile``."""
-    try:
-        tree = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return False
-    alias_map = _AliasResolver()
-    alias_map.collect(tree)
-    return any(
-        isinstance(node, ast.Call) and alias_map.resolve_call(node.func) in _CODE_STRING_CALLS
-        for node in ast.walk(tree)
-    )
+    for tree in _python_views(code) or ():
+        alias_map = _AliasResolver()
+        alias_map.collect(tree)
+        if any(
+            isinstance(node, ast.Call) and alias_map.resolve_call(node.func) in _CODE_STRING_CALLS
+            for node in ast.walk(tree)
+        ):
+            return True
+    return False
 
 
 def _effect_module_read(dotted: str) -> bool:
@@ -1046,13 +1173,8 @@ def is_provably_read_only_python(code: str) -> bool:
         # Empty payload: nothing to exempt; let caller's default path handle.
         return False
 
-    try:
-        tree = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return False
-
-    checker = _ReadOnlyChecker()
-    return checker.is_read_only(tree)
+    trees = _python_views(code)
+    return trees is not None and all(_ReadOnlyChecker().is_read_only(tree) for tree in trees)
 
 
 class _ReadOnlyChecker:
@@ -1295,6 +1417,8 @@ class _AliasResolver:
         # name-as-bound -> canonical dotted prefix
         # e.g. {"sp": "subprocess", "r": "subprocess.run", "c": "boto3.client"}
         self._aliases: dict = {}
+        self._imported: Dict[str, str] = {}
+        self._modules: Set[str] = set()
 
     def collect(self, tree: ast.AST) -> None:
         for node in ast.walk(tree):
@@ -1302,12 +1426,16 @@ class _AliasResolver:
                 for alias in node.names:
                     name = alias.asname or alias.name
                     self._aliases[name] = alias.name
+                    bound = alias.asname or alias.name.split(".")[0]
+                    self._imported[bound] = alias.name if alias.asname else bound
+                    self._modules.add(bound)
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 for alias in node.names:
                     name = alias.asname or alias.name
                     full = f"{module}.{alias.name}" if module else alias.name
                     self._aliases[name] = full
+                    self._imported[name] = full
 
         # Second pass: bind names assigned the result of a resolvable call, so
         # the two-statement form of a chain resolves like the one-liner.  Runs
@@ -1335,6 +1463,30 @@ class _AliasResolver:
         """The dotted name of *node* when its head was bound by an import or a resolvable call, else None."""
         chain = self._chain(node)
         return ".".join(chain[0]) if chain and chain[1] else None
+
+    def denotes(self, node: ast.AST) -> Optional[str]:
+        """The dotted name *node* evaluates to as a reference (never a call's result), else None."""
+        if isinstance(node, ast.Name):
+            return self._imported.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            head = self.denotes(node.value)
+            return f"{head}.{node.attr}" if head else None
+        if isinstance(node, ast.Call):
+            attr = self.getattr_name(node)
+            if attr is None:
+                return _imported_module(node, self.resolve_call(node.func))
+            head = self.denotes(node.args[0])
+            return f"{head}.{attr}" if head else None
+        if isinstance(node, ast.Subscript) and _is_str_literal(node.slice):
+            return node.slice.value if self.resolve_call(node.value) == "sys.modules" else None
+        return None
+
+    def is_module(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in self._modules
+        if isinstance(node, ast.Call):
+            return _imported_module(node, self.resolve_call(node.func)) is not None
+        return isinstance(node, ast.Subscript) and self.denotes(node) is not None
 
     def getattr_name(self, call: ast.Call) -> Optional[str]:
         """The attribute a ``getattr`` call names by a string literal, which makes it a plain attribute access."""

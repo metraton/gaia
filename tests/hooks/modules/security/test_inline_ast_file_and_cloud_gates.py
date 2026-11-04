@@ -76,6 +76,11 @@ class TestShutilCopyfileGate:
         assert copyfile.is_dangerous is copy.is_dangerous is True
         assert copyfile.category == copy.category == "FILE_MUTATION"
 
+    def test_copyfile_through_a_computed_getattr_is_mutative(self):
+        assert analyze_python_inline(
+            'import shutil\ngetattr(shutil, "copy" + "file")("/a", "/b")'
+        ).is_dangerous is True
+
     def test_copyfile_through_literal_import_module_is_mutative(self):
         assert analyze_python_inline(
             'import importlib\nimportlib.import_module("shutil").copyfile("/a","/b")'
@@ -318,11 +323,6 @@ class TestKnownEscapes:
     improvement -- update the assertion; do not read the current value as
     coverage.
     """
-
-    def test_dynamic_getattr_dispatch_is_not_caught(self):
-        assert analyze_python_inline(
-            'import shutil\ngetattr(shutil, "copy" + "file")("/a", "/b")'
-        ).is_dangerous is False
 
     def test_write_on_a_handle_bound_elsewhere_is_not_caught(self):
         assert analyze_python_inline(
