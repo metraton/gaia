@@ -6062,7 +6062,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
     # --- Step 1c-py: ``python -m <module>`` re-dispatched as that module's CLI ---
     # Only a mutative verdict is adopted for a non-package-manager module.
-    py_module_result = _check_python_module_runner(base_cmd, semantics)
+    pytest_result = _check_pytest_run(base_cmd, semantics, cwd)
+    if pytest_result is not None:
+        return pytest_result
+    py_module_result = _check_python_module_runner(base_cmd, semantics, cwd=cwd, _depth=_depth)
     if py_module_result is not None:
         return py_module_result
 
@@ -6224,9 +6227,13 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # using the 3-layer approach instead of verb-matching tokens (which would
     # false-positive on generic keywords like "import", "create", etc.).
     cli_flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
-    if base_cmd in _INLINE_CODE_CLIS and (
-        cli_flags & set(semantics.flag_tokens) or (base_cmd == "deno" and tuple(semantics.non_flag_tokens[:1]) == ("eval",))
-    ):
+    if base_cmd in _PYTHON_INTERPRETERS:
+        runs_inline_code = _python_program(list(semantics.tokens[1:]))[0] == "-c"
+    else:
+        runs_inline_code = base_cmd in _INLINE_CODE_CLIS and bool(
+            cli_flags & set(semantics.flag_tokens) or (base_cmd == "deno" and tuple(semantics.non_flag_tokens[:1]) == ("eval",))
+        )
+    if runs_inline_code:
         return _check_inline_code(command, base_cmd, family, cwd=cwd, _depth=_depth)
 
     # --- Step 3c: Heredoc safety check ---
@@ -7076,7 +7083,7 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
 
 
 def _check_python_module_runner(
-    base_cmd: str, semantics: "CommandSemantics",
+    base_cmd: str, semantics: "CommandSemantics", cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> "Optional[MutativeResult]":
     """Re-dispatch ``python -m <pkg-mgr> ...`` as the package-manager command.
 
@@ -7125,7 +7132,7 @@ def _check_python_module_runner(
     import shlex
     rest = raw_tokens[module_idx + 1:]
     rewritten = " ".join(shlex.quote(t) for t in (module, *rest))
-    inner = detect_mutative_command(rewritten)
+    inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
 
     # Beyond the package managers, ANY module invoked through ``-m`` is the CLI
     # of that module (``python3 -m twine upload``, ``python3 -m alembic upgrade
@@ -9265,6 +9272,228 @@ def _python_local_module_run(
     return _foreign_code_result(f"python -m {module} runs {local}")
 
 
+def _python_program(args: "List[str]") -> "Tuple[str, int]":
+    """``("-c" | "-m" | "", index)`` of what names the program; a ``-c`` after ``-m`` or a script is the program's own."""
+    tokens = iter(enumerate(args))
+    for index, token in tokens:
+        if token == "-c" or token.startswith("-m"):
+            return token[:2], index
+        if token in _PYTHON_OPTION_VALUE_FLAGS:
+            next(tokens, None)
+        elif not token.startswith("-"):
+            return "", index
+    return "", len(args)
+
+
+_PYTEST_PROGRAMS: FrozenSet[str] = frozenset({"pytest", "py.test"})
+_PYTEST_SWITCHES: FrozenSet[str] = frozenset({
+    "-q", "-v", "-x", "-s", "-l", "--quiet", "--verbose", "--exitfirst", "--showlocals",
+    "--lf", "--last-failed", "--ff", "--failed-first", "--nf", "--new-first", "--sw", "--stepwise",
+    "--co", "--collect-only", "--strict-markers", "--strict-config", "--no-header", "--no-summary",
+    "--disable-warnings", "--setup-show", "--runxfail", "--doctest-modules", "--cache-clear",
+})
+_PYTEST_PATH_OPTIONS: FrozenSet[str] = frozenset({"-c", "--config-file", "--rootdir", "--confcutdir"})
+_PYTEST_WRITE_OPTIONS: FrozenSet[str] = frozenset({
+    "--basetemp", "--junitxml", "--junit-xml", "--log-file", "--resultlog", "--result-log",
+})
+_PYTEST_VALUE_OPTIONS: FrozenSet[str] = _PYTEST_PATH_OPTIONS | _PYTEST_WRITE_OPTIONS | frozenset({
+    "-k", "-m", "-r", "-n", "-W", "--tb", "--maxfail", "--durations", "--color", "--capture",
+    "--import-mode", "--deselect", "--ignore", "--ignore-glob", "--pythonwarnings", "-p", "-o", "--override-ini",
+})
+_DOTTED_NAME_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+
+
+def _pytest_arguments(base_cmd: str, args: "List[str]") -> "Optional[List[str]]":
+    if base_cmd in _PYTEST_PROGRAMS:
+        return list(args)
+    if base_cmd not in _PYTHON_INTERPRETERS:
+        return None
+    kind, index = _python_program(args)
+    if kind != "-m":
+        return None
+    attached = args[index][2:]
+    module, rest = (attached, index + 1) if attached else (args[index + 1] if index + 1 < len(args) else "", index + 2)
+    return list(args[rest:]) if module == "pytest" else None
+
+
+def _pytest_options(args: "List[str]") -> "Tuple[List[Tuple[str, Optional[str]]], List[str], bool]":
+    options: "List[Tuple[str, Optional[str]]]" = []
+    positionals: "List[str]" = []
+    known = True
+    tokens = iter(args)
+    for token in tokens:
+        if token == "--":
+            positionals.extend(tokens)
+        elif not token.startswith("-") or token == "-":
+            positionals.append(token)
+        elif token.startswith("--"):
+            name, equals, value = token.partition("=")
+            if name in _PYTEST_VALUE_OPTIONS:
+                options.append((name, value if equals else next(tokens, None)))
+            else:
+                known = known and name in _PYTEST_SWITCHES and not equals
+                options.append((token, None))
+        elif token[:2] in _PYTEST_VALUE_OPTIONS:
+            options.append((token[:2], token[2:] or next(tokens, None)))
+        else:
+            known = known and all(f"-{letter}" in _PYTEST_SWITCHES for letter in token[1:])
+            options.append((token, None))
+    return options, positionals, known
+
+
+def _repository_top(directory: Path) -> "Optional[Path]":
+    top = _git_read(str(directory), "rev-parse", "--show-toplevel")
+    return Path(os.path.realpath(top)) if top else None
+
+
+def _inside_repository(top: "Optional[Path]", base: Path, value: "Optional[str]") -> "Optional[Path]":
+    if top is None or not value or any(char in value for char in "$`"):
+        return None
+    path = Path(os.path.realpath(Path(base, Path(value).expanduser())))
+    return path if path == top or top in path.parents else None
+
+
+def _pytest_may_write(top: "Optional[Path]", base: Path, value: "Optional[str]") -> bool:
+    import tempfile
+
+    if not value or any(char in value for char in "$`"):
+        return False
+    path = Path(os.path.realpath(Path(base, Path(value).expanduser())))
+    roots = [Path(os.path.realpath(tempfile.gettempdir())), *([top] if top else [])]
+    return any(root in path.parents for root in roots)
+
+
+def _pytest_write_result(source: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="pytest-writes-outside",
+        cli_family="linter",
+        confidence="high",
+        reason=f"{source} writes or deletes outside the repository and the temp dir",
+        rule="sign.destroys",
+    )
+
+
+def _pytest_outside_effect(
+    options: "List[Tuple[str, Optional[str]]]", top: "Optional[Path]", base: Path, read_config: bool = True,
+) -> "Optional[MutativeResult]":
+    for name, value in options:
+        if name in _PYTEST_PATH_OPTIONS:
+            path = _inside_repository(top, base, value)
+            if path is None:
+                return _foreign_code_result(f"pytest {name} {value} reaches outside the repository")
+            if read_config and name in ("-c", "--config-file"):
+                effect = _pytest_config_outside_effect(path, top, base)
+                if effect is not None:
+                    return effect
+        elif name in _PYTEST_WRITE_OPTIONS:
+            if not _pytest_may_write(None if name == "--basetemp" else top, base, value):
+                return _pytest_write_result(f"pytest {name} {value}")
+        elif name == "-p":
+            if not value or not (value.startswith("no:") or _DOTTED_NAME_RE.fullmatch(value)):
+                return _foreign_code_result(f"pytest -p {value} is not a plugin module name")
+        elif name in ("-o", "--override-ini"):
+            key, _, setting = (value or "").partition("=")
+            if key.strip() == "pythonpath" and any(
+                _inside_repository(top, base, entry) is None for entry in setting.split()
+            ):
+                return _foreign_code_result(f"pytest {name} {value} puts a directory outside the repository on sys.path")
+            if key.strip() == "cache_dir" and not _pytest_may_write(top, base, setting.strip()):
+                return _pytest_write_result(f"pytest {name} {value}")
+            if key.strip() == "addopts":
+                effect = _pytest_addopts_effect(setting, top, base)
+                if effect is not None:
+                    return effect
+    return None
+
+
+def _pytest_addopts_effect(value: str, top: "Optional[Path]", base: Path) -> "Optional[MutativeResult]":
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return _foreign_code_result(f"pytest addopts {value} cannot be read")
+    return _pytest_outside_effect(_pytest_options(words)[0], top, base, read_config=False)
+
+
+def _pytest_environment_effect(name: str, value: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    base = Path(cwd or Path.cwd())
+    if name == "PYTEST_ADDOPTS":
+        return _pytest_addopts_effect(value, _repository_top(base), base)
+    if all(_DOTTED_NAME_RE.fullmatch(each.strip()) for each in value.split(",")):
+        return None
+    return _foreign_code_result(f"PYTEST_PLUGINS={value} is not a list of plugin module names")
+
+
+def _pytest_config_outside_effect(path: Path, top: "Optional[Path]", base: Path) -> "Optional[MutativeResult]":
+    import configparser
+
+    try:
+        if not path.is_file() or path.stat().st_size > _MAX_SCRIPT_READ_BYTES:
+            return _foreign_code_result(f"pytest configuration {path} is not a readable file")
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".toml":
+            import tomllib
+
+            data = tomllib.loads(text)
+            tool = data.get("tool")
+            section = (tool.get("pytest", {}).get("ini_options") if isinstance(tool, dict) else None) or data.get("pytest")
+        else:
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read_string(text)
+            name = next((each for each in ("pytest", "tool:pytest") if parser.has_section(each)), None)
+            section = dict(parser[name]) if name else None
+    except (OSError, UnicodeDecodeError, ValueError, AttributeError, ImportError, configparser.Error):
+        return _foreign_code_result(f"pytest configuration {path} cannot be read")
+    if not isinstance(section, dict):
+        return None
+
+    def entries(key: str) -> "List[str]":
+        value = section.get(key, [])
+        return [str(each) for each in value] if isinstance(value, list) else shlex.split(str(value))
+
+    try:
+        addopts = entries("addopts")
+        located = entries("pythonpath") + entries("testpaths")
+    except ValueError:
+        return _foreign_code_result(f"pytest configuration {path} cannot be read")
+    if any(_inside_repository(top, path.parent, entry) is None for entry in located):
+        return _foreign_code_result(f"pytest configuration {path} reaches outside the repository")
+    cache_dir = section.get("cache_dir")
+    if cache_dir is not None and not _pytest_may_write(top, path.parent, str(cache_dir)):
+        return _pytest_write_result(f"pytest configuration {path} cache_dir {cache_dir}")
+    return _pytest_outside_effect(_pytest_options(addopts)[0], top, base, read_config=False)
+
+
+def _check_pytest_run(
+    base_cmd: str, semantics: "CommandSemantics", cwd: "Optional[str]",
+) -> "Optional[MutativeResult]":
+    """Free a known-shape pytest run inside its repository; ask when it loads or writes outside it; else None."""
+    args = _pytest_arguments(base_cmd, list(semantics.tokens[1:]))
+    if args is None:
+        return None
+    base = Path(cwd or Path.cwd())
+    top = _repository_top(base)
+    options, positionals, known = _pytest_options(args)
+    effect = _pytest_outside_effect(options, top, base)
+    if effect is not None:
+        return effect
+    if top is not None and any(
+        _inside_repository(top, base, positional.split("::")[0]) is None for positional in positionals
+    ):
+        return _foreign_code_result("pytest collects tests from outside the repository")
+    if not known or top is None:
+        return None
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_READ_ONLY,
+        verb="pytest-run",
+        cli_family="linter",
+        confidence="medium",
+        reason="pytest runs the test suite of the repository it starts in and loads no code from outside it",
+    )
+
+
 def _python_foreign_module(
     code: str, directory: "Optional[Path]", family: str, cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
@@ -9298,6 +9527,7 @@ _CODE_INJECTING_ENVIRONMENT: "Dict[str, Tuple[re.Pattern[str], re.Pattern[str]]]
     "lua": (_LUA_PROGRAM_RE, re.compile(r"LUA_INIT(?:_\d+_\d+)?")),
     "r": (re.compile(r"r|rscript"), re.compile(r"R_(?:PROFILE|ENVIRON)(?:_USER)?")),
     "awk": (re.compile("|".join(map(re.escape, sorted(AWK_PROGRAMS)))), re.compile(r"AWKPATH")),
+    "pytest": (re.compile(r"pytest|py\.test"), re.compile(r"PYTEST_ADDOPTS|PYTEST_PLUGINS")),
     "git": (
         re.compile(r"git"),
         re.compile(r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|EXTERNAL_DIFF|ASKPASS|PROXY_COMMAND)"),
@@ -9330,6 +9560,7 @@ def runs_under_injected_environment(
     if not assignments:
         return None
     programs = set()
+    runs_pytest = False
     for reading in _peel_wrapper_readings(command)[0]:
         try:
             words = shlex.split(reading)
@@ -9337,9 +9568,18 @@ def runs_under_injected_environment(
             continue
         if words:
             programs.add(program_identity(words[0]).lower())
+            runs_pytest = runs_pytest or _pytest_arguments(program_identity(words[0]).lower(), words[1:]) is not None
     for program, name, value in assignments:
         pattern = _CODE_INJECTING_ENVIRONMENT[program][0]
-        if not value or not any(pattern.fullmatch(candidate) for candidate in programs):
+        reached = any(pattern.fullmatch(candidate) for candidate in programs) or (
+            runs_pytest and (name == "PYTHONPATH" or program == "pytest")
+        )
+        if not value or not reached:
+            continue
+        if program == "pytest":
+            effect = _pytest_environment_effect(name, value, cwd)
+            if effect is not None:
+                return effect
             continue
         if program == "git":
             if value.lower() in _GIT_HARMLESS_CODE_VALUES:
@@ -9350,9 +9590,17 @@ def runs_under_injected_environment(
         elif name == "NODE_OPTIONS":
             if _node_options_load_code(value):
                 return _foreign_code_result(f"NODE_OPTIONS={value} preloads code into node")
-        elif name != "PYTHONPATH" or _pythonpath_is_writable(value, cwd):
+        elif name != "PYTHONPATH" or (
+            _pythonpath_is_writable(value, cwd) and not (runs_pytest and _pythonpath_in_repository(value, cwd))
+        ):
             return _foreign_code_result(f"{name} makes {program} load {value}")
     return None
+
+
+def _pythonpath_in_repository(value: str, cwd: "Optional[str]") -> bool:
+    base = Path(cwd or Path.cwd())
+    top = _repository_top(base)
+    return all(_inside_repository(top, base, entry) is not None for entry in value.split(os.pathsep))
 
 
 def _node_options_load_code(value: str) -> bool:
