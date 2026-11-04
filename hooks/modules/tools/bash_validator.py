@@ -1288,7 +1288,7 @@ class BashValidator:
         # An interpreter's heredoc is its program: splitting it into shell
         # components would validate the body's lines one by one and never
         # show the classifier the program whose effect decides the tier.
-        agent_id = str((hook_payload or {}).get("agent_id") or "") if self.agent_names_scratch else ""
+        agent_id = _scratch_owner(str((hook_payload or {}).get("agent_id") or "")) if self.agent_names_scratch else ""
         if not has_operators or program is not None:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
@@ -2220,6 +2220,20 @@ class BashValidator:
             return msg.strip()
 
         return None
+
+
+def _scratch_owner(harness_agent_id: str) -> str:
+    """Return the agent id the caller's scratch entries are named after: its contract's, else the host id it was sent with."""
+    if not harness_agent_id:
+        return ""
+    try:
+        from gaia.store.writer import find_dispatch_row_by_harness_agent_id
+
+        row = find_dispatch_row_by_harness_agent_id(harness_agent_id)
+    except Exception as exc:
+        logger.debug("scratch owner lookup failed: %s", exc)
+        row = None
+    return str((row or {}).get("agent_id") or harness_agent_id)
 
 
 def _pending_requests_of(session_id: str, agent_id: str) -> list:
