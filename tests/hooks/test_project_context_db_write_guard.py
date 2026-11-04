@@ -575,6 +575,30 @@ def test_sql_inside_the_allowlist_signs(sql):
     assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
 
 
+@pytest.mark.parametrize("command", [
+    f"sqlite3 {OTHER} 'SELECT t\n.mode FROM (SELECT 1 AS mode) AS t; SELECT sha3_query(1)'",
+    f"sqlite3 {OTHER} '.tables\nSELECT 1'",
+    f"sqlite3 {OTHER} <<'EOF'\nSELECT t\n.mode FROM (SELECT 1 AS mode) AS t; SELECT writefile('/tmp/x', 1);\nEOF",
+    f"sqlite3 {OTHER} <<'EOF'\nSELECT t\n  .mode FROM (SELECT 1 AS mode) AS t; SELECT fsdir('/tmp');\nEOF",
+    f"sqlite3 {OTHER} <<'EOF'\nSELECT 'a'\ngo\nPRAGMA user_version = 9;\nEOF",
+    f"sqlite3 {OTHER} <<'EOF'\nSELECT 'a'\n/\nCREATE TRIGGER g AFTER INSERT ON t BEGIN SELECT 1; END;\nEOF",
+    f"sqlite3 {OTHER} 'PRAGMA main.wal_checkpoint(table_info)'",
+    f"sqlite3 {OTHER} 'PRAGMA wal_checkpoint(table_info)'",
+])
+def test_sqlite3_input_is_read_as_the_shell_reads_it(command):
+    allowed, reason = check(command, "/tmp")
+    assert allowed is False, command
+    assert "gaia context query" in reason
+
+
+@pytest.mark.parametrize("command", [
+    f"sqlite3 {OTHER} <<'EOF'\n.tables\n# note\nSELECT 1;\n.schema t\nSELECT 'go'\ngo\nEOF",
+    f"sqlite3 {OTHER} 'PRAGMA main.table_info(t)' 'SELECT 1 /* a . b */'",
+])
+def test_sqlite3_input_read_as_the_shell_reads_it_signs_inside_the_subset(command):
+    assert check(command, "/tmp") == (True, None), command
+
+
 def test_an_unproven_folder_with_no_sqlite3_cd_does_not_blame_cd(opener):
     allowed, reason = check(f"ls; sqlite3 {OTHER} < ok.sql", str(opener))
     assert allowed is False and "could not prove" in reason
