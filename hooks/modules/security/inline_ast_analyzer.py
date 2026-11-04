@@ -350,18 +350,82 @@ _ARGV_PASSIVE_KEYWORDS: FrozenSet[str] = frozenset({
 })
 
 
-def _literal_argv(call: ast.Call) -> Optional[Tuple[str, ...]]:
+def _literal_argv(call: ast.Call, bindings: Dict[str, ast.AST]) -> Optional[Tuple[str, ...]]:
     """Return the argv of a process call when it is provably literal, else None."""
     if len(call.args) != 1 or not isinstance(call.args[0], (ast.List, ast.Tuple)):
         return None
     if any(kw.arg not in _ARGV_PASSIVE_KEYWORDS for kw in call.keywords):
         return None
-    argv = call.args[0].elts
-    if not argv or not all(
-        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in argv
-    ):
+    argv = [_literal_string(item, bindings) for item in call.args[0].elts]
+    if not argv or None in argv:
         return None
-    return tuple(item.value for item in argv)
+    return tuple(argv)
+
+
+def _literal_string(node: ast.AST, bindings: Dict[str, ast.AST], depth: int = 0) -> Optional[str]:
+    if depth > 8:
+        return None
+    if _is_str_literal(node):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in bindings:
+        return _literal_string(bindings[node.id], bindings, depth + 1)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parts = [node.left, node.right]
+    elif isinstance(node, ast.JoinedStr):
+        parts = [value.value if isinstance(value, ast.FormattedValue) else value for value in node.values]
+        if any(isinstance(v, ast.FormattedValue) and (v.conversion != -1 or v.format_spec) for v in node.values):
+            return None
+    else:
+        return None
+    strings = [_literal_string(part, bindings, depth + 1) for part in parts]
+    return None if None in strings else "".join(strings)
+
+
+# ``sys`` is built into the interpreter, so no file can stand in for it.
+_ARGV_PROGRAM_IMPORTS: FrozenSet[str] = frozenset({"subprocess", "sys"})
+_ARGV_PROGRAM_NODES = (
+    ast.Module, ast.Assign, ast.Expr, ast.Import, ast.ImportFrom, ast.alias, ast.Name, ast.Load,
+    ast.Store, ast.Constant, ast.BinOp, ast.Add, ast.JoinedStr, ast.FormattedValue, ast.List, ast.Tuple,
+    ast.Call, ast.keyword, ast.Attribute,
+)
+_ARGV_PROGRAM_ATTRIBUTES: FrozenSet[str] = frozenset(
+    {name.rpartition(".")[2] for name in _ARGV_PROCESS_CALLS}
+    | {"stdout", "stderr", "returncode", "PIPE", "DEVNULL", "STDOUT"}
+)
+
+
+def _argv_bindings(tree: ast.AST, alias_map: "_AliasResolver") -> Dict[str, ast.AST]:
+    """Names an argv may resolve: none unless the whole program is literal assignments, fixed imports and process or print calls."""
+    bound, loaded = [], set()
+    for node in ast.walk(tree):
+        if not isinstance(node, _ARGV_PROGRAM_NODES):
+            return {}
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module if not node.level else ""]
+        else:
+            modules = []
+        if any(module not in _ARGV_PROGRAM_IMPORTS for module in modules):
+            return {}
+        if isinstance(node, ast.alias):
+            bound.append(node.asname or node.name)
+        elif isinstance(node, ast.Assign):
+            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                return {}
+            bound.append(node.targets[0].id)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            loaded.add(node.id)
+        elif isinstance(node, ast.Attribute) and node.attr not in _ARGV_PROGRAM_ATTRIBUTES:
+            return {}
+        elif isinstance(node, ast.Call) and alias_map.resolve_call(node.func) not in _ARGV_PROCESS_CALLS | {"print"}:
+            return {}
+    names = set(bound) | loaded
+    if len(bound) != len(set(bound)) or "*" in names or any(name.startswith("__") for name in names):
+        return {}
+    if not loaded <= set(bound) | {"print"}:
+        return {}
+    return {node.targets[0].id: node.value for node in tree.body if isinstance(node, ast.Assign)}
 
 
 _URLOPEN = "urllib.request.urlopen"
@@ -499,6 +563,7 @@ def analyze_python_inline(
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     provenance = _RequestProvenance(tree, alias_map)
+    bindings = _argv_bindings(tree, alias_map)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -516,7 +581,7 @@ def analyze_python_inline(
         if dotted == _URLOPEN and _urlopen_is_read(node, provenance):
             continue
         if argv_is_mutative is not None and dotted in _ARGV_PROCESS_CALLS:
-            argv = _literal_argv(node)
+            argv = _literal_argv(node, bindings)
             if argv is not None and not argv_is_mutative(argv):
                 continue
 
