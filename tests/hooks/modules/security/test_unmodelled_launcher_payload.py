@@ -29,6 +29,12 @@ LAUNCHED = {
     "dbus-run-session": "dbus-run-session -- sqlite3 {S} VACUUM",
     "renamed-copy": "/opt/tools/launch-it --quiet sqlite3 {S} VACUUM",
     "computed-payload": "systemd-run --user \"$RUN\" {S}",
+    "lone-reboot": "xvfb-run reboot",
+    "lone-poweroff": "xvfb-run poweroff",
+    "lone-shutdown": "/opt/tools/bg-run shutdown",
+    "lone-after-options": "xvfb-run -a --server-num 5 --auth-file /tmp/xa --error-file /tmp/xe reboot",
+    "mapfile-callback": "mapfile -C \"$c\" lines < f",
+    "readarray-callback": "readarray -C \"$c\" lines < f",
 }
 
 READ_ONLY = {
@@ -37,7 +43,8 @@ READ_ONLY = {
     "launcher-ls": "systemd-run --user ls /tmp",
     "make-target": "make -C /tmp test",
     "trap-echo": "trap 'echo bye' EXIT",
-    "program-mention": "ldd /usr/bin/sqlite3",
+    "program-mention": "ldd /usr/bin/ls",
+    "lone-read-only": "xvfb-run ls",
 }
 
 

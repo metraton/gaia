@@ -781,7 +781,7 @@ _SPLIT_NAMES = ("{a}\"\"{b}", "{a}\\{b}", "\"{a}\"{b}", "{a}''{b}", "$'{a}'{b}",
 _COMPUTED_NAMES = ("$'\\x{hex}'{rest}", "$'\\u00{hex}'{rest}", "{init}?", "{init}[{last}]", "{init}*",
                    "{{{name},X}}", "{a}{{,}}{b}", "{init}{{{last},}}", "{a}{{{b},X}}")
 _LINE_READS = ("echo ${name}; {cmd}", "echo \"${{{name}}}\"; {cmd}", "echo \"${{{name}:-none}}\"; {cmd}",
-               "read -rp \"$p\" line < f; {cmd}", "printf '%s' \"${name}\"; {cmd}", "mapfile -C \"$c\" lines < f; {cmd}",
+               "read -rp \"$p\" line < f; {cmd}", "printf '%s' \"${name}\"; {cmd}", "mapfile -t lines < f; {cmd}",
                "grep -c {name} f; {cmd}", "export -- FOO=1; {cmd}", "typeset -gx FOO=1; read -r line < f; {cmd}",
                "for f in a b; do :; done; {cmd}")
 _VERIFIER_ROWS = (

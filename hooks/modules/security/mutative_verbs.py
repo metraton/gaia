@@ -172,7 +172,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Lifecycle
     "start", "restart", "reboot", "reload", "refresh", "resume",
     "uncordon", "unsuspend", "enable", "disable", "suspend", "pause",
-    "stop", "shutdown", "halt", "abort", "up", "seal", "unseal",
+    "stop", "shutdown", "halt", "poweroff", "abort", "up", "seal", "unseal",
     # Movement / transfer
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
@@ -5378,7 +5378,9 @@ def _names_a_program(word: str) -> bool:
         return False
     if _is_capability_verb is not None and _is_capability_verb(name):
         return True
-    return name == name.lower() and _classifier_rule_names(name, programs_only=True)
+    return name == name.lower() and (
+        name in _NEVER_INHERITING_PROGRAMS or _classifier_rule_names(name, programs_only=True)
+    )
 
 
 def _check_launched_payload(
@@ -5408,7 +5410,7 @@ def _check_launched_payload(
         if len(words) > 1:
             if _names_a_program(words[0]):
                 payloads.append(text)
-        elif index + 1 < len(args) and _names_a_program(text):
+        elif _names_a_program(text):
             payloads.append(" ".join(args[index:]))
     if not payloads:
         return None
