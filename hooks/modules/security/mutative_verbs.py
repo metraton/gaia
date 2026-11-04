@@ -5416,7 +5416,7 @@ def _check_launched_payload(
     base_cmd: str, semantics: "CommandSemantics", *,
     cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
-    """Adopt the mutative verdict of any command a program with no grammar here could be handed in its arguments; a command substitution, or any expansion in a mapfile callback, signs."""
+    """Adopt the mutative verdict of any command a program with no grammar here could be handed in its arguments; a command substitution, or any expansion in a trap action or mapfile callback, signs."""
     if base_cmd not in _COMMAND_EXECUTORS and (
         _classifier_rule_names(base_cmd)
         or base_cmd in _EXPRESSION_FIRST_TOOLS
@@ -5425,7 +5425,7 @@ def _check_launched_payload(
     ):
         return None
     raw = semantics.raw_command.strip()
-    names_a_callback = base_cmd in _CALLBACK_BUILTINS and any(
+    names_a_callback = base_cmd == "trap" or base_cmd in _CALLBACK_BUILTINS and any(
         token.startswith("-") and not token.startswith("--") and "C" in token for token in semantics.tokens[1:]
     )
     pattern = _EXPANSION_START_RE if names_a_callback else _SUBSTITUTION_START_RE

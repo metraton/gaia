@@ -38,6 +38,7 @@ LAUNCHED = {
     "systemd-backtick": "systemd-run --user `cat /tmp/cmd`",
     "backtick-args": "firejail `cat /tmp/cmd` {S} VACUUM",
     "trap-backtick": "trap `cat /tmp/cb` EXIT",
+    "trap-variable-action": "trap \"$X\" EXIT",
     "mapfile-backtick": "mapfile -C `cat /tmp/cb` lines < /tmp/f",
     "mapfile-callback": "mapfile -C \"$c\" lines < f",
     "readarray-callback": "readarray -C \"$c\" lines < f",
