@@ -72,6 +72,7 @@ import ast
 import io
 import logging
 import re
+import sys
 import tokenize
 from dataclasses import dataclass
 from typing import Callable, Dict, FrozenSet, Optional, Set, Tuple
@@ -861,6 +862,8 @@ _PROCESS_FAMILIES: Tuple[str, ...] = tuple(p for p in _PROCESS_LAUNCH_PREFIXES i
 _PROCESS_MODULES: FrozenSet[str] = frozenset(
     name.split(".")[0] for name in (*_PROCESS_CALLS, *_PROCESS_FAMILIES)
 )
+# A standard-library module may import os, and nothing short of reading it proves it does not.
+_REACHING_MODULES: FrozenSet[str] = _PROCESS_MODULES | frozenset(getattr(sys, "stdlib_module_names", ()))
 _NAMESPACE_CALLS: FrozenSet[str] = frozenset({
     "globals", "locals", "vars", "builtins.globals", "builtins.locals", "builtins.vars",
 })
@@ -916,7 +919,9 @@ def _process_reach(node: ast.AST, alias_map: "_AliasResolver") -> str:
         return "callable"
     if dotted == "sys.modules":
         return "registry"
-    if alias_map.is_module(node) or dotted.rpartition(".")[2] in _PROCESS_MODULES:
+    if dotted.rpartition(".")[2] in _PROCESS_MODULES:
+        return "module"
+    if alias_map.is_module(node) and dotted.split(".")[0] in _REACHING_MODULES:
         return "module"
     return ""
 
