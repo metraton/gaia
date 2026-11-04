@@ -473,6 +473,57 @@ def test_sqlite3_input_the_guard_cannot_read_in_full_is_unproven(opener, command
 
 
 @pytest.mark.parametrize("command", [
+    "sqlite3 /tmp/a.sqlar -Ax -C {d}",
+    "sqlite3 /tmp/a.sqlar '.ar -x -C {d}'",
+    "sqlite3 /tmp/a.sqlar '.ar --extract --directory {d}'",
+    "cd {d} && sqlite3 /tmp/a.sqlar '.arc -x'",
+    "cd {d} && sqlite3 /tmp/a.sqlar -archive -x",
+    "cd {d} && sqlite3 /tmp/a.sqlar --Ax",
+    "cd {d} && sqlite3 /tmp/a.sqlar '.a -x'",
+    "sqlite3 {d}/o.db '.trace hl.db' 'SELECT 1'",
+    "sqlite3 {d}/o.db \"SELECT writefile('hl.db', 'x')\"",
+    "sqlite3 {o} $'.op\\x65n {d}/hl.db'",
+    "sqlite3 {o} $'ATT\\x41CH \\'/tmp/x.db\\' AS y'",
+    "time -p sqlite3 {o} < {d}/open.sql",
+    "HOME=/tmp sqlite3 {o} 'SELECT 1'",
+    "sqlite3 -cmd '.tables' {o}",
+    "sqlite3 -init /dev/null {o}",
+    "sqlite3 {o} \"SELECT name FROM fsdir('/tmp')\"",
+    "sqlite3 {o} '.header on' 'SELECT 1'",
+    "sqlite3 {o} '.output /tmp/out.txt' 'SELECT 1'",
+    "sqlite3 {o} '.shell ls /tmp'",
+    "sqlite3 ./rel.db 'SELECT 1'",
+    "sqlite3 'file:/tmp/o.db?vfs=unix' 'SELECT 1'",
+    "sqlite3 {o} \"VACUUM INTO '/tmp/c.db'\"",
+])
+def test_sqlite3_outside_the_read_subset_is_refused(opener, command):
+    allowed, reason = check(command.format(d=opener, o=OTHER), str(opener))
+    assert allowed is False, command
+    assert "gaia context query" in reason
+
+
+@pytest.mark.parametrize("command", [
+    "sqlite3 -readonly -json {o} '.tables' '.schema t' 'SELECT 1'",
+    "sqlite3 --safe {o} '.headers on' '.mode csv' 'SELECT * FROM t'",
+    "sqlite3 {o} '.dump'",
+    "sqlite3 {o} <<'EOF'\n.tables\nSELECT 1;\nEOF",
+    "sqlite3 {o} < {d}/ok.sql",
+    "sqlite3 -separator , {o} 'SELECT 1'",
+    "sqlite3 :memory: 'SELECT 1'",
+])
+def test_sqlite3_inside_the_read_subset_signs(opener, command):
+    command = command.format(d=opener, o=OTHER)
+    assert check(command, "/tmp") == (True, None), command
+    assert sqlite_unproven_effect(command, "/tmp") == guard.SIGN_GUIDANCE
+
+
+def test_an_unproven_folder_with_no_sqlite3_cd_does_not_blame_cd(opener):
+    allowed, reason = check(f"ls; sqlite3 {OTHER} < ok.sql", str(opener))
+    assert allowed is False and "could not prove" in reason
+    assert "`.cd`" not in reason
+
+
+@pytest.mark.parametrize("command", [
     "sqlite3 {o} \"$(head {d}/open.sql)\"",
     "sqlite3 {o} \"$SQL\"",
     "sqlite3 {o} \"SELECT $X\"",
