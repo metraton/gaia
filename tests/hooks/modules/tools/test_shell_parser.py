@@ -22,7 +22,7 @@ from modules.tools.shell_parser import (
     get_shell_parser,
     parse_command,
     is_compound_command,
-    strip_comment_before_heredoc,
+    strip_comment,
     strip_grouping,
 )
 
@@ -48,8 +48,8 @@ def test_strip_grouping_removes_only_the_words_that_group_commands(command, expe
     ("echo 'a # b' a#b", "echo 'a # b' a#b"),
     ("awk -f - <<'EOF' # c\n$0 ~ / #x/ { system(\"y\") }\nEOF", "awk -f - <<'EOF' \n$0 ~ / #x/ { system(\"y\") }\nEOF"),
 ])
-def test_strip_comment_before_heredoc_keeps_the_body_as_data(command, expected):
-    assert strip_comment_before_heredoc(command) == expected
+def test_strip_comment_keeps_the_heredoc_body_as_data(command, expected):
+    assert strip_comment(command) == expected
 
 
 class TestShellCommandParser:

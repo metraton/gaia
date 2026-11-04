@@ -132,7 +132,7 @@ from ..security.composition_rules import (
     redirected_into_sender,
     CompositionDecision,
 )
-from .shell_parser import get_shell_parser
+from .shell_parser import get_shell_parser, strip_comment
 from .cloud_pipe_validator import validate_cloud_pipe, violation_kind
 from .hook_response import (
     build_hook_permission_response,
@@ -315,6 +315,7 @@ def _starts_command(line: str, index: int) -> bool:
 
 
 def _heredoc_openers(line: str) -> List[_Heredoc]:
+    line = strip_comment(line)
     openers, quote, index, start = [], "", 0, 0
     while index < len(line):
         char = line[index]
@@ -324,8 +325,6 @@ def _heredoc_openers(line: str) -> List[_Heredoc]:
             index += 1
         elif char in "'\"`":
             quote = char
-        elif char == "#" and (index == 0 or line[index - 1] in " \t"):
-            break
         elif line.startswith(("||", "&&"), index):
             index = start = index + 2
             continue

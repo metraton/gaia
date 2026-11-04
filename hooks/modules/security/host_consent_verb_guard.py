@@ -171,6 +171,9 @@ def _closing_paren(text: str, start: int) -> int:
 
 def _parse(command: str) -> _Parsed:
     """Split ``command`` into simple commands of bash words, quotes removed."""
+    from ..tools.shell_parser import strip_comment
+
+    command = strip_comment(command)
     parsed = _Parsed()
     current = _Command()
     word: Optional[_Word] = None
@@ -300,10 +303,6 @@ def _parse(command: str) -> _Parsed:
         if char == ">":
             end_word()
             i += 1
-            continue
-        if char == "#" and word is None:
-            newline = command.find("\n", i)
-            i = n if newline < 0 else newline
             continue
         if char == "\n":
             end_command()

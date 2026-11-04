@@ -1265,11 +1265,11 @@ def classify_by_flags(
     Returns:
         FlagClassifierResult if the program's base name (``/usr/bin/sed`` is sed) is a known family, else None.
     """
-    from ..tools.shell_parser import strip_comment_before_heredoc, strip_grouping
+    from ..tools.shell_parser import strip_comment, strip_grouping
 
     if not command or not command.strip():
         return None
-    command = strip_grouping(strip_comment_before_heredoc(command))
+    command = strip_grouping(strip_comment(command))
     tokens = _tokenize(command)
     if not tokens:
         return None

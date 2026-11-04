@@ -24,56 +24,184 @@ import shlex
 from typing import List, Optional
 from dataclasses import dataclass
 
-# Characters after which a `#` starts a word, and so a comment.
+# Characters after which a `#` starts a word, and so a comment. `<` and `>` are
+# left out: bash discards a `#` after them too, but keeping it costs only a word.
 _WORD_START_BEFORE = " \t\n;&|()"
 
 # A redirection operator alone (its target is the next word) and one with the
 # target attached (`2>/dev/null`, `<in`, `2>&1`).
 _REDIRECT_OPERATOR = re.compile(r"^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<)$")
 _REDIRECT_ATTACHED = re.compile(r"^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<).+$")
-_HEREDOC_OPERATOR = re.compile(r"<<(?!<)")
+_HEREDOC_OPENER = re.compile(
+    r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\\$`\n]*)\"|([^\s'\"\\<>;&|()`$]+))(?=[\s;&|()<>]|$)"
+)
+_CASE_WORD = re.compile(r"case(?=[\s;&|()<>])")
 _GROUP_OPENER = re.compile(r"(?:[{}](?=\s|$)|\((?!\())\s*")
 
 
 def strip_comment(command: str) -> str:
-    """*command* without its comments: an unquoted `#` at word start, outside a substitution, through the end of its line."""
+    """*command* without the comments bash discards; from where it cannot prove bash's reading, the text is kept whole."""
     out: List[str] = []
     i, n = 0, len(command)
-    in_single = in_double = False
-    depth = 0
+    word_start = True
+    heredocs: List["tuple[str, bool]"] = []
     while i < n:
         ch = command[i]
-        if ch == "\\" and not in_single and i + 1 < n:
-            out.append(command[i:i + 2])
-            i += 2
+        if ch == "\n" and heredocs:
+            end = _heredoc_bodies_end(command, i + 1, heredocs)
+            out.append(command[i:end])
+            i, word_start, heredocs = end, True, []
             continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif not in_single and not in_double:
-            if ch == "$" and i + 1 < n and command[i + 1] == "(":
-                depth += 1
-            elif ch == ")" and depth:
-                depth -= 1
-            elif ch == "#" and depth == 0 and (i == 0 or command[i - 1] in _WORD_START_BEFORE):
-                end = command.find("\n", i)
-                if end == -1:
-                    break
-                i = end
-                continue
-        out.append(ch)
-        i += 1
+        if ch == "#" and word_start:
+            end = command.find("\n", i)
+            if end == -1:
+                break
+            i = end
+            continue
+        if command.startswith("<<", i) and not command.startswith("<<<", i):
+            opener = _HEREDOC_OPENER.match(command, i)
+            if opener is None:
+                return "".join(out) + command[i:]
+            heredocs.append((next(g for g in opener.groups()[1:] if g is not None), opener.group(1) == "-"))
+            out.append(opener.group(0))
+            i, word_start = opener.end(), False
+            continue
+        end = _construct_end(command, i, word_start)
+        if end is None:
+            return "".join(out) + command[i:]
+        out.append(command[i:end])
+        word_start = end == i + 1 and ch in _WORD_START_BEFORE
+        i = end
     return "".join(out)
 
 
-def strip_comment_before_heredoc(command: str) -> str:
-    """*command* without comments, except in a heredoc body, whose `#` is data the reader receives."""
-    first, newline, rest = command.partition("\n")
-    first = strip_comment(first)
-    if _HEREDOC_OPERATOR.search(first):
-        return first + newline + rest
-    return strip_comment(command)
+def _construct_end(text: str, i: int, word_start: bool) -> Optional[int]:
+    """Index after the quote, escape or expansion opening at *i* (i + 1 for a plain character), or None when its end is unproven."""
+    ch = text[i]
+    if ch == "\\":
+        return min(i + 2, len(text))
+    if ch == "'":
+        end = text.find("'", i + 1)
+        return None if end == -1 else end + 1
+    if text.startswith("$'", i):
+        try:
+            return _ansi_c_body(text, i + 2)[1]
+        except ValueError:
+            return None
+    if ch == '"' or text.startswith('$"', i):
+        return _double_quote_end(text, i + (2 if ch == "$" else 1))
+    if ch == "`":
+        return _backtick_end(text, i + 1)
+    if text.startswith(("$((", "$["), i):
+        return _arithmetic_end(text, i + 3 if text[i + 1] == "(" else i + 2, text[i + 1])
+    if word_start and text.startswith("((", i):
+        return _arithmetic_end(text, i + 2, "(")
+    if text.startswith(("$(", "<(", ">("), i):
+        return _substitution_end(text, i + 2)
+    if text.startswith("${", i):
+        return _parameter_end(text, i + 2)
+    return i + 1
+
+
+def _double_quote_end(text: str, i: int) -> Optional[int]:
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            return i + 1
+        if ch == "\\":
+            i += 2
+            continue
+        expands = ch == "`" or (ch == "$" and text[i + 1:i + 2] in ("(", "[", "{"))
+        end = _construct_end(text, i, False) if expands else i + 1
+        if end is None:
+            return None
+        i = end
+    return None
+
+
+def _backtick_end(text: str, i: int) -> Optional[int]:
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == "`":
+            return i + 1
+        i += 1
+    return None
+
+
+def _arithmetic_end(text: str, i: int, opener: str) -> Optional[int]:
+    closer = ")" if opener == "(" else "]"
+    depth = 2 if opener == "(" else 1
+    while i < len(text):
+        ch = text[i]
+        if ch == "#" and text[i - 1] in _WORD_START_BEFORE:
+            return None
+        if ch in "\"'`$\\":
+            end = _construct_end(text, i, False)
+            if end is None:
+                return None
+            i = end
+            continue
+        depth += {opener: 1, closer: -1}.get(ch, 0)
+        i += 1
+        if depth == 0:
+            return i
+    return None
+
+
+def _substitution_end(text: str, i: int) -> Optional[int]:
+    depth, word_start = 1, True
+    while i < len(text):
+        ch = text[i]
+        if ch == "#" and word_start:
+            i = text.find("\n", i)
+            if i == -1:
+                return None
+            continue
+        if text.startswith("<<", i) or (word_start and _CASE_WORD.match(text, i)):
+            return None
+        if ch in "()" and not (word_start and text.startswith("((", i)):
+            depth += 1 if ch == "(" else -1
+            i += 1
+            if depth == 0:
+                return i
+            word_start = True
+            continue
+        end = _construct_end(text, i, word_start)
+        if end is None:
+            return None
+        word_start = end == i + 1 and ch in _WORD_START_BEFORE
+        i = end
+    return None
+
+
+def _parameter_end(text: str, i: int) -> Optional[int]:
+    depth = 1
+    while i < len(text):
+        ch = text[i]
+        if ch in "{}":
+            depth += 1 if ch == "{" else -1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        end = _construct_end(text, i, False)
+        if end is None:
+            return None
+        i = end
+    return None
+
+
+def _heredoc_bodies_end(text: str, i: int, heredocs: List["tuple[str, bool]"]) -> int:
+    for delimiter, strip_tabs in heredocs:
+        while i < len(text):
+            newline = text.find("\n", i)
+            line = text[i:] if newline == -1 else text[i:newline]
+            i = len(text) if newline == -1 else newline + 1
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                break
+    return i
 
 
 def strip_grouping(command: str) -> str:
