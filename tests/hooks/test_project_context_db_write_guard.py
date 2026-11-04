@@ -419,6 +419,21 @@ def test_a_relative_database_with_anything_before_sqlite3_on_the_line_is_unprove
     assert check(f"env -C {cd_folder} sqlite3 {OTHER} 'SELECT 1'", "/tmp") == (True, None)
 
 
+@pytest.mark.parametrize("command,cwd", [
+    ("cd {d} && sqlite3 /tmp/o.db < evil.sql", "/tmp"),
+    ("cd {d} && sqlite3 -init evil.sql /tmp/o.db", "/tmp"),
+    ("cd {d} && HOME=. sqlite3 /tmp/o.db 'SELECT 1'", "/tmp"),
+    ("cd {d} && XDG_CONFIG_HOME=cfg sqlite3 /tmp/o.db 'SELECT 1'", "/tmp"),
+    ("sqlite3 /tmp/o.db 'SELECT 1'; cd {d}; sqlite3 /tmp/o.db < evil.sql", "/tmp"),
+    ("cd {d} && cat evil.sql | sqlite3 /tmp/o.db", "/tmp"),
+    ("cd {d} && sqlite3 /tmp/o.db '.read evil.sql'", "/tmp"),
+    ("sqlite3 -init evil.sql /tmp/o.db", None),
+])
+def test_a_relative_file_sqlite3_reads_from_an_unproven_folder_is_unproven(cd_folder, command, cwd):
+    _refused_unproven(command.format(d=cd_folder), cwd)
+    assert check(f"sqlite3 -init {cd_folder}/cd.sql {OTHER}", None)[1] != guard.UNPROVEN_FOLDER_MESSAGE
+
+
 @pytest.mark.parametrize("command", [
     f"echo .shell touch /tmp/pwn | sqlite3 {OTHER}",
     f"printf '.%s kubectl delete ns prod\\n' shell | sqlite3 {OTHER}",
