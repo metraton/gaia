@@ -63,6 +63,14 @@ UNPROVEN_FOLDER_MESSAGE = (
     "`gaia context query`."
 )
 
+UNPROVEN_INPUT_MESSAGE = (
+    "sqlite3 reads SQL this guard could not read in full (a program's output, a "
+    "descriptor, a process substitution, or a file that is missing, unreadable or not "
+    "named literally), so it could not prove the SQL leaves gaia.db alone. Feed it a "
+    "literal file, `cat` of literal files, or literal SQL; read gaia.db with "
+    "`gaia context query`."
+)
+
 SIGN_GUIDANCE = (
     "Every sqlite3 call asks for a signature: even `sqlite3 -readonly -safe` reads "
     "any file through fsdir(), so no form of it is provably read-only. Read gaia.db "
@@ -95,12 +103,13 @@ _TRUNCATORS = frozenset({
 _INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php"})
 
 _SQLITE_PROGRAMS = frozenset({"sqlite3", "sqlite"})
+_LEAD_WORDS = frozenset({"{", "(", "!", "if", "then", "else", "elif", "do", "while", "until", "time"})
 _VALUE_OPTIONS = frozenset({
     "init", "cmd", "separator", "newline", "nullvalue", "vfs", "mmap", "maxsize",
     "heap", "nonce", "escape",
 })
 _PAIR_OPTIONS = frozenset({"lookaside", "pagecache"})
-_REDIRECT_WORD = re.compile(r"^\d*(?:<<<|<<-?|<>|<&|>>|>&|>\||&>>|&>|<|>)")
+_REDIRECT_WORD = re.compile(r"^(?:\d*|\{\w+\})(?P<op><<<|<<-?|<>|<&|>>|>&|>\||&>>|&>|<|>)")
 _NOT_LITERAL = re.compile(r"[$`*?\[\]{}]|^~(?!/|$)")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _DOT_COMMAND = re.compile(
@@ -115,6 +124,7 @@ _SQL_GAP = r"(?:\s|/\*.*?\*/|--[^\n]*\n)*"
 _ATTACH = re.compile(rf"\bATTACH\b(?:{_SQL_GAP}DATABASE\b)?{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}AS\b))?", re.I | re.S)
 _VACUUM_INTO = re.compile(rf"\bVACUUM\b[^;]*?\bINTO\b{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}(?:;|$|[\"'])))?", re.I | re.S)
 _SQL_STRING = re.compile(r"'((?:[^']|'')*)'")
+_LOAD_EXTENSION = re.compile(rf"\bload_extension\b{_SQL_GAP}\({_SQL_GAP}'((?:[^']|'')*)'", re.I | re.S)
 _SQL_CALL = re.compile(
     rf"[\"\[`]?\b(?P<fn>edit|writefile)\b(?:\\?[\"\]`])?{_SQL_GAP}\({_SQL_GAP}(?P<first>'(?:[^']|'')*')"
     rf"(?:{_SQL_GAP},{_SQL_GAP}(?P<second>'(?:[^']|'')*'))?",
@@ -123,7 +133,7 @@ _SQL_CALL = re.compile(
 _WORD = re.compile(r"[^\s'\"`(),;|<>=]+")
 _OUTPUT_SPECIALS = frozenset({"off", "stdout", "stderr"})
 _FILE_OPERAND_INDEX = {
-    "open": -1, "read": 0, "once": 0, "output": 0, "import": 0, "log": 0,
+    "open": -1, "read": 0, "once": 0, "output": 0, "import": 0, "log": 0, "load": 0,
     "save": -1, "backup": -1, "restore": -1,
 }
 _WRITTEN_FILE_COMMANDS = frozenset({"once", "output", "log", "save", "backup"})
@@ -221,7 +231,7 @@ class _Invocation:
         for index, word in enumerate(self.args):
             following = self.args[index + 1] if index + 1 < len(self.args) else ""
             redirect = _REDIRECT_WORD.match(word)
-            if redirect and redirect.group(0).lstrip("0123456789") in ("<", "<>"):
+            if redirect and redirect["op"] in ("<", "<>"):
                 target = word[redirect.end():] or following
                 if target:
                     yield target
@@ -259,11 +269,19 @@ def _sqlite_args(reading: str) -> Optional[List[str]]:
         words = shell_split(reading)
     except ValueError:
         words = _tokenize(reading)
-    head = 0
-    while head < len(words) and _ASSIGNMENT.match(words[head]):
-        head += 1
-    if head < len(words) and command_name(words[head]) in _SQLITE_PROGRAMS:
-        return words[head + 1:]
+    head, redirects = 0, []
+    while head < len(words):
+        redirect = _REDIRECT_WORD.match(words[head])
+        if redirect:
+            width = 1 if words[head][redirect.end():] else 2
+            redirects += words[head:head + width]
+            head += width
+        elif _ASSIGNMENT.match(words[head]) or words[head] in _LEAD_WORDS:
+            head += 1
+        else:
+            break
+    if head < len(words) and command_name(words[head].lstrip("(")) in _SQLITE_PROGRAMS:
+        return redirects + words[head + 1:]
     return None
 
 
@@ -296,6 +314,95 @@ def _read_fed_file(path: str, cwd: Optional[str]) -> str:
     if not path or _NOT_LITERAL.search(path) or (not os.path.isabs(path) and cwd is None):
         return ""
     return _read_file(Path(cwd or "", path))[1] or ""
+
+
+def _read_in_full(path: Optional[str], cwd: Optional[str]) -> bool:
+    """Whether *path* is a literal regular file the guard reads whole from *cwd*."""
+    from pathlib import Path
+
+    from .targets import _read_file
+
+    path = os.path.expanduser(path or "")
+    if not path or _NOT_LITERAL.search(path) or path.startswith(("<(", "(")):
+        return False
+    if not os.path.isabs(path) and cwd is None:
+        return False
+    return _read_file(Path(cwd or "", path))[2] is not None
+
+
+def _stdin_sources(reading: str) -> Iterator[Optional[str]]:
+    """Each file the shell feeds to a stdin in *reading*, or None for a descriptor it duplicates."""
+    from ..tools.shell_parser import shell_split
+
+    try:
+        words = shell_split(reading)
+    except ValueError:
+        words = _tokenize(reading)
+    for index, word in enumerate(words):
+        redirect = _REDIRECT_WORD.match(word)
+        target = redirect and (word[redirect.end():] or (words[index + 1] if index + 1 < len(words) else ""))
+        if redirect and redirect["op"] in ("<", "<>"):
+            yield target
+        elif redirect and redirect["op"] == "<&" and target != "-":
+            yield None
+
+
+def _pipes(text: str) -> Iterator[Tuple[str, str]]:
+    """Each ``(producer, consumer)`` pair an unquoted ``|`` or ``|&`` joins in *text*."""
+    segments, operators, current, quote, index = [], [], [], None, 0
+    while index < len(text):
+        char = text[index]
+        if quote != "'" and char == "\\":
+            current.append(text[index:index + 2])
+            index += 2
+            continue
+        if quote is None and char in ("'", '"'):
+            quote = char
+        elif quote is not None and char == quote:
+            quote = None
+        elif quote is None and (char in ";\n|" or text[index:index + 2] == "&&"):
+            operator = text[index:index + 2] if text[index:index + 2] in ("&&", "||", "|&") else char
+            segments.append("".join(current))
+            operators.append(operator)
+            current = []
+            index += len(operator)
+            continue
+        current.append(char)
+        index += 1
+    segments.append("".join(current))
+    for position, operator in enumerate(operators):
+        if operator in ("|", "|&"):
+            yield segments[position], segments[position + 1]
+
+
+def _literal_printer(command: str) -> bool:
+    """Whether *command* is an ``echo`` or ``printf`` whose output is its own literal words."""
+    from ..tools.shell_parser import shell_split
+
+    try:
+        words = shell_split(command)
+    except ValueError:
+        return False
+    if not words or command_name(words[0]) not in ("echo", "printf") or "\\" in command:
+        return False
+    return not any(w.startswith("-") or _NOT_LITERAL.search(w) or "%" in w for w in words[1:])
+
+
+def _feeds(command: str) -> Tuple[List[str], bool]:
+    """The files a proven feeder pipes into a sqlite3 run on the line, and whether any feeder is unproven."""
+    from .shell_unwrapper import shell_command_string
+
+    texts = [command, *extract_substitutions(command)]
+    for reading in _readings(command):
+        texts += [*_executor_floor_payloads(reading), shell_command_string(reading) or ""]
+    files, unproven = [], False
+    for text in filter(None, texts):
+        for producer, consumer in _pipes(text):
+            if any(_sqlite_args(r) is not None for r in _readings(consumer)):
+                printed = _proven_output_files(producer.strip())
+                files += printed
+                unproven = unproven or not (printed or _literal_printer(producer.strip()))
+    return files, unproven
 
 
 def _dot_commands(text: str) -> Iterator[Tuple[str, str]]:
@@ -360,7 +467,7 @@ def _proven_output_files(command: str) -> List[str]:
         words = shell_split(command)
     except ValueError:
         return []
-    operands = words[1:]
+    operands = words[2:] if words[1:2] == ["--"] else words[1:]
     if not operands or command_name(words[0]) != "cat":
         return []
     if any(word.startswith("-") or _NOT_LITERAL.search(word) for word in operands):
@@ -373,7 +480,7 @@ def _read_targets(text: str) -> Iterator[str]:
         operands = _dot_operands(arguments)
         if operands and "read".startswith(typed):
             if operands[0].startswith("|"):
-                yield from _proven_output_files(" ".join(operands)[1:])
+                yield from _proven_output_files(" ".join(operands)[1:]) or [""]
             else:
                 yield operands[0]
 
@@ -483,15 +590,25 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     paths = [path for inv in invocations for path in inv.read_files()]
     paths += [os.path.join(value, *_SQLITERC[name]) for name, value in assigned if name in _SQLITERC and value]
     paths += [path for reading in _readings(command) for path in _proven_output_files(reading)]
+    fed, unproven_feed = _feeds(command)
+    stdin = [source for reading in _readings(command) for source in _stdin_sources(reading)]
+    paths += fed + [source for source in stdin if source]
     sources = [command, *(word for inv in invocations for word in inv.args)]
     start = cwd if _starts_in_shell_folder(command) else None
     folders, texts, folder_unproven = _folders(sources, paths, start)
     verdicts = [v for f in folders if (v := _folder_refusal(invocations, texts, line_words, assigned, f))]
     if verdicts:
         return STORE_REJECTION_MESSAGE if STORE_REJECTION_MESSAGE in verdicts else verdicts[0]
-    inputs = paths + [path for text in texts for path in (*_read_targets(text), *(p for _, p in _file_operands(text)))]
-    if (folder_unproven or start is None) and any(_relative(p) and not p.startswith(("<(", "(")) for p in inputs):
+    read_as_sql = stdin + fed + [p for inv in invocations for p in inv.read_files()]
+    read_as_sql += [path for text in texts for path in _read_targets(text)]
+    inputs = paths + read_as_sql + [path for text in texts for _, path in _file_operands(text)]
+    inputs += [m[1].replace("''", "'") for text in texts for m in _LOAD_EXTENSION.finditer(text)]
+    if (folder_unproven or start is None) and any(
+        p and _relative(p) and not p.startswith(("<(", "(")) for p in inputs
+    ):
         return UNPROVEN_FOLDER_MESSAGE
+    if unproven_feed or not all(_read_in_full(p, f) for p in read_as_sql for f in folders):
+        return UNPROVEN_INPUT_MESSAGE
     return None
 
 

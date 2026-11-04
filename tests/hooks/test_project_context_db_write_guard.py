@@ -183,7 +183,6 @@ def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
     f"sqlite3 {OTHER} \".output '|sh'\" \"SELECT 'touch /tmp/pwn'\"",
     f"sqlite3 {OTHER} '.once -e' 'SELECT 1'",
     f"sqlite3 {OTHER} '.excel' 'SELECT 1'",
-    f"sqlite3 -init /tmp/w.sql {OTHER} 'SELECT 1'",
     f"HOME=/tmp/h sqlite3 {OTHER} 'SELECT 1'",
     f"XDG_CONFIG_HOME=/tmp/h sqlite3 {OTHER} 'SELECT 1'",
     f"env -u HOME sqlite3 {OTHER} 'SELECT 1'",
@@ -193,16 +192,11 @@ def test_a_readable_payload_meets_the_floors_a_bash_line_meets(command):
     f"sqlite3 {OTHER} \"SELECT writefile(name, data) FROM t\"",
     f"sqlite3 {OTHER} \"SELECT writefile/**/('/tmp/' || name, data) FROM t\"",
     f"sqlite3 {OTHER} '.output $OUT' 'SELECT 1'",
-    f"sqlite3 {OTHER} '.read /tmp/w.sql'",
-    f"sqlite3 {OTHER} < /tmp/w.sql",
-    f"cat /tmp/w.sql | sqlite3 {OTHER}",
-    f"python3 /tmp/emit.py | sqlite3 {OTHER}",
     f"sqlite3 {OTHER} '.cd /tmp' 'SELECT 1'",
     f"sqlite3 -A -x -f /tmp/a.sqlar",
     f"sqlite3 {OTHER} '.ar -x'",
     f"sqlite3 {OTHER} <<EOF\n.shell kubectl apply -f x.yaml\nEOF",
     f"VISUAL=vim sqlite3 {OTHER} \"SELECT edit('x')\"",
-    f"sqlite3 {OTHER} \".read '|cat /tmp/absent-1097.sql'\"",
 ])
 def test_another_database_signs_when_nothing_it_reaches_is_refused(command):
     assert check(command, "/tmp") == (True, None)
@@ -308,10 +302,14 @@ def test_every_file_sqlite3_is_made_to_read_meets_the_checks_of_a_redirected_one
         f"sqlite3 -init {tmp_path}/absent.sql {OTHER}",
         f"sqlite3 {OTHER} '.read {tmp_path}'",
         f"sqlite3 {OTHER} < <(cat {tmp_path}/*.sql)",
+        f"sqlite3 {OTHER} '.read nested.sql'",
+        f"sqlite3 -init /tmp/absent-1097.sql {OTHER} 'SELECT 1'",
+        f"sqlite3 {OTHER} '.read /tmp/absent-1097.sql'",
+        f"sqlite3 {OTHER} < /tmp/absent-1097.sql",
+        f"cat /tmp/absent-1097.sql | sqlite3 {OTHER}",
+        f"sqlite3 {OTHER} \".read '|cat /tmp/absent-1097.sql'\"",
     ):
-        assert check(unproven, None) == (True, None), unproven
-        assert sqlite_unproven_effect(unproven, None) == guard.SIGN_GUIDANCE
-    _refused_unproven(f"sqlite3 {OTHER} '.read nested.sql'", None)
+        _refused_unproven(unproven, None)
 
 
 @pytest.fixture()
@@ -462,7 +460,7 @@ def test_sqlite3_stdin_from_any_redirect_or_proven_feeder_is_judged_by_its_conte
     "python3 /tmp/emit.py | sqlite3 {o}",
     "sqlite3 {o} <&3",
     "sqlite3 {o} < {d}/absent.sql",
-    "sqlite3 {o} < <(cat {d}/open.sql)",
+    "sqlite3 {o} < <(head {d}/open.sql)",
     "sqlite3 {o} \".read '|head {d}/open.sql'\"",
     "cd {d} && sqlite3 {o} '.load ./ext'",
     "cd {d} && sqlite3 {o} \"SELECT load_extension('./ext')\"",
