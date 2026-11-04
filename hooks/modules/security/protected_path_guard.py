@@ -99,7 +99,7 @@ _GIT_WRITE_SUBCOMMANDS = frozenset({
 # one rule: ".claude/ writes via Bash are blocked".
 _FILESYSTEM_WRITE_COMMANDS = frozenset({
     "mv", "cp", "install", "dd", "tee", "ln", "rsync", "touch", "truncate",
-    "mkdir", "sed", "chmod", "chown", "chgrp", "shred", "unlink", "rm", "tar",
+    "mkdir", "sed", "chmod", "chown", "chgrp", "shred", "unlink", "rm", "tar", "unzip",
     # cmd.exe builtins and PowerShell cmdlets with their aliases.
     "copy", "xcopy", "robocopy", "copy-item", "cpi", "move", "move-item", "mi",
     "ren", "rename", "rename-item", "rni", "del", "erase", "rd", "rmdir",
@@ -189,6 +189,10 @@ def _write_targets(tokens: List[str], base: str) -> Tuple[List[str], List[str]]:
         directories = [tok.split("=", 1)[1] for tok in tokens if tok.startswith("--directory=")]
         operands += directories
         if _tar_extracts(tokens) and not directories and "-C" not in tokens:
+            operands.append(".")
+    if base == "unzip":
+        operands += [tok[2:] for tok in tokens[1:] if tok.startswith("-d") and len(tok) > 2]
+        if not any(tok.startswith("-d") for tok in tokens[1:]):
             operands.append(".")
     return redirects, operands
 

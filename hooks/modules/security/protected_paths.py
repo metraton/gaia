@@ -270,13 +270,13 @@ def is_read_spool_path(path_str: str, cwd: Optional[str] = None) -> bool:
         return False
     from gaia.contract.read_spool import spool_dir
 
-    from .effect_content import cache_dir
+    from .effect_content import protected_dirs
 
     spelled = expand_home(path_str)
     if cwd and not os.path.isabs(spelled) and not spelled.startswith("~"):
         spelled = os.path.join(cwd, spelled)
     roots = set()
-    for directory in (spool_dir(), cache_dir()):
+    for directory in (spool_dir(), *protected_dirs()):
         root = Path(os.path.abspath(directory))
         roots |= {root, root.resolve()}
     return any(

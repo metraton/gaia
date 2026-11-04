@@ -44,7 +44,7 @@ modules/
 │   ├── blocked_commands.py # Permanently blocked patterns by category
 │   ├── mutative_verbs.py   # CLI-agnostic verb detector; a T3 is denied with an approval_id
 │   ├── nested_executors.py # kubectl/docker exec, op run, ... take the verdict of the command they run
-│   ├── effect_content.py # Judges a Python test suite by the files it loads (tests, conftest chain, plugins, on-disk imports): free with no effect marker, else signs naming it; per-file facts cached by content hash in a directory only hooks write
+│   ├── effect_content.py # Judges a Python test suite by the files it loads (tests, conftest chain, plugins, on-disk imports): free with no effect marker, else signs naming it; per-file facts cached by content hash, each entry authenticated by an HMAC key no read surface returns
 │   ├── targets.py        # Where a command lands: context, project, account, branch; production detection
 │   ├── canonical_path.py # One canonical form of a path for every path guard (Windows spellings included)
 │   ├── gaia_cli_only_guard.py # The orchestrator's Bash lane: the trusted gaia binary and an allowlist of verbs

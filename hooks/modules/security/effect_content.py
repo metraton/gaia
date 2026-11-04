@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-MARKER_SET_VERSION = "1"
+MARKER_SET_VERSION = "2"
 MAX_FILES = 4000
 MAX_FILE_BYTES = 2_000_000
 
@@ -34,8 +34,14 @@ _MODULE_MARKERS: Dict[str, str] = {
         "sqlalchemy", "alembic", "peewee", "cassandra", "elasticsearch",
     ), DATABASE),
     **dict.fromkeys(("dotenv", "keyring", "google.auth", "hvac", "secretstorage", "oauth2client"), SECRET),
-    **dict.fromkeys(("ctypes", "cffi", "runpy", "code", "pickle", "marshal", "imp", "pkgutil"), CANNOT),
+    **dict.fromkeys(("ctypes", "cffi", "runpy", "code", "pickle", "marshal", "imp", "pkgutil", "importlib",
+                     "zipimport"), CANNOT),
 }
+_LOADER_NAMES = frozenset({
+    "importorskip", "import_module", "exec_module", "load_module", "module_from_spec", "spec_from_file_location",
+    "spec_from_loader", "SourceFileLoader", "SourcelessFileLoader", "ExtensionFileLoader", "run_path",
+    "run_module", "load_source", "load_compiled", "load_dynamic", "__import__",
+})
 _PROCESS_CALL_RE = re.compile(r"os\.(system|popen|spawn\w*|exec\w*|fork\w*|posix_spawnp?|kill|killpg)|asyncio\.create_subprocess_\w+")
 _DYNAMIC_NAMES = frozenset({"eval", "exec", "compile", "__import__", "globals", "vars", "breakpoint"})
 _SECRET_NAME_RE = re.compile(r"SECRET|PASSW|API_?KEY|PRIVATE_KEY|ACCESS_KEY|TOKEN|CREDENTIAL", re.IGNORECASE)
@@ -75,43 +81,95 @@ class Finding:
         return self.kind is None
 
 
-def cache_dir() -> Path:
-    """The directory of cached file facts; protected_paths refuses every writer but this module."""
+def _data_home() -> Path:
     try:
         from ..core.paths import get_data_home
 
-        home = get_data_home()
+        return Path(get_data_home())
     except Exception:
-        home = Path(os.environ.get("GAIA_DATA_DIR") or Path.home() / ".gaia")
-    return Path(home) / "cache" / "effect-analysis"
+        return Path(os.environ.get("GAIA_DATA_DIR") or Path.home() / ".gaia")
+
+
+def cache_dir() -> Path:
+    """The directory of cached file facts; protected_paths refuses every writer but this module."""
+    return _data_home() / "cache" / "effect-analysis"
+
+
+def key_path() -> Path:
+    """The HMAC key that authenticates cache entries; its .key suffix makes every read surface refuse it."""
+    return _data_home() / "cache" / "effect-analysis-key" / "entries.key"
+
+
+def protected_dirs() -> Tuple[Path, Path]:
+    """The directories only this module writes: the cache and its key."""
+    return cache_dir(), key_path().parent
 
 
 def cache_entry_path(content: bytes) -> Optional[Path]:
     """The cache file holding the facts of a file with this exact content."""
-    digest = hashlib.sha256(MARKER_SET_VERSION.encode() + b"\0" + content).hexdigest()
-    return cache_dir() / f"{digest}.json"
+    return cache_dir() / f"{_digest(content)}.json"
 
 
-def _cached_facts(content: bytes) -> Optional[dict]:
-    entry = cache_entry_path(content)
+def _digest(content: bytes) -> str:
+    return hashlib.sha256(MARKER_SET_VERSION.encode() + b"\0" + content).hexdigest()
+
+
+def _key() -> Optional[bytes]:
+    """The entry key, created on first use; None (no caching) unless it is a private regular file reached by no link."""
+    path = key_path()
     try:
-        data = json.loads(entry.read_text(encoding="utf-8")) if entry else None
-    except (OSError, ValueError):
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(os.urandom(32))
+        handle = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(handle, "rb") as stream:
+            status = os.fstat(stream.fileno())
+            key = stream.read(64)
+    except OSError:
         return None
-    if isinstance(data, dict) and data.get("version") == MARKER_SET_VERSION and isinstance(data.get("facts"), dict):
-        return data["facts"]
+    private = status.st_uid == os.getuid() and not status.st_mode & 0o077 and status.st_nlink == 1
+    if not private or len(key) != 32 or os.path.realpath(path) != os.path.abspath(path):
+        return None
+    return key
+
+
+def _mac(key: bytes, content: bytes, facts: dict) -> str:
+    import hmac
+
+    message = _digest(content).encode() + b"\0" + json.dumps(facts, sort_keys=True).encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def _cached_facts(content: bytes, key: Optional[bytes]) -> Optional[dict]:
+    """Facts from an entry whose MAC this key verifies; any other entry is ignored as if absent."""
+    import hmac
+
+    if key is None:
+        return None
+    try:
+        data = json.loads(cache_entry_path(content).read_text(encoding="utf-8"))
+        facts, mac = data["facts"], data["mac"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    if isinstance(facts, dict) and isinstance(mac, str) and hmac.compare_digest(mac, _mac(key, content, facts)):
+        return facts
     return None
 
 
-def _store_facts(content: bytes, facts: dict) -> None:
-    entry = cache_entry_path(content)
-    if entry is None:
+def _store_facts(content: bytes, facts: dict, key: Optional[bytes]) -> None:
+    if key is None:
         return
+    entry = cache_entry_path(content)
     try:
-        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         handle, temporary = tempfile.mkstemp(dir=entry.parent, suffix=".tmp")
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump({"version": MARKER_SET_VERSION, "facts": facts}, stream)
+            json.dump({"version": MARKER_SET_VERSION, "facts": facts, "mac": _mac(key, content, facts)}, stream)
         os.replace(temporary, entry)
     except OSError:
         pass
@@ -191,7 +249,7 @@ class _FileScan(ast.NodeVisitor):
         module = node.module or ""
         for alias in node.names:
             if alias.name == "*":
-                self.imports.append([module, node.level, node.lineno])
+                self.imports.append([module, node.level, node.lineno, "*"])
                 self._module_marker(module, node)
                 continue
             full = f"{module}.{alias.name}" if module else alias.name
@@ -305,6 +363,8 @@ class _FileScan(ast.NodeVisitor):
             self._mark(CANNOT, node, "environment variable read by a computed name")
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr in _LOADER_NAMES:
+            self._mark(CANNOT, node, f".{node.attr} loads a module the analysis cannot place")
         if id(node) not in self._callees:
             dotted = self._dotted(node)
             if dotted:
@@ -330,8 +390,8 @@ class _FileScan(ast.NodeVisitor):
             self._mark(SUBPROCESS, node, dotted)
         elif dotted in ("sys.path.insert", "sys.path.append", "sys.path.extend", "site.addsitedir", "sys.meta_path"):
             self._mark(CANNOT, node, f"{dotted} changes where imports resolve")
-        elif dotted in ("importlib.import_module", "importlib.__import__", "importlib.reload"):
-            self._mark(CANNOT, node, f"{dotted} imports a module")
+        elif dotted.rsplit(".", 1)[-1] in _LOADER_NAMES:
+            self._mark(CANNOT, node, f"{dotted} loads a module the analysis cannot place")
         elif _WRITE_CALL_RE.fullmatch(dotted) or dotted in _OPENERS or dotted == "sqlite3.connect":
             self.sites.append([WRITE, getattr(node, "lineno", 0), f"{dotted} referenced by another name", None])
 
@@ -343,13 +403,6 @@ class _FileScan(ast.NodeVisitor):
             self._mark(CANNOT, node, f"{name}() runs or imports code built at runtime")
         elif name in ("getattr", "setattr", "delattr"):
             self._attribute_call(node, name)
-        elif dotted in ("importlib.import_module", "importlib.__import__"):
-            target = node.args[0] if node.args else None
-            if isinstance(target, ast.Constant) and isinstance(target.value, str) and len(node.args) == 1:
-                self.imports.append([target.value, 0, node.lineno])
-                self._module_marker(target.value, node)
-            else:
-                self._mark(CANNOT, node, f"{dotted} imports a module named at runtime")
         elif dotted in ("os.getenv", "os.environ.get", "os.environ.pop", "os.environ.setdefault"):
             self._environment_read(node, node.args[0] if node.args else None)
         elif dotted in _OPENERS:
@@ -425,11 +478,12 @@ def _relative_segment_head(node: ast.AST) -> bool:
 
 def file_facts(content: bytes) -> dict:
     """Facts of one Python file, read from the cache by content hash or analysed and stored."""
-    cached = _cached_facts(content)
+    key = _key()
+    cached = _cached_facts(content, key)
     if cached is not None:
         return cached
     try:
-        tree = ast.parse(content)
+        tree = _parse(content)
     except (SyntaxError, ValueError) as error:
         facts = {"markers": [[CANNOT, getattr(error, "lineno", 0) or 0, "the file does not parse"]],
                  "imports": [], "sites": [], "assigns": {}, "fixtures": {}}
@@ -438,8 +492,50 @@ def file_facts(content: bytes) -> dict:
         scan.visit(tree)
         facts = {"markers": scan.markers, "imports": scan.imports, "sites": scan.sites,
                  "assigns": scan.assigns, "fixtures": scan.fixtures}
-    _store_facts(content, facts)
+    _store_facts(content, facts, key)
     return facts
+
+
+def _parse(content: bytes) -> ast.AST:
+    return ast.parse(content)
+
+
+def _ini_settings(start: Path) -> Dict[str, List[str]]:
+    """``pythonpath``, ``python_files`` and ``addopts`` of the ini governing *start*; ValueError if it cannot be read."""
+    import configparser
+
+    for directory in [start, *start.parents]:
+        for name, section in (("pytest.ini", "pytest"), ("pyproject.toml", None), ("tox.ini", "pytest"),
+                              ("setup.cfg", "tool:pytest")):
+            path = directory / name
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+                if section is None:
+                    import tomllib
+
+                    options = tomllib.loads(text).get("tool", {}).get("pytest", {}).get("ini_options")
+                    if options is None:
+                        continue
+                else:
+                    parser = configparser.ConfigParser(interpolation=None)
+                    parser.read_string(text)
+                    if not parser.has_section(section):
+                        if name == "pytest.ini":
+                            return {"pythonpath": [], "python_files": [], "addopts": []}
+                        continue
+                    options = dict(parser[section])
+                settings = {
+                    key: value.split() if isinstance(value, str) else [str(each) for each in value]
+                    for key in ("pythonpath", "python_files", "addopts")
+                    for value in [options.get(key, [])]
+                }
+            except (OSError, UnicodeDecodeError, ValueError, AttributeError, ImportError, configparser.Error) as error:
+                raise ValueError(f"{path} cannot be read") from error
+            settings["pythonpath"] = [os.path.realpath(directory / entry) for entry in settings["pythonpath"]]
+            return settings
+    return {"pythonpath": [], "python_files": [], "addopts": []}
 
 
 def _module_files(name: str, roots: Sequence[Path]) -> Optional[List[Path]]:
@@ -495,14 +591,19 @@ def _search_roots(path: Path, rootdir: Path, extra: Sequence[Path]) -> List[Path
     return list(dict.fromkeys([path.parent, basedir, rootdir, *extra]))
 
 
-def collect(roots: Iterable[Path], rootdir: Path) -> Tuple[List[Path], Optional[Finding]]:
-    """Every .py file under the suite's roots plus their conftest.py and package __init__ chains."""
+def collect(
+    roots: Iterable[Path], rootdir: Path, patterns: Optional[Sequence[str]],
+) -> Tuple[List[Path], Optional[Finding]]:
+    """The .py files under the roots whose names match *patterns* (None: all), plus conftest and __init__ chains."""
+    import fnmatch
+
     files: List[Path] = []
     for root in roots:
         if root.is_dir():
             for directory, subdirs, names in os.walk(root):
                 subdirs[:] = sorted(each for each in subdirs if each not in (".git", "__pycache__"))
-                files.extend(Path(directory, name) for name in sorted(names) if name.endswith(".py"))
+                files.extend(Path(directory, name) for name in sorted(names) if name.endswith(".py") and (
+                    patterns is None or any(fnmatch.fnmatch(name, pattern) for pattern in patterns)))
                 if len(files) > MAX_FILES:
                     return [], Finding(CANNOT, str(root), 0, f"more than {MAX_FILES} Python files")
         elif root.is_file():
@@ -511,24 +612,33 @@ def collect(roots: Iterable[Path], rootdir: Path) -> Tuple[List[Path], Optional[
             return [], Finding(CANNOT, str(root), 0, "the path is neither a file nor a directory")
     files.extend(candidate for candidate in (rootdir / "conftest.py",) if candidate.is_file())
     chain: List[Path] = []
-    for each in files:
-        directory = each.parent
-        while True:
-            chain.extend(candidate for candidate in (directory / "conftest.py", directory / "__init__.py")
-                         if candidate.is_file())
-            if directory == rootdir or rootdir not in directory.parents:
-                break
+    for directory in dict.fromkeys(each.parent for each in files):
+        chain.extend(each / "conftest.py" for each in [directory, *directory.parents] if (each / "conftest.py").is_file())
+        while (directory / "__init__.py").is_file():
+            chain.append(directory / "__init__.py")
             directory = directory.parent
     return list(dict.fromkeys(files + chain)), None
 
 
+PYTEST_FILES = ("test_*.py", "*_test.py")
+
+
 def judge_suite(
     roots: Sequence[Path], rootdir: Path, plugins: Sequence[str] = (), import_roots: Sequence[Path] = (),
+    patterns: Optional[Sequence[str]] = PYTEST_FILES, pytest_config: bool = True,
 ) -> Finding:
     """First effect marker in the closure of the suite under *roots*, or a free Finding counting its files."""
     rootdir = Path(os.path.realpath(rootdir))
-    extra = [Path(os.path.realpath(each)) for each in import_roots]
-    queue, early = collect([Path(os.path.realpath(each)) for each in roots], rootdir)
+    try:
+        settings = _ini_settings(rootdir) if pytest_config else {"pythonpath": [], "python_files": [], "addopts": []}
+    except ValueError as error:
+        return Finding(CANNOT, str(rootdir), 0, str(error))
+    if patterns is not None and any("doctest-modules" in each for each in settings["addopts"]):
+        patterns = None
+    elif patterns is not None and settings["python_files"]:
+        patterns = list(settings["python_files"])
+    extra = [Path(os.path.realpath(each)) for each in [*import_roots, *settings["pythonpath"]]]
+    queue, early = collect([Path(os.path.realpath(each)) for each in roots], rootdir, patterns)
     if early is not None:
         return early
     for plugin in plugins:
@@ -556,7 +666,7 @@ def judge_suite(
         facts = seen[path] = file_facts(content)
         findings.extend(Finding(kind, _show(path, rootdir), line, detail) for kind, line, detail in facts.get("markers", []))
         package = path.parent
-        for name, level, line in facts.get("imports", []):
+        for name, level, line, *star in facts.get("imports", []):
             if level:
                 base = package
                 for _ in range(level - 1):
@@ -566,6 +676,8 @@ def judge_suite(
                 located = _module_files(name, _search_roots(path, rootdir, extra))
             if located is not None:
                 queue.extend(each for each in located if each not in seen)
+            elif star:
+                findings.append(Finding(CANNOT, _show(path, rootdir), line, f"star import from {name} binds names the analysis cannot see"))
             elif level or not _is_library(name, rootdir):
                 findings.append(Finding(CANNOT, _show(path, rootdir), line, f"import {name} cannot be placed"))
     findings.extend(_site_findings(seen, rootdir))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -147,36 +148,138 @@ def test_unchanged_file_is_read_from_cache_and_edited_file_is_analysed_again(rep
 
     assert not _judge(UNITTEST, repo).is_mutative
     target = repo / "tests" / "test_b.py"
-    entry = effect_content.cache_entry_path(target.read_bytes())
-    assert entry is not None and entry.is_file()
+    assert effect_content.cache_entry_path(target.read_bytes()).is_file()
 
-    cached_entry = json.loads(entry.read_text())
-    cached_entry["facts"]["markers"] = [["network", 1, "only the cache says so"]]
-    entry.write_text(json.dumps(cached_entry))
-    cached = _judge(UNITTEST, repo)
-    assert cached.is_mutative and "only the cache says so" in cached.reason, cached.reason
-
-    target.write_text(target.read_text() + "\n# edited\n")
-    assert not _judge(UNITTEST, repo).is_mutative
+    parsed = []
+    real_parse = effect_content._parse
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(effect_content, "_parse", lambda content: parsed.append(content) or real_parse(content))
+        assert not _judge(UNITTEST, repo).is_mutative
+        assert parsed == []
+        target.write_text(target.read_text() + "\n# edited\n")
+        assert not _judge(UNITTEST, repo).is_mutative
+        assert parsed == [target.read_bytes()]
 
     (repo / "tests" / "conftest.py").write_text("import pytest\nimport socket\n")
     assert "conftest.py" in _judge(UNITTEST, repo).reason
 
 
-def test_no_tool_can_write_a_cache_entry(repo):
+@pytest.mark.parametrize("forgery", ["no-mac", "wrong-key", "facts-swapped"])
+def test_a_forged_cache_entry_never_frees_a_marked_file(forgery, repo):
+    import hashlib
+    import hmac
+
+    from modules.security import effect_content
+
+    target = repo / "tests" / "test_a.py"
+    target.write_text("import socket\n\ndef test_a():\n    assert True\n")
+    assert _judge(UNITTEST, repo).is_mutative
+    entry = effect_content.cache_entry_path(target.read_bytes())
+    stored = json.loads(entry.read_text())
+    empty = {"markers": [], "imports": [], "sites": [], "assigns": {}, "fixtures": {}}
+    if forgery == "no-mac":
+        stored = {"version": effect_content.MARKER_SET_VERSION, "facts": empty}
+    elif forgery == "wrong-key":
+        message = json.dumps(empty, sort_keys=True).encode()
+        stored = {"version": effect_content.MARKER_SET_VERSION, "facts": empty,
+                  "mac": hmac.new(b"0" * 32, message, hashlib.sha256).hexdigest()}
+    else:
+        stored["facts"] = empty
+    entry.write_text(json.dumps(stored))
+    result = _judge(UNITTEST, repo)
+    assert result.is_mutative and "network" in result.reason, result.reason
+
+
+def _forge_routes(cache: Path, key: Path, source: Path) -> dict:
+    entry = cache / ("0" * 64 + ".json")
+    rel_cache = os.path.relpath(cache, Path.home())
+    return {
+        "cp": f"cp /dev/null {entry}", "redirect": f"echo '{{}}' > {entry}", "tee": f"tee {cache}/x.json",
+        "ln-symlink-entry": f"ln -s {source} {entry}", "ln-hardlink-entry": f"ln {source} {entry}",
+        "mv-entry": f"mv {source} {entry}", "cp-r-dir": f"cp -r {source.parent} {cache}",
+        "cp-into-dir-slash": f"cp {source} {cache}/", "rsync": f"rsync {source} {entry}",
+        "install": f"install -m644 {source} {entry}", "dd-of": f"dd if={source} of={entry}",
+        "tar-x-C": f"tar -xf {source.parent}/a.tar -C {cache}", "unzip-d": f"unzip {source.parent}/a.zip -d {cache}",
+        "unzip-d-attached": f"unzip {source.parent}/a.zip -d{cache}", "unzip-key-dir": f"unzip a.zip -d {key.parent}",
+        "tilde": f"cp {source} ~/{rel_cache}/h.json", "dollar-home": f"cp {source} $HOME/{rel_cache}/h.json",
+        "sed-w": f"sed -n 'w {entry}' {source}", "key-overwrite": f"cp {source} {key}",
+        "read-key": f"cat {key}", "read-key-python": f"python3 -c \"print(open('{key}', 'rb').read())\"",
+    }
+
+
+def test_no_tool_can_write_the_cache_or_read_its_key(repo, tmp_path):
     from modules.security import effect_content
     from modules.security.protected_paths import is_read_spool_path
     from modules.tools.bash_validator import BashValidator
 
     assert not _judge(UNITTEST, repo).is_mutative
     entry = effect_content.cache_entry_path((repo / "tests" / "test_a.py").read_bytes())
-    assert entry.is_file() and is_read_spool_path(str(entry))
-    payload = {"cwd": str(repo), "tool_use_id": "t-1", "session_id": "s-1", "agent_id": "aeffect01", "agent_type": "developer"}
-    for command in (f"cp /dev/null {entry}", f"echo '{{}}' > {entry}", f"tee {entry.parent}/x.json"):
-        verdict = BashValidator().validate(
-            command, is_subagent=True, session_id="s-1", agent_type="developer", hook_payload=payload,
-        )
-        assert not verdict.allowed, command
+    key = effect_content.key_path()
+    assert entry.is_file() and key.is_file() and is_read_spool_path(str(entry)) and is_read_spool_path(str(key))
+    source = tmp_path / "x.json"
+    source.write_text("{}")
+    payload = {"cwd": str(tmp_path), "tool_use_id": "t-1", "session_id": "s-1", "agent_id": "aeffect01", "agent_type": "developer"}
+    free = [name for name, command in _forge_routes(effect_content.cache_dir(), key, source).items()
+            if BashValidator().validate(command, is_subagent=True, session_id="s-1", agent_type="developer",
+                                        hook_payload=payload).allowed]
+    assert not free, free
+
+
+VERIFIER_MARKED = {
+    "star-import-os-system": {"tests/test_a.py": "from os import *\n\ndef test_a():\n    system('true')\n"},
+    "star-import-shutil-rmtree": {"tests/test_a.py": "from shutil import *\n\ndef test_a():\n    rmtree('/x')\n"},
+    "module-alias-attr": {"tests/test_a.py": "import os as o\nf = o.popen\n\ndef test_a():\n    f('true')\n"},
+    "class-attr-alias": {"tests/test_a.py": "import os\n\nclass K:\n    go = staticmethod(os.system)\n"},
+    "reexport-star": {
+        "tests/test_a.py": "from pkg import *\n\ndef test_a():\n    go()\n",
+        "tests/pkg/__init__.py": "from .impl import *\n",
+        "tests/pkg/impl.py": "import socket\n\ndef go():\n    socket.create_connection(('x', 1))\n",
+    },
+    "dynamic-importorskip": {"tests/test_a.py": "import pytest\ns = pytest.importorskip('socket')\n"},
+    "importorskip-from-import": {"tests/test_a.py": "from pytest import importorskip as skip\ns = skip('socket')\n"},
+    "spec-from-file": {"tests/test_a.py": (
+        "import importlib.util\n\ndef test_a():\n"
+        "    spec = importlib.util.spec_from_file_location('m', '/x/evil.py')\n"
+        "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n")},
+    "source-file-loader": {"tests/test_a.py": (
+        "from importlib.machinery import SourceFileLoader\n\ndef test_a():\n    SourceFileLoader('m', '/x/e.py').load_module()\n")},
+    "loader-through-attribute": {"tests/test_a.py": "def test_a(spec):\n    spec.loader.exec_module(spec)\n"},
+    "pythonpath-shadows-installed": {
+        "pytest.ini": "[pytest]\npythonpath = src\n",
+        "src/pytest_shadowed_name/__init__.py": "import subprocess\n",
+        "tests/test_a.py": "import pytest_shadowed_name\n",
+    },
+}
+
+
+@pytest.mark.parametrize(("command", "in_repo"), SUITE_COMMANDS, ids=SUITE_IDS)
+@pytest.mark.parametrize("case", sorted(VERIFIER_MARKED))
+def test_verifier_probe_marked_closure_never_free(case, command, in_repo, repo):
+    _place(repo, in_repo)
+    for relative, body in VERIFIER_MARKED[case].items():
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        (repo / relative).write_text(body)
+    result = _judge(command, repo)
+    assert result.is_mutative, f"{case} ran free: {result.reason}"
+
+
+def test_pythonpath_shadowing_an_installed_module_is_resolved_locally(repo):
+    _place(repo, False)
+    (repo / "pytest.ini").write_text("[pytest]\npythonpath = src\n")
+    (repo / "src" / "json").mkdir(parents=True)
+    (repo / "src" / "json" / "__init__.py").write_text("import subprocess\n")
+    (repo / "tests" / "test_a.py").write_text("import json\n")
+    result = _judge("python3 -m pytest -q tests/", repo)
+    assert result.is_mutative and "src/json/__init__.py" in result.reason, result.reason
+
+
+def test_conftest_above_the_working_directory_is_in_the_closure(repo):
+    _place(repo, False)
+    (repo / "conftest.py").write_text("import subprocess\n")
+    (repo / "a" / "b").mkdir(parents=True)
+    (repo / "a" / "b" / "test_x.py").write_text("def test_x():\n    assert True\n")
+    result = _judge("python3 -m pytest -q", repo / "a" / "b")
+    assert result.is_mutative and "conftest.py" in result.reason, result.reason
 
 
 @pytest.mark.parametrize(
