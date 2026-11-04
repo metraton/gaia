@@ -317,7 +317,6 @@ def _read_fed_file(path: str, cwd: Optional[str]) -> str:
 
 
 def _read_in_full(path: Optional[str], cwd: Optional[str]) -> bool:
-    """Whether *path* is a literal regular file the guard reads whole from *cwd*."""
     from pathlib import Path
 
     from .targets import _read_file
@@ -348,7 +347,6 @@ def _stdin_sources(reading: str) -> Iterator[Optional[str]]:
 
 
 def _pipes(text: str) -> Iterator[Tuple[str, str]]:
-    """Each ``(producer, consumer)`` pair an unquoted ``|`` or ``|&`` joins in *text*."""
     segments, operators, current, quote, index = [], [], [], None, 0
     while index < len(text):
         char = text[index]
@@ -376,7 +374,6 @@ def _pipes(text: str) -> Iterator[Tuple[str, str]]:
 
 
 def _literal_printer(command: str) -> bool:
-    """Whether *command* is an ``echo`` or ``printf`` whose output is its own literal words."""
     from ..tools.shell_parser import shell_split
 
     try:
