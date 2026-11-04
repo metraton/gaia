@@ -10,8 +10,8 @@ reads as SQL whose path and content are literal: a `<` or `-init` file, a
 `.read` target, the sqliterc under a HOME or XDG_CONFIG_HOME the line assigns,
 and the files a `cat` on the line prints, followed through `.read` recursively.
 A literal sqlite3 `.cd` target is one more folder every relative path is judged
-in; one the guard cannot resolve leaves every relative file operand unproven,
-as does anything on the line before sqlite3, which must be its first command.
+in; an unresolvable one, a run not the line's first and only sqlite3, computed
+text, a program's output or a missing input file leaves its input unproven.
 Reads go through `gaia context query`. A shell command or file a sqlite3 call
 names in a readable payload -- `.shell`, `.system`, any dot-command operand
 starting with `|`, edit()'s editor, a VISUAL or EDITOR the line assigns --
@@ -124,7 +124,12 @@ _SQL_GAP = r"(?:\s|/\*.*?\*/|--[^\n]*\n)*"
 _ATTACH = re.compile(rf"\bATTACH\b(?:{_SQL_GAP}DATABASE\b)?{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}AS\b))?", re.I | re.S)
 _VACUUM_INTO = re.compile(rf"\bVACUUM\b[^;]*?\bINTO\b{_SQL_GAP}(?P<arg>'(?:[^']|'')*'(?={_SQL_GAP}(?:;|$|[\"'])))?", re.I | re.S)
 _SQL_STRING = re.compile(r"'((?:[^']|'')*)'")
-_LOAD_EXTENSION = re.compile(rf"\bload_extension\b{_SQL_GAP}\({_SQL_GAP}'((?:[^']|'')*)'", re.I | re.S)
+_PATH_FUNCTION = re.compile(
+    rf"[\"\[`]?\b(?:load_extension|readfile|writefile)\b(?:\\?[\"\]`])?{_SQL_GAP}\({_SQL_GAP}'((?:[^']|'')*)'",
+    re.I | re.S,
+)
+_UNQUOTED_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*[A-Za-z_]")
+_EXPANSION = re.compile(r"\$[A-Za-z_{(0-9@*#?!$-]|`")
 _SQL_CALL = re.compile(
     rf"[\"\[`]?\b(?P<fn>edit|writefile)\b(?:\\?[\"\]`])?{_SQL_GAP}\({_SQL_GAP}(?P<first>'(?:[^']|'')*')"
     rf"(?:{_SQL_GAP},{_SQL_GAP}(?P<second>'(?:[^']|'')*'))?",
@@ -373,6 +378,42 @@ def _pipes(text: str) -> Iterator[Tuple[str, str]]:
             yield segments[position], segments[position + 1]
 
 
+def _expands(text: str) -> bool:
+    quote, index = None, 0
+    while index < len(text):
+        char = text[index]
+        if quote != "'" and char == "\\":
+            index += 2
+            continue
+        if quote is None and char in ("'", '"'):
+            quote = char
+        elif quote is not None and char == quote:
+            quote = None
+        elif quote != "'" and _EXPANSION.match(text, index):
+            return True
+        index += 1
+    return False
+
+
+def _computes_sqlite_text(command: str) -> bool:
+    from ..tools.shell_parser import shell_split
+
+    for body in [command, *extract_substitutions(command)]:
+        for component in filter(None, map(str.strip, _split_components(body))):
+            own = component
+            for substitution in extract_substitutions(component):
+                own = own.replace(substitution, "")
+            try:
+                words = shell_split(own)
+            except ValueError:
+                words = _tokenize(own)
+            if any(command_name(w.lstrip("(")) in _SQLITE_PROGRAMS for w in words) and (
+                _expands(component) or (_UNQUOTED_HEREDOC.search(component) and _EXPANSION.search(command))
+            ):
+                return True
+    return False
+
+
 def _literal_printer(command: str) -> bool:
     from ..tools.shell_parser import shell_split
 
@@ -599,12 +640,17 @@ def _sqlite_refusal(command: str, cwd: Optional[str]) -> Optional[str]:
     read_as_sql = stdin + fed + [p for inv in invocations for p in inv.read_files()]
     read_as_sql += [path for text in texts for path in _read_targets(text)]
     inputs = paths + read_as_sql + [path for text in texts for _, path in _file_operands(text)]
-    inputs += [m[1].replace("''", "'") for text in texts for m in _LOAD_EXTENSION.finditer(text)]
-    if (folder_unproven or start is None) and any(
+    inputs += [m[1].replace("''", "'") for text in texts for m in _PATH_FUNCTION.finditer(text)]
+    archive = any(w.startswith("-A") or w == "--archive" for inv in invocations for w in inv.args) or any(
+        typed in ("ar", "archive") for text in texts for typed, _ in _dot_commands(text)
+    )
+    if (folder_unproven or start is None) and (archive or any(
         p and _relative(p) and not p.startswith(("<(", "(")) for p in inputs
-    ):
+    )):
         return UNPROVEN_FOLDER_MESSAGE
-    if unproven_feed or not all(_read_in_full(p, f) for p in read_as_sql for f in folders):
+    if unproven_feed or _computes_sqlite_text(command) or not all(
+        _read_in_full(p, f) for p in read_as_sql for f in folders
+    ):
         return UNPROVEN_INPUT_MESSAGE
     return None
 

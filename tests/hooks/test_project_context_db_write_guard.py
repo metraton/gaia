@@ -476,7 +476,7 @@ def test_sqlite3_input_the_guard_cannot_read_in_full_is_unproven(opener, command
     "sqlite3 {o} \"$(head {d}/open.sql)\"",
     "sqlite3 {o} \"$SQL\"",
     "sqlite3 {o} \"SELECT $X\"",
-    "sqlite3 {o} `cat {d}/open.sql`",
+    "sqlite3 {o} `head {d}/open.sql`",
     "env -C /tmp sqlite3 {o} \"$SQL\"",
     "sqlite3 {o} <<EOF\n$SQL\nEOF",
     "HOME=$PWD sqlite3 {o} 'SELECT 1'",
