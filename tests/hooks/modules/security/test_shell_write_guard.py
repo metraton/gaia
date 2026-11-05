@@ -131,6 +131,26 @@ def test_write_hidden_in_command_substitution_is_refused(repo):
     assert allowed is False
 
 
+@pytest.mark.parametrize("command", [
+    "cat notes.txt | tee >(wc -l) {target}",
+    "cat notes.txt | tee >(cat > {target})",
+    "diff <(cat a.txt) <(cat b.txt) > {target}",
+])
+def test_write_beside_or_inside_a_process_substitution_is_refused(repo, command):
+    allowed, _ = check(command.format(target=repo / "src" / "app.py"), cwd=str(repo))
+    assert allowed is False
+
+
+@pytest.mark.parametrize("command", [
+    "cat notes.txt | tee >(wc -l)",
+    "echo hi > >(wc -l)",
+    "diff <(cat a.txt) <(cat b.txt)",
+])
+def test_process_substitution_is_not_a_file_target(repo, command):
+    allowed, _ = check(command, cwd=str(repo))
+    assert allowed is True
+
+
 def test_write_in_a_later_chain_component_is_refused(repo):
     target = repo / "src" / "app.py"
     allowed, _ = check(f"ls -la && echo x > {target}", cwd=str(repo))

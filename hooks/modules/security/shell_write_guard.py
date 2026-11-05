@@ -39,6 +39,7 @@ import re
 import shlex
 from typing import List, Optional, Tuple
 
+from ..tools.shell_parser import process_substitutions
 from .canonical_path import command_name, native_path
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -265,8 +266,16 @@ def downloader_paths(tokens: List[str]) -> List[str]:
     return words + names + [os.path.join(d, n) for d in words for n in relative if d != n]
 
 
+def _without_process_substitutions(component: str) -> str:
+    """The component with each ``<(...)``/``>(...)`` removed: bash passes a pipe, never a file, and the body is judged as its own command."""
+    for opener, body in process_substitutions(component):
+        component = component.replace(f"{opener}{body})", " ", 1)
+    return component
+
+
 def _writer_targets(component: str) -> List[str]:
     """Return every destination this component writes, shell-authored only."""
+    component = _without_process_substitutions(component)
     targets = _redirect_targets(component)
 
     tokens = _tokenize(strip_grouping_wrappers(component))
