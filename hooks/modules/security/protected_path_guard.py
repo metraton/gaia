@@ -185,7 +185,7 @@ def _write_targets(tokens: List[str], base: str) -> Tuple[List[str], List[str]]:
         redirects += [name for script in scripts for name in _SED_WRITE_COMMAND.findall(script)]
     if base == "dd":
         operands = [op[3:] for op in operands if op.startswith("of=")]
-    if base == "tar":
+    if base in ("tar", "bsdtar"):
         directories = [tok.split("=", 1)[1] for tok in tokens if tok.startswith("--directory=")]
         operands += directories
         if _tar_extracts(tokens) and not directories and "-C" not in tokens:
@@ -200,7 +200,9 @@ def _tar_extracts(tokens: List[str]) -> bool:
     return any(tok in ("--extract", "--get") for tok in tokens) or any("x" in b for b in bundles)
 
 
-_INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php", "deno", "bun"})
+INTERPRETERS = frozenset({
+    "python", "pypy", "node", "perl", "ruby", "php", "deno", "bun", "lua", "luajit", "rscript",
+})
 _CODE_WORD = re.compile(r"[^\s'\"(),;=`]+")
 _LITERAL_CONCATENATION = re.compile(r"""(['"])\s*\+\s*(['"])""")
 _NON_LITERAL_DIR = re.compile(r"[$`*?\[{]")
@@ -225,7 +227,7 @@ def _proven_cwd(command: str, cwd: Optional[str]) -> Optional[str]:
 
 
 def _has_interpreter(command: str) -> bool:
-    return any(command_name(word).rstrip("0123456789.") in _INTERPRETERS for word in command.split())
+    return any(command_name(word).rstrip("0123456789.") in INTERPRETERS for word in command.split())
 
 
 def _code_words(command: str) -> List[str]:
@@ -292,7 +294,7 @@ def _is_read_only(tokens: List[str]) -> bool:
 
 def _program_words(tokens: List[str]) -> List[str]:
     """The program a component runs, and an interpreter's script: running installed code is not writing it."""
-    interpreted = command_name(tokens[0]).rstrip("0123456789.") in _INTERPRETERS
+    interpreted = command_name(tokens[0]).rstrip("0123456789.") in INTERPRETERS
     if interpreted and len(tokens) > 1 and not tokens[1].startswith("-"):
         return tokens[:2]
     return tokens[:1]
@@ -489,6 +491,39 @@ def _line_names_install_root_unread(command: str, cwd: Optional[str]) -> Optiona
     return None
 
 
+_TARGET_READERS = frozenset({"awk", "gawk", "mawk", "nawk", "bat", "nl", "od", "hexdump", "strings"})
+
+
+def unnamed_program_words(tokens: List[str]) -> List[str]:
+    """The argument words of a program no guard grammar vouches for (not git, the gaia CLI or a reader), else []."""
+    while tokens and _ASSIGNMENT.fullmatch(tokens[0]):
+        tokens = tokens[1:]
+    base = command_name(tokens[0]) if tokens else ""
+    if not base or base == "git" or is_gaia_cli(tokens[0]) or base in _TARGET_READERS or _is_read_only(tokens):
+        return []
+    return _named_words(tokens)
+
+
+def _unnamed_program_operands(tokens: List[str], cwd: Optional[str]) -> List[str]:
+    return [
+        word for word in unnamed_program_words(tokens)
+        if os.path.isabs(expand_home(word.strip("'\"")))
+        or (cwd and cwd != UNKNOWN_CWD and os.path.lexists(os.path.join(cwd, word.split("/")[0])))
+    ]
+
+
+def _holds_protected_tree(target: str, cwd: Optional[str]) -> Optional[str]:
+    path = expand_home(target.strip("'\""))
+    if not os.path.isabs(path):
+        if not cwd or cwd == UNKNOWN_CWD:
+            return None
+        path = os.path.join(cwd, path)
+    path = os.path.normpath(path)
+    if os.path.basename(path) == ".claude" or is_install_root_container(path):
+        return path
+    return None
+
+
 def _component_writes_protected_path(component: str, cwd: Optional[str] = None) -> Optional[str]:
     """Return the offending protected path if `component` writes to one.
 
@@ -509,9 +544,14 @@ def _component_writes_protected_path(component: str, cwd: Optional[str] = None) 
     writer = subcommand in _GIT_WRITE_SUBCOMMANDS if base == "git" else base in _FILESYSTEM_WRITE_COMMANDS
 
     for target in redirects + (operands if writer else []) + downloader_paths(tokens):
-        hit = _protected_spelling(target, cwd)
+        hit = _protected_spelling(target, cwd) or (writer and _holds_protected_tree(target, cwd))
         if hit:
             return hit
+    if not writer:
+        for target in _unnamed_program_operands(tokens, cwd):
+            hit = _protected_spelling(target, cwd) or _holds_protected_tree(target, cwd)
+            if hit:
+                return hit
 
     protected_tokens = [p for p in map(_protected_spelling, tokens) if p]
     if not protected_tokens:

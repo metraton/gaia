@@ -110,12 +110,12 @@ _COPY_WRITERS = frozenset({
     "cp", "mv", "install", "ln", "rsync",
     "copy", "xcopy", "copy-item", "cpi", "move", "move-item", "mi",
 })
+_MOVERS = frozenset({"mv", "move", "move-item", "mi"})
 # Every operand may be the file written.
 _TRUNCATORS = frozenset({
     "truncate", "set-content", "sc", "add-content", "ac", "out-file", "clear-content",
     "clc", "new-item", "ni",
 })
-_INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php"})
 
 _SQLITE_PROGRAMS = frozenset({"sqlite3", "sqlite"})
 _LEAD_WORDS = frozenset({"{", "(", "!", "if", "then", "else", "elif", "do", "while", "until", "time"})
@@ -823,15 +823,32 @@ def _component_writes_db(component: str) -> bool:
         return False
     if any(_is_gaia_db_file(t) for t in downloader_paths(tokens)):
         return True
+    from .protected_path_guard import INTERPRETERS, unnamed_program_words
+
     base = command_name(tokens[0])
     operands =[t for t in tokens[1:] if not t.startswith("-")]
+    if base in _MOVERS and any(_is_gaia_db_file(t) for t in operands):
+        return True
     if base in _COPY_WRITERS:
-        return bool(operands) and _is_gaia_db_file(operands[-1])
+        return bool(operands) and (_is_gaia_db_file(operands[-1]) or _copies_into_store_name(operands))
     if base in _TRUNCATORS:
         return any(_is_gaia_db_file(t) for t in operands)
-    if base.rstrip("0123456789.") in _INTERPRETERS and _GAIA_DB_NAME_RE.search(peeled):
+    if base.rstrip("0123456789.") in INTERPRETERS and _GAIA_DB_NAME_RE.search(peeled):
         return detect_mutative_command(peeled).is_mutative
-    return False
+    if base in _SQLITE_PROGRAMS:
+        return False
+    return any(_is_gaia_db_file(_scheme_stripped(word)) for word in unnamed_program_words(tokens))
+
+
+def _copies_into_store_name(operands: List[str]) -> bool:
+    destination = operands[-1]
+    if len(operands) < 2 or not (destination.endswith("/") or os.path.isdir(os.path.expanduser(destination))):
+        return False
+    return any(_is_gaia_db_file(os.path.join(destination, os.path.basename(s.rstrip("/")))) for s in operands[:-1])
+
+
+def _scheme_stripped(word: str) -> str:
+    return re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*:(?://)?", "", _uri_path(word), count=1)
 
 
 def writes_db_file(command: str) -> bool:
