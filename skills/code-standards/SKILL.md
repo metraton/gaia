@@ -168,6 +168,15 @@ fixture. For non-behavioral changes, show preservation of behavior rather than
 manufacturing tests for prose. State what ran, what it establishes, and what remains
 unverified; loading this skill or passing a linter is not evidence of its application.
 
+How much to run, and when, comes in three rings, each run once and only when its cost
+is justified. Ring 1 is the test of what changed, written red before the edit and green
+after. Ring 2, at feature close, is the tests of the modules that import what was
+touched: chosen by blast radius, not by running everything. Ring 3 is the whole suite,
+run only in CI, once per integration push, never locally. A red in a wider ring is
+reproduced as the single failing test, fixed in ring 1, and pushed again; the wider
+ring is not re-run locally. A verifier re-runs only the gates and probes the producer
+declared, never a wider run.
+
 ### 10. Write everything versioned in English
 
 Identifiers, comments, docstrings, CHANGELOG entries, commit messages, pull request

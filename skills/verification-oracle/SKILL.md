@@ -79,5 +79,6 @@ are the verifier's judgment on top of it.
   nothing about the change; that is `broken_test`, not `pass`.
 - **Trusting a stale pass** -- the verdict predates the change that marked it;
   only a fresh run clears it.
+- **Widening the run** -- the oracle re-runs only the declared gate and probes, never a wider run (`code-standards` Rule 9).
 - **Skipping re-execution because the producer said it passed** -- that is what
   `self_review` is for; a `command`/`code` gate exists so someone re-runs it.
