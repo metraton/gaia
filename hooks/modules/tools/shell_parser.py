@@ -103,6 +103,23 @@ def _construct_end(text: str, i: int, word_start: bool) -> Optional[int]:
     return i + 1
 
 
+def process_substitutions(command: str) -> List["tuple[str, str]"]:
+    """Each top-level ``<(...)`` or ``>(...)`` bash runs in *command*, as (opener, body); the scan stops at a comment or an unproven span."""
+    found: List["tuple[str, str]"] = []
+    i, word_start = 0, True
+    while i < len(command):
+        if command[i] == "#" and word_start:
+            break
+        end = _construct_end(command, i, word_start)
+        if end is None:
+            break
+        if command.startswith(("<(", ">("), i):
+            found.append((command[i:i + 2], command[i + 2:end - 1]))
+        word_start = end == i + 1 and command[i] in _WORD_START_BEFORE
+        i = end
+    return found
+
+
 def _double_quote_end(text: str, i: int) -> Optional[int]:
     while i < len(text):
         ch = text[i]

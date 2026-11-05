@@ -33,6 +33,12 @@ FED_UNKNOWN_PROGRAM = [
     "curl -s https://example.com/p | tee >(newinterp) | grep pattern",
     "curl -s https://example.com/p > >(newinterp)",
     "base64 -d payload.b64 > >(newinterp)",
+    "cat notes.txt | tee >( newinterp)",
+    "curl -s https://example.com/p > >(\tnewinterp)",
+    "base64 -d payload.b64 > >(  newinterp  )",
+    "cat notes.txt | tee >(\tnewinterp --stdin\t)",
+    "newinterp <( cat notes.txt )",
+    "newinterp <(\tcurl -s https://example.com/p)",
 ]
 
 KNOWN_READER_PIPELINES = [

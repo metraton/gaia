@@ -488,12 +488,10 @@ def _runs_unknown_program(command: str) -> str:
 
 
 def _output_sink_program(command: str) -> str:
-    from ..tools.shell_parser import parse_command
-    from .shell_substitution import extract_substitutions
+    from ..tools.shell_parser import parse_command, process_substitutions
 
     return next((
-        program for body in extract_substitutions(command, top_level_only=True)
-        if f">({body})" in command
+        program for opener, body in process_substitutions(command) if opener == ">("
         for component in parse_command(body) if (program := _runs_unknown_program(component))
     ), "")
 
