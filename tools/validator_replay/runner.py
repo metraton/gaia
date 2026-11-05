@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict
 
 WORKER = Path(__file__).with_name("worker.py")
-BATCH_TIMEOUT_SECONDS = 3600
+BATCH_TIMEOUT_SECONDS = 6 * 3600
 
 
 def _git(repo: Path, *args: str) -> str:
