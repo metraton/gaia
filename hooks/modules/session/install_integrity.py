@@ -33,7 +33,6 @@ def integrity_notice(workspace: Path) -> str:
 
 
 def _drifted(manifest: Any, workspace: Path, entry: dict) -> bool:
-    """Whether the path now differs from what the install wrote; for JSON settings only the keys Gaia wrote count."""
     written = entry["written"]
     if written["type"] in ("absent", "dir"):
         return False

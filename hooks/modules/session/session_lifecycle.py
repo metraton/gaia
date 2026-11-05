@@ -183,7 +183,6 @@ def run_start_maintenance(start: SessionStart) -> None:
 
 
 def _install_integrity_notice() -> str:
-    """Drift of the install workspace's recorded links and settings."""
     try:
         from gaia.install_root import installed_root
         from modules.session.install_integrity import integrity_notice

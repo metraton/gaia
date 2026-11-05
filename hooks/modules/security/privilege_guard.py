@@ -41,11 +41,7 @@ def privilege_program(command: str) -> Optional[str]:
 
 
 def privilege_verdict(command: str, detected) -> Optional[MutativeResult]:
-    """The signature *command* asks for because it changes user; None when it starts no privilege program.
-
-    It replaces the payload's own rule; the payload's floors are still applied by
-    the refusal check every T3 outcome runs first.
-    """
+    """The sign.privilege request for *command*, replacing the payload's rule while its floors still apply; None without sudo, su or doas."""
     program = privilege_program(command)
     if program is None:
         return None

@@ -411,7 +411,6 @@ def _is_store(target: str, home: str) -> bool:
 
 
 def _runs_as_entry_point() -> bool:
-    """True for bin/gaia (which exports STORE_ENTRY_ENV to its children), a hooks/*.py entry, or the OpenCode bridge."""
     if os.environ.get(STORE_ENTRY_ENV):
         return True
     main = getattr(sys.modules.get("__main__"), "__file__", None)

@@ -385,10 +385,7 @@ _SYSTEM_DIRS = ("/etc", "/usr", "/boot")
 
 
 def system_path_target(command: str, cwd: Optional[str] = None) -> Optional[str]:
-    """The first destination a shell writer in *command* resolves to under /etc, /usr or /boot, else None.
-
-    Such a write signs (D198 point 5); it is not refused like a working-tree write.
-    """
+    """The first destination a shell writer in *command* resolves to under /etc, /usr or /boot, which signs (D198 point 5), else None."""
     if not command:
         return None
     components = _split_components(command)
