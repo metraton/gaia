@@ -62,6 +62,15 @@ def test_an_unmodelled_program_with_no_operands_is_top_through_the_validator(iso
     assert result.allowed and result.effects == lattice.TOP
 
 
+@pytest.mark.parametrize("command", [
+    "echo $(zorbtool)", "ls `zorbtool`", 'echo "$(qqxrun y)"', "echo $(ls $(zorbtool))",
+    "cat <(zorbtool)", "zorbtool | grep x", "ls; qqxrun", "kubectl exec pod -- zorbtool",
+])
+def test_an_unmodelled_program_anywhere_the_command_runs_contributes_top(command, isolated):  # noqa: F811
+    result = _validate(command, isolated)
+    assert lattice.is_top(result.effects), (result.allowed, result.rule, result.effects)
+
+
 @pytest.mark.parametrize("lane,effects,kind", [
     ("verb-scan", lambda: detect_mutative_command("kubectl delete ns x").effects, lattice.NET_EGRESS),
     ("verb-scan-read", lambda: detect_mutative_command("ls -la").effects, lattice.FS_READ),
