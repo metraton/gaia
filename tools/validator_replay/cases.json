@@ -1,0 +1,22 @@
+{
+ "cases": [
+  {"id": "merge-local-branch", "command": "git merge feature-x", "context": "repo"},
+  {"id": "merge-local-branch-ff-only", "command": "git merge --ff-only feature-x", "context": "repo"},
+  {"id": "merge-local-branch-no-ff", "command": "git merge --no-ff feature-x", "context": "repo"},
+  {"id": "merge-own-upstream-ff-only", "command": "git merge --ff-only origin/main", "context": "repo"},
+  {"id": "merge-local-branch-managed-worktree", "command": "git merge --ff-only feature-x", "context": "managed_repo"},
+  {"id": "push-own-branch", "command": "git push origin feature-x", "context": "repo"},
+  {"id": "push-own-branch-upstream", "command": "git push -u origin feature-x", "context": "repo"},
+  {"id": "push-main", "command": "git push origin main", "context": "repo"},
+  {"id": "push-head-to-main", "command": "git push origin HEAD:main", "context": "repo"},
+  {"id": "push-force-own-branch", "command": "git push --force origin feature-x", "context": "repo"},
+  {"id": "push-force-main", "command": "git push --force origin main", "context": "repo"},
+  {"id": "push-force-with-lease", "command": "git push --force-with-lease origin feature-x", "context": "repo"},
+  {"id": "push-dry-run-main", "command": "git push --dry-run origin main", "context": "repo"},
+  {"id": "friction-ghx-pr-create-body-file", "command": "ghx pr create --repo o/r --head feat/x --base main --body-file /home/jorge/.gaia/scratch/x.md", "context": "none"},
+  {"id": "friction-gh-pr-create-body-file", "command": "gh pr create --repo o/r --head feat/x --base main --body-file /home/jorge/.gaia/scratch/x.md", "context": "none"},
+  {"id": "friction-jq-object-construction", "command": "jq -c '{a: .b}' file.json", "context": "none"},
+  {"id": "friction-jq-raw-field", "command": "jq -r '.x' file.json", "context": "none"},
+  {"id": "friction-bun-run-cwd-script", "command": "bun run --cwd {CWD} typecheck", "context": "pkg_plain"}
+ ]
+}
