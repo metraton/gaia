@@ -22,7 +22,7 @@ Escalation (route to T3 ask, not permanent block):
                       e.g. cat script.sh | bash
   6. Egress:          any other stage | network_write
                       e.g. git diff | curl --data-binary @- host
-  7. Unknown sink:    network/file/decode | ... | a program no rule names
+  7. Unknown sink:    read/download/decode feeding an unnamed program; fed_unknown_program only raises a free verdict
 
 Transparent suffix rule:
   If every stage after the first is a safe_filter, no composition rule fires
@@ -240,6 +240,8 @@ _FEEDING_STAGES = frozenset({
 })
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _EXECUTOR_DEPTH = 3
+_LITERAL_PROGRAM = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+_INPUT_BUILTINS = frozenset({"read", "mapfile", "readarray"})
 
 # ssh options taking a value, and the ones that keep stdin from the remote side.
 _SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
@@ -438,14 +440,21 @@ def redirected_into_sender(command: str) -> str:
 
 def _unmodelled_program(command: str) -> str:
     """The program *command* runs when no classifier rule and no declared tool row names it, else ""."""
+    from ..tools.shell_parser import shell_split
     from .cli_aliases import aliased_cli
     from .mutative_verbs import _is_unmodelled_cli
 
-    tokens = _strip_transparent_prefixes(_tokenize_safe(command))
+    try:
+        tokens = _strip_transparent_prefixes(shell_split(command))
+    except ValueError:
+        return ""
     while tokens and _ASSIGNMENT.match(tokens[0]):
         tokens = tokens[1:]
-    program = _get_executable(tokens)
-    if program and _is_unmodelled_cli(program) and aliased_cli(program) is None:
+    program = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+    if (
+        _LITERAL_PROGRAM.fullmatch(program) and program not in _INPUT_BUILTINS
+        and _is_unmodelled_cli(program) and aliased_cli(program) is None
+    ):
         return program
     return ""
 
@@ -511,27 +520,15 @@ def redirected_into_unknown(command: str) -> str:
     return next((c.strip() for c in parse_command(command) if _sink_of_fed_stage(c, False)), "")
 
 
-def _fed_unknown_program(
-    stages: List[CompositionStage], all_types: List[StageType],
-) -> Optional[CompositionResult]:
-    """Escalate the first stage that runs a program no rule names, directly or through an executor, on data a read, download or decode hands it."""
+def fed_unknown_program(stages: List[CompositionStage]) -> str:
+    """The first program no rule names that a stage runs, directly or through an executor, on data a read, download or decode hands it, or ""."""
     for index, stage in enumerate(stages):
         upstream = range(_pipe_run_start(stages, index), index)
-        feed = next((stages[k].command for k in upstream if stages[k].stage_type in _FEEDING_STAGES), "")
-        program = _sink_of_fed_stage(stage.command, bool(feed))
-        feed = feed or _input_feed(stage.command) or stage.command
+        fed = any(stages[k].stage_type in _FEEDING_STAGES for k in upstream)
+        program = _sink_of_fed_stage(stage.command, fed)
         if program:
-            return CompositionResult(
-                decision=CompositionDecision.ESCALATE,
-                pattern="unknown_sink",
-                reason=(
-                    f"'{feed[:60]}' feeds '{program}', a program no rule here names, "
-                    f"so what it does with that data could not be determined"
-                ),
-                matched_stages=[index],
-                stage_types=all_types,
-            )
-    return None
+            return program
+    return ""
 
 
 def _pipe_run_start(stages: List[CompositionStage], index: int) -> int:
@@ -616,7 +613,6 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
       5. Net-write RCE: network_write | exec_sink             -> BLOCK
       6. Egress:       any other      | network_write         -> ESCALATE
       7. File-to-exec: file_read      | exec_sink             -> ESCALATE
-      8. Unknown sink: read/decode | ... | unmodelled program -> ESCALATE
 
     Returns a CompositionResult.  If no rule fires, decision is ALLOW.
     """
@@ -627,7 +623,6 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
         )
 
     all_types = [s.stage_type for s in stages]
-    unknown_sink = _fed_unknown_program(stages, all_types)
 
     # Extract pipe-linked consecutive pairs: (i, i+1) where stages[i].operator == "|"
     pipe_pairs: List[tuple] = []
@@ -636,7 +631,7 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
             pipe_pairs.append((i, i + 1))
 
     if not pipe_pairs:
-        return unknown_sink or CompositionResult(
+        return CompositionResult(
             decision=CompositionDecision.ALLOW,
             stage_types=all_types,
         )
@@ -650,7 +645,7 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
 
     # Transparent suffix rule
     if _all_suffix_safe_filters(pipe_stages_ordered):
-        return unknown_sink or CompositionResult(
+        return CompositionResult(
             decision=CompositionDecision.ALLOW,
             reason="All pipe suffixes are safe filters (transparent suffix rule)",
             stage_types=all_types,
@@ -748,7 +743,7 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
                 stage_types=all_types,
             )
 
-    return unknown_sink or CompositionResult(
+    return CompositionResult(
         decision=CompositionDecision.ALLOW,
         stage_types=all_types,
     )
