@@ -83,6 +83,7 @@ def test_start_maintenance_runs_in_order_on_the_explicit_inputs(calls, tmp_path)
         "installed_root",
         "reconcile_plugin_install",
         "workspace_status",
+        "installed_root",
         "build_session_context",
     ]
     by_name = {name: (args, kwargs) for name, args, kwargs in calls}
