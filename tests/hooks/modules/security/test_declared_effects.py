@@ -18,6 +18,7 @@ from modules.security.gaia_cli_only_guard import ALLOWED_WRITE_PHRASES  # noqa: 
 from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
 from modules.security.subagent_memory_write_guard import DECLARATION_REJECTION, check  # noqa: E402
 from modules.security.verdict import Verdict  # noqa: E402
+from modules.tools.bash_validator import BashValidator  # noqa: E402
 
 DECLARE = "gaia memory declare --project proj --command 'make build' --effect local"
 
@@ -138,3 +139,48 @@ def test_a_declaration_never_lowers_a_floor_a_guard_or_a_modelled_destroyer(stor
         detect_mutative_command("rm -rf build").effects, "rm -rf build", str(project))) is Verdict.SIGNED
     floored = TOP | {Effect(FS_WRITE, scope=STORE)}
     assert lattice_verdict(apply_declarations(floored, "frobctl list", str(project))) is Verdict.BLOCKED
+
+
+_STORE_CODE = {
+    "approve": "python3 -c 'from gaia.approvals.store import approve; approve(\"P-x\")'",
+    "declare": "python3 -c 'from gaia.store.declarations import declare_command; declare_command(\"me\", \"p\", \"make build\", \"read\")'",
+    "package": "python3 -I -c 'import gaia.contract'",
+    "dynamic": "python3 -c 'import importlib; importlib.import_module(\"gaia.approvals\")'",
+    "computed": "python3 -c 'import importlib, sys; importlib.import_module(sys.argv[1])' gaia.store",
+    "module": "python3 -m gaia.store.writer",
+    "heredoc": "python3 - <<'PY'\nfrom gaia.store import writer\nPY",
+    "store-literal": "python3 -c 'import sqlite3; sqlite3.connect(\"{store}\").execute(\"DELETE FROM memory\")'",
+    "store-uri": "python3 -c 'import sqlite3; sqlite3.connect(\"file:{store}?mode=rw\", uri=True)'",
+    "store-env": "python3 -c 'import os, sqlite3; sqlite3.connect(os.environ[\"GAIA_DB\"]).execute(\"DELETE FROM memory\")'",
+    "aliased": "python3 -c 'from sqlite3 import connect as c; c(\"{store}\")'",
+    "script": "python3 {script}",
+}
+
+
+@pytest.fixture()
+def isolated_store(tmp_path, monkeypatch):
+    store = tmp_path / "isolated" / "gaia.db"
+    monkeypatch.setenv("GAIA_DB", str(store))
+    script = tmp_path / "write.py"
+    script.write_text("from gaia.approvals import store\nstore.approve('P-x')\n")
+    return store, script, tmp_path
+
+
+@pytest.mark.parametrize("subagent", [True, False])
+@pytest.mark.parametrize("case", sorted(_STORE_CODE))
+def test_python_that_reaches_the_store_is_refused_like_a_direct_write(isolated_store, case, subagent):
+    store, script, cwd = isolated_store
+    command = _STORE_CODE[case].format(store=store, script=script)
+    result = BashValidator().validate(command, is_subagent=subagent, agent_type="developer", cwd=str(cwd))
+    assert (result.allowed, result.rule, result.approval_id) == (False, "floor.gaia-db-write", None)
+
+
+@pytest.mark.parametrize("command", [
+    "python3 -c 'import json; print(json.dumps(1))'",
+    "python3 -c 'import sqlite3; sqlite3.connect(\":memory:\")'",
+    "gaia memory list",
+    f"python3 {_ROOT / 'bin' / 'gaia'} memory list",
+])
+def test_code_that_does_not_reach_the_store_keeps_its_lane(isolated_store, command):
+    result = BashValidator().validate(command, is_subagent=True, agent_type="developer", cwd=str(isolated_store[2]))
+    assert result.rule != "floor.gaia-db-write"
