@@ -515,12 +515,15 @@ _LOCAL_HOST = re.compile(r"|localhost|127(?:\.\d{1,3}){3}|\[::1\]", re.IGNORECAS
 
 
 def _file_uri_path(word: str) -> Optional[str]:
-    """The path of a ``file:`` URI whose host is this machine (RFC 8089), else None."""
+    """The path a ``file:`` URI names on this machine: its path under a local host (RFC 8089), or
+    the relative path of the cloud-CLI form ``file://t.json``, whose host part has no path after it; else None."""
     try:
         parts = urlsplit(word)
     except ValueError:
         return None
-    return unquote(parts.path) if _LOCAL_HOST.fullmatch(parts.netloc) else None
+    if _LOCAL_HOST.fullmatch(parts.netloc):
+        return unquote(parts.path)
+    return None if parts.path else unquote(parts.netloc)
 
 
 def unresolvable_file_uri(word: str) -> bool:
@@ -557,9 +560,13 @@ def _holds_protected_tree(target: str, cwd: Optional[str]) -> Optional[str]:
             return None
         path = os.path.join(cwd, path)
     path = os.path.normpath(path)
-    if os.path.basename(path) == ".claude" or is_install_root_container(path):
+    if os.path.basename(path) == ".claude":
         return path
-    return None
+    # A directory this user cannot list (/root) is unprovable here; the verb scan still signs a sudo write into it.
+    try:
+        return path if is_install_root_container(path) else None
+    except OSError:
+        return None
 
 
 def _component_writes_protected_path(component: str, cwd: Optional[str] = None) -> Optional[str]:
