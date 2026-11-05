@@ -155,76 +155,43 @@ class MutativeResult:
 # Verb Taxonomy Constants
 # ============================================================================
 
-MUTATIVE_VERBS: FrozenSet[str] = frozenset({
-    # Creation / addition
-    # NOTE: "add" is absent -- safe by elimination (e.g., git add is local-only)
-    "apply", "create", "put", "insert", "register",
-    # Modification
-    "update", "patch", "set", "modify", "edit", "configure",
-    "replace", "overwrite", "write",
-    # Deployment / packaging
-    # NOTE: "release" is absent -- it is a CLI subcommand group noun in `gh release`,
-    # `glab release`, etc.; the mutative actions (create, delete, edit, upload) are
-    # already listed, and "release" would flag `gh release view`.
-    "deploy", "install", "upgrade", "downgrade", "publish", "promote",
-    # Scaling
-    "scale", "resize", "autoscale",
-    # Lifecycle
-    "start", "restart", "reboot", "reload", "refresh", "resume",
-    "uncordon", "unsuspend", "enable", "disable", "suspend", "pause",
-    "stop", "shutdown", "halt", "poweroff", "abort", "up", "seal", "unseal",
-    # Movement / transfer
-    "move", "rename", "copy", "sync",
-    "import", "export", "migrate", "transfer",
-    # Attachment
-    # NOTE: "link" is absent -- it would flag shell variable names (e.g., "for link in ...").
-    #       The `ln` command is already covered as a COMMAND_ALIAS.
-    "attach", "bind", "connect", "mount",
-    # Execution
-    # NOTE: "run" is absent -- safe by elimination (e.g., docker run is common dev workflow)
-    # "replay" re-executes a previously recorded command (e.g. `gaia approvals
-    # replay <id>` re-presents the sealed_payload of an already-used approval
-    # and, once confirmed, re-runs its commands, including ones that were
-    # originally T3). Global, not a `gaia`-specific exception: replaying a
-    # stored command has the exact same effect as running it the first time,
-    # so it must classify at least as mutative as the taxonomy already treats
-    # "execute"/"invoke". `--dry-run` still short-circuits to non-mutative via
-    # the SIMULATION_FLAGS check in Step 3, which runs before this table.
-    "exec", "execute", "invoke", "trigger", "send", "reply", "replay",
-    # Remote execution entry points: re-run a finished run, fire a dispatch
-    # event, stop a run in flight. `run` itself stays out (see above); these
-    # three name the effect, so they need no per-binary anchor.
-    "rerun", "dispatch", "cancel",
-    # Git operations
-    # NOTE: "stash" is absent -- safe by elimination (local-only operation)
-    # NOTE: "commit" is absent -- local-only operation, trust system
-    "push", "merge", "rebase",
-    "rollback",
-    # Access control
-    "grant", "assign", "revoke", "login", "select", "get-credentials",
-    # Reconciliation
-    "reconcile", "rsync",
-    # Deletion / removal (approvable with consent -- blocked_commands.py catches
-    # the truly destructive patterns like "delete namespace", "delete-vpc", etc.)
-    # NOTE: "cleanup" sits alongside "clean" rather than relying on hyphen-split
-    # collapsing it to "clean" -- there is no hyphen in "cleanup" to split, and
-    # the CLI subcommand token IS the literal word "cleanup" (`gaia cleanup`,
-    # no flags, removes CLAUDE.md/settings.json/symlinks/plugin markers and
-    # applies retention deletions with no prompt). `--dry-run` still
-    # short-circuits to non-mutative via SIMULATION_FLAGS in Step 3, which
-    # runs before this table is consulted.
-    "delete", "destroy", "remove", "drop", "purge", "wipe", "clean", "cleanup",
-    "trash", "shred", "srm",
-    "truncate", "kill", "terminate", "uninstall", "unpublish",
-    "drain", "evict", "cordon", "deregister", "detach",
-    "disconnect", "unbind", "force-delete", "force-remove", "erase",
-    # Collaboration (GitHub/GitLab CLI)
-    "comment", "label", "annotate", "approve", "close", "reopen", "tag",
-    # HTTP methods (e.g., glab api -X POST, gh api -X DELETE)
-    # NOTE: "put" and "patch" already appear under Modification above, and
-    # "uninstall" under Deletion/removal -- so only "post" is new here.
-    "post",
-})
+# One class per change verb; a new synonym joins the class whose effect it names. Free by
+# elimination: add/commit/stash (local), release (`gh release view`), link, unlink (`npm unlink`).
+CHANGE_VERB_CLASSES: Dict[str, FrozenSet[str]] = {
+    "create": frozenset({
+        "create", "put", "insert", "register", "import", "install", "provision",
+        "attach", "bind", "connect", "mount", "tag", "label", "annotate",
+    }),
+    "update": frozenset({
+        "update", "patch", "set", "modify", "edit", "configure", "replace", "overwrite",
+        "write", "upsert", "mutate", "upgrade", "downgrade", "scale", "resize", "autoscale",
+        "move", "rename", "copy", "migrate", "transfer", "rebase", "rollback", "reconcile",
+        "rsync", "grant", "assign", "select", "get-credentials", "enable", "disable",
+        "suspend", "unsuspend", "pause", "resume", "cordon", "uncordon", "seal", "unseal",
+        "approve", "close", "reopen",
+    }),
+    # "cleanup" is its own word: `gaia cleanup` has no hyphen for the split to reach "clean".
+    "delete": frozenset({
+        "delete", "destroy", "remove", "drop", "purge", "wipe", "clean", "cleanup",
+        "trash", "shred", "srm", "truncate", "kill", "terminate", "uninstall", "unpublish",
+        "drain", "evict", "deregister", "detach", "disconnect", "unbind", "force-delete",
+        "force-remove", "erase", "revoke", "stop", "shutdown", "halt", "poweroff",
+        "nuke", "obliterate", "zap", "annihilate", "expunge", "eradicate", "decommission",
+        "teardown", "deprovision",
+    }),
+    "publish": frozenset({
+        "apply", "deploy", "publish", "promote", "push", "merge", "sync", "export",
+        "send", "reply", "post", "comment", "login", "upload", "submit", "ship",
+    }),
+    # "replay" re-runs a stored command (`gaia approvals replay`), the same effect as its first run;
+    # run/build/test/make stay out until the exec class gets its own lexicon.
+    "exec": frozenset({
+        "exec", "execute", "invoke", "trigger", "replay", "rerun", "dispatch", "cancel",
+        "start", "restart", "reboot", "reload", "refresh", "abort", "up",
+    }),
+}
+
+MUTATIVE_VERBS: FrozenSet[str] = frozenset().union(*CHANGE_VERB_CLASSES.values())
 
 SIMULATION_VERBS: FrozenSet[str] = frozenset({
     "plan", "diff", "preview", "template", "render", "simulate",
