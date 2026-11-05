@@ -1373,6 +1373,26 @@ _PYTHON_INTERPRETERS: FrozenSet[str] = frozenset({
     "python3.10", "python3.11", "python3.12", "python3.13",
 })
 
+_INTERPRETER_FAMILY_SHAPES: Tuple[Tuple["re.Pattern[str]", str], ...] = (
+    (_re.compile(r"(?:python|pypy|graalpy)\d*(?:\.\d+)*t?"), "python3"),
+    (_re.compile(r"node(?:js)?\d*"), "node"),
+    (_re.compile(r"(?:j|truffle)?ruby\d*(?:\.\d+)*"), "ruby"),
+    (_re.compile(r"perl\d*(?:\.\d+)*"), "perl"),
+    (_re.compile(r"php\d*(?:\.\d+)*(?:-cli)?"), "php"),
+    (_re.compile(r"luajit[\d.-]*"), "luajit"),
+    (_re.compile(r"lua\d*(?:\.\d+)*"), "lua"),
+)
+
+
+def _interpreter_family(program: str) -> str:
+    if program in _INLINE_CODE_CLIS or program in _SCRIPT_FILE_INTERPRETERS:
+        return program
+    for shape, family in _INTERPRETER_FAMILY_SHAPES:
+        if shape.fullmatch(program):
+            return family
+    return program
+
+
 # ---------------------------------------------------------------------------
 # Script-file interpreters (Step 1d)
 # ---------------------------------------------------------------------------
@@ -5569,7 +5589,7 @@ def _classifier_rule_names(name: str, *, programs_only: bool = False) -> bool:
     from .command_semantics import LONG_VALUE_FLAGS
 
     base = name.lower()
-    if base != name or base.startswith("mkfs"):
+    if base != name or base.startswith("mkfs") or _interpreter_family(base) != base:
         return True
     if "-" in base and base.split("-", 1)[0] in _PS_ALL_VERBS:
         return True
@@ -6215,6 +6235,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     )
     if script_result is not None:
         return script_result
+
+    inline_shape_result = _check_inline_code_shape(base_cmd, family, list(semantics.tokens))
+    if inline_shape_result is not None:
+        return inline_shape_result
 
     # --- Step 1e: package managers (npm, bun, pnpm, yarn) ---
     # A script name is arbitrary, so `<manager> run <script>` classifies by the
@@ -8392,7 +8416,7 @@ def _name_program_head(command: str) -> "Tuple[str, bool]":
     """
     head_end = _consume_shell_word(command, 0)
     word = command[:head_end].strip("\"'")
-    program = program_identity(word)
+    program = _interpreter_family(program_identity(word))
     if "\\" not in word and program == word.rsplit("/", 1)[-1].lower():
         return command, False
     if is_launcher(word):
@@ -9845,6 +9869,71 @@ def node_test_under_node_options(command: str, cwd: "Optional[str]") -> "Optiona
     )
 
 
+_INLINE_CODE_SHAPE_FLAGS: FrozenSet[str] = frozenset({
+    "-c", "-e", "-E", "--eval", "--exec", "--execute", "--command", "--code",
+})
+
+
+def _unrecognised_interpreter(program: str, source: str, family: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_UNKNOWN,
+        verb="unrecognised-interpreter",
+        cli_family=family,
+        confidence="low",
+        reason=f"'{program}' runs {source}, and no lane here models that interpreter",
+        rule="unknown.dynamic-span",
+    )
+
+
+def _check_inline_code_shape(
+    base_cmd: str, family: str, tokens: "List[str]",
+) -> "Optional[MutativeResult]":
+    """Ask for an unmodelled program whose inline-code flag carries code (whitespace, a call or a block), never a bare word."""
+    if not _is_unmodelled_cli(base_cmd):
+        return None
+    for index, token in enumerate(tokens[1:], start=1):
+        flag, attached, payload = token.partition("=")
+        if not attached and index + 1 < len(tokens):
+            payload = tokens[index + 1]
+        if flag in _INLINE_CODE_SHAPE_FLAGS and _re.search(r"[\s();{}]", payload):
+            return _unrecognised_interpreter(base_cmd, f"the code passed to {flag}", family)
+    return None
+
+
+def _check_script_by_shebang(
+    command: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Judge ``./x.frob`` as the program the kernel starts for it: its ``#!`` line, else ``sh``; unreadable or unmodelled asks."""
+    invoked = semantics.tokens[0] if semantics.tokens else ""
+    name = invoked.rsplit("/", 1)[-1]
+    if "/" not in invoked or "." not in name.lstrip("."):
+        return None
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("script body")
+    content = _read_script_content(invoked, cwd=cwd)
+    if content is None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="script-file-unreadable",
+            cli_family=family,
+            confidence="medium",
+            reason=f"Script '{invoked}' is not a readable file, so the program it starts cannot be verified",
+        )
+    if "\x00" in content:
+        return None
+    first_line = content.split("\n", 1)[0]
+    words = first_line[2:].split() if first_line.startswith("#!") else ["sh"]
+    if words and program_identity(words[0]) == "env":
+        words = [word for word in words[1:] if not word.startswith("-") and "=" not in word]
+    interpreter = _interpreter_family(program_identity(words[0])) if words else ""
+    if interpreter not in _SCRIPT_FILE_INTERPRETERS:
+        return _unrecognised_interpreter(interpreter or invoked, f"the script '{invoked}'", family)
+    return detect_mutative_command(f"{interpreter} {command.strip()}", cwd=cwd, _depth=_depth + 1)
+
+
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -9872,6 +9961,9 @@ def _check_script_file(
         # No script FILE to open -- the payload may still be a program the
         # interpreter reads from stdin, which is un-inspectable rather than
         # absent.  Every other shape returns None and classifies normally.
+        shebang_result = _check_script_by_shebang(command, family, semantics, cwd, _depth)
+        if shebang_result is not None:
+            return shebang_result
         return _check_stdin_script_payload(command, base_cmd, family, semantics)
 
     # Budget exhausted: stop descending AND retain -- see the constant. Placed
