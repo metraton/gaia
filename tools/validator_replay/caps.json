@@ -1,0 +1,7 @@
+{
+ "history_newly_asking_max_count": 50,
+ "history_newly_asking_max_fraction": 0.0025,
+ "pinned_changes_max_outside_declared": 0,
+ "loosened_unreviewed_max": 0,
+ "new_errors_max": 0
+}

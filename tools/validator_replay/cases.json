@@ -1,0 +1,17 @@
+{
+ "cases": [
+  {"id": "merge-local-branch", "command": "git merge feature-x", "context": "repo"},
+  {"id": "merge-local-branch-ff-only", "command": "git merge --ff-only feature-x", "context": "repo"},
+  {"id": "merge-local-branch-no-ff", "command": "git merge --no-ff feature-x", "context": "repo"},
+  {"id": "merge-own-upstream-ff-only", "command": "git merge --ff-only origin/main", "context": "repo"},
+  {"id": "merge-local-branch-managed-worktree", "command": "git merge --ff-only feature-x", "context": "managed_repo"},
+  {"id": "push-own-branch", "command": "git push origin feature-x", "context": "repo"},
+  {"id": "push-own-branch-upstream", "command": "git push -u origin feature-x", "context": "repo"},
+  {"id": "push-main", "command": "git push origin main", "context": "repo"},
+  {"id": "push-head-to-main", "command": "git push origin HEAD:main", "context": "repo"},
+  {"id": "push-force-own-branch", "command": "git push --force origin feature-x", "context": "repo"},
+  {"id": "push-force-main", "command": "git push --force origin main", "context": "repo"},
+  {"id": "push-force-with-lease", "command": "git push --force-with-lease origin feature-x", "context": "repo"},
+  {"id": "push-dry-run-main", "command": "git push --dry-run origin main", "context": "repo"}
+ ]
+}
