@@ -52,7 +52,17 @@ def test_unknown_extension_script_is_judged_by_its_shebang(tmp_path, shebang, bo
     assert detect_mutative_command("./x.frob", cwd=str(tmp_path)).is_mutative is asks
 
 
-@pytest.mark.parametrize("raw", [b"#!/bin/sh\n\x00\ntouch RAN\n", b"#!/bin/sh\n\xff\xfe\ntouch RAN\n"])
-def test_unknown_extension_script_not_readable_as_text_asks(tmp_path, raw):
-    (tmp_path / "x.frob").write_bytes(raw)
-    assert detect_mutative_command("./x.frob", cwd=str(tmp_path)).is_mutative
+@pytest.mark.parametrize("name, commands, raw", [
+    ("x.frob", ["./x.frob"], b"#!/bin/sh\n\x00\ntouch RAN\n"),
+    ("x.frob", ["./x.frob"], b"#!/bin/sh\n\xff\xfe\ntouch RAN\n"),
+    ("x.frob", ["./x.frob"], b"#!/bin/sh\n" + b"#" * 2_000_000 + b"\ntouch RAN\n"),
+    ("x.sh", ["sh x.sh", "./x.sh"], b"#!/bin/sh\n\x00\ntouch RAN\n"),
+    ("x.sh", ["sh x.sh", "./x.sh"], b"#!/bin/sh\n\xff\xfe\ntouch RAN\n"),
+    ("x.sh", ["bash x.sh", "./x.sh"], b"#!/bin/bash\n# \xff\ntouch RAN\n"),
+    ("x.sh", ["bash x.sh", "./x.sh"], b"#!/bin/bash\ntouch RAN\n\x00"),
+    ("x.sh", ["sh x.sh", "./x.sh"], b"#!/bin/sh\n" + b"#" * 2_000_000 + b"\ntouch RAN\n"),
+], ids=["frob-nul", "frob-undecodable", "frob-huge", "sh-nul", "sh-undecodable", "bash-undecodable", "bash-nul-end", "sh-huge"])
+def test_script_not_read_whole_as_text_asks(tmp_path, name, commands, raw):
+    (tmp_path / name).write_bytes(raw)
+    for command in commands:
+        assert detect_mutative_command(command, cwd=str(tmp_path)).is_mutative, command

@@ -8838,7 +8838,7 @@ def _check_powershell_command(
     ]
     has_command_flag, payload = _powershell_payload(command)
     if ps_files and not has_command_flag:
-        content = _read_script_content(ps_files[0], cwd=cwd)
+        content = _read_script_text(ps_files[0], cwd=cwd)
         if content is None:
             return MutativeResult(
                 is_mutative=True,
@@ -9012,6 +9012,23 @@ def _read_script_content(
             return None
         with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
             return fh.read(_MAX_SCRIPT_READ_BYTES)
+    except (OSError, ValueError):
+        return None
+
+
+def _read_script_text(path: str, cwd: "Optional[str]" = None) -> "Optional[str]":
+    """A script to be judged, whole, as UTF-8 text; None when unreadable, over the read cap, holding a NUL or undecodable."""
+    import os
+
+    resolved = os.path.join(cwd if cwd is not None else os.getcwd(), os.path.expanduser(path))
+    try:
+        if not os.path.isfile(resolved):
+            return None
+        with open(resolved, "rb") as fh:
+            data = fh.read(_MAX_SCRIPT_READ_BYTES + 1)
+        if len(data) > _MAX_SCRIPT_READ_BYTES or b"\x00" in data:
+            return None
+        return data.decode("utf-8")
     except (OSError, ValueError):
         return None
 
@@ -9912,8 +9929,8 @@ def _check_script_by_shebang(
         return None
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("script body")
-    content = _read_script_content(invoked, cwd=cwd)
-    if content is None or "\x00" in content or "�" in content:
+    content = _read_script_text(invoked, cwd=cwd)
+    if content is None:
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_MUTATIVE,
@@ -10009,11 +10026,11 @@ def _check_script_file(
             reason=f"node --test runs the test suite under '{script_path}'",
         )
 
-    content = _read_script_content(script_path, cwd=cwd)
+    content = _read_script_text(script_path, cwd=cwd)
     if content is None:
-        # Conservative default: an interpreter invoked on a missing or
-        # unreadable file is treated as mutative.  We cannot prove the payload
-        # is safe, and an un-inspectable executable payload requires consent.
+        # Conservative default: an interpreter invoked on a file that cannot
+        # be read whole as text is treated as mutative.  We cannot prove the
+        # payload is safe, and an un-inspectable payload requires consent.
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_MUTATIVE,
@@ -10022,7 +10039,7 @@ def _check_script_file(
             confidence="medium",
             reason=(
                 f"Interpreter '{base_cmd}' invoked on script "
-                f"'{script_path}' that is not a readable file -- cannot "
+                f"'{script_path}' that cannot be read whole as text -- cannot "
                 f"verify the payload, requiring approval (conservative default)"
             ),
         )
@@ -10546,7 +10563,7 @@ def _classify_js_import_closure(
                 seen.add(target)
                 if target.endswith(".json"):
                     continue
-                imported = _read_script_content(target)
+                imported = _read_script_text(target)
                 if imported is None or len(imported) >= _MAX_SCRIPT_READ_BYTES:
                     return _import_closure_unproven(
                         "js-import-unresolved", entry_path, family,
