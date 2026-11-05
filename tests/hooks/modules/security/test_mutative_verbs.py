@@ -902,7 +902,7 @@ class TestLongInlineReadOnlyExemption:
 
     def _long_readonly(self) -> str:
         body = (
-            "import sqlite3; con=sqlite3.connect('/home/u/.gaia/gaia.db'); "
+            "import sqlite3; con=sqlite3.connect('/home/u/data/app.db'); "
             "cols=[d[0] for d in con.execute('%s').fetchall()]; " % self._PRAGMA +
             "rows=con.execute('%s id,status,verb,subagent_id,created_at,"
             "expires_at,scope,command_hash,nonce,grant_kind,verb_family,"

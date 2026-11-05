@@ -2786,6 +2786,34 @@ _EDIT_RETIRED = (
 )
 
 
+def _cmd_declare(args) -> int:
+    """Write one declaration: a tool's effect, or a project's exact command form; the hooks sign it."""
+    as_json = getattr(args, "json", False)
+    effect = None if args.withdraw else args.effect
+    if not args.withdraw and effect is None:
+        return _err("--effect is required unless --withdraw", as_json)
+    if bool(args.project) != bool(args.command):
+        return _err("--command goes with --project, and --project needs --command", as_json)
+    from gaia.store.declarations import DeclarationRefused, declare_command, declare_tool_effect
+
+    try:
+        if args.binary:
+            changed = declare_tool_effect(args.binary, effect)
+            result = {"binary": args.binary, "effect": effect, "rows": changed}
+        else:
+            workspace = _resolve_workspace(getattr(args, "workspace", None))
+            form = declare_command(workspace, args.project, args.command, effect)
+            result = {"workspace": workspace, "project": args.project, "command": form, "effect": effect}
+    except DeclarationRefused as exc:
+        return _err_structured(str(exc), as_json, code="declaration_refused")
+    if as_json:
+        print(json.dumps({"status": "applied", **result}))
+    else:
+        subject = result.get("command") or result["binary"]
+        print(f"declared {subject!r}: {effect}" if effect else f"withdrew the declaration of {subject!r}")
+    return 0
+
+
 def _cmd_edit_retired(args) -> int:
     """Refuse the retired ``edit`` verb, naming what replaces it."""
     as_json = getattr(args, "json", False) or "--json" in args.retired_args
@@ -3760,6 +3788,43 @@ def register(subparsers):
         help="Emit JSON. bool.",
     )
     delete_p.set_defaults(func=_cmd_delete)
+
+    declare_p = actions.add_parser(
+        "declare",
+        allow_abbrev=False,
+        help="T3: declare a tool's effect or a project's exact command form",
+        description=(
+            "Declare what a command does, so the hooks judge it by the declaration instead of "
+            "as an unknown program. --binary names a live user tool row (one that replaces no "
+            "CLI); --project with --command names one exact literal form, matched word for "
+            "word in that project only. A declaration never lowers a floor, a guard or a "
+            "program the classifier models. T3 for every caller: it changes what the hooks "
+            "conclude, so the user signs it; a subagent is refused and proposes it instead."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory declare --binary ghq --effect read\n"
+            "  gaia memory declare --project gaia --command 'make build' --effect local\n"
+            "  gaia memory declare --project gaia --command 'make build' --withdraw\n"
+        ),
+    )
+    declare_target = declare_p.add_mutually_exclusive_group(required=True)
+    declare_target.add_argument("--binary", default=None, metavar="NAME",
+                                help="The tool row's binary.")
+    declare_target.add_argument("--project", default=None, metavar="P",
+                                help="Project whose exact command form is declared; needs --command.")
+    declare_p.add_argument("--command", default=None, metavar="FORM",
+                           help="The exact literal command, e.g. 'make build'.")
+    declare_p.add_argument("--effect", default=None, choices=("read", "local", "runs-project-code"),
+                           help="What the command does: reads, changes only the project's own "
+                                "tree, or runs the project's own code.")
+    declare_p.add_argument("--withdraw", action="store_true", default=False,
+                           help="Remove the declaration instead.")
+    declare_p.add_argument("--workspace", default=None, metavar="W",
+                           help="Workspace identity (project declarations).")
+    declare_p.add_argument("--json", action="store_true", default=False, help="Emit JSON. bool.")
+    declare_p.set_defaults(func=_cmd_declare)
 
     # Retired, and kept only so a call names its replacement; unlisted in help.
     # No prefix character can match, so every old flag lands in retired_args

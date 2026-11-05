@@ -1019,6 +1019,7 @@ CREATE TABLE IF NOT EXISTS memory (
     until              TEXT,  -- v71: a preference's expiry -- an ISO date, or memory:<ws>/<slug> (holds while that row is live). NULL = standing.
     binary             TEXT,  -- v72: a tool's executable on PATH; the writer verifies it resolves. One live tool row per (workspace, binary).
     replaces           TEXT,  -- v72: the CLI the hooks judge a tool as (hooks/modules/security/cli_aliases.py); only a CLI the classifier models.
+    effect             TEXT,  -- v74: read | local | runs-project-code, kind=tool only; written only by the signed `gaia memory declare` (gaia/store/declarations.py).
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -1136,6 +1137,41 @@ BEGIN
             THEN RAISE(ABORT, 'binary and replaces belong to kind=tool only')
     END;
 END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memory_effect_insert
+BEFORE INSERT ON memory
+WHEN NEW.effect IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind IS NOT 'tool'
+            THEN RAISE(ABORT, 'effect belongs to kind=tool only')
+        WHEN NEW.effect NOT IN ('read', 'local', 'runs-project-code')
+            THEN RAISE(ABORT, 'a tool effect is read, local or runs-project-code')
+    END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memory_effect_update
+BEFORE UPDATE OF effect, kind ON memory
+WHEN NEW.effect IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind IS NOT 'tool'
+            THEN RAISE(ABORT, 'effect belongs to kind=tool only')
+        WHEN NEW.effect NOT IN ('read', 'local', 'runs-project-code')
+            THEN RAISE(ABORT, 'a tool effect is read, local or runs-project-code')
+    END;
+END;
+
+-- v74: an exact literal command form a project declares with an effect
+-- (gaia/store/declarations.py), written only by the signed `gaia memory declare`.
+CREATE TABLE IF NOT EXISTS command_declarations (
+    workspace   TEXT NOT NULL,
+    project     TEXT NOT NULL,
+    command     TEXT NOT NULL,
+    effect      TEXT NOT NULL CHECK (effect IN ('read', 'local', 'runs-project-code')),
+    declared_at TEXT NOT NULL,
+    PRIMARY KEY (workspace, project, command)
+);
 
 -- ---------------------------------------------------------------------------
 -- memory_links (v4): graph primitives between curated memory rows.

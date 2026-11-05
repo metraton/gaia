@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from ..security.effect_lattice import (
     TOP as TOP_EFFECTS, UNDETERMINED as UNDETERMINED_EFFECT, Effect, floor_effect, join, signed_effect, within_own_work,
 )
+from ..security.declared_effects import apply_declarations
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
@@ -194,7 +195,7 @@ class BashValidationResult:
             return frozenset({UNDETERMINED_EFFECT}) if self.undetermined else signed_effect(self.rule)
         command, cwd = self.effect_source or ("", None)
         runs, cut = _commands_run(command)
-        reported = (detect_mutative_command(run, cwd=cwd).effects for run in runs)
+        reported = (apply_declarations(detect_mutative_command(run, cwd=cwd).effects, run, cwd) for run in runs)
         return within_own_work(join(*reported, TOP_EFFECTS if cut else frozenset()))
 
 

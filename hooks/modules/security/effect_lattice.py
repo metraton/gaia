@@ -90,7 +90,7 @@ _LANE_VERBS = {
     "egress": Effect(NET_EGRESS, DIRECT, REMOTE),
     "install": Effect(CODE_EXEC, TRANSITIVE, REMOTE),
 }
-_UNDETERMINED_VERBS: FrozenSet[str] = frozenset({"script-file-unreadable", "executor-unparsed-flag"})
+_UNDETERMINED_VERBS: FrozenSet[str] = frozenset({"script-file-unreadable", "executor-unparsed-flag", "unproven-python"})
 
 LEG_EFFECTS = {
     "sign.destroys": Effect(FS_WRITE, DIRECT, UNKNOWN_SCOPE),

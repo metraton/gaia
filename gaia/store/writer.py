@@ -389,11 +389,41 @@ def schema_versions(db_path: Path) -> tuple[int | None, int | None, int | None]:
     return live, _expected_schema_version(), minimum
 
 
+def _account_home() -> str:
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, AttributeError):
+        return os.environ.get("USERPROFILE") or os.path.expanduser("~")
+
+
+def real_store_refusal(db_path: Path) -> str | None:
+    """The refusal for writing the account's real ``~/.gaia`` from inside a pytest run (D197), else None."""
+    if not (os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules or "_pytest" in sys.modules):
+        return None
+    real = os.path.realpath(os.path.join(_account_home(), ".gaia", "gaia.db"))
+    target = os.path.realpath(db_path)
+    try:
+        same_file = os.path.samefile(target, real)
+    except OSError:
+        same_file = False
+    if not (same_file or target == real):
+        return None
+    return (
+        f"a test run (pytest) never writes Gaia's real data directory {real}; "
+        "point GAIA_DATA_DIR or GAIA_DB at a temporary one"
+    )
+
+
 def assert_schema_writable(db_path: Path) -> None:
-    """Raise SchemaAheadError when ``db_path`` is past this code's compatibility window.
+    """Raise SchemaAheadError when ``db_path`` is past this code's compatibility window or is the real store under pytest.
 
     For the few writers that open their own connection instead of _connect.
     """
+    refusal = real_store_refusal(db_path)
+    if refusal:
+        raise SchemaAheadError(refusal)
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         message = _schema_ahead(con, db_path)
@@ -560,7 +590,7 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # serialized so a concurrent first-write can never observe a missing table.
     _ensure_schema_materialized(con, db_path)
     _stamp_signals_with_session(con)
-    con.schema_ahead = _schema_ahead(con, db_path)
+    con.schema_ahead = _schema_ahead(con, db_path) or real_store_refusal(db_path)
     if con.schema_ahead:
         con.set_authorizer(_refuse_main_writes)
     return con
@@ -2643,7 +2673,8 @@ def upsert_memory(
                     owner_level       = excluded.owner_level,
                     until             = excluded.until,
                     binary            = excluded.binary,
-                    replaces          = excluded.replaces
+                    replaces          = excluded.replaces,
+                    effect            = CASE WHEN binary IS excluded.binary THEN effect END
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no

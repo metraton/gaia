@@ -197,9 +197,9 @@ def test_a_literal_dynamic_import_is_judged_like_import(name, tmp_path):
 
 
 @pytest.mark.parametrize("name", list(PY_DYNAMIC_IMPORT_READS))
-def test_a_catalogued_read_through_a_literal_dynamic_import_is_free(name, tmp_path):
+def test_a_read_through_a_dynamic_import_asks_since_its_closure_is_not_proven(name, tmp_path):
     for spelling, command in _short_and_long(PY_DYNAMIC_IMPORT_READS[name], tmp_path).items():
-        assert _judge(command, str(tmp_path)) == "FREE", (name, spelling)
+        assert _judge(command, str(tmp_path)) != "FREE", (name, spelling)
 
 
 @pytest.mark.parametrize("code", [

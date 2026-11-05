@@ -1211,6 +1211,8 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # one returns the old row to every injection -- is as unrecoverable
         # as `delete`.
         MutativeAnchor(path=("memory", "link"), flags=frozenset({"--delete"})),
+        # A declaration changes what the hooks conclude about a command.
+        MutativeAnchor(path=("memory", "declare")),
     ),
     "gcloud": (
         # `set-password` sits three tokens below the gcloud root, beyond the
@@ -5712,6 +5714,15 @@ def detect_mutative_command(
 
     if result.is_mutative:
         return result
+
+    from .store_code_guard import unproven_reason
+
+    unproven = None if from_source_code else unproven_reason(command, cwd)
+    if unproven is not None:
+        return MutativeResult(
+            is_mutative=True, category=CATEGORY_MUTATIVE, verb="unproven-python", confidence="high",
+            reason=unproven, rule="unknown.dynamic-span",
+        )
 
     elsewhere = None if from_source_code else _change_request_elsewhere(command, cwd)
     if elsewhere is not None:

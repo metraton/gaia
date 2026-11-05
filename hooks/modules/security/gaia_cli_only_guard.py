@@ -512,6 +512,8 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("memory", "move"),
     ("memory", "link"),
     ("memory", "checkpoint"),
+    # Admitted only so the T3 gate can ask the user: every declaration is signed.
+    ("memory", "declare"),
     # Withdrawal: the coordinator may reject or revoke an approval it can see
     # going stale, because both only take back consent Gaia issued. Granting
     # stays out: `approve` is denied below.
@@ -1110,6 +1112,8 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("memory", "checkpoint"): _flags(
         "--file --project --project-ref --initiative --workspace", "--json"),
     ("memory", "conflicts"): _flags("--threshold --owner --exclude-class --limit", "--json"),
+    ("memory", "declare"): _flags(
+        "--binary --project --command --effect --workspace", "--withdraw --json"),
     ("memory", "episode-show"): _flags("", "--json"),
     ("memory", "get-relevant"): _flags(
         "--workspace --limit --max-chars --types --sections --initiative --project --group",
@@ -1188,7 +1192,7 @@ _FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
         ("context", "scan"), ("context", "show"), ("contract", "proposals", "list"),
         ("contract", "validate"), ("contract", "view"), ("defects",), ("doctor",),
         ("evidence", "list"), ("history",), ("lint", "comments"), ("memory", "add"),
-        ("memory", "checkpoint"), ("memory", "conflicts"), ("memory", "get-relevant"),
+        ("memory", "checkpoint"), ("memory", "conflicts"), ("memory", "declare"), ("memory", "get-relevant"),
         ("memory", "list"), ("memory", "stats"), ("metrics",), ("notifications", "add"),
         ("notifications", "list"), ("now",), ("plan", "list"), ("query",),
         ("session", "preview"), ("session", "resume-point", "set"),

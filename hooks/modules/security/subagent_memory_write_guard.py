@@ -78,6 +78,15 @@ PROPOSAL_DECISION_REJECTION = (
     "not approvable."
 )
 
+DECLARATION_VERBS = frozenset({"declare"})
+
+DECLARATION_REJECTION = (
+    "A declaration changes what the hooks conclude about a command, so only the user "
+    "signs it, from the main session; it is refused for every subagent, gaia-operator "
+    "included. Propose it in your contract row instead. Do NOT retry -- this is not "
+    "approvable."
+)
+
 IDENTITY_REJECTION = (
     "A subagent does not unset, empty or override GAIA_DISPATCH_AGENT, nor clear its "
     "environment (env -i). Run the command without touching your identity. Do NOT "
@@ -222,6 +231,8 @@ def check(
         return False, COMPUTED_WORDS_REJECTION
     if any(is_proposal_decision_attempt(reading) for reading in readings):
         return False, PROPOSAL_DECISION_REJECTION
+    if any(is_memory_write_attempt(reading, DECLARATION_VERBS) for reading in readings):
+        return False, DECLARATION_REJECTION
     if agent_type in ALLOWED_AGENTS:
         return True, None
     if any(is_memory_write_attempt(reading) for reading in readings):

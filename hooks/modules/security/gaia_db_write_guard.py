@@ -901,4 +901,7 @@ def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]
         return False, reason
     if writes_db_file(command):
         return False, FILE_WRITE_REJECTION_MESSAGE
-    return True, None
+    from .store_code_guard import check as store_code_refusal
+
+    reason = store_code_refusal(command, cwd)
+    return (False, reason) if reason else (True, None)

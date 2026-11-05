@@ -245,6 +245,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("workspace", "curate"),
             ("memory", "add"),
             ("memory", "link"),
+            ("memory", "declare"),
         }
 
     def test_cloud_cli_paths_are_the_reviewed_mutative_forms(self):
