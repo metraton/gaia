@@ -41,15 +41,19 @@ empty role" are kept distinct rather than collapsed by a default.
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 import re
 import json
 import shlex
 import shutil
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, FrozenSet, Optional, List, Tuple
 from dataclasses import dataclass, field
 
+from ..security.effect_lattice import (
+    TOP as TOP_EFFECTS, UNDETERMINED as UNDETERMINED_EFFECT, Effect, floor_effect, join, signed_effect, within_own_work,
+)
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
@@ -71,7 +75,7 @@ from ..security.mutative_verbs import (
     sets_node_options,
     target_under_line,
 )
-from ..security.nested_executors import targets_set_on_line
+from ..security.nested_executors import nested_run, targets_set_on_line
 from ..security.targets import naming_variables_on_line, production_target_verdict
 from ..security.flag_classifiers import (
     classify_by_flags,
@@ -134,7 +138,7 @@ from ..security.composition_rules import (
     redirected_into_unknown,
     CompositionDecision,
 )
-from .shell_parser import get_shell_parser, strip_comment
+from .shell_parser import get_shell_parser, shell_split, strip_comment
 from .cloud_pipe_validator import validate_cloud_pipe, violation_kind
 from .hook_response import (
     build_hook_permission_response,
@@ -175,17 +179,56 @@ class BashValidationResult:
     # The (rule, undetermined) a T3 would sign under, kept when no requester
     # could be named, so a nested probe still reads it as a signature.
     withheld: Optional[Tuple[str, str]] = None
+    effect_source: Optional[Tuple[str, Optional[str]]] = None
 
     def __post_init__(self):
         if self.suggestions is None:
             self.suggestions = []
 
+    @property
+    def effects(self) -> FrozenSet[Effect]:
+        """The effect set behind this ruling, computed on read and in shadow: it decides nothing yet."""
+        if not self.allowed:
+            if not (self.approval_id or (self.reason or "").startswith(_COMPOUND_T3_DENIAL)):
+                return floor_effect(self.rule)
+            return frozenset({UNDETERMINED_EFFECT}) if self.undetermined else signed_effect(self.rule)
+        command, cwd = self.effect_source or ("", None)
+        runs, cut = _commands_run(command)
+        reported = (detect_mutative_command(run, cwd=cwd).effects for run in runs)
+        return within_own_work(join(*reported, TOP_EFFECTS if cut else frozenset()))
+
+
+def _commands_run(command: str, depth: int = 0) -> Tuple[List[str], bool]:
+    """Every command *command* runs -- its parts, each substitution body, each executor payload -- and whether a scan was cut short."""
+    bodies, cut = extract_substitutions_truncated(command)
+    runs: List[str] = []
+    for text in (command, *bodies):
+        for part in [p for p in get_shell_parser().parse(text) if p.strip()] or [text]:
+            runs.append(part)
+            try:
+                run = nested_run(shell_split(part))
+            except ValueError:
+                cut = True
+                continue
+            if run is None or not run.inner:
+                continue
+            if depth >= _OBFUSCATION_DEPTH_LIMIT:
+                return runs, True
+            inner, inner_cut = _commands_run(run.inner, depth + 1)
+            runs.extend(inner)
+            cut = cut or inner_cut
+    return runs, cut
+
 
 def _carries_ruling(validate):
     """Make every refusal and signature request a validator returns name its rule and remediation."""
+    signature = inspect.signature(validate)
+
     @functools.wraps(validate)
     def wrapper(self, command: str, *args, **kwargs) -> BashValidationResult:
         result = validate(self, command, *args, **kwargs)
+        arguments = signature.bind(self, command, *args, **kwargs).arguments
+        result.effect_source = (command, arguments.get("cwd") or (arguments.get("hook_payload") or {}).get("cwd"))
         if result.allowed:
             return result
         line = render(result.rule or "floor.unclassified")

@@ -46,9 +46,13 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import FrozenSet, List, Optional
 
+from .effect_lattice import (
+    ABSTAINS, CODE_EXEC, CRED, DIRECT, FS_READ, NET_EGRESS, NET_INGRESS, REMOTE, TOP, TRANSITIVE, Effect, floor_effect, join,
+)
 from .flag_classifiers import classify_by_flags, OUTCOME_MUTATIVE
+from .verdict import COMPOSITION_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +119,30 @@ class CompositionResult:
     stage_types: List[StageType] = field(default_factory=list)
 
     @property
+    def effects(self) -> FrozenSet[Effect]:
+        """The effect set of the pipeline: each stage's effect, plus the floor or the request its pattern carries."""
+        stages = join(*(_STAGE_EFFECTS.get(stage, TOP) for stage in self.stage_types))
+        if self.decision is CompositionDecision.BLOCK:
+            return stages | floor_effect(COMPOSITION_RULES.get(self.pattern, ""))
+        if self.decision is CompositionDecision.ESCALATE:
+            return stages | {_ESCALATION_EFFECTS.get(self.pattern, Effect(CODE_EXEC, TRANSITIVE))}
+        return stages
+
+    @property
     def is_blocked(self) -> bool:
         return self.decision == CompositionDecision.BLOCK
+
+
+_STAGE_EFFECTS = {
+    StageType.SENSITIVE_READ: frozenset({Effect(CRED)}),
+    StageType.FILE_READ: frozenset({Effect(FS_READ)}),
+    StageType.NETWORK_READ: frozenset({Effect(NET_INGRESS, DIRECT, REMOTE)}),
+    StageType.NETWORK_WRITE: frozenset({Effect(NET_EGRESS, DIRECT, REMOTE)}),
+    StageType.EXEC_SINK: frozenset({Effect(CODE_EXEC, TRANSITIVE)}),
+    StageType.DECODE: ABSTAINS,
+    StageType.SAFE_FILTER: ABSTAINS,
+}
+_ESCALATION_EFFECTS = {"egress": Effect(NET_EGRESS, DIRECT, REMOTE)}
 
 
 def _is_sensitive_path(command: str) -> bool:

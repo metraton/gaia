@@ -29,10 +29,11 @@ Categories:
 import re
 import logging
 import posixpath
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .canonical_path import program_identity
+from .effect_lattice import ABSTAINS, DIRECT, FS_WRITE, NET_EGRESS, PROTECTED, Effect
 from .cli_aliases import with_wrappers_resolved
 from .command_semantics import CommandSemantics, analyze_command, _contains_ordered_sequence
 from .shell_grouping import strip_grouping_wrappers
@@ -185,6 +186,17 @@ class BlockedCommandResult:
     pattern_matched: Optional[str] = None
     category: Optional[str] = None
     suggestion: Optional[str] = None
+
+    @property
+    def effects(self) -> FrozenSet[Effect]:
+        """The categorical effect a matched floor pattern stands for; an unmatched check abstains."""
+        if not self.is_blocked:
+            return ABSTAINS
+        kind = FS_WRITE if self.category in _LOCAL_FLOOR_CATEGORIES else NET_EGRESS
+        return frozenset({Effect(kind, DIRECT, PROTECTED)})
+
+
+_LOCAL_FLOOR_CATEGORIES = frozenset({"disk_operations", "rm_critical", "sql_critical"})
 
 
 @dataclass(frozen=True)
