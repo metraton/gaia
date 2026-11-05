@@ -146,13 +146,21 @@ _STORE_CODE = {
     "declare": "python3 -c 'from gaia.store.declarations import declare_command; declare_command(\"me\", \"p\", \"make build\", \"read\")'",
     "package": "python3 -I -c 'import gaia.contract'",
     "dynamic": "python3 -c 'import importlib; importlib.import_module(\"gaia.approvals\")'",
-    "computed": "python3 -c 'import importlib, sys; importlib.import_module(sys.argv[1])' gaia.store",
     "module": "python3 -m gaia.store.writer",
+    "bundled-flags": "python3 -Ic 'from gaia.approvals import store'",
+    "local-module": "python3 -c 'import mymod'",
+    "local-module-m": "python3 -m mymod",
+    "script-imports-local": "python3 {cwd}/run.py",
+    "symlinked-package": "python3 -c 'import g.approvals.store as s'",
+    "uv-run": "uv run python3 -c 'from gaia.approvals import store'",
+    "shebang-noext": "{cwd}/tool",
+    "ipython": "ipython -c 'from gaia.approvals import store'",
     "heredoc": "python3 - <<'PY'\nfrom gaia.store import writer\nPY",
     "store-literal": "python3 -c 'import sqlite3; sqlite3.connect(\"{store}\").execute(\"DELETE FROM memory\")'",
     "store-uri": "python3 -c 'import sqlite3; sqlite3.connect(\"file:{store}?mode=rw\", uri=True)'",
     "store-env": "python3 -c 'import os, sqlite3; sqlite3.connect(os.environ[\"GAIA_DB\"]).execute(\"DELETE FROM memory\")'",
     "aliased": "python3 -c 'from sqlite3 import connect as c; c(\"{store}\")'",
+    "exec-literal": "python3 -c \"exec('from gaia.approvals import store')\"",
     "script": "python3 {script}",
 }
 
@@ -161,8 +169,19 @@ _STORE_CODE = {
 def isolated_store(tmp_path, monkeypatch):
     store = tmp_path / "isolated" / "gaia.db"
     monkeypatch.setenv("GAIA_DB", str(store))
+    approve = "from gaia.approvals import store\nstore.approve('P-x')\n"
     script = tmp_path / "write.py"
-    script.write_text("from gaia.approvals import store\nstore.approve('P-x')\n")
+    script.write_text(approve)
+    (tmp_path / "mymod.py").write_text(approve)
+    (tmp_path / "run.py").write_text("import mymod\n")
+    (tmp_path / "helper.py").write_text("import json\nVALUE = json.dumps(1)\n")
+    (tmp_path / "clean.py").write_text("import helper\nprint(helper.VALUE)\n")
+    tool = tmp_path / "tool"
+    tool.write_text("#!/usr/bin/env python3\n" + approve)
+    tool.chmod(0o755)
+    (tmp_path / "g").symlink_to(_ROOT / "gaia")
+    (tmp_path / "alias").mkdir()
+    (tmp_path / "alias" / "gx").symlink_to(_ROOT / "gaia")
     return store, script, tmp_path
 
 
@@ -170,17 +189,55 @@ def isolated_store(tmp_path, monkeypatch):
 @pytest.mark.parametrize("case", sorted(_STORE_CODE))
 def test_python_that_reaches_the_store_is_refused_like_a_direct_write(isolated_store, case, subagent):
     store, script, cwd = isolated_store
-    command = _STORE_CODE[case].format(store=store, script=script)
+    command = _STORE_CODE[case].format(store=store, script=script, cwd=cwd)
     result = BashValidator().validate(command, is_subagent=subagent, agent_type="developer", cwd=str(cwd))
     assert (result.allowed, result.rule, result.approval_id) == (False, "floor.gaia-db-write", None)
+
+
+_UNPROVEN_CODE = {
+    "computed-import": "python3 -c 'import importlib, sys; importlib.import_module(sys.argv[1])' gaia.store",
+    "concat-import": "python3 -c \"import importlib; importlib.import_module('ga'+'ia.store')\"",
+    "dunder-import-alias": "python3 -c \"imp = __import__; imp('gaia.approvals.store')\"",
+    "import-module-alias": "python3 -c \"from importlib import import_module as im; im('x')\"",
+    "getattr-importlib": "python3 -c \"import importlib; getattr(importlib, 'import_module')('x')\"",
+    "runpy-run-path": "python3 -c \"import runpy; runpy.run_path('write.py')\"",
+    "runpy-alias": "python3 -c \"from runpy import run_module as r; r('mymod')\"",
+    "exec-string": "python3 -c \"exec(input())\"",
+    "exec-compile": "python3 -c \"exec(compile(open('write.py').read(), 'x', 'exec'))\"",
+    "exec-alias": "python3 -c \"run = exec; run('1')\"",
+    "builtins": "python3 -c \"import builtins; builtins.exec('1')\"",
+    "dunder-chain": "python3 -c \"().__class__.__base__.__subclasses__()\"",
+    "syspath-alias": "python3 -c \"import sys; sys.path.insert(0, '{cwd}/alias'); import gx.approvals.store\"",
+    "pythonpath-alias": "PYTHONPATH={cwd}/alias python3 -c 'import gx.approvals.store'",
+    "stdin-redirect": "python3 < {cwd}/write.py",
+    "pipe-into-python": "cat {cwd}/write.py | python3",
+    "uv-run-script": "uv run python3 {cwd}/write.py",
+    "timeout-wrapper": "timeout 5 python3 -c 'from gaia.approvals import store'",
+    "unparsed": "python3 -c 'import (('",
+}
+
+
+@pytest.mark.parametrize("subagent", [True, False])
+@pytest.mark.parametrize("case", sorted(_UNPROVEN_CODE))
+def test_python_whose_closure_is_not_proven_never_runs_free(isolated_store, case, subagent):
+    cwd = isolated_store[2]
+    command = _UNPROVEN_CODE[case].format(cwd=cwd)
+    result = BashValidator().validate(command, is_subagent=subagent, agent_type="developer", cwd=str(cwd))
+    assert not result.allowed, (case, result.tier, result.rule)
 
 
 @pytest.mark.parametrize("command", [
     "python3 -c 'import json; print(json.dumps(1))'",
     "python3 -c 'import sqlite3; sqlite3.connect(\":memory:\")'",
+    "python3 --version",
+    "python3 -c 'import helper; print(helper.VALUE)'",
+    "python3 {cwd}/clean.py",
     "gaia memory list",
     f"python3 {_ROOT / 'bin' / 'gaia'} memory list",
 ])
 def test_code_that_does_not_reach_the_store_keeps_its_lane(isolated_store, command):
-    result = BashValidator().validate(command, is_subagent=True, agent_type="developer", cwd=str(isolated_store[2]))
+    cwd = isolated_store[2]
+    result = BashValidator().validate(command.format(cwd=cwd), is_subagent=True, agent_type="developer", cwd=str(cwd))
     assert result.rule != "floor.gaia-db-write"
+    if command.startswith("python3") and "bin" not in command:
+        assert result.allowed, (command, result.rule)
