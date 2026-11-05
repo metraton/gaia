@@ -50,3 +50,9 @@ def test_read_only_code_under_a_family_spelling_stays_free(command):
 def test_unknown_extension_script_is_judged_by_its_shebang(tmp_path, shebang, body, asks):
     (tmp_path / "x.frob").write_text(f"{shebang}\n{body}")
     assert detect_mutative_command("./x.frob", cwd=str(tmp_path)).is_mutative is asks
+
+
+@pytest.mark.parametrize("raw", [b"#!/bin/sh\n\x00\ntouch RAN\n", b"#!/bin/sh\n\xff\xfe\ntouch RAN\n"])
+def test_unknown_extension_script_not_readable_as_text_asks(tmp_path, raw):
+    (tmp_path / "x.frob").write_bytes(raw)
+    assert detect_mutative_command("./x.frob", cwd=str(tmp_path)).is_mutative

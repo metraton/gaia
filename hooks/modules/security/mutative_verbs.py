@@ -9913,17 +9913,15 @@ def _check_script_by_shebang(
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("script body")
     content = _read_script_content(invoked, cwd=cwd)
-    if content is None:
+    if content is None or "\x00" in content or "�" in content:
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_MUTATIVE,
             verb="script-file-unreadable",
             cli_family=family,
             confidence="medium",
-            reason=f"Script '{invoked}' is not a readable file, so the program it starts cannot be verified",
+            reason=f"Script '{invoked}' cannot be read as text, so the program it starts cannot be verified",
         )
-    if "\x00" in content:
-        return None
     first_line = content.split("\n", 1)[0]
     words = first_line[2:].split() if first_line.startswith("#!") else ["sh"]
     if words and program_identity(words[0]) == "env":
