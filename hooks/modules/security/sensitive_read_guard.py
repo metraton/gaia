@@ -59,6 +59,14 @@ _LISTER_COMMANDS = frozenset({
     "ls", "dir", "vdir", "tree", "find", "du", "exa", "eza", "lsd",
     "get-childitem", "gci",
 })
+# Programs that use or test a credential file without printing it; any other program reads it.
+_CREDENTIAL_USERS = frozenset({
+    "ssh", "ssh-add", "ssh-keygen", "ssh-copy-id", "sshfs", "git", "kubectl", "helm",
+    "gcloud", "gsutil", "aws", "az", "docker", "terraform",
+    "chmod", "chown", "chgrp", "rm", "rmdir", "unlink", "touch", "mkdir", "ln", "shred", "tee", "truncate",
+    "cd", "pushd", "test", "[", "stat", "realpath", "readlink", "basename", "dirname",
+    "echo", "printf", "export", "which", "source", ".",
+})
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 _QUOTED_LITERAL = re.compile(r"""(['"`])((?:\\.|(?!\1).)*)\1""", re.S)
 # A program named by an expansion is unknown until the shell runs it.
@@ -183,11 +191,15 @@ def _is_local_operand(operand: str) -> bool:
 
 
 def copy_written_paths(command: str) -> List[str]:
-    """The local destinations the copy and transfer tools in *command* write."""
+    """The local destinations the copy and transfer tools in *command* write, and every place a program no grammar vouches for is handed."""
+    from .protected_path_guard import unnamed_program_words
+
     written: List[str] = []
     for component in _components(command):
         tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
         base = command_name(tokens[0]) if tokens else ""
+        if base not in _COPIERS and base not in _CREDENTIAL_USERS and base not in _READER_COMMANDS:
+            written += unnamed_program_words(tokens)
         if base not in _COPIERS or base == "sftp":
             continue
         operands, target_given = _copy_operands(base, tokens[1:])
@@ -292,6 +304,14 @@ def _gaia_read_candidates(tokens: List[str]) -> List[str]:
     return _option_values(arguments) if is_gaia_cli(tokens[0]) else arguments
 
 
+def _operand_words(arguments: List[str]) -> List[str]:
+    """Every operand, and the value of every ``--option=value``, as the file it names: the places a program is handed."""
+    from .protected_path_guard import operand_place
+
+    return [operand_place(arg.split("=", 1)[1] if arg.startswith("-") else arg) for arg in arguments
+            if not arg.startswith("-") or "=" in arg]
+
+
 def _option_values(arguments: List[str]) -> List[str]:
     values = []
     for index, argument in enumerate(arguments):
@@ -353,8 +373,10 @@ def _component_reads_sensitive_as_written(component: str, cwd: Optional[str]) ->
         return _first_copied_secret(_tar_sources(arguments), cwd)
     if base in _COPIERS:
         return _first_copied_secret(_copied_sources(base, arguments), cwd)
-    if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
+    if base in _CREDENTIAL_USERS:
         return ""
+    if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
+        return first_sensitive_token(_operand_words(arguments), cwd)
     if base == "sed" and any(_SED_IN_PLACE.match(arg) for arg in arguments):
         return ""
     if base == "find":
