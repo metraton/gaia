@@ -208,6 +208,33 @@ def test_python_that_reaches_the_store_is_refused_like_a_direct_write(isolated_s
     assert (result.allowed, result.rule, result.approval_id) == (False, "floor.gaia-db-write", None)
 
 
+def test_a_test_run_never_writes_the_real_data_directory(tmp_path, monkeypatch):
+    from gaia.store import writer
+
+    account = tmp_path / "account"
+    real_db = account / ".gaia" / "gaia.db"
+    monkeypatch.setattr(writer, "_account_home", lambda: str(tmp_path / "elsewhere"), raising=False)
+    writer._connect(real_db).close()
+    monkeypatch.setattr(writer, "_account_home", lambda: str(account), raising=False)
+    con = writer._connect(real_db)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            con.execute("INSERT INTO schema_version (version, applied_at) VALUES (999, 'x')")
+        assert con.execute("SELECT COUNT(*) FROM schema_version WHERE version = 999").fetchone()[0] == 0
+    finally:
+        con.close()
+    with pytest.raises(sqlite3.DatabaseError):
+        writer.assert_schema_writable(real_db)
+    linked = tmp_path / "linked.db"
+    linked.symlink_to(real_db)
+    with pytest.raises(sqlite3.DatabaseError):
+        writer.assert_schema_writable(linked)
+    temporary = tmp_path / "temporary" / "gaia.db"
+    con = writer._connect(temporary)
+    con.execute("INSERT INTO schema_version (version, applied_at) VALUES (999, 'x')")
+    con.close()
+
+
 _UNPROVEN_CODE = {
     "computed-import": "python3 -c 'import importlib, sys; importlib.import_module(sys.argv[1])' gaia.store",
     "concat-import": "python3 -c \"import importlib; importlib.import_module('ga'+'ia.store')\"",
