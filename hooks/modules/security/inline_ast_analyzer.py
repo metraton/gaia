@@ -77,6 +77,8 @@ import tokenize
 from dataclasses import dataclass
 from typing import Callable, Dict, FrozenSet, Optional, Set, Tuple
 
+from .effect_lattice import Effect, catalogue_effects
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,6 +106,11 @@ class InlineAstResult:
     category: str = ""
     parse_failed: bool = False
     detail: str = ""
+
+    @property
+    def effects(self) -> FrozenSet[Effect]:
+        """The effect set this payload reports: its catalogued call's class, or TOP where the catalogue proves nothing."""
+        return catalogue_effects(is_dangerous=self.is_dangerous, category=self.category, parse_failed=self.parse_failed)
 
 
 # Entries are (canonical dotted name, label, category); a call's name is resolved through _AliasResolver before the lookup.

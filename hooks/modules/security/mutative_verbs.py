@@ -34,6 +34,7 @@ except ImportError:
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
 from .cli_aliases import as_wrapped_cli, declared_wrapper
+from .effect_lattice import Effect, classification_effects
 from .flag_classifiers import AWK_PROGRAMS
 from .forge_shapes import change_request_action
 from .command_semantics import (
@@ -149,6 +150,23 @@ class MutativeResult:
     guidance: str = ""
     rule: str = ""
 
+    @property
+    def effects(self) -> FrozenSet[Effect]:
+        """The effect set this classification reports, in shadow: the verdict is still decided by the fields above."""
+        return classification_effects(
+            is_mutative=self.is_mutative, reads=self.category in _READING_CATEGORIES,
+            changes=self.category == CATEGORY_MUTATIVE, verb=self.verb, cli_family=self.cli_family,
+            verb_class=change_verb_class(self.verb),
+        )
+
+
+def change_verb_class(verb: str) -> Optional[str]:
+    """The change class *verb*, or the first hyphen fragment that is a change verb, belongs to."""
+    for word in (verb.lower(), *verb.lower().split("-")):
+        for name, verbs in CHANGE_VERB_CLASSES.items():
+            if word in verbs:
+                return name
+    return None
 
 
 # ============================================================================

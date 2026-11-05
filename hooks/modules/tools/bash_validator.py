@@ -41,15 +41,19 @@ empty role" are kept distinct rather than collapsed by a default.
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 import re
 import json
 import shlex
 import shutil
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, FrozenSet, Optional, List, Tuple
 from dataclasses import dataclass, field
 
+from ..security.effect_lattice import (
+    UNDETERMINED as UNDETERMINED_EFFECT, Effect, floor_effect, join, signed_effect, within_own_work,
+)
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
@@ -175,17 +179,33 @@ class BashValidationResult:
     # The (rule, undetermined) a T3 would sign under, kept when no requester
     # could be named, so a nested probe still reads it as a signature.
     withheld: Optional[Tuple[str, str]] = None
+    effect_source: Optional[Tuple[str, Optional[str]]] = None
 
     def __post_init__(self):
         if self.suggestions is None:
             self.suggestions = []
 
+    @property
+    def effects(self) -> FrozenSet[Effect]:
+        """The effect set behind this ruling, computed on read and in shadow: it decides nothing yet."""
+        if not self.allowed:
+            if not (self.approval_id or (self.reason or "").startswith(_COMPOUND_T3_DENIAL)):
+                return floor_effect(self.rule)
+            return frozenset({UNDETERMINED_EFFECT}) if self.undetermined else signed_effect(self.rule)
+        command, cwd = self.effect_source or ("", None)
+        components = [c for c in get_shell_parser().parse(command) if c.strip()] or [command]
+        return within_own_work(join(*(detect_mutative_command(c, cwd=cwd).effects for c in components)))
+
 
 def _carries_ruling(validate):
     """Make every refusal and signature request a validator returns name its rule and remediation."""
+    signature = inspect.signature(validate)
+
     @functools.wraps(validate)
     def wrapper(self, command: str, *args, **kwargs) -> BashValidationResult:
         result = validate(self, command, *args, **kwargs)
+        arguments = signature.bind(self, command, *args, **kwargs).arguments
+        result.effect_source = (command, arguments.get("cwd") or (arguments.get("hook_payload") or {}).get("cwd"))
         if result.allowed:
             return result
         line = render(result.rule or "floor.unclassified")
