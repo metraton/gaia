@@ -6,6 +6,7 @@ import ast
 import functools
 import os
 import re
+import shutil
 import site
 import sys
 from importlib.machinery import PathFinder
@@ -256,11 +257,35 @@ def _gaia_cli_shaped(path: str) -> bool:
     return path.endswith(".py") and os.path.basename(parent) == "cli" and os.path.basename(os.path.dirname(parent)) == "bin"
 
 
-def _python_script(path: str) -> bool:
-    if path.endswith(".py"):
-        return True
-    head = (_read(path) or "")[:200]
-    return head.startswith("#!") and bool(re.search(r"\b(?:i?python|pypy)[0-9.]*\b", head.splitlines()[0]))
+def _shebang_interpreter(path: str) -> Optional[str]:
+    """The real path of the program a ``#!`` line runs (through ``env`` too), ``""`` when unresolvable, None without one."""
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline(512)
+    except OSError:
+        return None
+    if not first.startswith(b"#!"):
+        return None
+    words = first[2:].decode("utf-8", "replace").split()
+    if words and os.path.basename(words[0]) == "env":
+        words = [w for w in words[1:] if not w.startswith("-") and "=" not in w]
+    if not words:
+        return ""
+    program = words[0] if "/" in words[0] else shutil.which(words[0])
+    return os.path.realpath(program) if program and os.path.exists(program) else ""
+
+
+def _script_lane(path: str) -> Optional[str]:
+    """``"python"`` for a Python script, ``"unknown"`` for a shebang no lane models, None for anything else."""
+    from .mutative_verbs import _classifier_rule_names
+
+    interpreter = _shebang_interpreter(path)
+    if interpreter is None:
+        return "python" if path.endswith(".py") else None
+    name = os.path.basename(interpreter)
+    if _PYTHON.match(name):
+        return "python"
+    return None if name and _classifier_rule_names(name, programs_only=True) else "unknown"
 
 
 def _absolute(path: str, cwd: str) -> str:
@@ -406,9 +431,10 @@ def _component(tokens: List[str], bodies: Dict[str, str], cwd: str) -> Optional[
     if _PYTHON.match(head):
         return _interpreter(tokens, bodies, cwd)
     full = _absolute(tokens[0], cwd)
-    if ("/" in tokens[0] or head.endswith(".py")) and os.path.isfile(full) and _python_script(full):
-        return _script(tokens[0], cwd)
-    return None
+    if not (("/" in tokens[0] or head.endswith(".py")) and os.path.isfile(full)):
+        return None
+    lane = _script_lane(full)
+    return _script(tokens[0], cwd) if lane == "python" else UNPROVEN if lane == "unknown" else None
 
 
 def closure(command: str, cwd: Optional[str] = None) -> Optional[str]:

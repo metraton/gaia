@@ -1,5 +1,6 @@
 """The declaration channel: signed to write, refused to a subagent, exact to match, never below a floor (AC-12)."""
 
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -162,6 +163,7 @@ _STORE_CODE = {
     "aliased": "python3 -c 'from sqlite3 import connect as c; c(\"{store}\")'",
     "exec-literal": "python3 -c \"exec('from gaia.approvals import store')\"",
     "package-main": "python3 -m mypkg",
+    "shebang-renamed-interpreter": "{cwd}/snaketool",
     "warnings-option": "python3 -W ignore::gaia.approvals.store.Warning -c 'print(1)'",
     "warnings-env": "PYTHONWARNINGS=ignore::gaia.approvals.store.Warning python3 -c 'print(1)'",
     "script": "python3 {script}",
@@ -179,6 +181,10 @@ def isolated_store(tmp_path, monkeypatch):
     (tmp_path / "run.py").write_text("import mymod\n")
     (tmp_path / "helper.py").write_text("import json\nVALUE = json.dumps(1)\n")
     (tmp_path / "clean.py").write_text("import helper\nprint(helper.VALUE)\n")
+    (tmp_path / "snake").symlink_to(os.path.realpath(sys.executable))
+    for name, interpreter in (("snaketool", tmp_path / "snake"), ("frobtool", "/usr/bin/env frobinterp")):
+        (tmp_path / name).write_text(f"#!{interpreter}\n" + approve)
+        (tmp_path / name).chmod(0o755)
     (tmp_path / "mypkg").mkdir()
     (tmp_path / "mypkg" / "__init__.py").write_text("")
     (tmp_path / "mypkg" / "__main__.py").write_text(approve)
@@ -223,6 +229,7 @@ _UNPROVEN_CODE = {
     "timeout-wrapper": "timeout 5 python3 -c 'from gaia.approvals import store'",
     "unparsed": "python3 -c 'import (('",
     "utf7-cookie": "python3 {cwd}/u7.py",
+    "unknown-shebang": "{cwd}/frobtool",
     "unresolved-module": "python3 -c 'import evil_user_site_module'",
     "unmodelled-option": "python3 -X importtime -c 'print(1)'",
 }
