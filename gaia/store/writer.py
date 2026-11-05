@@ -398,21 +398,49 @@ def _account_home() -> str:
         return os.environ.get("USERPROFILE") or os.path.expanduser("~")
 
 
-def real_store_refusal(db_path: Path) -> str | None:
-    """The refusal for writing the account's real ``~/.gaia`` from inside a pytest run (D197), else None."""
-    if not (os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules or "_pytest" in sys.modules):
-        return None
-    real = os.path.realpath(os.path.join(_account_home(), ".gaia", "gaia.db"))
-    target = os.path.realpath(db_path)
+STORE_ENTRY_ENV = "GAIA_STORE_ENTRY_POINT"
+_GAIA_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _is_store(target: str, home: str) -> bool:
+    real = os.path.realpath(os.path.join(home, ".gaia", "gaia.db"))
     try:
-        same_file = os.path.samefile(target, real)
+        return target == real or os.path.samefile(target, real)
     except OSError:
-        same_file = False
-    if not (same_file or target == real):
+        return False
+
+
+def _runs_as_entry_point() -> bool:
+    if os.environ.get(STORE_ENTRY_ENV):
+        return True
+    main = getattr(sys.modules.get("__main__"), "__file__", None)
+    if not main:
+        return False
+    path = Path(os.path.realpath(main))
+    return path.parent == _GAIA_ROOT / "hooks" or path in (_GAIA_ROOT / "bin" / "gaia", _GAIA_ROOT / "opencode" / "bridge.py")
+
+
+def real_store_refusal(db_path: Path) -> str | None:
+    """The refusal for writing the account's real store from a pytest run (D197) or from outside Gaia's entry points.
+
+    This is an accidental-write wall against stray scripts and tests, not a
+    privilege boundary: code running as the user can still pass as an entry
+    point; a store process under a separate user is a future brief.
+    """
+    target = os.path.realpath(db_path)
+    if os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules or "_pytest" in sys.modules:
+        if not _is_store(target, _account_home()):
+            return None
+        return (
+            f"a test run (pytest) never writes Gaia's real data directory {os.path.dirname(target)}; "
+            "point GAIA_DATA_DIR or GAIA_DB at a temporary one"
+        )
+    homes = {_account_home(), os.path.expanduser("~")}
+    if _runs_as_entry_point() or not any(_is_store(target, home) for home in homes):
         return None
     return (
-        f"a test run (pytest) never writes Gaia's real data directory {real}; "
-        "point GAIA_DATA_DIR or GAIA_DB at a temporary one"
+        f"the accidental-write wall keeps Gaia's real store {target} for Gaia's own entry points "
+        "(the gaia CLI, the hook scripts); write it through the gaia CLI"
     )
 
 
@@ -571,6 +599,9 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     if db_path is None:
         db_path = _db_path()
 
+    refusal = real_store_refusal(db_path)
+    if refusal and not db_path.exists():
+        raise SchemaAheadError(refusal)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path), factory=_Connection)
     con.row_factory = sqlite3.Row
@@ -590,7 +621,7 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # serialized so a concurrent first-write can never observe a missing table.
     _ensure_schema_materialized(con, db_path)
     _stamp_signals_with_session(con)
-    con.schema_ahead = _schema_ahead(con, db_path) or real_store_refusal(db_path)
+    con.schema_ahead = _schema_ahead(con, db_path) or refusal
     if con.schema_ahead:
         con.set_authorizer(_refuse_main_writes)
     return con

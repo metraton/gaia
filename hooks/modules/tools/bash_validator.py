@@ -120,7 +120,8 @@ from ..security.protected_path_guard import (
     check as check_protected_path_write,
     unprovable_write_target,
 )
-from ..security.shell_write_guard import check as check_shell_write
+from ..security.shell_write_guard import check as check_shell_write, system_path_target
+from ..security.privilege_guard import privilege_verdict
 from ..security.sensitive_read_guard import check as check_sensitive_read, remote_copy_destination
 from ..security.publish_attribution_guard import check as check_publish_attribution
 from ..security.comment_push_gate import check as check_comment_push
@@ -1174,6 +1175,19 @@ class BashValidator:
                 agent_type=agent_type,
             )
 
+        # Decided before the sanitizer strips the redirect, so the grant is looked up here too.
+        if system_path_target(write_guard_scope, cwd):
+            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
+                command,
+                verb="system-path-write",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+                cwd=cwd,
+                rule="sign.system-path",
+            )
+
         unprovable_target = unprovable_write_target(write_guard_scope, cwd)
         if unprovable_target:
             return decide_t3_outcome(
@@ -1585,7 +1599,7 @@ class BashValidator:
         # ``cwd`` is the directory folded from a preceding ``cd`` component (see
         # _validate_compound_command), against which a relative script resolves.
         result = detect_mutative_command(command, cwd=cwd, caller=caller)
-        result = production_target_verdict(command, result, cwd=cwd) or result
+        result = privilege_verdict(command, result) or production_target_verdict(command, result, cwd=cwd) or result
         if result.is_mutative:
             from gaia.store.writer import find_pending_plan_command
             if not session_id or not tool_use_id:
@@ -2672,6 +2686,30 @@ def _build_sealed_payload(
         ),
         operation=f"{category} command intercepted: {verb}",
         risk_level="high" if category.upper() == "DESTRUCTIVE" else "medium",
+    )
+
+
+def _granted_result(command: str, *, session_id: str, agent_type: str, cwd: str | None) -> BashValidationResult | None:
+    """The pass a live grant gives *command*, consuming it, for a signature decided outside the verb scan; else None."""
+    from gaia.approvals.core import grant_lookup_filter
+
+    grant = check_approval_grant(
+        command, session_id=session_id,
+        requester=grant_lookup_filter(cwd=cwd or os.getcwd(), session_id=session_id, agent_id=agent_type),
+    )
+    if grant is None:
+        return None
+    approval_id = getattr(grant, "_db_approval_id", None)
+    if approval_id:
+        try:
+            from gaia.store.writer import consume_db_semantic_grant
+            consume_db_semantic_grant(approval_id)
+        except Exception as exc:
+            logger.warning("DB semantic grant consume failed (non-fatal): %s", exc)
+    return BashValidationResult(
+        allowed=True, tier=SecurityTier.T3_BLOCKED,
+        reason="Grant confirmed" if grant.confirmed else "Grant active, pending confirmation",
+        consumed_approval_id=approval_id,
     )
 
 

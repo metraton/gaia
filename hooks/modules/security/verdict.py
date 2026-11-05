@@ -29,6 +29,8 @@ REMEDIATION: Dict[str, str] = {
     "sign.lands-on-protected": "Request a signature for this exact command naming the account or credential file it writes and what it puts there, or leave that file for the user to change.",
     "sign.foreign-code": "Request a signature naming the package and where it comes from, or use code already installed in the project.",
     "sign.lifecycle-body-verb": "Request a signature naming the lifecycle script that mutates, or install with lifecycle scripts disabled.",
+    "sign.privilege": "Request a signature naming the user the command runs as and what it does there, or run it without sudo, su or doas.",
+    "sign.system-path": "Request a signature naming the system file under /etc, /usr or /boot it writes and what it puts there, or leave that file for the user to change.",
     UNKNOWN_SPAN: "Write the word the decision depends on literally, with no variable, substitution or unrecognised flag, or request a signature naming it.",
     UNKNOWN_TARGET: "Name the target literally, with no variable or substitution, or request a signature naming it.",
     "floor.gaia-cli-only": "Run only Gaia CLI commands from this role, and dispatch a specialist for anything else.",

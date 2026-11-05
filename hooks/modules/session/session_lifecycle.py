@@ -52,6 +52,7 @@ def start_session(start: SessionStart) -> StartOutcome:
         "## Database upgrade": upgrade_notice,
         "## Data home": data_home_notice,
         "## Workspace": workspace_notice,
+        "## Install integrity": _install_integrity_notice(),
         "## Leftovers": _leftovers_notice(start.workspace_dir),
     }
     shown = {title: text for title, text in notices.items() if text}
@@ -179,6 +180,16 @@ def run_start_maintenance(start: SessionStart) -> None:
             conclusions.baseline(start.session_id)
     except Exception as exc:
         logger.debug("signals or conclusions baseline failed (non-fatal): %s", exc)
+
+
+def _install_integrity_notice() -> str:
+    try:
+        from gaia.install_root import installed_root
+        from modules.session.install_integrity import integrity_notice
+        return integrity_notice(installed_root())
+    except Exception as exc:
+        logger.debug("install integrity notice failed (non-fatal): %s", exc)
+        return ""
 
 
 def _leftovers_notice(workspace_dir: Path) -> str:
