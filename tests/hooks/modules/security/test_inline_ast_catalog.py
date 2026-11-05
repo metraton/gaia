@@ -18,7 +18,10 @@ BANDIT_VERSION = "1.9.4"
 BANDIT_SOURCE = (
     "bandit/blacklists/calls.py, bandit/plugins/injection_shell.py gen_config, and the call matchers of "
     "pytorch_load, huggingface_unsafe_download, logging_config_insecure_listen, yaml_load, "
-    "tarfile_unsafe_members and hashlib_insecure_functions, read at tag 1.9.4 (PyPI latest, 2026-02-25)"
+    "tarfile_unsafe_members, hashlib_insecure_functions, request_without_timeout, django_sql_injection, "
+    "jinja2_templates, mako_templates, insecure_ssl_tls, snmp_security_check, injection_paramiko, "
+    "weak_cryptographic_key, ssh_no_host_key_verification, app_debug and crypto_request_no_cert_validation, "
+    "read at tag 1.9.4 (PyPI latest, 2026-02-25); B111 exec_as_root could not be fetched and stays unverified"
 )
 
 EXCLUDED = "EXCLUDED"
@@ -30,7 +33,7 @@ EFFECT_CLASSES = frozenset({
 CALL_IDS = frozenset({
     "B102", "B103", "B111", "B113", "B201", "B202", "B301", "B302", "B303", "B304", "B305", "B306",
     "B307", "B308", "B310", "B311", "B312", "B313", "B314", "B315", "B316", "B317", "B318", "B319",
-    "B321", "B323", "B324", "B502", "B503", "B504", "B505", "B507", "B508", "B509", "B601", "B602",
+    "B321", "B323", "B324", "B501", "B502", "B504", "B505", "B506", "B507", "B508", "B509", "B601", "B602",
     "B603", "B604", "B605", "B606", "B607", "B609", "B610", "B611", "B612", "B614", "B615", "B701",
     "B702", "B703", "B704",
 })
@@ -42,6 +45,7 @@ class Entry(NamedTuple):
     effect: str
     reason: str = ""
     code: str = ""
+    verified: bool = True
 
 
 NO_STATE_EFFECT = "construction or computation only; nothing outside the process changes"
@@ -50,16 +54,18 @@ XML_PARSE = "parser reads the named file into a tree; no write, process or netwo
 NO_MODULE_PATH = "method on a receiver the analyzer cannot name; no dotted module path to match"
 UNBOUNDED_NAME = "selected by a keyword on a call of any name; the callee is unbounded, so no name catalogue can hold it"
 UNPICKLER = "import {m}\n{m}.{c}(stream).load()"
-PY2_ONLY = "module removed in Python 3; the import fails under python3, the only interpreter this lane runs"
+HTTP_VERBS = ("get", "options", "head", "post", "put", "patch", "delete")
+HTTPX_CALLS = HTTP_VERBS + ("request", "stream", "Client", "AsyncClient")
+YAML_LOAD = "import yaml\nyaml.load(payload, {loader})"
+PY2_ONLY ="module removed in Python 3; the import fails under python3, the only interpreter this lane runs"
 
 BANDIT_ENTRIES: Tuple[Entry, ...] = (
     Entry("B102", "exec", "DYNAMIC_CODE"),
     Entry("B103", "os.chmod", "PERMISSION_MOD"),
-    Entry("B111", "oslo_concurrency.processutils.execute", EXCLUDED, UNBOUNDED_NAME),
-    *(Entry("B113", f"requests.{m}", "NETWORK") for m in (
-        "get", "post", "put", "delete", "patch", "head", "options", "request")),
-    *(Entry("B113", f"httpx.{m}", "NETWORK") for m in ("get", "post", "put", "delete", "patch", "head", "options")),
-    Entry("B201", "flask.Flask.run", EXCLUDED, NO_MODULE_PATH),
+    Entry("B111", "oslo_concurrency.processutils.execute", EXCLUDED, UNBOUNDED_NAME, verified=False),
+    *(Entry(i, f"requests.{m}", "NETWORK") for i in ("B113", "B501") for m in HTTP_VERBS),
+    *(Entry(i, f"httpx.{m}", "NETWORK") for i in ("B113", "B501") for m in HTTPX_CALLS),
+    Entry("B201", "<app>.run", EXCLUDED, NO_MODULE_PATH),
     Entry("B202", "tarfile.TarFile.extractall", "FILE_WRITE", code="import tarfile\ntarfile.open(payload).extractall(payload)"),
     Entry("B301", "pickle.loads", "DYNAMIC_CODE"),
     Entry("B301", "pickle.load", "DYNAMIC_CODE"),
@@ -119,9 +125,17 @@ BANDIT_ENTRIES: Tuple[Entry, ...] = (
     Entry("B323", "ssl._create_unverified_context", "NETWORK"),
     *(Entry("B324", f"hashlib.{f}", EXCLUDED, HASH_OR_CIPHER) for f in ("md4", "md5", "sha", "sha1", "new")),
     Entry("B502", "ssl.wrap_socket", "NETWORK"),
-    Entry("B503", "ssl.SSLContext", "NETWORK"),
+    Entry("B502", "pyOpenSSL.SSL.Context", EXCLUDED, NO_STATE_EFFECT),
     Entry("B504", "ssl.wrap_socket", "NETWORK"),
-    Entry("B505", "cryptography.hazmat.primitives.asymmetric.rsa.generate_private_key", EXCLUDED, HASH_OR_CIPHER),
+    *(Entry("B505", f"cryptography.hazmat.primitives.asymmetric.{k}.generate_private_key", EXCLUDED, HASH_OR_CIPHER)
+      for k in ("dsa", "rsa", "ec")),
+    *(Entry("B505", f"{p}.PublicKey.{k}.generate", EXCLUDED, HASH_OR_CIPHER)
+      for p in ("Crypto", "Cryptodome") for k in ("DSA", "RSA")),
+    Entry("B506", "yaml.load", "DYNAMIC_CODE"),
+    Entry("B506", "yaml.load(Loader=yaml.Loader)", "DYNAMIC_CODE", code=YAML_LOAD.format(loader="Loader=yaml.Loader")),
+    Entry("B506", "yaml.load(yaml.FullLoader)", "DYNAMIC_CODE", code=YAML_LOAD.format(loader="yaml.FullLoader")),
+    Entry("B506", "yaml.load(Loader=yaml.UnsafeLoader)", "DYNAMIC_CODE",
+          code=YAML_LOAD.format(loader="Loader=yaml.UnsafeLoader")),
     Entry("B507", "paramiko.SSHClient.set_missing_host_key_policy", "NETWORK",
           code="import paramiko\nclient = paramiko.SSHClient()\nclient.set_missing_host_key_policy(paramiko.AutoAddPolicy())"),
     Entry("B508", "pysnmp.hlapi.CommunityData", EXCLUDED, NO_STATE_EFFECT),
@@ -141,8 +155,8 @@ BANDIT_ENTRIES: Tuple[Entry, ...] = (
         "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe", "startfile")),
     *(Entry("B607", f"subprocess.{f}", "PROCESS_EXECUTION") for f in ("Popen", "run")),
     Entry("B609", "os.system", "PROCESS_EXECUTION"),
-    Entry("B610", "django.db.models.query.QuerySet.extra", EXCLUDED, NO_MODULE_PATH),
-    Entry("B611", "django.db.models.expressions.RawSQL", EXCLUDED, NO_STATE_EFFECT),
+    Entry("B610", "extra", EXCLUDED, NO_MODULE_PATH),
+    Entry("B611", "RawSQL", EXCLUDED, NO_STATE_EFFECT),
     Entry("B612", "logging.config.listen", "DYNAMIC_CODE"),
     Entry("B614", "torch.load", "DYNAMIC_CODE"),
     Entry("B614", "torch.serialization.load", "DYNAMIC_CODE"),
@@ -157,6 +171,7 @@ BANDIT_ENTRIES: Tuple[Entry, ...] = (
 
 GAIA_AUDIT_ENTRIES: Tuple[Entry, ...] = (
     Entry("audit-36975", "pydoc.pipepager", "PROCESS_EXECUTION"),
+    Entry("verifier-37020", "yaml.unsafe_load", "DYNAMIC_CODE"),
 )
 
 ALL_ENTRIES = BANDIT_ENTRIES + GAIA_AUDIT_ENTRIES
@@ -180,6 +195,8 @@ JUDGED_FREE_TODAY = frozenset({
     "six.moves.urllib.request.urlopen", "six.moves.urllib.request.urlretrieve",
     "six.moves.urllib.request.URLopener", "six.moves.urllib.request.FancyURLopener",
     "huggingface_hub.hf_hub_download", "huggingface_hub.snapshot_download", "os.startfile", "pydoc.pipepager",
+    "yaml.load", "yaml.load(Loader=yaml.Loader)", "yaml.load(yaml.FullLoader)",
+    "yaml.load(Loader=yaml.UnsafeLoader)", "yaml.unsafe_load",
 })
 STILL_FREE = pytest.mark.xfail(strict=True, reason="analyzer has no class for this call yet (task 1114 finding)")
 
@@ -216,6 +233,9 @@ class TestCatalogueShape:
     def test_every_bandit_entry_uses_a_listed_id(self):
         assert {e.source_id for e in BANDIT_ENTRIES} - CALL_IDS == set()
         assert all(re.fullmatch(r"B\d{3}", e.source_id) for e in BANDIT_ENTRIES)
+
+    def test_entries_not_read_from_the_1_9_4_source_are_named(self):
+        assert {e.source_id for e in ALL_ENTRIES if not e.verified} == {"B111"}
 
     def test_a_pinned_version_is_recorded(self):
         assert re.fullmatch(r"\d+\.\d+\.\d+", BANDIT_VERSION) and BANDIT_SOURCE
