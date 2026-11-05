@@ -130,6 +130,7 @@ from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
     redirected_into_sender,
+    redirected_into_unknown,
     CompositionDecision,
 )
 from .shell_parser import get_shell_parser, strip_comment
@@ -1153,6 +1154,16 @@ class BashValidator:
                 session_id=session_id,
                 agent_type=agent_type,
             )
+        if redirected_into_unknown(write_guard_scope):
+            return decide_t3_outcome(
+                command,
+                verb="unknown_sink",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+                rule=UNKNOWN_SPAN,
+            )
 
         # After the write guards, so their refusals win; the operator splitter
         # would otherwise cut a data heredoc's prose into "components".
@@ -2003,11 +2014,7 @@ class BashValidator:
         Returns:
             BashValidationResult if a composition rule fires, else None.
         """
-        if not decomposed.stages or len(decomposed.stages) < 2:
-            return None
-
-        has_pipe = any(s.operator == "|" for s in decomposed.stages)
-        if not has_pipe:
+        if not decomposed.stages:
             return None
 
         comp_stages = build_composition_stages(decomposed.stages)

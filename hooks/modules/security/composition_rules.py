@@ -239,6 +239,7 @@ _FEEDING_STAGES = frozenset({
     StageType.NETWORK_WRITE, StageType.DECODE,
 })
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_EXECUTOR_DEPTH = 3
 
 # ssh options taking a value, and the ones that keep stdin from the remote side.
 _SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
@@ -449,6 +450,76 @@ def _unmodelled_program(command: str) -> str:
     return ""
 
 
+def _commands_run(command: str, depth: int = 0) -> List[str]:
+    from .mutative_verbs import _executor_floor_payloads, _peel_wrapper_readings
+
+    readings = [command, *_peel_wrapper_readings(command)[0]]
+    if depth >= _EXECUTOR_DEPTH:
+        return readings
+    handed = [payload for reading in readings for payload in _executor_floor_payloads(reading)]
+    return readings + [run for payload in handed for run in _commands_run(payload, depth + 1)]
+
+
+def _input_feed(command: str) -> str:
+    from ..tools.shell_parser import parse_command
+    from .shell_substitution import extract_substitutions
+
+    for body in extract_substitutions(command):
+        feeding = [c for c in parse_command(body) if classify_stage(c) in _FEEDING_STAGES]
+        if feeding:
+            return feeding[0].strip()
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return ""
+    for operator, target in zip(tokens, tokens[1:]):
+        if operator in ("<", "<>") and target != "/dev/null":
+            return f"{operator} {target}"
+    return ""
+
+
+def _runs_unknown_program(command: str) -> str:
+    return next((
+        name for run in _commands_run(command)
+        if classify_stage(run) == StageType.UNKNOWN and (name := _unmodelled_program(run))
+    ), "")
+
+
+def redirected_into_unknown(command: str) -> str:
+    """The component of *command* that runs a program no rule names on input a redirect or substitution reads, or ""."""
+    from ..tools.shell_parser import parse_command
+
+    for component in parse_command(command):
+        if _input_feed(component) and _runs_unknown_program(component):
+            return component.strip()
+    return ""
+
+
+def _fed_unknown_program(
+    stages: List[CompositionStage], all_types: List[StageType],
+) -> Optional[CompositionResult]:
+    """Escalate the first stage that runs a program no rule names, directly or through an executor, on data a read, download or decode hands it."""
+    for index, stage in enumerate(stages):
+        upstream = range(_pipe_run_start(stages, index), index)
+        feed = next((stages[k].command for k in upstream if stages[k].stage_type in _FEEDING_STAGES), "")
+        feed = feed or _input_feed(stage.command)
+        program = _runs_unknown_program(stage.command) if feed else ""
+        if program:
+            return CompositionResult(
+                decision=CompositionDecision.ESCALATE,
+                pattern="unknown_sink",
+                reason=(
+                    f"'{feed[:60]}' feeds '{program}', a program no rule here names, "
+                    f"so what it does with that data could not be determined"
+                ),
+                matched_stages=[index],
+                stage_types=all_types,
+            )
+    return None
+
+
 def _pipe_run_start(stages: List[CompositionStage], index: int) -> int:
     """The first stage of the unbroken pipe that feeds stage *index*."""
     while index > 0 and stages[index - 1].operator == "|":
@@ -542,6 +613,7 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
         )
 
     all_types = [s.stage_type for s in stages]
+    unknown_sink = _fed_unknown_program(stages, all_types)
 
     # Extract pipe-linked consecutive pairs: (i, i+1) where stages[i].operator == "|"
     pipe_pairs: List[tuple] = []
@@ -550,7 +622,7 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
             pipe_pairs.append((i, i + 1))
 
     if not pipe_pairs:
-        return CompositionResult(
+        return unknown_sink or CompositionResult(
             decision=CompositionDecision.ALLOW,
             stage_types=all_types,
         )
@@ -564,14 +636,12 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
 
     # Transparent suffix rule
     if _all_suffix_safe_filters(pipe_stages_ordered):
-        return CompositionResult(
+        return unknown_sink or CompositionResult(
             decision=CompositionDecision.ALLOW,
             reason="All pipe suffixes are safe filters (transparent suffix rule)",
             stage_types=all_types,
         )
 
-    # An unknown sink is returned only once no later pair blocks the pipe.
-    unknown_sink: Optional[CompositionResult] = None
     for src_idx, dst_idx in pipe_pairs:
         src = stages[src_idx]
         dst = stages[dst_idx]
@@ -661,20 +731,6 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
                     f"to '{dst.command[:60]}' -- requires approval"
                 ),
                 matched_stages=[src_idx, dst_idx],
-                stage_types=all_types,
-            )
-
-        feeder = next((k for k in upstream if stages[k].stage_type in _FEEDING_STAGES), None)
-        program = _unmodelled_program(dst.command) if dst_type == StageType.UNKNOWN else ""
-        if program and feeder is not None and unknown_sink is None:
-            unknown_sink = CompositionResult(
-                decision=CompositionDecision.ESCALATE,
-                pattern="unknown_sink",
-                reason=(
-                    f"'{stages[feeder].command[:60]}' feeds '{program}', a program no rule "
-                    f"here names, so what it does with that data could not be determined"
-                ),
-                matched_stages=[feeder, dst_idx],
                 stage_types=all_types,
             )
 
