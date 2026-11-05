@@ -381,6 +381,31 @@ def targets_working_tree(command: str, cwd: Optional[str] = None) -> Optional[st
     return None
 
 
+_SYSTEM_DIRS = ("/etc", "/usr", "/boot")
+
+
+def system_path_target(command: str, cwd: Optional[str] = None) -> Optional[str]:
+    """The first destination a shell writer in *command* resolves to under /etc, /usr or /boot, else None.
+
+    Such a write signs (D198 point 5); it is not refused like a working-tree write.
+    """
+    if not command:
+        return None
+    components = _split_components(command)
+    for inner in extract_substitutions(command):
+        components.extend(_split_components(inner))
+    for component in components:
+        for token in _writer_targets(component.strip()):
+            cleaned = token.strip("'\"")
+            if not cleaned or cleaned.startswith("-") or cleaned.startswith("$"):
+                continue
+            expanded = os.path.expanduser(native_path(cleaned))
+            resolved = os.path.realpath(os.path.join(cwd or os.getcwd(), expanded))
+            if any(resolved == d or resolved.startswith(d + os.sep) for d in _SYSTEM_DIRS):
+                return resolved
+    return None
+
+
 def rejection_message(path: str) -> str:
     """Return the refusal text an agent sees, naming the permitted channel."""
     return (

@@ -99,6 +99,8 @@ LEG_EFFECTS = {
     "sign.lands-on-protected": Effect(PERSIST, DIRECT, HOME),
     "sign.foreign-code": Effect(CODE_EXEC, TRANSITIVE, REMOTE),
     "sign.lifecycle-body-verb": Effect(CODE_EXEC, TRANSITIVE, REPO),
+    "sign.privilege": Effect(PRIV, DIRECT, UNKNOWN_SCOPE),
+    "sign.system-path": Effect(FS_WRITE, DIRECT, UNKNOWN_SCOPE),
 }
 
 FLOOR_EFFECTS = {

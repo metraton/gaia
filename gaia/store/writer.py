@@ -600,6 +600,9 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     if db_path is None:
         db_path = _db_path()
 
+    refusal = real_store_refusal(db_path)
+    if refusal and not db_path.exists():
+        raise SchemaAheadError(refusal)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path), factory=_Connection)
     con.row_factory = sqlite3.Row
@@ -619,7 +622,7 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # serialized so a concurrent first-write can never observe a missing table.
     _ensure_schema_materialized(con, db_path)
     _stamp_signals_with_session(con)
-    con.schema_ahead = _schema_ahead(con, db_path) or real_store_refusal(db_path)
+    con.schema_ahead = _schema_ahead(con, db_path) or refusal
     if con.schema_ahead:
         con.set_authorizer(_refuse_main_writes)
     return con
