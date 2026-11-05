@@ -63,6 +63,7 @@ import os
 import re
 import shlex
 from typing import List, Optional, Tuple
+from urllib.parse import unquote
 
 from .canonical_path import command_name
 from .data_heredoc import _literal_words, is_gaia_cli
@@ -504,16 +505,30 @@ def unnamed_program_words(tokens: List[str]) -> List[str]:
     return _named_words(tokens)
 
 
+_URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:(?://)?")
+
+
+def operand_place(word: str) -> str:
+    """The file an operand names: quotes, a URI scheme and its query dropped, ``~``, ``~user`` and ``$HOME`` expanded."""
+    word = word.strip("'\"")
+    if _URI_SCHEME.match(word):
+        word = unquote(re.split(r"[?#]", _URI_SCHEME.sub("", word, count=1), maxsplit=1)[0])
+    return os.path.expanduser(expand_home(word))
+
+
 def _unnamed_program_operands(tokens: List[str], cwd: Optional[str]) -> List[str]:
-    return [
-        word for word in unnamed_program_words(tokens)
-        if os.path.isabs(expand_home(word.strip("'\"")))
-        or (cwd and cwd != UNKNOWN_CWD and os.path.lexists(os.path.join(cwd, word.split("/")[0])))
-    ]
+    places = []
+    for word in unnamed_program_words(tokens):
+        place = operand_place(word)
+        if os.path.isabs(place):
+            places.append(place)
+        elif cwd and cwd != UNKNOWN_CWD and os.path.lexists(os.path.join(cwd, place.split("/")[0])):
+            places.append(word)
+    return places
 
 
 def _holds_protected_tree(target: str, cwd: Optional[str]) -> Optional[str]:
-    path = expand_home(target.strip("'\""))
+    path = operand_place(target)
     if not os.path.isabs(path):
         if not cwd or cwd == UNKNOWN_CWD:
             return None

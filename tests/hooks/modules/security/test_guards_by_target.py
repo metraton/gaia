@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import getpass
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from modules.security import (  # noqa: E402
 from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
 
 HOME = str(Path.home())
+USER = getpass.getuser()
 STORE = f"{HOME}/.gaia/gaia.db"
 CLAUDE = f"{HOME}/.claude/settings.json"
 HOOKS = f"{HOME}/.claude/hooks"
@@ -52,6 +55,29 @@ REFUSED = [
     ("secret", f"newcat {HOME}/.ssh/id_rsa"),
     ("secret", f"newcat --in={HOME}/.ssh/id_rsa"),
     ("secret", f"cat {HOME}/.ssh/id_rsa"),
+    ("protected", f'newtool --out="{CLAUDE}"'),
+    ("protected", f"newtool /tmp/a /tmp/b {CLAUDE}"),
+    ("protected", "newtool ~/.claude/settings.json"),
+    ("protected", "newtool ${HOME}/.claude/hooks/x.py"),
+    ("protected", f"newtool ~{USER}/.claude/settings.json"),
+    ("protected", f"newtool file://{CLAUDE}"),
+    ("protected", f"newtool --out=file://{HOOKS}/x.py"),
+    ("protected", f"newtool -o{HOOKS}/x.py"),
+    ("protected", f"unar -o {HOOKS} /tmp/a.rar"),
+    ("protected", f"lha xw={HOOKS} /tmp/a.lzh"),
+    ("protected", f"ar x --output={HOOKS} /tmp/a.a"),
+    ("protected", f"newtool --in-place {HOME}/.claude"),
+    ("db", f'newtool "--db={STORE}" vacuum'),
+    ("db", "newtool $HOME/.gaia/gaia.db"),
+    ("db", f"newtool file:{STORE}?mode=rw"),
+    ("db", f"newtool --url=sqlite:///{STORE}"),
+    ("db", f"newtool {STORE}-wal"),
+    ("db", f"usql file://{STORE} -c 'DELETE FROM memory'"),
+    ("secret", "newcat $HOME/.ssh/id_rsa"),
+    ("secret", f'newcat "--key={HOME}/.ssh/id_rsa"'),
+    ("secret", f"newcat --in {HOME}/.ssh/id_rsa"),
+    ("secret", f"newcat file://{HOME}/.ssh/id_rsa"),
+    ("secret", f"newcat ~{USER}/.ssh/id_rsa"),
 ]
 
 
@@ -62,5 +88,31 @@ def test_operand_on_a_guarded_target_is_refused_whatever_the_program(guard, comm
     assert reason
 
 
-def test_unnamed_program_on_an_account_path_asks_for_a_signature():
-    assert detect_mutative_command(f"newtool --in-place {HOME}/.bashrc", cwd=WORKTREE).is_mutative
+@pytest.fixture
+def links(tmp_path):
+    for target, name in ((f"{HOME}/.claude", "c"), (STORE, "s"), (f"{HOME}/.ssh/id_rsa", "k")):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        (tmp_path / name).symlink_to(target)
+    return tmp_path
+
+
+@pytest.mark.parametrize("guard, command", [
+    ("protected", "newtool {links}/c/settings.json"),
+    ("db", "newtool {links}/s"),
+    ("db", "newtool --db={links}/s vacuum"),
+    ("secret", "newcat {links}/k"),
+])
+def test_a_link_is_judged_by_the_file_it_reaches(links, guard, command):
+    assert not GUARDS[guard].check(command.format(links=links), cwd=WORKTREE)[0]
+
+
+@pytest.mark.parametrize("command", [
+    f"newtool --in-place {HOME}/.bashrc",
+    f"newtool --file={HOME}/.bashrc",
+    "newtool ~/.gitconfig",
+    "newtool $HOME/.bashrc",
+    f'newtool "--rc={HOME}/.zshrc"',
+    f"newtool /tmp/a {HOME}/.profile",
+])
+def test_unnamed_program_on_an_account_path_asks_for_a_signature(command):
+    assert detect_mutative_command(command, cwd=WORKTREE).is_mutative

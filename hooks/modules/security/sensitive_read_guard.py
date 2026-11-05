@@ -305,8 +305,10 @@ def _gaia_read_candidates(tokens: List[str]) -> List[str]:
 
 
 def _operand_words(arguments: List[str]) -> List[str]:
-    """Every operand, and the value of every ``--option=value``: the places a program is handed."""
-    return [arg.split("=", 1)[1] if arg.startswith("-") else arg for arg in arguments
+    """Every operand, and the value of every ``--option=value``, as the file it names: the places a program is handed."""
+    from .protected_path_guard import operand_place
+
+    return [operand_place(arg.split("=", 1)[1] if arg.startswith("-") else arg) for arg in arguments
             if not arg.startswith("-") or "=" in arg]
 
 
