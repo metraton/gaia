@@ -90,7 +90,7 @@ from ..security.approval_messages import (
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
 from ..security.verdict import COMPOSITION_RULES, UNDETERMINED, UNKNOWN_SPAN, blocked_rule, render, signing_rule
-from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
+from ..security.shell_unwrapper import _SHELLS, ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
 from ..security.shell_substitution import (
@@ -351,6 +351,17 @@ def _heredoc_as_program(heredoc: _Heredoc) -> Optional[str]:
     return command if program is not None and program.is_readable else None
 
 
+def _xargs_line_is_argument(heredoc: _Heredoc, line: str) -> bool:
+    """True when xargs appends *line* unexpanded to a command no shell runs, so ``<cmd> <line>`` is its whole reading."""
+    target = _xargs_payload(heredoc.reader)
+    if heredoc.piped or target is None or (heredoc.expands and set("$`") & set(line)):
+        return False
+    words = _peel_leading_command_wrappers(heredoc.reader)[0].split()
+    replaces = any(word.startswith(("-I", "-i", "-J", "--replace")) for word in words[1:])
+    program = _peel_leading_command_wrappers(target)[0].split()
+    return not replaces and bool(program) and os.path.basename(program[0]) not in _SHELLS
+
+
 def _heredoc_lines(body: List[str]) -> List[str]:
     return [line for line in (b.strip() for b in body) if line]
 
@@ -372,7 +383,7 @@ def _scan_heredocs(command: str) -> Tuple[str, List[_Heredoc]]:
         if heredoc.is_data and not heredoc.piped:
             lines.extend(f"echo {b}" for b in heredoc.body if heredoc.expands and set("$`") & set(b))
         else:
-            lines.extend(heredoc.body)
+            lines.extend(b for b in heredoc.body if not _xargs_line_is_argument(heredoc, b))
         code.extend([] if heredoc.is_data else [heredoc])
         lines.append(line)
         pending.pop(0)

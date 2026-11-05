@@ -38,3 +38,11 @@ def test_the_caller_cwd_places_a_relative_line_not_the_hook_cwd(tmp_path, monkey
     result = _validate(TEE_RELATIVE, cwd=str(repo))
     assert not result.allowed
     assert result.rule == "floor.shell-write"
+
+
+def test_an_xargs_line_is_its_argument_while_a_shell_runs_each_line(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    missing = tmp_path / "absent" / "deploy.frob"
+    assert _validate(f"xargs cat <<'EOF'\n{missing}\nEOF").allowed
+    assert not _validate(f"bash <<'EOF'\n{missing}\nEOF").allowed
+    assert not _validate(f"sh -s <<'EOF'\n{missing}\nEOF").allowed
