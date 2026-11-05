@@ -2038,6 +2038,7 @@ class BashValidator:
                 has_orchestrator_above=is_subagent,
                 session_id=session_id,
                 agent_type=agent_type,
+                rule=UNKNOWN_SPAN if result.pattern == "unknown_sink" else "",
             )
 
         return None

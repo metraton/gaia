@@ -22,6 +22,7 @@ Escalation (route to T3 ask, not permanent block):
                       e.g. cat script.sh | bash
   6. Egress:          any other stage | network_write
                       e.g. git diff | curl --data-binary @- host
+  7. Unknown sink:    network/file/decode | ... | a program no rule names
 
 Transparent suffix rule:
   If every stage after the first is a safe_filter, no composition rule fires
@@ -233,6 +234,11 @@ _NETWORK_EXECUTABLES = frozenset({
     "fetch",
 })
 _STDIN_REDIRECTS = frozenset({"<", "<>", "<<", "<<<", "<<-"})
+_FEEDING_STAGES = frozenset({
+    StageType.SENSITIVE_READ, StageType.FILE_READ, StageType.NETWORK_READ,
+    StageType.NETWORK_WRITE, StageType.DECODE,
+})
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # ssh options taking a value, and the ones that keep stdin from the remote side.
 _SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
@@ -429,6 +435,20 @@ def redirected_into_sender(command: str) -> str:
     return ""
 
 
+def _unmodelled_program(command: str) -> str:
+    """The program *command* runs when no classifier rule and no declared tool row names it, else ""."""
+    from .cli_aliases import aliased_cli
+    from .mutative_verbs import _is_unmodelled_cli
+
+    tokens = _strip_transparent_prefixes(_tokenize_safe(command))
+    while tokens and _ASSIGNMENT.match(tokens[0]):
+        tokens = tokens[1:]
+    program = _get_executable(tokens)
+    if program and _is_unmodelled_cli(program) and aliased_cli(program) is None:
+        return program
+    return ""
+
+
 def _pipe_run_start(stages: List[CompositionStage], index: int) -> int:
     """The first stage of the unbroken pipe that feeds stage *index*."""
     while index > 0 and stages[index - 1].operator == "|":
@@ -511,6 +531,7 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
       5. Net-write RCE: network_write | exec_sink             -> BLOCK
       6. Egress:       any other      | network_write         -> ESCALATE
       7. File-to-exec: file_read      | exec_sink             -> ESCALATE
+      8. Unknown sink: read/decode | ... | unmodelled program -> ESCALATE
 
     Returns a CompositionResult.  If no rule fires, decision is ALLOW.
     """
@@ -549,7 +570,8 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
             stage_types=all_types,
         )
 
-    # Evaluate rules against each pipe-connected pair
+    # An unknown sink is returned only once no later pair blocks the pipe.
+    unknown_sink: Optional[CompositionResult] = None
     for src_idx, dst_idx in pipe_pairs:
         src = stages[src_idx]
         dst = stages[dst_idx]
@@ -642,8 +664,21 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
                 stage_types=all_types,
             )
 
-    # No rule fired
-    return CompositionResult(
+        feeder = next((k for k in upstream if stages[k].stage_type in _FEEDING_STAGES), None)
+        program = _unmodelled_program(dst.command) if dst_type == StageType.UNKNOWN else ""
+        if program and feeder is not None and unknown_sink is None:
+            unknown_sink = CompositionResult(
+                decision=CompositionDecision.ESCALATE,
+                pattern="unknown_sink",
+                reason=(
+                    f"'{stages[feeder].command[:60]}' feeds '{program}', a program no rule "
+                    f"here names, so what it does with that data could not be determined"
+                ),
+                matched_stages=[feeder, dst_idx],
+                stage_types=all_types,
+            )
+
+    return unknown_sink or CompositionResult(
         decision=CompositionDecision.ALLOW,
         stage_types=all_types,
     )
