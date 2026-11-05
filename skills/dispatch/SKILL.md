@@ -140,6 +140,7 @@ in `reference.md`; one two-writer wave, end to end, is in `examples.md`.
   work allows: one pull request per logical block of work -- not per task, not
   one giant -- a separate one only when a change is urgent, risky or of very
   different scope, and one signature for everything already known.
+- **The verification rings.** A goal that changes behavior asks for the rings it can afford, as `code-standards` Rule 9 states them; the whole suite stays CI's (principle 7).
 - **Acceptance as a property, not a checklist.** A checklist is satisfied by
   its items; a property makes the specialist find the cases the goal did not
   name, proven by literal output, never by the agent's assertion -- for a

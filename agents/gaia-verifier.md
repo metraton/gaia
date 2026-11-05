@@ -90,6 +90,8 @@ confirm.
    - a probe that only shows another design would be nicer is taste, never a
      failure.
    Name in the contract which probes ran and which could not run, and why.
+   Run only the declared gates and these probes, never a wider run
+   (`code-standards` Rule 9).
 4. **Record each verdict and its evidence.** `gaia task gate set-status <brief>
    <order_num> <gate_id> pass`, or `fail --cause=<product|environment|broken_test|requirement_changed>`
    naming what has to move: the product, the environment, the check itself, or
