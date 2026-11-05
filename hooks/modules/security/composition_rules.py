@@ -487,14 +487,30 @@ def _runs_unknown_program(command: str) -> str:
     ), "")
 
 
+def _output_sink_program(command: str) -> str:
+    from ..tools.shell_parser import parse_command
+    from .shell_substitution import extract_substitutions
+
+    return next((
+        program for body in extract_substitutions(command, top_level_only=True)
+        if f">({body})" in command
+        for component in parse_command(body) if (program := _runs_unknown_program(component))
+    ), "")
+
+
+def _sink_of_fed_stage(command: str, fed_from_outside: bool) -> str:
+    input_feed = _input_feed(command)
+    if (fed_from_outside or input_feed) and (program := _runs_unknown_program(command)):
+        return program
+    writes_data = fed_from_outside or input_feed or classify_stage(command) in _FEEDING_STAGES
+    return _output_sink_program(command) if writes_data else ""
+
+
 def redirected_into_unknown(command: str) -> str:
-    """The component of *command* that runs a program no rule names on input a redirect or substitution reads, or ""."""
+    """The component of *command* that hands what a redirect, substitution, read or decode yields to a program no rule names, or ""."""
     from ..tools.shell_parser import parse_command
 
-    for component in parse_command(command):
-        if _input_feed(component) and _runs_unknown_program(component):
-            return component.strip()
-    return ""
+    return next((c.strip() for c in parse_command(command) if _sink_of_fed_stage(c, False)), "")
 
 
 def _fed_unknown_program(
@@ -504,8 +520,8 @@ def _fed_unknown_program(
     for index, stage in enumerate(stages):
         upstream = range(_pipe_run_start(stages, index), index)
         feed = next((stages[k].command for k in upstream if stages[k].stage_type in _FEEDING_STAGES), "")
-        feed = feed or _input_feed(stage.command)
-        program = _runs_unknown_program(stage.command) if feed else ""
+        program = _sink_of_fed_stage(stage.command, bool(feed))
+        feed = feed or _input_feed(stage.command) or stage.command
         if program:
             return CompositionResult(
                 decision=CompositionDecision.ESCALATE,

