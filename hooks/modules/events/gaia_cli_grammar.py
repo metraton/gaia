@@ -32,8 +32,8 @@ SUBCOMMANDS = {
     'lint': 'comments',
     'login': 'start status',
     'memory': (
-        'add append checkpoint conflicts delete edit episode-show get-relevant link list move '
-        'reclassify search show stats story'
+        'add append checkpoint conflicts declare delete edit episode-show get-relevant link '
+        'list move reclassify search show stats story'
     ),
     'migrate': 'apply plan',
     'milestone': 'add edit remove set-status',
@@ -203,6 +203,7 @@ OPTIONS = {
     'memory append': '--body --body-file --help --json --workspace -h',
     'memory checkpoint': '--file --help --initiative --json --project --project-ref --workspace -h',
     'memory conflicts': '--exclude-class --help --json --limit --owner --threshold -h',
+    'memory declare': '--binary --command --effect --help --json --project --withdraw --workspace -h',
     'memory delete': '--hard --help --json --workspace --yes -h',
     'memory edit': "",
     'memory episode-show': '--help --json -h',

@@ -342,6 +342,13 @@ SURFACES: tuple[Surface, ...] = (
           ["memory", "checkpoint", "--file", "__CHECKPOINT_PAYLOAD__",
            "--workspace", WORKSPACE, "--json"],
           None, action="checkpoint", contains=("applied",)),
+    _read("declare-binary-refused",
+          ["memory", "declare", "--binary", "no_such_tool", "--effect", "read", "--json"],
+          None, action="declare", rc=1, contains=("declaration_refused",)),
+    _read("declare-command-withdraw-refused",
+          ["memory", "declare", "--project", "no_such_project", "--command", "make build",
+           "--withdraw", "--workspace", WORKSPACE, "--json"],
+          None, action="declare", rc=1, contains=("declaration_refused",)),
 )
 
 #: Flags that shape neither the row set nor the output shape, so exercising
@@ -366,6 +373,7 @@ NON_CLASSIFYING_FLAGS: dict[str, frozenset[str]] = {
                        "--kind", "--from-file"}),
     "conflicts": frozenset(),
     "story": frozenset({"--workspace"}),
+    "declare": frozenset({"--workspace"}),
 }
 
 #: Modules allowed to call ``record_memory_access``, each mapped to the

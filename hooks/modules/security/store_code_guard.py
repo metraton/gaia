@@ -30,18 +30,23 @@ _INERT_DUNDERS = frozenset({
     "__post_init__", "__main__",
 })
 _IMPORT_STATE = frozenset({"path", "modules", "meta_path", "path_hooks", "path_importer_cache"})
+_READ_METHODS = {"path": frozenset({"index", "count", "copy"}), "modules": frozenset({"keys"})}
+_STATE_READERS = frozenset({
+    "print", "len", "list", "tuple", "sorted", "set", "frozenset", "str", "repr", "any", "all", "enumerate",
+})
 _CODE_OBJECTS = frozenset({"CodeType", "FunctionType"})
 _ATTRIBUTE_READERS = frozenset({"getattr", "setattr", "delattr"})
 _DYNAMIC_IMPORTERS = frozenset({"import_module", "__import__", "run_module", "run_path"})
 _SQLITE_MODULES = frozenset({"sqlite3", "apsw", "pysqlite2", "pysqlite3", "sqlalchemy", "sqlite_utils", "peewee", "aiosqlite"})
 _OPENERS = frozenset({"connect", "Connection", "create_engine", "Database", "SqliteDatabase"})
-_PATH_ENVIRONMENT = re.compile(r"(?:^|[\s;&|(])PYTHON(?:PATH|HOME|STARTUP|USERBASE|SAFEPATH|PLATLIBDIR|BREAKPOINT)=")
+_PATH_ENVIRONMENT = re.compile(r"(?:^|[\s;&|(])(PYTHON(?:PATH|HOME|STARTUP|USERBASE|SAFEPATH|PLATLIBDIR|BREAKPOINT))=")
 _WARNINGS_ENVIRONMENT = re.compile(r"(?:^|[\s;&|(])PYTHONWARNINGS=(['\"]?)([^\s'\"]*)\1")
 _COOKIE = re.compile(rb"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
 _PLAIN_ENCODINGS = frozenset({
     "utf-8", "utf8", "utf-8-sig", "ascii", "us-ascii", "latin-1", "latin1", "iso-8859-1", "iso8859-1", "l1",
 })
 _MODELLED_FLAGS = frozenset("IEsSBuObqvdPRVh")
+_INERT_X_OPTIONS = frozenset({"utf8", "utf8=0", "utf8=1", "dev"})
 _LANE_MODULES = frozenset({"pytest", "pip"})
 _REDIRECT = re.compile(r"^\d*(?:>>?|<>|>&|&>>?|<&)")
 _HEREDOC_OPENER = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
@@ -72,6 +77,41 @@ def _root(node: ast.AST) -> Optional[str]:
 
 def _dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__") and name not in _INERT_DUNDERS
+
+
+def _bound_names(tree: ast.AST) -> Set[str]:
+    bound: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound |= _STATE_READERS if alias.name == "*" else {(alias.asname or alias.name).split(".")[0]}
+    return bound
+
+
+def _reads_import_state(node: ast.Attribute, parents: Dict[int, ast.AST], bound: Set[str]) -> bool:
+    """True when *node* (``sys.path`` or ``sys.modules``) is only inspected: never changed, aliased or handed to unknown code."""
+    if node.attr not in _READ_METHODS or not isinstance(node.ctx, ast.Load):
+        return False
+    parent = parents.get(id(node))
+    if isinstance(parent, ast.Compare):
+        return True
+    if isinstance(parent, (ast.For, ast.comprehension)):
+        return parent.iter is node
+    if isinstance(parent, ast.Call):
+        func = parent.func
+        return isinstance(func, ast.Name) and func.id in _STATE_READERS and func.id not in bound and node in parent.args
+    if isinstance(parent, ast.Attribute) and parent.attr in _READ_METHODS[node.attr]:
+        call = parents.get(id(parent))
+        return isinstance(call, ast.Call) and call.func is parent
+    if isinstance(parent, ast.Subscript) and node.attr == "path":
+        return parent.value is node and isinstance(parent.ctx, ast.Load)
+    return False
 
 
 def _decode(raw: bytes) -> Optional[str]:
@@ -123,6 +163,8 @@ class _Closure:
             tree = ast.parse(code)
         except (SyntaxError, ValueError):
             return UNPROVEN
+        parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        bound = _bound_names(tree)
         sqlite_modules, sqlite_openers = set(), set()
         outcomes: List[Optional[str]] = []
         literal_runs = {id(n.func) for n in ast.walk(tree) if self.literal_run(n)}
@@ -145,7 +187,8 @@ class _Closure:
                 outcomes.append(UNPROVEN)
             elif isinstance(node, ast.Attribute) and (
                     _dunder(node.attr) or node.attr in _CODE_OBJECTS
-                    or (_root(node) == "sys" and node.attr in _IMPORT_STATE)):
+                    or (_root(node) == "sys" and node.attr in _IMPORT_STATE
+                        and not _reads_import_state(node, parents, bound))):
                 outcomes.append(UNPROVEN)
             elif isinstance(node, ast.Call):
                 outcomes.append(self.call(node, sqlite_modules, sqlite_openers))
@@ -272,7 +315,9 @@ def _shebang_interpreter(path: str) -> Optional[str]:
     if not words:
         return ""
     program = words[0] if "/" in words[0] else shutil.which(words[0])
-    return os.path.realpath(program) if program and os.path.exists(program) else ""
+    if program and os.path.exists(program):
+        return os.path.realpath(program)
+    return words[0] if _PYTHON.match(os.path.basename(words[0])) else ""
 
 
 def _script_lane(path: str) -> Optional[str]:
@@ -295,11 +340,13 @@ def _absolute(path: str, cwd: str) -> str:
 def _script(path: str, cwd: str) -> Optional[str]:
     from pathlib import Path
 
+    from .gaia_cli_only_guard import is_trusted_gaia_binary
     from .mutative_verbs import _gaia_shipped_script
 
     full = _absolute(path, cwd)
     if _gaia_cli_shaped(full) or _gaia_cli_shaped(os.path.realpath(full)):
-        return None if _gaia_shipped_script(Path(full)) else UNPROVEN
+        linked = os.path.islink(full) and is_trusted_gaia_binary(full)
+        return None if linked or _gaia_shipped_script(Path(full)) else UNPROVEN
     if not os.path.isfile(full):
         return UNPROVEN
     return _Closure(os.path.dirname(os.path.realpath(full)), cwd).file(full)
@@ -350,43 +397,67 @@ def _stdin(tokens: List[str], bodies: Dict[str, str]) -> Tuple[List[str], Option
     return rest, stdin
 
 
-def _interpreter(tokens: List[str], bodies: Dict[str, str], cwd: str) -> Optional[str]:
-    """The closure outcome of one python invocation *tokens* (``tokens[0]`` is the interpreter)."""
-    if any(t in ("--version", "-V", "-VV", "--help", "-h") for t in tokens[1:]):
-        return None
-    tokens, stdin = _stdin(tokens, bodies)
+def _parse(tokens: List[str]) -> Tuple[str, str, List[str]]:
+    """How python *tokens* start their program: ``(kind, value, -W specs)``, kind c, m, script, stdin or unproven."""
+    warnings: List[str] = []
     index = 1
     while index < len(tokens):
         token = tokens[index]
         if token == "-":
             break
-        if token.startswith("-") and not token.startswith("--"):
-            letters = token[1:]
-            for position, letter in enumerate(letters):
-                rest = letters[position + 1:] or (tokens[index + 1] if index + 1 < len(tokens) else "")
-                if letter == "c":
-                    return _Closure(cwd, cwd).code(rest, cwd)
-                if letter == "m":
-                    return _run_module(rest, cwd) if rest else UNPROVEN
-                if letter == "W":
-                    warned = _warning_imports(rest, cwd)
-                    if warned:
-                        return warned
-                    index += 0 if letters[position + 1:] else 1
-                    break
-                if letter not in _MODELLED_FLAGS:
-                    return UNPROVEN
-            index += 1
-            continue
         if token.startswith("--"):
-            return UNPROVEN
-        return _script(token, cwd)
-    if stdin is None:
+            return "unproven", "", warnings
+        if not token.startswith("-"):
+            return "script", token, warnings
+        letters = token[1:]
+        for position, letter in enumerate(letters):
+            attached = letters[position + 1:]
+            value = attached or (tokens[index + 1] if index + 1 < len(tokens) else "")
+            if letter in "cm":
+                return letter, value, warnings
+            if letter in "WX":
+                if letter == "X" and value not in _INERT_X_OPTIONS:
+                    return "unproven", "", warnings
+                if letter == "W":
+                    warnings.append(value)
+                index += 0 if attached else 1
+                break
+            if letter not in _MODELLED_FLAGS:
+                return "unproven", "", warnings
+        index += 1
+    return "stdin", "", warnings
+
+
+def _program(kind: str, value: str, stdin: Optional[Tuple[str, str]], cwd: str) -> Optional[str]:
+    if kind == "c":
+        return _Closure(cwd, cwd).code(value, cwd)
+    if kind == "m":
+        return _run_module(value, cwd) if value else UNPROVEN
+    if kind == "script":
+        return _script(value, cwd)
+    if kind == "unproven" or stdin is None:
         return UNPROVEN
-    kind, value = stdin
-    if kind == "file":
-        return _script(value, cwd) if value else UNPROVEN
-    return UNPROVEN if value == "\0" else _Closure(cwd, cwd).code(value, cwd)
+    source, payload = stdin
+    if source == "file":
+        return _script(payload, cwd) if payload else UNPROVEN
+    return UNPROVEN if payload == "\0" else _Closure(cwd, cwd).code(payload, cwd)
+
+
+def _interpreter(tokens: List[str], bodies: Dict[str, str], cwd: str) -> Optional[str]:
+    """The closure outcome of one python invocation *tokens* (``tokens[0]`` is the interpreter)."""
+    if any(t in ("--version", "-V", "-VV", "--help", "-h") for t in tokens[1:]):
+        return None
+    tokens, stdin = _stdin(tokens, bodies)
+    kind, value, warnings = _parse(tokens)
+    return _worst([*(_warning_imports(w, cwd) for w in warnings), _program(kind, value, stdin, cwd)])
+
+
+def _runs_pytest(tokens: List[str]) -> bool:
+    tokens = (_runner_tail(tokens) or (tokens, None))[0]
+    if not _PYTHON.match(os.path.basename(tokens[0])):
+        return False
+    kind, module, _ = _parse(_stdin(tokens, {})[0])
+    return kind == "m" and module.split(".")[0] == "pytest"
 
 
 def _run_module(module: str, cwd: str) -> Optional[str]:
@@ -414,19 +485,38 @@ def _installed(name: str) -> bool:
         return False
 
 
-def _runner_tail(tokens: List[str]) -> Optional[List[str]]:
-    if os.path.basename(tokens[0]) not in _RUNNERS or "run" not in tokens:
+def _uv_directory(options: List[str]) -> Optional[str]:
+    directory = None
+    for index, option in enumerate(options):
+        if option == "--directory" and index + 1 < len(options):
+            directory = options[index + 1]
+        elif option.startswith("--directory="):
+            directory = option.split("=", 1)[1]
+    return directory
+
+
+def _runner_tail(tokens: List[str]) -> Optional[Tuple[List[str], Optional[str]]]:
+    runner = os.path.basename(tokens[0])
+    if runner not in _RUNNERS or "run" not in tokens:
         return None
-    for token in tokens[tokens.index("run") + 1:]:
+    start = tokens.index("run") + 1
+    for index in range(start, len(tokens)):
+        token = tokens[index]
         if _PYTHON.match(os.path.basename(token)):
-            return tokens[tokens.index(token):]
-        if token.endswith(".py"):
-            return ["python3", *tokens[tokens.index(token):]]
+            tail = tokens[index:]
+        elif token.endswith(".py"):
+            tail = ["python3", *tokens[index:]]
+        else:
+            continue
+        return tail, _uv_directory(tokens[:index]) if runner == "uv" else None
     return None
 
 
 def _component(tokens: List[str], bodies: Dict[str, str], cwd: str) -> Optional[str]:
-    tokens = _runner_tail(tokens) or tokens
+    run = _runner_tail(tokens)
+    if run:
+        tokens, directory = run
+        cwd = _absolute(directory, cwd) if directory else cwd
     head = os.path.basename(tokens[0])
     if _PYTHON.match(head):
         return _interpreter(tokens, bodies, cwd)
@@ -449,6 +539,7 @@ def closure(command: str, cwd: Optional[str] = None) -> Optional[str]:
     cwd = cwd or os.getcwd()
     lines, bodies = _split_heredocs(resolve_cat_heredocs(command, keep_newlines=True))
     outcomes: List[Optional[str]] = []
+    pytest_runs = 0
     for component in _split_components(lines):
         peeled, _ = _peel_leading_command_wrappers(component.strip())
         try:
@@ -457,9 +548,12 @@ def closure(command: str, cwd: Optional[str] = None) -> Optional[str]:
             tokens = peeled.split()
         if tokens:
             outcomes.append(_component(tokens, bodies, cwd))
-    if any(_PYTHON.match(os.path.basename(w)) for w in lines.split()):
-        if _PATH_ENVIRONMENT.search(lines):
-            outcomes.append(UNPROVEN)
+            pytest_runs += _runs_pytest(tokens)
+    pythons = sum(1 for w in lines.split() if _PYTHON.match(os.path.basename(w)))
+    if pythons:
+        for match in _PATH_ENVIRONMENT.finditer(lines):
+            if match.group(1) != "PYTHONPATH" or pythons != pytest_runs:
+                outcomes.append(UNPROVEN)
         outcomes.extend(_warning_imports(m.group(2), cwd) for m in _WARNINGS_ENVIRONMENT.finditer(lines))
     return _worst(outcomes)
 

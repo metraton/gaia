@@ -279,7 +279,8 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
                  reject and revoke withdraw ONE approval by id, taking back
                  consent Gaia issued; request-set phrases a signature your own
                  denial asked for. Granting and sweeping stay outside this lane.
-  memory         add | append | reclassify | move | link | checkpoint
+  memory         add | append | reclassify | move | link | checkpoint | declare
+                 declare is T3: the user signs what the hooks will conclude.
   scan
                  re-index this workspace's repos into (workspace, project)
                  rows -- how the coordinator keeps its own context current.
