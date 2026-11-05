@@ -489,6 +489,7 @@ def _run_with_plugins(argv, plugins):
 def main(argv=None):
     """CLI entry point. Returns exit code."""
     raw_argv = sys.argv[1:] if argv is None else list(argv)
+    os.environ.setdefault("GAIA_STORE_ENTRY_POINT", "bin/gaia")
 
     if not os.environ.get(_FAST_PATH_DISABLE_ENV):
         fast_name = _fast_path_subcommand(raw_argv)
