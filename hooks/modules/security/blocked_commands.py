@@ -32,6 +32,7 @@ import posixpath
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
+from .canonical_path import program_identity
 from .cli_aliases import with_wrappers_resolved
 from .command_semantics import CommandSemantics, analyze_command, _contains_ordered_sequence
 from .shell_grouping import strip_grouping_wrappers
@@ -383,7 +384,8 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
     "disk_operations": [
         re.compile(r"^dd\s+", re.IGNORECASE),
         re.compile(r"^fdisk\s+", re.IGNORECASE),
-        re.compile(r"^mkfs(\.(ext[34]|fat|ntfs))?\s+", re.IGNORECASE),
+        # every mkfs.<type> is a front end of mkfs, whatever filesystem it builds
+        re.compile(r"^mkfs(\.\w+)?\s+", re.IGNORECASE),
         # Windows volume, partition and shadow-copy destruction
         # format takes its switches before or after the drive, which may be
         # quoted or have a switch glued to it (C:/q)
@@ -786,12 +788,24 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
 
 
 def _classify_stripped_command(command: str) -> BlockedCommandResult:
-    """Classify an already-stripped command against the permanent-deny floor.
+    """Classify one reading from ``_classify_all_forms`` against the floor, as written and with its head named as the program it starts."""
+    for reading in dict.fromkeys((command, _with_program_named(command))):
+        result = _classify_reading(reading)
+        if result.is_blocked:
+            return result
+    return BlockedCommandResult(is_blocked=False)
 
-    Runs the false-positive fast-path, the semantic deny rules, and the raw
-    regex loop.  ``_classify_all_forms`` calls it for the command as written
-    and for each reading derived from it.
-    """
+
+def _with_program_named(command: str) -> str:
+    """*command* with its first word as ``program_identity`` names it, so ``^``-anchored patterns see ``dd`` behind ``/opt/bin/dd``."""
+    words = command.split(None, 1)
+    if not words:
+        return command
+    return " ".join([program_identity(words[0].strip("\"'")), *words[1:]])
+
+
+def _classify_reading(command: str) -> BlockedCommandResult:
+    """Run the false-positive fast-path, the semantic deny rules and the raw regex loop on one reading."""
     if _is_false_positive_carrier(command):
         return BlockedCommandResult(is_blocked=False)
 
