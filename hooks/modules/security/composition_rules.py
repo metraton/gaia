@@ -22,6 +22,7 @@ Escalation (route to T3 ask, not permanent block):
                       e.g. cat script.sh | bash
   6. Egress:          any other stage | network_write
                       e.g. git diff | curl --data-binary @- host
+  7. Unknown sink:    read/download/decode feeding an unnamed program; fed_unknown_program only raises a free verdict
 
 Transparent suffix rule:
   If every stage after the first is a safe_filter, no composition rule fires
@@ -233,6 +234,14 @@ _NETWORK_EXECUTABLES = frozenset({
     "fetch",
 })
 _STDIN_REDIRECTS = frozenset({"<", "<>", "<<", "<<<", "<<-"})
+_FEEDING_STAGES = frozenset({
+    StageType.SENSITIVE_READ, StageType.FILE_READ, StageType.NETWORK_READ,
+    StageType.NETWORK_WRITE, StageType.DECODE,
+})
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_EXECUTOR_DEPTH = 3
+_LITERAL_PROGRAM = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+_INPUT_BUILTINS = frozenset({"read", "mapfile", "readarray"})
 
 # ssh options taking a value, and the ones that keep stdin from the remote side.
 _SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
@@ -429,6 +438,99 @@ def redirected_into_sender(command: str) -> str:
     return ""
 
 
+def _unmodelled_program(command: str) -> str:
+    """The program *command* runs when no classifier rule and no declared tool row names it, else ""."""
+    from ..tools.shell_parser import shell_split
+    from .cli_aliases import aliased_cli
+    from .mutative_verbs import _is_unmodelled_cli
+
+    try:
+        tokens = _strip_transparent_prefixes(shell_split(command))
+    except ValueError:
+        return ""
+    while tokens and _ASSIGNMENT.match(tokens[0]):
+        tokens = tokens[1:]
+    program = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+    if (
+        _LITERAL_PROGRAM.fullmatch(program) and program not in _INPUT_BUILTINS
+        and _is_unmodelled_cli(program) and aliased_cli(program) is None
+    ):
+        return program
+    return ""
+
+
+def _commands_run(command: str, depth: int = 0) -> List[str]:
+    from .mutative_verbs import _executor_floor_payloads, _peel_wrapper_readings
+
+    readings = [command, *_peel_wrapper_readings(command)[0]]
+    if depth >= _EXECUTOR_DEPTH:
+        return readings
+    handed = [payload for reading in readings for payload in _executor_floor_payloads(reading)]
+    return readings + [run for payload in handed for run in _commands_run(payload, depth + 1)]
+
+
+def _input_feed(command: str) -> str:
+    from ..tools.shell_parser import parse_command
+    from .shell_substitution import extract_substitutions
+
+    for body in extract_substitutions(command):
+        feeding = [c for c in parse_command(body) if classify_stage(c) in _FEEDING_STAGES]
+        if feeding:
+            return feeding[0].strip()
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return ""
+    for operator, target in zip(tokens, tokens[1:]):
+        if operator in ("<", "<>") and target != "/dev/null":
+            return f"{operator} {target}"
+    return ""
+
+
+def _runs_unknown_program(command: str) -> str:
+    return next((
+        name for run in _commands_run(command)
+        if classify_stage(run) == StageType.UNKNOWN and (name := _unmodelled_program(run))
+    ), "")
+
+
+def _output_sink_program(command: str) -> str:
+    from ..tools.shell_parser import parse_command, process_substitutions
+
+    return next((
+        program for opener, body in process_substitutions(command) if opener == ">("
+        for component in parse_command(body) if (program := _runs_unknown_program(component))
+    ), "")
+
+
+def _sink_of_fed_stage(command: str, fed_from_outside: bool) -> str:
+    input_feed = _input_feed(command)
+    if (fed_from_outside or input_feed) and (program := _runs_unknown_program(command)):
+        return program
+    writes_data = fed_from_outside or input_feed or classify_stage(command) in _FEEDING_STAGES
+    return _output_sink_program(command) if writes_data else ""
+
+
+def redirected_into_unknown(command: str) -> str:
+    """The component of *command* that hands what a redirect, substitution, read or decode yields to a program no rule names, or ""."""
+    from ..tools.shell_parser import parse_command
+
+    return next((c.strip() for c in parse_command(command) if _sink_of_fed_stage(c, False)), "")
+
+
+def fed_unknown_program(stages: List[CompositionStage]) -> str:
+    """The first program no rule names that a stage runs, directly or through an executor, on data a read, download or decode hands it, or ""."""
+    for index, stage in enumerate(stages):
+        upstream = range(_pipe_run_start(stages, index), index)
+        fed = any(stages[k].stage_type in _FEEDING_STAGES for k in upstream)
+        program = _sink_of_fed_stage(stage.command, fed)
+        if program:
+            return program
+    return ""
+
+
 def _pipe_run_start(stages: List[CompositionStage], index: int) -> int:
     """The first stage of the unbroken pipe that feeds stage *index*."""
     while index > 0 and stages[index - 1].operator == "|":
@@ -549,7 +651,6 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
             stage_types=all_types,
         )
 
-    # Evaluate rules against each pipe-connected pair
     for src_idx, dst_idx in pipe_pairs:
         src = stages[src_idx]
         dst = stages[dst_idx]
@@ -642,7 +743,6 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
                 stage_types=all_types,
             )
 
-    # No rule fired
     return CompositionResult(
         decision=CompositionDecision.ALLOW,
         stage_types=all_types,

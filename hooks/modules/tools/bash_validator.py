@@ -129,7 +129,9 @@ from ..security.comment_push_gate import check as check_comment_push
 from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
+    fed_unknown_program,
     redirected_into_sender,
+    redirected_into_unknown,
     CompositionDecision,
 )
 from .shell_parser import get_shell_parser, strip_comment
@@ -1153,6 +1155,7 @@ class BashValidator:
                 session_id=session_id,
                 agent_type=agent_type,
             )
+        fed_unknown = redirected_into_unknown(write_guard_scope)
 
         # After the write guards, so their refusals win; the operator splitter
         # would otherwise cut a data heredoc's prose into "components".
@@ -1310,6 +1313,11 @@ class BashValidator:
         if code_heredocs:
             result = self._fail_closed_on_code_heredoc(
                 code_heredocs, result, is_subagent=is_subagent, cwd=payload_cwd,
+            )
+        if result.allowed and (fed_unknown or fed_unknown_program(build_composition_stages(decomposed.stages))):
+            result = decide_t3_outcome(
+                command, verb="unknown_sink", category="MUTATIVE", has_orchestrator_above=is_subagent,
+                session_id=session_id, agent_type=agent_type, rule=UNKNOWN_SPAN,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
