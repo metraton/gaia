@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import ast
+import functools
 import os
 import re
+import site
+import sys
+from importlib.machinery import PathFinder
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 STORE = "store"
@@ -30,7 +34,14 @@ _ATTRIBUTE_READERS = frozenset({"getattr", "setattr", "delattr"})
 _DYNAMIC_IMPORTERS = frozenset({"import_module", "__import__", "run_module", "run_path"})
 _SQLITE_MODULES = frozenset({"sqlite3", "apsw", "pysqlite2", "pysqlite3", "sqlalchemy", "sqlite_utils", "peewee", "aiosqlite"})
 _OPENERS = frozenset({"connect", "Connection", "create_engine", "Database", "SqliteDatabase"})
-_PATH_ENVIRONMENT = re.compile(r"(?:^|[\s;&|(])PYTHON(?:PATH|HOME|STARTUP|USERBASE|SAFEPATH|PLATLIBDIR)=")
+_PATH_ENVIRONMENT = re.compile(r"(?:^|[\s;&|(])PYTHON(?:PATH|HOME|STARTUP|USERBASE|SAFEPATH|PLATLIBDIR|BREAKPOINT)=")
+_WARNINGS_ENVIRONMENT = re.compile(r"(?:^|[\s;&|(])PYTHONWARNINGS=(['\"]?)([^\s'\"]*)\1")
+_COOKIE = re.compile(rb"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
+_PLAIN_ENCODINGS = frozenset({
+    "utf-8", "utf8", "utf-8-sig", "ascii", "us-ascii", "latin-1", "latin1", "iso-8859-1", "iso8859-1", "l1",
+})
+_MODELLED_FLAGS = frozenset("IEsSBuObqvdPRVh")
+_LANE_MODULES = frozenset({"pytest", "pip"})
 _REDIRECT = re.compile(r"^\d*(?:>>?|<>|>&|&>>?|<&)")
 _HEREDOC_OPENER = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
 _MAX_FILES = 200
@@ -62,10 +73,27 @@ def _dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__") and name not in _INERT_DUNDERS
 
 
+def _decode(raw: bytes) -> Optional[str]:
+    """*raw* as CPython decodes source, or None for an encoding the guard does not model or bytes that do not decode."""
+    encoding = "utf-8-sig"
+    for line in raw.split(b"\n")[:2]:
+        cookie = _COOKIE.match(line)
+        if cookie:
+            name = cookie.group(1).decode("ascii", "replace").lower().replace("_", "-")
+            if name not in _PLAIN_ENCODINGS:
+                return None
+            encoding = "utf-8-sig" if name.startswith("utf") or name in ("ascii", "us-ascii") else "latin-1"
+            break
+    try:
+        return raw.decode(encoding)
+    except UnicodeDecodeError:
+        return None
+
+
 def _read(path: str) -> Optional[str]:
     try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            return handle.read(_MAX_BYTES)
+        with open(path, "rb") as handle:
+            return _decode(handle.read(_MAX_BYTES))
     except OSError:
         return None
 
@@ -88,6 +116,8 @@ class _Closure:
         return UNPROVEN if code is None else self.code(code, os.path.dirname(real))
 
     def code(self, code: str, package_dir: str) -> Optional[str]:
+        if _decode(code.encode("utf-8", "surrogatepass")) is None:
+            return UNPROVEN
         try:
             tree = ast.parse(code)
         except (SyntaxError, ValueError):
@@ -167,7 +197,9 @@ class _Closure:
         if not submodule and top in _UNPROVABLE_MODULES:
             return UNPROVEN
         found = self.local(root, dotted.split("."), optional=True)
-        return found if found != "absent" else None
+        if found != "absent":
+            return found
+        return None if submodule or _installed(top) else UNPROVEN
 
     def local(self, base: str, parts: List[str], optional: bool = False) -> Optional[str]:
         """Analyse the local module *parts* under *base*: each package __init__ on the way and the module itself."""
@@ -310,15 +342,19 @@ def _interpreter(tokens: List[str], bodies: Dict[str, str], cwd: str) -> Optiona
                 if letter == "c":
                     return _Closure(cwd, cwd).code(rest, cwd)
                 if letter == "m":
-                    return _Closure(cwd, cwd).module(rest, cwd) if rest else UNPROVEN
-                if letter in "XWQ":
+                    return _run_module(rest, cwd) if rest else UNPROVEN
+                if letter == "W":
+                    warned = _warning_imports(rest, cwd)
+                    if warned:
+                        return warned
                     index += 0 if letters[position + 1:] else 1
                     break
+                if letter not in _MODELLED_FLAGS:
+                    return UNPROVEN
             index += 1
             continue
         if token.startswith("--"):
-            index += 1
-            continue
+            return UNPROVEN
         return _script(token, cwd)
     if stdin is None:
         return UNPROVEN
@@ -326,6 +362,31 @@ def _interpreter(tokens: List[str], bodies: Dict[str, str], cwd: str) -> Optiona
     if kind == "file":
         return _script(value, cwd) if value else UNPROVEN
     return UNPROVEN if value == "\0" else _Closure(cwd, cwd).code(value, cwd)
+
+
+def _run_module(module: str, cwd: str) -> Optional[str]:
+    if module.split(".")[0] in _LANE_MODULES:
+        return None
+    closure = _Closure(cwd, cwd)
+    main = closure.local(cwd, [*module.split("."), "__main__"], optional=True)
+    return _worst([closure.module(module, cwd), None if main == "absent" else main])
+
+
+def _warning_imports(spec: str, cwd: str) -> Optional[str]:
+    categories = [entry.split(":")[2] for entry in spec.split(",") if entry.count(":") >= 2]
+    return _worst(_Closure(cwd, cwd).module(c.rsplit(".", 1)[0], cwd) for c in categories if "." in c)
+
+
+@functools.lru_cache(maxsize=256)
+def _installed(name: str) -> bool:
+    """True for a stdlib module or one found in a system or virtualenv site-packages, never the user site."""
+    if name in sys.stdlib_module_names or name in sys.builtin_module_names:
+        return True
+    try:
+        directories = [d for d in site.getsitepackages() if os.path.isdir(d)]
+        return PathFinder.find_spec(name, directories) is not None
+    except Exception:
+        return False
 
 
 def _runner_tail(tokens: List[str]) -> Optional[List[str]]:
@@ -370,8 +431,10 @@ def closure(command: str, cwd: Optional[str] = None) -> Optional[str]:
             tokens = peeled.split()
         if tokens:
             outcomes.append(_component(tokens, bodies, cwd))
-    if _PATH_ENVIRONMENT.search(lines) and any(_PYTHON.match(os.path.basename(w)) for w in lines.split()):
-        outcomes.append(UNPROVEN)
+    if any(_PYTHON.match(os.path.basename(w)) for w in lines.split()):
+        if _PATH_ENVIRONMENT.search(lines):
+            outcomes.append(UNPROVEN)
+        outcomes.extend(_warning_imports(m.group(2), cwd) for m in _WARNINGS_ENVIRONMENT.finditer(lines))
     return _worst(outcomes)
 
 

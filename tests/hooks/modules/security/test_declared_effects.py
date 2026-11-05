@@ -161,6 +161,9 @@ _STORE_CODE = {
     "store-env": "python3 -c 'import os, sqlite3; sqlite3.connect(os.environ[\"GAIA_DB\"]).execute(\"DELETE FROM memory\")'",
     "aliased": "python3 -c 'from sqlite3 import connect as c; c(\"{store}\")'",
     "exec-literal": "python3 -c \"exec('from gaia.approvals import store')\"",
+    "package-main": "python3 -m mypkg",
+    "warnings-option": "python3 -W ignore::gaia.approvals.store.Warning -c 'print(1)'",
+    "warnings-env": "PYTHONWARNINGS=ignore::gaia.approvals.store.Warning python3 -c 'print(1)'",
     "script": "python3 {script}",
 }
 
@@ -176,6 +179,11 @@ def isolated_store(tmp_path, monkeypatch):
     (tmp_path / "run.py").write_text("import mymod\n")
     (tmp_path / "helper.py").write_text("import json\nVALUE = json.dumps(1)\n")
     (tmp_path / "clean.py").write_text("import helper\nprint(helper.VALUE)\n")
+    (tmp_path / "mypkg").mkdir()
+    (tmp_path / "mypkg" / "__init__.py").write_text("")
+    (tmp_path / "mypkg" / "__main__.py").write_text(approve)
+    (tmp_path / "u7.py").write_bytes(
+        b"# -*- coding: utf-7 -*-\n#+AAo-from gaia.approvals import store+AAo-store.approve('P-x')\n")
     tool = tmp_path / "tool"
     tool.write_text("#!/usr/bin/env python3\n" + approve)
     tool.chmod(0o755)
@@ -214,6 +222,9 @@ _UNPROVEN_CODE = {
     "uv-run-script": "uv run python3 {cwd}/write.py",
     "timeout-wrapper": "timeout 5 python3 -c 'from gaia.approvals import store'",
     "unparsed": "python3 -c 'import (('",
+    "utf7-cookie": "python3 {cwd}/u7.py",
+    "unresolved-module": "python3 -c 'import evil_user_site_module'",
+    "unmodelled-option": "python3 -X importtime -c 'print(1)'",
 }
 
 
