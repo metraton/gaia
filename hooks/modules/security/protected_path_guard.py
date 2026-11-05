@@ -63,7 +63,7 @@ import os
 import re
 import shlex
 from typing import List, Optional, Tuple
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from .canonical_path import command_name
 from .data_heredoc import _literal_words, is_gaia_cli
@@ -338,6 +338,9 @@ def unprovable_write_target(command: str, cwd: Optional[str] = None) -> Optional
                 continue
             base = command_name(tokens[0])
             redirects, operands = _write_targets(tokens, base)
+            unplaced = [w for w in redirects + operands + unnamed_program_words(tokens) if unresolvable_file_uri(w)]
+            if unplaced:
+                return unplaced[0]
             if base == "git":
                 writes = bool(operands) and operands[0] in _GIT_WRITE_SUBCOMMANDS
                 operands = operands[1:]
@@ -508,10 +511,30 @@ def unnamed_program_words(tokens: List[str]) -> List[str]:
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:(?://)?")
 
 
+_LOCAL_HOST = re.compile(r"|localhost|127(?:\.\d{1,3}){3}|\[::1\]", re.IGNORECASE)
+
+
+def _file_uri_path(word: str) -> Optional[str]:
+    """The path of a ``file:`` URI whose host is this machine (RFC 8089), else None."""
+    try:
+        parts = urlsplit(word)
+    except ValueError:
+        return None
+    return unquote(parts.path) if _LOCAL_HOST.fullmatch(parts.netloc) else None
+
+
+def unresolvable_file_uri(word: str) -> bool:
+    """True for a ``file:`` URI naming another host or one that does not parse: its target cannot be placed."""
+    word = word.strip("'\"")
+    return word[:5].lower() == "file:" and _file_uri_path(word) is None
+
+
 def operand_place(word: str) -> str:
     """The file an operand names: quotes, a URI scheme and its query dropped, ``~``, ``~user`` and ``$HOME`` expanded."""
     word = word.strip("'\"")
-    if _URI_SCHEME.match(word):
+    if word[:5].lower() == "file:":
+        word = _file_uri_path(word) or word
+    elif _URI_SCHEME.match(word):
         word = unquote(re.split(r"[?#]", _URI_SCHEME.sub("", word, count=1), maxsplit=1)[0])
     return os.path.expanduser(expand_home(word))
 

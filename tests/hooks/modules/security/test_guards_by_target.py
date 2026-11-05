@@ -78,7 +78,24 @@ REFUSED = [
     ("secret", f"newcat --in {HOME}/.ssh/id_rsa"),
     ("secret", f"newcat file://{HOME}/.ssh/id_rsa"),
     ("secret", f"newcat ~{USER}/.ssh/id_rsa"),
+    ("protected", f"newtool file://localhost{CLAUDE}"),
+    ("protected", f"newtool --out=file://LOCALHOST{HOOKS}/x.py"),
+    ("protected", f"newtool file://127.0.0.1{CLAUDE}"),
+    ("db", f"newtool file://localhost{STORE}"),
+    ("db", f"newtool --db=file://localhost{STORE}?mode=rw"),
+    ("secret", f"newcat file://localhost{HOME}/.ssh/id_rsa"),
+    ("secret", f"newcat --key=file://127.0.0.1{HOME}/.ssh/id_rsa"),
 ]
+
+
+@pytest.mark.parametrize("command", [
+    f"newtool file://otherhost{CLAUDE}",
+    f"newtool --db=file://otherhost{STORE}",
+    f"newcat file://otherhost{HOME}/.ssh/id_rsa",
+    f"newtool file://[bad{CLAUDE}",
+])
+def test_a_file_uri_on_another_host_cannot_be_placed_and_asks(command):
+    assert protected_path_guard.unprovable_write_target(command, cwd=WORKTREE)
 
 
 @pytest.mark.parametrize("guard, command", REFUSED)
