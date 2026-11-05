@@ -2643,7 +2643,8 @@ def upsert_memory(
                     owner_level       = excluded.owner_level,
                     until             = excluded.until,
                     binary            = excluded.binary,
-                    replaces          = excluded.replaces
+                    replaces          = excluded.replaces,
+                    effect            = CASE WHEN binary IS excluded.binary THEN effect END
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no

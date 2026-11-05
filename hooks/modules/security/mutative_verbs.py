@@ -1211,6 +1211,8 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # one returns the old row to every injection -- is as unrecoverable
         # as `delete`.
         MutativeAnchor(path=("memory", "link"), flags=frozenset({"--delete"})),
+        # A declaration changes what the hooks conclude about a command.
+        MutativeAnchor(path=("memory", "declare")),
     ),
     "gcloud": (
         # `set-password` sits three tokens below the gcloud root, beyond the
