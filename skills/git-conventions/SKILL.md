@@ -33,7 +33,7 @@ chore(deps): update terraform to v1.6.0
 Repeat `-m` once per paragraph -- `git -C /abs commit -m "type: subject" -m
 "First paragraph." -m "Second paragraph."` -- no heredoc, no temp file. For
 exact wraps, use `git commit -m "$(cat <<'EOF' ... EOF)"` instead
-(`command-execution` Rule 7). Never attach a bare, unquoted heredoc
+(the bare-`cat` heredoc receiver `security-tiers` names). Never attach a bare, unquoted heredoc
 directly to git (`git commit -F - <<EOF ... EOF`) -- measured, the
 classifier misreads a prose line as a command and blocks with a spurious
 T3 (`Verb: 'rm' (MUTATIVE)` on text that only *mentions* `rm -rf`).
@@ -46,7 +46,7 @@ the command identically to the bare verb (`git -C /repo push origin main` is
 T3 `push`, same as `git push origin main`); there is NO bypass of Gaia's gate. The full discipline --
 why one byte-identical form prevents the approval loop, and why a separate `cd`
 call cannot work (the cwd resets between Bash calls) -- lives in
-`command-execution` Rule 7; follow it there.
+`command-execution` ("Before the call" rule 2 and "After the call"); follow it there.
 
 Two narrow caveats:
 - Prefer `-C /abs` (short flag) or `--git-dir=/abs` (equals form); both are
@@ -68,24 +68,32 @@ Push to the feature branch. Only push directly to `main` when explicitly
 instructed or when the work is already on main. Force-push (`--force`)
 requires explicit user instruction.
 
-Which of these ask for a signature (`security-tiers` owns the rule;
-`_check_git_publish_relief` in `mutative_verbs.py` decides it):
+Which of these ask for a signature (`security-tiers` owns the rule; the
+shapes are the entries of `verb_lexicon.py::EFFECT_OVER_VERB_EXCEPTIONS`):
 
 - **Free:** `commit`, `add` and the other local subcommands;
   `git -C /abs push [-u|--set-upstream] <remote> <branch>` when the branch is
   named, is not main, master or the remote's HEAD branch, and the repository's
-  push configuration sends it to itself, with nothing before `git`; `gh pr create`; `gh pr
-  edit` without `--base`; `git -C <path> merge --ff-only <rev>` when `<path>`
-  is a Gaia-managed worktree.
-- **Free, local sync in any repository:** `merge --ff-only <remote>/<branch>`
-  when `<branch>` is the checked-out branch (`_git_local_sync` decides it from
-  the repository's state); `git fetch`, `pull --ff-only` and `switch`/`checkout
-  <branch>` are free by elimination.
+  push configuration sends it to itself, with nothing before `git`
+  (`mutative_verbs.py::_git_push_targets_feature_branch`).
+- **Free in any repository:** a local `merge` whose flags are all in
+  `mutative_verbs.py::_GIT_LOCAL_MERGE_FLAGS` (`--no-ff`, `--ff-only`,
+  `--squash`, ...), plus `-m <msg>`, with literal ref operands, and a bare
+  `merge --abort|--continue|--quit` (`mutative_verbs.py::_git_merge_is_local`);
+  opening a change request (`pr create`, any forge binary, any `--repo`;
+  `forge_shapes.py::change_request_action`) and editing one on this
+  checkout's origin without a retarget, ready, draft or status flag;
+  `git fetch`, `pull --ff-only` and `switch`/`checkout <branch>` by
+  elimination.
 - **T3:** bare `git push`, a push to the default branch or `HEAD`, any push
   with another flag (`--force`, `--force-with-lease`, `--delete`, `--mirror`,
-  `--all`, `--tags`) or a `+`/`:` refspec; `gh pr merge`; `gh pr edit
-  --base`; every other `merge`, including a `--ff-only` that moves the current
-  branch to another branch's ref; `rebase`; `reset --hard`.
+  `--all`, `--tags`), a `+`/`:` refspec or a `src:dst` onto another branch
+  (a force push signs as `sign.destroys`, never refused); `pr merge`; a
+  change-request edit with `--base` (`_CHANGE_REQUEST_EDIT_FLAGS`) or on
+  another origin (`mutative_verbs.py::_change_request_elsewhere`); a merge
+  with a strategy option (`-s`, `-X`) or a computed operand; a `rebase`
+  outside the unpushed, managed-worktree shape
+  (`mutative_verbs.py::_git_rebase_rewrites_only_unpushed`); `reset --hard`.
 
 Do not request the free forms in advance: run them, and request only what is
 still T3.

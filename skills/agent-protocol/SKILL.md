@@ -43,7 +43,7 @@ runbook written for a human operator describes what must happen, not who does it
 read it as the sequence of effects, run each step yourself, and request the T3
 ones as one set through `subagent-request-approval`. The person's steps go in
 `conclusion` as a block headed `Human steps:`, one step per line with why it is
-theirs, and only those -- the orchestrator reads a step an agent could run as the
+theirs, each ready to paste and run with its values filled in, and only those -- the orchestrator reads a step an agent could run as the
 cue to resume you with it (`agent-response`).
 
 Approval is authority to attempt execution; it is never evidence that execution
@@ -69,7 +69,7 @@ The orchestrator sees where an unfinished turn stands by reading its row: `gaia 
 
 ## 7. Every increment closes verified, and fixing starts by going back to the sources
 
-Close each piece verified before starting the next, against the acceptance the kernel or the goal carries: run the assertion, re-run it after each fix until it holds or the gap is declared -- by result, never by exit code. What only judgment settles is named a rubric and left to the verifier, not looped on. Going deeper inside the goal rather than wider is `investigation`'s "Deeper, not bigger". Failures compound, and separating two entangled ones costs more than verifying the first. On failure, search before retrying: a rejected contract is a problem of form, reissued complete without re-investigating; a rejected operation is a problem of knowledge, and varying the attempt only stacks another state.
+Close each piece verified before starting the next, against the acceptance the kernel or the goal carries: run the assertion, re-run it after each fix until it holds or the gap is declared -- by result, never by exit code. What only judgment settles is named a rubric and left to the verifier, not looped on. A clear defect in your own deliverable you fix without asking, and say so in one line. Going deeper inside the goal rather than wider is `investigation`'s "Deeper, not bigger". Failures compound, and separating two entangled ones costs more than verifying the first. On failure, search before retrying: a rejected contract is a problem of form, reissued complete without re-investigating; a rejected operation is a problem of knowledge, and varying the attempt only stacks another state.
 
 ## 8. Before declaring yourself blocked, ask
 

@@ -67,10 +67,13 @@ reclaims entries named by a closed contract id, and `prueba-firmas` is not one.
    the listing shows. Report which part did not match.
 7. Clean everything, only now that every question is answered. Withdraw each
    still-pending signature with `gaia approvals reject <approval_id>`, then
-   give a specialist one last ordinary task: `rm` of each exact path left
-   with the run's prefix, which inside scratch needs no signature. The folder
-   and `otra/` stay, with no file of the run; check the listing before you
-   finish.
+   give a specialist one last task: `rm` of each exact path left with the
+   run's prefix. That `rm` signs: scratch removal runs free only inside the
+   remover's own entry, one named by its `agent_id`
+   (`hooks/modules/security/mutative_verbs.py::_owned_by`), and
+   `prueba-firmas` is no agent's, so present the cleanup's approval like any
+   other. The folder and `otra/` stay, with no file of the run; check the
+   listing before you finish.
 
 ## Area: approvals
 

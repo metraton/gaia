@@ -44,8 +44,13 @@ restrictions, and model.
 3. The agent follows the newly loaded protocol
 ```
 
-`hooks/hooks.json` carries no `Skill` matcher, so a `Skill(...)` call never
-reaches PreToolUse. This route is entirely host-side too.
+The load itself is host-side: PreToolUse in `hooks/hooks.json` does not
+match `Skill`, so nothing gates the call. Its PostToolUse `Skill` matcher
+only records it afterwards, as a `skill.loaded` event
+(`hooks/modules/events/capability_usage.py::SKILL_LOADED`), and a
+main-session `Skill('memory')` also as `memory.skill_loaded`, which the
+orchestrator's memory-write guard reads
+(`hooks/modules/security/memory_skill_guard.py::SKILL_LOADED_EVENT`).
 
 Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation. Approval presentation is the same in both hosts: the orchestrator passes `gaia approvals question` output to its question tool, and an approval resumes the same specialist by task id. In neither host is the question opened in the requesting specialist's session.
 

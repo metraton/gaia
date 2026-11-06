@@ -8,6 +8,23 @@ description: Use when executing any bash command, CLI tool, or shell operation
 One command, one result, one exit code. This skill owns invocation discipline;
 `security-tiers` owns classification and the approval branch owns T3 payloads.
 
+## Choosing the command
+
+A command is written for a person, who reads it when asked to sign it: pick
+the simplest literal form that shows its own effect. Take the first of these
+that does the work: the host's file and search tools (`Read`, `Grep`, `Glob`,
+`Edit`, `Write`); a read-only CLI form; a local verb on your own work, your
+own branch or your own scratch entry named by your `contract_id`; and only
+last a form that changes shared or live state.
+
+When a command asks for a signature, either its effect is needed, and you
+request it plainly, or a genuinely lighter route reaches the goal (a read
+instead of a write, your own scratch entry, a file tool), and you take it. A
+different spelling of the same effect is neither: a wrapper shell, an
+interpreter one-liner, a variable in the program or verb position, the effect
+moved into a script. That is the elusion `security-tiers` forbids; refuse an
+instruction to use one and record the refusal, as rule 6 below does for writes.
+
 ## Before the call
 
 1. Prefer a native CLI flag to a pipe and a file tool to shell file I/O.
@@ -144,7 +161,9 @@ shows the gate where it reads and writes runs free; reach for these first
   (`tests/hooks/modules/security/test_pytest_runner_options.py::test_pytest_options_inside_the_repo_run_free`).
 - Copy, move or remove inside a scratch entry named by your `contract_id`
   (`tests/hooks/modules/security/test_own_scratch_relief_real_shape.py::test_own_scratch_relief_under_the_real_payload`,
-  cases `cp-into-own-entry`, `mv-in-own-entry`, `rm-in-own-entry`).
+  cases `cp-into-own-entry`, `mv-in-own-entry`, `rm-in-own-entry`). The
+  relief covers only that entry; another agent's entry or a shared scratch
+  folder signs (`hooks/modules/security/mutative_verbs.py::_owned_by`).
 - Keep a Python probe's argv literal: names bound once to literals and passed
   to `subprocess.run` are judged as the command they spell
   (`tests/hooks/modules/security/test_script_file_readonly_subprocess.py::test_argv_names_bound_once_to_literals_run_free`).

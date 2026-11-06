@@ -149,6 +149,8 @@ A rule the user sets for one project splits along those lines: the habit
 ("follow the workflow each repository declares") is his, the value ("this one
 integrates straight to main") belongs to the project. Filed as a user row, the
 value follows him into every other project and contradicts the next one.
+Write a principle or a rule row with no specific values -- no counts, names,
+hosts or limits; the values go to the owning project's facts.
 
 Ask of any rule for how Gaia should behave: **would it hold for any user?** Then
 it is not his difference: it is a missing standard or a defect, filed under
