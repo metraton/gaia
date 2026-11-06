@@ -97,7 +97,6 @@ BOOLEAN_SHORT_FLAGS: Dict[str, FrozenSet[str]] = {
     "yum": frozenset({"-y", "-q", "-v", "-C", "-h"}),
     "dnf": frozenset({"-y", "-q", "-v", "-C", "-h"}),
     "pip": frozenset({"-q", "-v", "-h"}),
-    "jq": frozenset({"-c", "-r", "-j", "-a", "-n", "-e", "-s", "-S", "-C", "-M", "-R"}),
     "pip3": frozenset({"-q", "-v", "-h"}),
 }
 

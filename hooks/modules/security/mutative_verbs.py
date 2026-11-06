@@ -5712,6 +5712,8 @@ def detect_mutative_command(
         return sync
 
     result = _detect_mutative_command(command, from_source_code, cwd, _depth, caller, _in_prefix)
+    if not from_source_code:
+        result = _check_execution_scan(command, result, cwd)
 
     declared = declared_wrapper(command)
     if declared is not None:
@@ -6207,9 +6209,6 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     pytest_result = _check_pytest_run(base_cmd, semantics, cwd)
     if pytest_result is not None:
         return pytest_result
-    execution_result = _check_execution_scan(command, family, cwd)
-    if execution_result is not None:
-        return execution_result
     py_module_result = _check_python_module_runner(base_cmd, semantics, cwd=cwd, _depth=_depth)
     if py_module_result is not None:
         return py_module_result
@@ -9634,20 +9633,31 @@ def _pytest_config_outside_effect(path: Path, top: "Optional[Path]", base: Path)
     return _pytest_outside_effect(_pytest_options(addopts)[0], top, base, read_config=False)
 
 
-def _check_execution_scan(command: str, family: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
-    """The short scan's verdict for an execution it models; None leaves the command to the lanes after it."""
+_NO_MODEL_VERBS: FrozenSet[str] = frozenset({
+    "npm-run-unresolved", "bun-run-unresolved", "pnpm-run-unresolved", "yarn-run-unresolved",
+    "frozen-install-unresolved", "script-file-unreadable", "js-import-unresolved", "js-hidden-effect",
+})
+
+
+def _check_execution_scan(command: str, result: MutativeResult, cwd: "Optional[str]") -> MutativeResult:
+    """*result* with the short scan applied (D198 point 3, decision B): a signal adds an ask, and no signal frees only a no-model ask."""
+    relievable = result.is_mutative and result.verb in _NO_MODEL_VERBS
+    if result.is_mutative and not relievable:
+        return result
     verdict = scan_execution(command, cwd, CLI_FAMILY_LOOKUP)
     if verdict is None:
-        return None
-    if verdict.signal is None:
+        return result
+    if verdict.signal is not None:
         return MutativeResult(
-            is_mutative=False, category=CATEGORY_READ_ONLY, verb="execution-scan", cli_family=family,
-            confidence="medium", reason=f"{verdict.kind} {verdict.entry}: no signal at depth 1",
+            is_mutative=True, category=CATEGORY_MUTATIVE, verb=f"execution-scan:{verdict.signal}",
+            cli_family=result.cli_family, confidence="high",
+            reason=f"{verdict.kind} {verdict.entry}: {verdict.signal} at {verdict.evidence}", rule=verdict.rule,
         )
+    if not relievable:
+        return result
     return MutativeResult(
-        is_mutative=True, category=CATEGORY_MUTATIVE, verb=f"execution-scan:{verdict.signal}", cli_family=family,
-        confidence="high", reason=f"{verdict.kind} {verdict.entry}: {verdict.signal} at {verdict.evidence}",
-        rule=verdict.rule,
+        is_mutative=False, category=CATEGORY_READ_ONLY, verb="execution-scan", cli_family=result.cli_family,
+        confidence="medium", reason=f"{verdict.kind} {verdict.entry}: no signal at depth 1",
     )
 
 
@@ -9950,15 +9960,21 @@ def _unrecognised_interpreter(program: str, source: str, family: str) -> Mutativ
     )
 
 
+_INLINE_SHAPE_VALUELESS_FLAGS: Dict[str, FrozenSet[str]] = {
+    "jq": frozenset({"-c", "-r", "-j", "-a", "-n", "-e", "-s", "-S", "-C", "-M", "-R"}),
+}
+
+
 def _check_inline_code_shape(
     base_cmd: str, family: str, tokens: "List[str]",
 ) -> "Optional[MutativeResult]":
     """Ask for an unmodelled program whose inline-code flag carries code (whitespace, a call or a block), never a bare word."""
     if not _is_unmodelled_cli(base_cmd):
         return None
+    valueless = _INLINE_SHAPE_VALUELESS_FLAGS.get(base_cmd, frozenset())
     for index, token in enumerate(tokens[1:], start=1):
         flag, attached, payload = token.partition("=")
-        if not attached and index + 1 < len(tokens) and not is_boolean_short_flag(base_cmd, flag):
+        if not attached and index + 1 < len(tokens) and not is_boolean_short_flag(base_cmd, flag) and flag not in valueless:
             payload = tokens[index + 1]
         if flag in _INLINE_CODE_SHAPE_FLAGS and _re.search(r"[\s();{}]", payload):
             return _unrecognised_interpreter(base_cmd, f"the code passed to {flag}", family)

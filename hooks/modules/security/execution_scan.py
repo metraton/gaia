@@ -18,6 +18,7 @@ from .verb_lexicon import CHANGE_VERB_CLASSES, ambiguous_verb_relieved
 REMOTE_FAMILIES = frozenset({"k8s", "iac", "git", "cloud", "workspace", "package", "system"})
 CHANGE_VERBS = frozenset().union(*CHANGE_VERB_CLASSES.values())
 MAX_BYTES = 512 * 1024
+PARTIAL = "\0partial"
 MAX_CALLEES = 32
 VERB_WINDOW = 4
 
@@ -211,6 +212,8 @@ def _shell_sends(words: List[str]) -> bool:
 
 def _signal(text: str, families: Mapping[str, str], roots: Tuple[str, ...]) -> Optional[Tuple[str, str, str]]:
     """The first signal on a non-comment line of *text*, as (signal, line excerpt, rule)."""
+    if text is PARTIAL:
+        return "partial-read", "the file was read only in part", "unknown.dynamic-span"
     for raw in text.replace("\\\n", " ").splitlines():
         line = raw.strip()
         if not line or line.startswith(_COMMENT_MARKS):
@@ -326,14 +329,20 @@ def _resolve(name: str, directory: Path) -> Optional[Path]:
 
 
 def _read(path: Path) -> Optional[str]:
+    """The text of *path*; None for a binary or unreadable file, ``PARTIAL`` when it is too large or not UTF-8."""
     try:
         with open(path, "rb") as handle:
-            data = handle.read(MAX_BYTES)
+            data = handle.read(MAX_BYTES + 1)
     except OSError:
         return None
     if b"\0" in data[:4096]:
         return None
-    return data.decode("utf-8", errors="replace")
+    if len(data) > MAX_BYTES:
+        return PARTIAL
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return PARTIAL
 
 
 def _execution(command: str, base: Path):
