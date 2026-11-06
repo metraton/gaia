@@ -9635,7 +9635,7 @@ def _pytest_config_outside_effect(path: Path, top: "Optional[Path]", base: Path)
 
 _NO_MODEL_VERBS: FrozenSet[str] = frozenset({
     "npm-run-unresolved", "bun-run-unresolved", "pnpm-run-unresolved", "yarn-run-unresolved",
-    "frozen-install-unresolved", "script-file-unreadable", "js-import-unresolved", "js-hidden-effect",
+    "frozen-install-unresolved", "script-file-unreadable",
 })
 
 

@@ -53,6 +53,15 @@ _ACCOUNT_OR_HARNESS_PATH = re.compile(
     r"|zshenv|gitconfig|aws|kube|gnupg|netrc|npmrc|pypirc|docker|config/gcloud|config/gh)\b"
     r"|\.claude(?=[/\"'\s]|$)|\.gaia/(?:gaia\.db|cache|plugins|hooks)\b|\.config/opencode\b|\.opencode/|\.codex/"
 )
+_WRITES = re.compile(
+    r"(?<![\w./$-])(?:cp|mv|rm|rmdir|tee|install|ln|chmod|chown|chgrp|touch|mkdir|truncate|dd|rsync|shred|unlink)\s"
+    r"|\bsed\s+-i|\bopen\s*\([^)]*,\s*[rbf]?['\"][^'\"]*[wax+]|\bOpenOptions\b|\bFile::create\b"
+    r"|\b(?:write|append|create|remove|unlink|rename|copy|move|symlink|truncate|chmod|chown|mkdir|makedirs|rmtree|rm"
+    r"|rmdir|RemoveAll|OpenFile)\w*\s*\(",
+    re.I,
+)
+_REDIRECT_TARGET = re.compile(r">{1,2}\s*[\"']?([^\s\"';|&)]+)")
+_COMMAND_PATH = re.compile(r"^(?:(?:sudo|exec|command|env|time|nohup|then|do|else)\s+)*((?:\.{1,2}/|/|~/)[^\s;|&]+)")
 _DOWNLOAD_AND_RUN = re.compile(
     r"\b(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|\n]*\|\s*(?:sudo\s+)?"
     r"(?:(?:ba|z|da|k)?sh|python[\d.]*|node|perl|ruby|bun|deno|iex|Invoke-Expression)\b"
@@ -102,7 +111,7 @@ _PYTHON = re.compile(r"python(?:\d+(?:\.\d+)?)?")
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 _JS_RUNTIMES = frozenset({"node", "bun", "deno", "tsx", "ts-node"})
 _INLINE_FLAGS = {
-    "python": frozenset({"-c"}), "shell": frozenset({"-c"}), "ruby": frozenset({"-e"}), "perl": frozenset({"-e", "-E"}),
+    "python": frozenset({"-c"}), "ruby": frozenset({"-e"}), "perl": frozenset({"-e", "-E"}),
     "php": frozenset({"-r"}), "node": frozenset({"-e", "--eval", "-p", "--print"}),
 }
 _NO_RUN_FLAGS = {"python": frozenset({"-m"}), "shell": frozenset({"-n"}), "node": frozenset({"-c", "--check", "--test"})}
@@ -144,16 +153,19 @@ def scan_execution(command: str, cwd: Optional[str], families: Mapping[str, str]
         return found
     roots = _kept_roots(base)
     callees: List[Tuple[str, str]] = []
+    unread = False
     for label, text in found.texts:
         hit = _signal(text, families, roots)
         if hit is not None:
             return _signed(found.kind, found.entry, hit, label)
-        callees.extend(_callees(text, Path(label).parent if label.startswith("/") else found.base, found.base, label))
+        directory = Path(label).parent if label.startswith("/") else found.base
+        unread = unread or _runs_unread_file(text, directory)
+        callees.extend(_callees(text, directory, found.base, label))
     for label, text in callees[:MAX_CALLEES]:
         hit = _signal(text, families, roots)
         if hit is not None:
             return _signed(found.kind, found.entry, hit, label)
-    return ScanVerdict(found.kind, found.entry)
+    return None if unread else ScanVerdict(found.kind, found.entry)
 
 
 def _signed(kind: str, entry: str, hit: Tuple[str, str, str], where: str) -> ScanVerdict:
@@ -223,10 +235,10 @@ def _signal(text: str, families: Mapping[str, str], roots: Tuple[str, ...]) -> O
             return "download-and-run", excerpt, "sign.foreign-code"
         if _RUNTIME_CODE.search(line):
             return "runtime-code", excerpt, "sign.foreign-code"
-        if _ACCOUNT_OR_HARNESS_PATH.search(line):
-            return "system-path", excerpt, "sign.lands-on-protected"
-        if _OS_PATH.search(line):
-            return "system-path", excerpt, "sign.system-path"
+        protected = _ACCOUNT_OR_HARNESS_PATH.search(line) or _OS_PATH.search(line)
+        if protected and _writes_protected(line):
+            rule = "sign.lands-on-protected" if _ACCOUNT_OR_HARNESS_PATH.search(line) else "sign.system-path"
+            return "system-path", excerpt, rule
         if _NETWORK_SEND.search(line):
             return "network-send", excerpt, "sign.speaks"
         if any(_outside(m.group("path"), roots) for m in _DESTROY_CALL.finditer(line)
@@ -244,6 +256,25 @@ def _signal(text: str, families: Mapping[str, str], roots: Tuple[str, ...]) -> O
             if _shell_sends(words):
                 return "network-send", excerpt, "sign.speaks"
     return None
+
+
+def _writes_protected(line: str) -> bool:
+    """Whether *line* writes or deletes, by a writer verb or a redirect onto a system or harness path; a read is not."""
+    targets = _REDIRECT_TARGET.findall(line)
+    return bool(_WRITES.search(line)) or any(_ACCOUNT_OR_HARNESS_PATH.search(t) or _OS_PATH.search(t) for t in targets)
+
+
+def _runs_unread_file(text: str, directory: Path) -> bool:
+    """Whether a line of *text* starts by running a path the scan cannot read, a callee it never saw."""
+    for raw in text.splitlines():
+        line = raw.strip()
+        match = None if line.startswith(_COMMENT_MARKS) else _COMMAND_PATH.match(line)
+        if match is None:
+            continue
+        path = _resolve(match.group(1), directory)
+        if path is None or _read(path) is None:
+            return True
+    return False
 
 
 def _blocked(command: str) -> bool:

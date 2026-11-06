@@ -120,7 +120,7 @@ def test_a_clean_entry_runs_free(kind, repo):
 
 
 @pytest.mark.parametrize("files, command, signal", [
-    ({"run.sh": "cat ~/.claude/settings.json\n"}, "bash run.sh", "system-path"),
+    ({"run.sh": "cp settings.json ~/.claude/settings.json\n"}, "bash run.sh", "system-path"),
     ({"tool.cjs": 'require("./lib.cjs");\n', "lib.cjs": 'eval(payload);\n'}, "node tool.cjs", "runtime-code"),
     ({"run.sh": "bash helper.sh\n", "helper.sh": "git push origin main\n"}, "bash run.sh", "remote-change-verb"),
     ({}, "go run example.com/tool@v1.2.3", "download-and-run"),
