@@ -1,0 +1,22 @@
+{
+ "task": 1104,
+ "truth_rows": [
+  "inline-python-os-system-twin", "inline-lanes-python-long-rmtree-twin",
+  "inline-lanes-node-long-rename-twin", "unknown-asymmetry-node-exec-sink",
+  "unknown-asymmetry-benign-extraction",
+  "unknown-v9-h1", "unknown-v9-h3", "unknown-v11-w2"
+ ],
+ "reviews": {
+  "inline-python-os-system-twin": "Inline code whose shell command is rm -rf build: a delete inside the project, no signal; SIGNED(sign.destroys) -> FREE by D198 point 3.",
+  "inline-lanes-python-long-rmtree-twin": "Long inline Python that prints package.json and rmtree('build'): a delete inside the project, no signal; SIGNED(sign.destroys) -> FREE by D198 point 3.",
+  "inline-lanes-node-long-rename-twin": "Long inline node that reads prd.json and renames it in place: no signal; SIGNED(sign.lands) -> FREE by D198 point 3.",
+  "unknown-asymmetry-node-exec-sink": "Inline node runs ls and rmSync('x'): a relative delete inside the project, no signal; SIGNED(sign.destroys) -> FREE by D198 point 3.",
+  "unknown-asymmetry-benign-extraction": "Inline Python runs subprocess ['ls'] and rmtree('build'): inside the project, no signal; SIGNED(sign.destroys) -> FREE by D198 point 3.",
+  "bash /home/jorge/ws/century-inc/branchkinect-metrics/snapshot.sh 2026-11-06": "History + approvals: the script runs ghx api graphql queries from local .graphql files, git fetch/log/show/rev-parse and mkdir under its own folder; no change verb on a remote family, no system path, no fetch-and-run, no built code, no data sent, no delete outside the project; SIGNED(sign.lands) -> FREE. ghx is a declared wrapper of gh and is not resolved inside scanned text.",
+  "bun run --cwd /home/jorge/ws/century-inc/.project-worktrees/branchkinect-platform/1c11cedb4b25e9cc8a940067c78509ad gen:traceability": "History + approvals, the bun-run-unresolved friction: the scan honors --cwd after run, reads scripts.gen:traceability from that package.json and finds no signal; SIGNED(sign.lands) -> FREE.",
+  "node /home/jorge/.gaia/scratch/a8c83da46f982a0b7.b2ef468371f4/build.cjs /home/jorge/.gaia/scratch/a8c83da46f982a0b7.b2ef468371f4/index.template.html /home/jorge/ws/me/.project-worktrees/chocolate-merken/c2b0c10a2ddf3add025c6cc018b44260/index.html": "History + approvals, the node <scratch script>.cjs friction: a scratch build script writing into a worktree, no signal at depth 1; SIGNED(sign.lands) -> FREE.",
+  "node /home/jorge/.gaia/scratch/a8c83da46f982a0b7.b2ef468371f4/test.cjs /home/jorge/ws/me/.project-worktrees/chocolate-merken/c2b0c10a2ddf3add025c6cc018b44260/index.html /tmp/claude-1001/-home-jorge-ws/d143bd71-c797-405c-8c8f-eaa66dc457f9/scratchpad/ux-packs": "History + approvals, the node <scratch script>.cjs friction: a scratch test script over a local page, no signal at depth 1; SIGNED(sign.lands) -> FREE.",
+  "npm --prefix /home/jorge/ws/me/balance run validate": "Approvals: the scan honors --prefix, reads scripts.validate and finds no signal; SIGNED(sign.lands) -> FREE."
+ },
+ "justification": "Replay 67cf949c -> task/1104-execution-scan with signals 5 (destroys-outside, sign.destroys) and 6 (network-send, sign.speaks) (sample 2000, since 2026-10-30, 99.9 s, report ~/.gaia/scratch/a1bcc846310e31f5a.2c76c12f5ef3.r2/report.md): violations none, 22 changes. Truth: 5 SIGNED -> FREE (inline deletes and a rename inside the project, reviewed above) and 3 SIGNED -> UNKNOWN (unquoted heredoc whose program word is a variable, still asking); inline-python-post-twin and the three /data heredoc rows keep their old verdict. History: 4 SIGNED -> FREE (3 distinct, reviewed), 1 SIGNED -> UNKNOWN (still asking), 1 FREE -> SIGNED (node prueba.cjs: runtime-code, a require of a computed specifier), so 1 new ask against the cap of 50, none from signals 5 or 6. Approvals: 5 SIGNED -> FREE (reviewed), 3 SIGNED -> UNKNOWN (still asking)."
+}

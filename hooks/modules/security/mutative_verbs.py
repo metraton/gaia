@@ -35,6 +35,7 @@ from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
 from .cli_aliases import as_wrapped_cli, declared_wrapper
 from .effect_lattice import Effect, classification_effects
+from .execution_scan import scan_execution
 from .flag_classifiers import AWK_PROGRAMS
 from .forge_shapes import change_request_action
 from .verb_lexicon import (
@@ -6206,6 +6207,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     pytest_result = _check_pytest_run(base_cmd, semantics, cwd)
     if pytest_result is not None:
         return pytest_result
+    execution_result = _check_execution_scan(command, family, cwd)
+    if execution_result is not None:
+        return execution_result
     py_module_result = _check_python_module_runner(base_cmd, semantics, cwd=cwd, _depth=_depth)
     if py_module_result is not None:
         return py_module_result
@@ -7654,7 +7658,7 @@ def _check_prefix_runner(
                 verb="registry-fetch",
                 cli_family=family,
                 confidence="medium",
-                reason=f"Runner '{base_cmd}' is signed: {fetch_reason}",
+                reason=f"Runner '{base_cmd}' is signed: download-and-run, {fetch_reason}",
             )
     return MutativeResult(
         is_mutative=inner.is_mutative,
@@ -9628,6 +9632,23 @@ def _pytest_config_outside_effect(path: Path, top: "Optional[Path]", base: Path)
     if cache_dir is not None and not _pytest_may_write(top, path.parent, str(cache_dir)):
         return _pytest_write_result(f"pytest configuration {path} cache_dir {cache_dir}")
     return _pytest_outside_effect(_pytest_options(addopts)[0], top, base, read_config=False)
+
+
+def _check_execution_scan(command: str, family: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    """The short scan's verdict for an execution it models; None leaves the command to the lanes after it."""
+    verdict = scan_execution(command, cwd, CLI_FAMILY_LOOKUP)
+    if verdict is None:
+        return None
+    if verdict.signal is None:
+        return MutativeResult(
+            is_mutative=False, category=CATEGORY_READ_ONLY, verb="execution-scan", cli_family=family,
+            confidence="medium", reason=f"{verdict.kind} {verdict.entry}: no signal at depth 1",
+        )
+    return MutativeResult(
+        is_mutative=True, category=CATEGORY_MUTATIVE, verb=f"execution-scan:{verdict.signal}", cli_family=family,
+        confidence="high", reason=f"{verdict.kind} {verdict.entry}: {verdict.signal} at {verdict.evidence}",
+        rule=verdict.rule,
+    )
 
 
 def _check_pytest_run(
