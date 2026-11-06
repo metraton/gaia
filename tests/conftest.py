@@ -480,6 +480,15 @@ def _isolate_dispatch_identity(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_random_retention_prune(monkeypatch):
+    """Keep the writer's 1-in-N retention prunes off, so a seeded old row never vanishes at random; a prune test sets its knob to 1."""
+    from gaia.store.writer import PRUNE_NEVER, PRUNE_SAMPLE_RATE_KNOBS
+
+    for knob in PRUNE_SAMPLE_RATE_KNOBS:
+        monkeypatch.setenv(knob, PRUNE_NEVER)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_claude_session_id(monkeypatch):
     """Start every test without a Claude session id and restore it afterwards.
 

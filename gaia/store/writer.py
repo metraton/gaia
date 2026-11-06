@@ -13116,6 +13116,12 @@ EPISODE_RETENTION_DAYS = 90
 # via env for tests / tuning. A value <= 1 makes every insert prune (used by
 # the regression test to force deterministic behavior).
 _PRUNE_SAMPLE_RATE_DEFAULT = 50
+PRUNE_NEVER = "never"
+PRUNE_SAMPLE_RATE_KNOBS = (
+    "GAIA_EPISODE_PRUNE_SAMPLE_RATE",
+    "GAIA_HARNESS_EVENT_PRUNE_SAMPLE_RATE",
+    "GAIA_HANDOFF_PRUNE_SAMPLE_RATE",
+)
 
 
 def _prune_sample_rate(env_var: str = "GAIA_EPISODE_PRUNE_SAMPLE_RATE") -> int:
@@ -13124,12 +13130,14 @@ def _prune_sample_rate(env_var: str = "GAIA_EPISODE_PRUNE_SAMPLE_RATE") -> int:
     Shared by all DB-side retention gates (episodes, harness_events,
     agent_contract_handoffs); each passes its own env var so a test can force
     one table's gate deterministically without affecting the others. A value
-    <= 1 makes every insert prune; a missing/malformed value falls back to
-    ``_PRUNE_SAMPLE_RATE_DEFAULT``.
+    <= 1 makes every insert prune, ``never`` (0) makes none; a missing or
+    malformed value falls back to ``_PRUNE_SAMPLE_RATE_DEFAULT``.
     """
     raw = os.environ.get(env_var)
     if raw is None:
         return _PRUNE_SAMPLE_RATE_DEFAULT
+    if raw == PRUNE_NEVER:
+        return 0
     try:
         val = int(raw)
     except (TypeError, ValueError):
@@ -13184,7 +13192,7 @@ def _maybe_prune_episodes(db_path: Path | None = None) -> None:
 
     try:
         rate = _prune_sample_rate()
-        if rate <= 1 or random.randint(1, rate) == 1:
+        if rate and (rate <= 1 or random.randint(1, rate) == 1):
             prune_episodes(db_path=db_path)
     except Exception:
         pass
@@ -13270,7 +13278,7 @@ def _maybe_prune_harness_events(db_path: Path | None = None) -> None:
 
     try:
         rate = _prune_sample_rate(_HARNESS_EVENT_PRUNE_ENV)
-        if rate <= 1 or random.randint(1, rate) == 1:
+        if rate and (rate <= 1 or random.randint(1, rate) == 1):
             prune_harness_events(db_path=db_path)
     except Exception:
         pass
@@ -13348,7 +13356,7 @@ def _maybe_prune_handoffs(db_path: Path | None = None) -> None:
 
     try:
         rate = _prune_sample_rate(_HANDOFF_PRUNE_ENV)
-        if rate <= 1 or random.randint(1, rate) == 1:
+        if rate and (rate <= 1 or random.randint(1, rate) == 1):
             prune_handoffs(db_path=db_path)
     except Exception:
         pass
