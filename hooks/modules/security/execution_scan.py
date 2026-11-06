@@ -75,7 +75,9 @@ _RUNTIME_CODE = re.compile(
     r"|(?<![.\w$])(?:import|require)\s*\(\s*(?![\s'\"`)])"
     r"|(?<![.\w])(?:__import__|import_module)\s*\(\s*(?![\s'\"])"
     r"|\bvm\.(?:runIn\w+|Script|compileFunction)\b|\bplugin\.Open\s*\("
-    r"|(?:^|[;&|({]\s*|\b(?:then|do|else)\s+|[\"']\s*)eval\s+\\?[\"'$]"
+)
+_SHELL_EVAL = re.compile(
+    r"(?:^|[;&|({]\s*|\b(?:then|do|else)\s+|[\"']\s*)eval\s+\\?[\"'$]"
     r"|\$\(eval\b|(?:^|[;&|]\s*)(?:source|\.)\s+<\(|\bInvoke-Expression\b"
 )
 _SEND_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -233,7 +235,8 @@ def _signal(text: str, families: Mapping[str, str], roots: Tuple[str, ...]) -> O
         excerpt = line[:160]
         if _DOWNLOAD_AND_RUN.search(line):
             return "download-and-run", excerpt, "sign.foreign-code"
-        if _RUNTIME_CODE.search(line):
+        code = _LITERAL.sub(lambda m: m.group(1) * 2, line)
+        if _RUNTIME_CODE.search(code) or _SHELL_EVAL.search(line):
             return "runtime-code", excerpt, "sign.foreign-code"
         protected = _ACCOUNT_OR_HARNESS_PATH.search(line) or _OS_PATH.search(line)
         if protected and _writes_protected(line):
