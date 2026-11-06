@@ -63,17 +63,27 @@ Entry point for all Bash and Task/Agent tool validation. With `Bash(*)` in the s
 
 ### Bash Command Validation (BashValidator)
 
-Order is short-circuit -- first match wins:
+`BashValidator.validate` (`hooks/modules/tools/bash_validator.py`) runs in this order, and the first refusal ends it:
 
 ```
-1. blocked_commands.py    --> permanently denied patterns (exit 2)
-2. Claude footer strip    --> auto-remove Co-Authored-By (transparent updatedInput)
-3. Commit message check   --> conventional commits format validation
-4. cloud_pipe_validator   --> block pipes/redirects/chains on cloud CLIs (exit 0, corrective)
-5. mutative_verbs.py      --> scan tokens 1-5 for MUTATIVE verbs
-   |                          If mutative + no active grant -> block with an approval_id
-   |                          If mutative + active grant -> allow (T3)
-   |                          If not mutative -> safe by elimination (T0)
+0. gaia_cli_only_guard     --> the orchestrator's closed Gaia CLI lane, on the raw string
+1. Guards                  --> host consent verbs, then AI-attribution footer strip
+   |                           (transparent updatedInput), publish attribution, comment-push
+   |                           limit, gaia.db writes, subagent memory writes, memory skill
+   |                           loaded, subagent resume point, contract ownership, protected
+   |                           paths, shell writes into a git tree, secret reads; a shell write under
+   |                           /etc, /usr or /boot asks (sign.system-path)
+2. Unwrap + decompose      --> wrapper-shell depth, indirect execution, operator-linked stages
+3. Classify                --> blocked_commands (exit 2), conventional commit message,
+   |                           cloud_pipe_validator, then mutative_verbs:
+   |                             a word in the closed change-verb lexicon (verb_lexicon.py),
+   |                             a program or verb word the shell expands asks,
+   |                             the depth-1 execution scan (execution_scan.py) only adds asks
+4. Composition             --> pipe rules (exfiltration, decode or download into exec)
+5. Aggregate               --> privilege_guard (sudo/su/doas) and production targets add a
+   |                           signature; mutative + no active grant -> deny with an approval_id
+   |                           mutative + active grant -> allow (T3)
+   |                           not mutative -> safe by elimination (T0)
 ```
 
 ### Task/Agent Validation
@@ -386,6 +396,9 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | `hooks/modules/tools/task_validator.py` | Task/Agent invocation validator |
 | `hooks/modules/security/blocked_commands.py` | Permanently denied command patterns |
 | `hooks/modules/security/mutative_verbs.py` | CLI-agnostic mutative verb detector |
+| `hooks/modules/security/verb_lexicon.py` | Closed change-verb lexicon and the effect-over-verb exceptions |
+| `hooks/modules/security/execution_scan.py` | Depth-1 scan of what a script or package script runs |
+| `tools/validator_replay/` | Old vs working-tree validator replay, held to friction caps |
 | `hooks/modules/security/approval_grants.py` | Approval grant lifecycle management |
 | `hooks/adapters/subagent_stop_core.py` | SubagentStop contract gate and close |
 | `hooks/modules/agents/contract_validator.py` | Agent contract envelope validator |

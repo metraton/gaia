@@ -51,7 +51,8 @@ No Claude Code session is involved in either case. The subcommands run in a norm
 
 ```
 bin/
-├── gaia                       # Python entry point — dispatches to bin/cli/<name>; its --help epilog is the lane map the orchestrator guard enforces
+├── gaia                       # Python entry point — dispatches to bin/cli/<name>; its --help epilog is the lane map the orchestrator guard enforces;
+│                              #   main sets GAIA_STORE_ENTRY_POINT, so it and its children may write the real gaia.db (gaia/store/writer.py::real_store_refusal)
 ├── plugin-dryrun.sh           # Plugin dry-run harness used by the release gate
 ├── pre-publish-validate.js    # Pre-publish gate for the release pipeline
 ├── python-detect.js           # Python runtime detection helper for npm lifecycles
@@ -83,7 +84,7 @@ bin/
     ├── lint.py                # gaia lint       — read-only checks over a branch; `lint comments` is the pre-push comment limit
     ├── login.py               # gaia login      — start a CLI login in its own session and print its link as JSON; status reports pending/complete/failed
     ├── map.py                 # gaia map        — what is live now with the verb that moves it, the five habits, intent -> capability; read-only
-    ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/move/checkpoint, --from-file batches for reclassify/link/move; add --replace and link --delete signed) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
+    ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/move/checkpoint, --from-file batches for reclassify/link/move; add --replace and link --delete signed; declare, signed, records a tool's effect or a project command form that no hook reads yet) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
     ├── memory_story.py        # backs `gaia memory story` (lineage narration); imported by memory.py, no register() of its own
     ├── metrics.py             # gaia metrics    — usage analytics (DB-canonical episodes/anomalies + audit-log tier/commands)
     ├── migrate.py             # gaia migrate    — plan | apply the schema migration chain: backup, one transaction, --consent-chain for data-reaching chains
