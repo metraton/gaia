@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,39 @@ def test_the_curated_cases_hold_local_merges_and_the_three_pushes():
     for needed in ("git merge feature-x", "git merge --ff-only feature-x", "git push origin feature-x",
                    "git push origin main", "git push --force origin feature-x"):
         assert (needed, "repo") in cases, needed
+
+
+STUB_PATHS = """import os
+from pathlib import Path
+def scratch_dir(): return Path(os.environ["GAIA_DATA_DIR"]) / "scratch"
+def worktrees_dir(): return Path(os.environ["GAIA_DATA_DIR"]) / "worktrees"
+def ensure_layout(): scratch_dir().mkdir(parents=True, exist_ok=True); worktrees_dir().mkdir(exist_ok=True)
+"""
+STUB_HARNESS = """import time
+HEADER = {"contexts": {}}
+def _isolate_targets(patch, base): pass
+def observe(command, context, world):
+    if command == "hang":
+        time.sleep(3600)
+    return "FREE", "Rule: free.read. Remediation: none."
+"""
+
+
+def test_a_hanging_command_is_reported_errored_and_the_batch_still_classifies(tmp_path, monkeypatch):
+    from tools.validator_replay import runner, worker
+
+    root = tmp_path / "root"
+    for relative, text in (("gaia/__init__.py", ""), ("gaia/paths.py", STUB_PATHS), (str(worker.HARNESS), STUB_HARNESS)):
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text(text)
+    monkeypatch.setattr(runner, "COMMAND_TIMEOUT_SECONDS", 2)
+    units = {f"none\0{command}": {"command": command, "context": "none"} for command in ("ls", "hang", "cat a", "pwd")}
+    started = time.monotonic()
+    result = runner.classify(root, units, tmp_path / "work", workers=1)
+    assert time.monotonic() - started < 30
+    assert {key: (value["verdict"], value["rule"]) for key, value in result.items()} == {
+        "none\0ls": ("FREE", "free.read"), "none\0hang": ("ERROR", "timeout"),
+        "none\0cat a": ("FREE", "free.read"), "none\0pwd": ("FREE", "free.read")}
 
 
 def test_the_entry_line_runs_free_through_the_bash_validator(tmp_path, monkeypatch):

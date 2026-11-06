@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -123,7 +124,9 @@ def run(*, caps, out: Path, db: Path, table: Path = corpus.DEFAULT_TABLE, cases:
         workers = workers or os.cpu_count() or 2
         classifiers = (lambda u: runner.classify(old_root, u, out / "old", workers),
                        lambda u: runner.classify(repo, u, out / "new", workers))
-    result = compare(units, members, classifiers[0](units), classifiers[1](units))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old_side, new_side = pool.map(lambda classify: classify(units), classifiers)
+    result = compare(units, members, old_side, new_side)
     result.update(old=old_name, new=new_name, units=len(units), seconds=round(time.monotonic() - started, 1),
                   caps_file=str(caps) if not isinstance(caps, dict) else "inline", caps=caps_values,
                   violations=check_caps(result, caps_values, declared_values))
