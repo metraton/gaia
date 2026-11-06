@@ -25,7 +25,8 @@ CAPS = {"history_newly_asking_max_count": 5, "history_newly_asking_max_fraction"
 
 
 def _stub(table):
-    return lambda units: {key: {"verdict": table[unit["command"]], "rule": ""} for key, unit in units.items()}
+    return lambda units: {key: {"verdict": table[unit["command"]], "rule": "timeout" if table[unit["command"]] == "ERROR" else ""}
+                          for key, unit in units.items()}
 
 
 def _store(path: Path) -> Path:
@@ -88,6 +89,17 @@ def test_identical_classifiers_pass_and_each_cap_alone_fails_the_run(replay_with
     assert not replay_with(OLD, loosening, declared=reviewed)["violations"]
 
 
+def test_an_errored_unit_is_never_a_change_and_only_an_error_new_to_the_new_side_fails(replay_with):
+    error_then_free = replay_with(dict(OLD, **{"kubectl apply -f x": "ERROR"}), dict(OLD, **{"kubectl apply -f x": "FREE"}))
+    assert not error_then_free["changes"] and not error_then_free["violations"]
+    assert error_then_free["error_counts"] == {"old": {"timeout": 1}, "new": {}}
+    both = replay_with(dict(OLD, ls="ERROR"), dict(OLD, ls="ERROR"))
+    assert not both["changes"] and not both["violations"]
+    new_only = replay_with(OLD, dict(OLD, ls="ERROR"))
+    assert not new_only["changes"] and new_only["violations"] == ["new_errors_max: 2 > 0"]
+    assert new_only["error_counts"] == {"old": {}, "new": {"timeout": 2}}
+
+
 def test_the_history_reader_opens_the_store_read_only(tmp_path):
     db = _store(tmp_path / "gaia.db")
     before = db.read_bytes()
@@ -122,7 +134,7 @@ def ensure_layout(): scratch_dir().mkdir(parents=True, exist_ok=True); worktrees
 """
 STUB_HARNESS = """import time
 HEADER = {"contexts": {}}
-def _isolate_targets(patch, base): pass
+def _isolate_targets(patch, base): (base / "world").mkdir()
 def observe(command, context, world):
     if command == "hang":
         time.sleep(3600)

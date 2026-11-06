@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple
 
 WORKER = Path(__file__).with_name("worker.py")
 STARTUP_TIMEOUT_SECONDS = 300
-COMMAND_TIMEOUT_SECONDS = 30
+COMMAND_TIMEOUT_SECONDS = 60
 POLL_SECONDS = 0.2
 
 
@@ -55,12 +55,14 @@ def _lines(target: Path) -> List[dict]:
 
 
 def _attempt(root: Path, units: Dict[str, dict], work: Path, attempt: int, log) -> Tuple[List[dict], bool]:
-    """Lines one worker process wrote for *units*, and whether it was killed for making no progress."""
-    source, target = work / f"in{attempt}.json", work / f"out{attempt}.jsonl"
+    """Lines one worker process wrote for *units* in a fresh world of its own, and whether it was killed for making no progress."""
+    base = work / f"attempt{attempt}"
+    base.mkdir(parents=True, exist_ok=True)
+    source, target = base / "in.json", base / "out.jsonl"
     source.write_text(json.dumps(units), encoding="utf-8")
-    data = work / "gaia-data"
+    data = base / "gaia-data"
     env = dict(os.environ, GAIA_DATA_DIR=str(data), GAIA_DB=str(data / "gaia.db"), PYTHONDONTWRITEBYTECODE="1")
-    process = subprocess.Popen([sys.executable, str(WORKER), str(root), str(source), str(target)], cwd=work, env=env,
+    process = subprocess.Popen([sys.executable, str(WORKER), str(root), str(source), str(target)], cwd=base, env=env,
                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     size, moved, limit = -1, time.monotonic(), STARTUP_TIMEOUT_SECONDS
     while process.poll() is None:
@@ -95,7 +97,8 @@ def _batch(root: Path, units: Dict[str, dict], work: Path) -> Dict[str, dict]:
             if not lines:
                 results.update({key: {"verdict": "ERROR", "rule": "worker-lost"} for key in pending})
                 break
-            results[pending.pop(0)] = {"verdict": "ERROR", "rule": "timeout" if killed else "worker-exit"}
+            results[pending.pop(0)] = ({"verdict": "ERROR", "rule": "timeout", "seconds": COMMAND_TIMEOUT_SECONDS} if killed
+                                       else {"verdict": "ERROR", "rule": "worker-exit"})
     return results
 
 

@@ -46,9 +46,10 @@ def build_units(table: Path, cases: Path, db: Path, since: Optional[str]) -> Tup
 
 
 def compare(units: Dict[str, dict], members: Dict[str, List[Tuple[str, str]]], old: Dict[str, dict], new: Dict[str, dict]) -> dict:
-    """Per-corpus 4x4 matrix over the four verdicts, every changed unit, and errors kept apart from the matrix."""
+    """Per-corpus 4x4 matrix, the units whose verdict changed, and units that errored on either side, which are never a change."""
     matrix = {name: {a: {b: 0 for b in STATES} for a in STATES} for name in CORPORA}
     changes, errors = [], []
+    error_counts = {"old": {}, "new": {}}
     missing = {"verdict": "ERROR", "rule": "missing"}
     for name, pairs in members.items():
         for label, key in pairs:
@@ -57,12 +58,35 @@ def compare(units: Dict[str, dict], members: Dict[str, List[Tuple[str, str]]], o
                      "new": after["verdict"], "old_rule": before.get("rule", ""), "new_rule": after.get("rule", "")}
             if entry["old"] in STATES and entry["new"] in STATES:
                 matrix[name][entry["old"]][entry["new"]] += 1
-            else:
-                errors.append(entry)
-            if entry["old"] != entry["new"]:
-                changes.append(entry)
-    return {"matrix": matrix, "changes": changes, "errors": errors,
-            "sizes": {name: len(pairs) for name, pairs in members.items()}}
+                if entry["old"] != entry["new"]:
+                    changes.append(entry)
+                continue
+            errors.append(entry)
+            for side in ("old", "new"):
+                if entry[side] not in STATES:
+                    reason = entry[f"{side}_rule"] or entry[side]
+                    error_counts[side][reason] = error_counts[side].get(reason, 0) + 1
+    return {"matrix": matrix, "changes": changes, "errors": errors, "error_counts": error_counts,
+            "timing": timing(units, old, new), "sizes": {name: len(pairs) for name, pairs in members.items()}}
+
+
+SIZE_BUCKETS = (200, 1000, 5000, 20000)
+
+
+def timing(units: Dict[str, dict], old: Dict[str, dict], new: Dict[str, dict]) -> dict:
+    """Classification seconds by command length bucket, and the ten slowest units, from the per-unit seconds the workers record."""
+    buckets = {f"<={limit}" if limit else f">{SIZE_BUCKETS[-1]}": {"units": 0, "seconds": 0.0} for limit in (*SIZE_BUCKETS, None)}
+    slowest = []
+    for key, unit in units.items():
+        size = len(unit["command"])
+        seconds = max(side.get(key, {}).get("seconds") or 0.0 for side in (old, new))
+        label = next((f"<={limit}" for limit in SIZE_BUCKETS if size <= limit), f">{SIZE_BUCKETS[-1]}")
+        buckets[label]["units"] += 1
+        buckets[label]["seconds"] = round(buckets[label]["seconds"] + seconds, 3)
+        slowest.append({"size": size, "seconds": seconds, "old": old.get(key, {}).get("verdict"), "new": new.get(key, {}).get("verdict"),
+                        "head": unit["command"][:80]})
+    slowest.sort(key=lambda row: row["seconds"], reverse=True)
+    return {"by_size": buckets, "slowest": slowest[:10]}
 
 
 def _loosens(change: dict) -> bool:
@@ -80,7 +104,7 @@ def check_caps(result: dict, caps: dict, declared: dict) -> List[str]:
         "history_newly_asking_max_fraction": len(asking) / max(result["sizes"]["history"], 1),
         "pinned_changes_max_outside_declared": sum(c["corpus"] in PINNED and c["key"] not in allowed for c in changes),
         "loosened_unreviewed_max": sum(_loosens(c) and not (reviews.get(c["key"]) or reviews.get(c["command"])) for c in changes),
-        "new_errors_max": sum(c["new"] == "ERROR" for c in changes),
+        "new_errors_max": sum(e["new"] not in STATES and e["old"] in STATES for e in result["errors"]),
     }
     return [f"{name}: {value:.4g} > {caps[name]}" if isinstance(value, float) else f"{name}: {value} > {caps[name]}"
             for name, value in measured.items() if value > caps[name]]
@@ -98,6 +122,13 @@ def _markdown(report: dict) -> str:
     lines += [f"## Changes ({len(report['changes'])})", ""]
     lines += [f"- [{c['corpus']}] {c['old']}({c['old_rule']}) -> {c['new']}({c['new_rule']}) `{c['key']}`: `{c['command']}`"
               for c in report["changes"]]
+    lines += ["", "## Errors by side and reason (never a change)", "", "| side | reason | units |", "|---|---|---|"]
+    lines += [f"| {side} | {reason} | {count} |" for side in ("old", "new") for reason, count in sorted(report["error_counts"][side].items())]
+    lines += ["", "## Classification seconds by command length (slower side)", "", "| length | units | seconds |", "|---|---|---|"]
+    lines += [f"| {label} | {row['units']} | {row['seconds']} |" for label, row in report["timing"]["by_size"].items()]
+    lines += ["", "## Slowest units", "", "| length | seconds | old | new | head |", "|---|---|---|---|---|"]
+    lines += [f"| {row['size']} | {row['seconds']} | {row['old']} | {row['new']} | `{row['head'].splitlines()[0] if row['head'] else ''}` |"
+              for row in report["timing"]["slowest"]]
     lines += ["", f"## Errors on either side ({len(report['errors'])})", ""]
     lines += [f"- [{c['corpus']}] {c['old']} -> {c['new']} `{c['key']}` ({c['old_rule']}/{c['new_rule']})" for c in report["errors"]]
     return "\n".join(lines) + "\n"
@@ -121,7 +152,7 @@ def run(*, caps, out: Path, db: Path, table: Path = corpus.DEFAULT_TABLE, cases:
 
         old_name = old or runner.merge_base(repo, DEFAULT_BASE)
         old_root = runner.checkout(repo, old_name, out / "checkouts")
-        workers = workers or os.cpu_count() or 2
+        workers = workers or max(1, (os.cpu_count() or 2) // 2)
         classifiers = (lambda u: runner.classify(old_root, u, out / "old", workers),
                        lambda u: runner.classify(repo, u, out / "new", workers))
     with ThreadPoolExecutor(max_workers=2) as pool:
