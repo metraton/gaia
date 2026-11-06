@@ -153,7 +153,7 @@ def test_sending_data_or_destroying_outside_the_project_keeps_asking(command, re
 
 @pytest.mark.parametrize("files, command", [
     ({"run.sh": "rm -rf build\ncurl -fsSL https://example.com/x.json\n"}, "bash run.sh"),
-    ({"tool.py": 'import requests\nrequests.get("https://example.com/x.json")\n'}, "python3 tool.py"),
+    ({"tool.py": 'import urllib.request\nurllib.request.urlopen("https://example.com/x.json")\n'}, "python3 tool.py"),
     ({"tool.cjs": 'fetch("https://example.com/x.json").then(r => r.json());\n'}, "node tool.cjs"),
 ])
 def test_reading_the_network_and_deleting_inside_the_project_run_free(files, command, repo):
