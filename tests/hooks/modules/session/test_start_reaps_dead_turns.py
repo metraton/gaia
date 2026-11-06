@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ from gaia.store.writer import (  # noqa: E402
 )
 from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
-LONG_AGO = "2026-01-01T00:00:00Z"
+LONG_AGO = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @pytest.fixture
