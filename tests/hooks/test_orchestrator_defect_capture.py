@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -90,21 +91,24 @@ def _seed_subagent_defect(defect_type: str = "agent_reported_defect",
                           severity: str = "critical") -> None:
     """A subagent-reported defect, via the channel a subagent actually uses."""
     episode_id = "ep-orchestrator-defect-test"
-    insert_episode(
+    seeded = datetime.now(timezone.utc) - timedelta(days=1)
+    episode = insert_episode(
         WORKSPACE, episode_id,
-        {"timestamp": "2026-07-26T09:00:00+00:00", "agent": "developer"},
+        {"timestamp": seeded.isoformat(), "agent": "developer"},
         db_path=db_path(),
     )
-    insert_episode_anomaly(
+    anomaly = insert_episode_anomaly(
         WORKSPACE, episode_id,
         {
-            "timestamp": "2026-07-26T09:00:01+00:00",
+            "timestamp": (seeded + timedelta(seconds=1)).isoformat(),
             "type": defect_type,
             "severity": severity,
             "message": "seeded subagent-origin defect",
         },
         db_path=db_path(),
     )
+    assert episode["status"] == "applied", episode
+    assert anomaly["status"] == "applied", anomaly
 
 
 class TestHarnessCutLandsAsOrchestratorDefect:
