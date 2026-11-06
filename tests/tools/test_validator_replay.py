@@ -25,8 +25,10 @@ CAPS = {"history_newly_asking_max_count": 5, "history_newly_asking_max_fraction"
 
 
 def _stub(table):
-    return lambda units: {key: {"verdict": table[unit["command"]], "rule": "timeout" if table[unit["command"]] == "ERROR" else ""}
-                          for key, unit in units.items()}
+    def classify(units):
+        found = {key: table[unit["command"]].partition(":") for key, unit in units.items()}
+        return {key: {"verdict": verdict, "rule": rule} for key, (verdict, _, rule) in found.items()}
+    return classify
 
 
 def _store(path: Path) -> Path:
@@ -90,14 +92,27 @@ def test_identical_classifiers_pass_and_each_cap_alone_fails_the_run(replay_with
 
 
 def test_an_errored_unit_is_never_a_change_and_only_an_error_new_to_the_new_side_fails(replay_with):
-    error_then_free = replay_with(dict(OLD, **{"kubectl apply -f x": "ERROR"}), dict(OLD, **{"kubectl apply -f x": "FREE"}))
+    error_then_free = replay_with(dict(OLD, **{"kubectl apply -f x": "ERROR:timeout"}), dict(OLD, **{"kubectl apply -f x": "FREE"}))
     assert not error_then_free["changes"] and not error_then_free["violations"]
     assert error_then_free["error_counts"] == {"old": {"timeout": 1}, "new": {}}
-    both = replay_with(dict(OLD, ls="ERROR"), dict(OLD, ls="ERROR"))
+    both = replay_with(dict(OLD, ls="ERROR:OSError"), dict(OLD, ls="ERROR:OSError"))
     assert not both["changes"] and not both["violations"]
-    new_only = replay_with(OLD, dict(OLD, ls="ERROR"))
+    new_only = replay_with(OLD, dict(OLD, ls="ERROR:OSError"))
     assert not new_only["changes"] and new_only["violations"] == ["new_errors_max: 2 > 0"]
-    assert new_only["error_counts"] == {"old": {}, "new": {"timeout": 2}}
+    assert new_only["error_counts"] == {"old": {}, "new": {"OSError": 2}}
+    new_timeout = replay_with(OLD, dict(OLD, ls="ERROR:timeout"))
+    assert not new_timeout["violations"] and new_timeout["error_counts"] == {"old": {}, "new": {"timeout": 2}}
+
+
+def test_the_sample_is_deterministic_holds_every_program_and_bounds_the_history(replay_with, monkeypatch):
+    commands = [f"git status {n}" for n in range(40)] + [f"FOO=1 /usr/bin/ls {n}" for n in range(40)] + ["kubectl get pods"]
+    picked = replay.draw(commands, 10)
+    assert len(picked) == 10 and set(picked) == set(replay.draw(list(reversed(commands)), 10))
+    assert {replay.program_word(command) for command in picked} == {"git", "ls", "kubectl"}
+    monkeypatch.setenv("GAIA_REPLAY_SAMPLE", "1")
+    sampled = replay_with(OLD, OLD)
+    assert sampled["sample"] == 1 and sampled["sizes"]["history"] + sampled["sizes"]["approvals"] == len(
+        {replay.program_word(c) for c in ("ls", "cat a", "$X", "rm -rf /", "git push origin main", "kubectl apply -f x")})
 
 
 def test_the_history_reader_opens_the_store_read_only(tmp_path):

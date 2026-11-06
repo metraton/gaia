@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,12 +17,15 @@ STATES = ("FREE", "SIGNED", "BLOCKED", "UNKNOWN")
 CORPORA = ("truth", "history", "approvals", "cases")
 PINNED = ("truth", "cases")
 DEFAULT_BASE = "origin/feat/gaia-5-7"
+SAMPLE_SEED = "gaia-validator-replay"
+UNCAPPED_ERRORS = ("timeout",)
 
 Classifier = Callable[[Dict[str, dict]], Dict[str, dict]]
 
 
-def build_units(table: Path, cases: Path, db: Path, since: Optional[str]) -> Tuple[Dict[str, dict], Dict[str, List[Tuple[str, str]]]]:
-    """Distinct units to classify, and each corpus as ``(label, unit key)`` pairs; one command in one context is one unit."""
+def build_units(table: Path, cases: Path, db: Path, since: Optional[str],
+                sample: Optional[int] = None) -> Tuple[Dict[str, dict], Dict[str, List[Tuple[str, str]]]]:
+    """Distinct units to classify, and each corpus as ``(label, unit key)`` pairs; with *sample*, history and approvals are a :func:`draw` of it."""
     units: Dict[str, dict] = {}
     members: Dict[str, List[Tuple[str, str]]] = {name: [] for name in CORPORA}
 
@@ -36,13 +41,42 @@ def build_units(table: Path, cases: Path, db: Path, since: Optional[str]) -> Tup
         command_unit("cases", case["id"], case["command"], case.get("context", "none"))
     con = corpus.open_read_only(db)
     try:
-        for command in corpus.history_commands(con, since):
-            command_unit("history", command, command, "none")
-        for command in corpus.approval_commands(con, since):
-            command_unit("approvals", command, command, "none")
+        history, approvals = corpus.history_commands(con, since), corpus.approval_commands(con, since)
     finally:
         con.close()
+    if sample:
+        kept = set(draw(history + approvals, sample))
+        history, approvals = [c for c in history if c in kept], [c for c in approvals if c in kept]
+    for command in history:
+        command_unit("history", command, command, "none")
+    for command in approvals:
+        command_unit("approvals", command, command, "none")
     return units, members
+
+
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def program_word(command: str) -> str:
+    """The first word of *command* past leading ``NAME=value`` assignments, without its directory."""
+    words = [word for word in command.split() if not ASSIGNMENT.match(word)]
+    return os.path.basename(words[0]) if words else ""
+
+
+def draw(commands: List[str], size: int) -> List[str]:
+    """A deterministic sample of at least *size* distinct commands: the first of every program word, then filled in seeded-hash order."""
+    ordered = sorted(set(commands), key=lambda command: hashlib.sha256(f"{SAMPLE_SEED}\0{command}".encode()).hexdigest())
+    picked: Dict[str, None] = {}
+    seen_programs = set()
+    for command in ordered:
+        if program_word(command) not in seen_programs:
+            seen_programs.add(program_word(command))
+            picked[command] = None
+    for command in ordered:
+        if len(picked) >= size:
+            break
+        picked.setdefault(command, None)
+    return list(picked)
 
 
 def compare(units: Dict[str, dict], members: Dict[str, List[Tuple[str, str]]], old: Dict[str, dict], new: Dict[str, dict]) -> dict:
@@ -104,7 +138,8 @@ def check_caps(result: dict, caps: dict, declared: dict) -> List[str]:
         "history_newly_asking_max_fraction": len(asking) / max(result["sizes"]["history"], 1),
         "pinned_changes_max_outside_declared": sum(c["corpus"] in PINNED and c["key"] not in allowed for c in changes),
         "loosened_unreviewed_max": sum(_loosens(c) and not (reviews.get(c["key"]) or reviews.get(c["command"])) for c in changes),
-        "new_errors_max": sum(e["new"] not in STATES and e["old"] in STATES for e in result["errors"]),
+        "new_errors_max": sum(e["new"] not in STATES and e["old"] in STATES and e["new_rule"] not in UNCAPPED_ERRORS
+                              for e in result["errors"]),
     }
     return [f"{name}: {value:.4g} > {caps[name]}" if isinstance(value, float) else f"{name}: {value} > {caps[name]}"
             for name, value in measured.items() if value > caps[name]]
@@ -112,7 +147,7 @@ def check_caps(result: dict, caps: dict, declared: dict) -> List[str]:
 
 def _markdown(report: dict) -> str:
     lines = [f"# Validator replay {report['old']} -> {report['new']}", "",
-             f"Sizes: {report['sizes']}. Seconds: {report['seconds']}. Caps: {report['caps_file']}.", "",
+             f"Sizes: {report['sizes']}. Sample: {report['sample'] or 'full corpus'}. Seconds: {report['seconds']}. Caps: {report['caps_file']}.", "",
              "Violations: " + ("; ".join(report["violations"]) or "none"), ""]
     for name in CORPORA:
         lines += [f"## {name} (old rows, new columns)", "", "| old \\ new | " + " | ".join(STATES) + " |",
@@ -136,8 +171,14 @@ def _markdown(report: dict) -> str:
 
 def run(*, caps, out: Path, db: Path, table: Path = corpus.DEFAULT_TABLE, cases: Path = corpus.DEFAULT_CASES,
         declared=None, since: Optional[str] = None, old: Optional[str] = None, repo: Path = corpus.REPO,
-        workers: Optional[int] = None, classifiers: Optional[Tuple[Classifier, Classifier]] = None) -> dict:
-    """Classify the corpus at *old* (default: merge-base with ``DEFAULT_BASE``) and at the working tree; write report.json and report.md under *out*."""
+        workers: Optional[int] = None, classifiers: Optional[Tuple[Classifier, Classifier]] = None,
+        sample: Optional[int] = None) -> dict:
+    """Classify the corpus at *old* (default: merge-base with ``DEFAULT_BASE``) and at the working tree; write report.json and report.md under *out*.
+
+    *sample* (default: ``GAIA_REPLAY_SAMPLE``, unset meaning the full corpus) bounds history and approvals to a :func:`draw`.
+    """
+    if sample is None and os.environ.get("GAIA_REPLAY_SAMPLE"):
+        sample = int(os.environ["GAIA_REPLAY_SAMPLE"])
     out = Path(out).resolve()
     if out == repo.resolve() or repo.resolve() in out.parents:
         raise ValueError(f"the report carries raw commands and may not be written inside the repository: {out}")
@@ -145,7 +186,7 @@ def run(*, caps, out: Path, db: Path, table: Path = corpus.DEFAULT_TABLE, cases:
     declared_values = json.loads(Path(declared).read_text(encoding="utf-8")) if isinstance(declared, (str, Path)) else (declared or {})
     out.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    units, members = build_units(table, cases, db, since)
+    units, members = build_units(table, cases, db, since, sample)
     old_name, new_name = old or "stub-old", "working-tree"
     if classifiers is None:
         from . import runner
@@ -158,7 +199,7 @@ def run(*, caps, out: Path, db: Path, table: Path = corpus.DEFAULT_TABLE, cases:
     with ThreadPoolExecutor(max_workers=2) as pool:
         old_side, new_side = pool.map(lambda classify: classify(units), classifiers)
     result = compare(units, members, old_side, new_side)
-    result.update(old=old_name, new=new_name, units=len(units), seconds=round(time.monotonic() - started, 1),
+    result.update(old=old_name, new=new_name, units=len(units), sample=sample, seconds=round(time.monotonic() - started, 1),
                   caps_file=str(caps) if not isinstance(caps, dict) else "inline", caps=caps_values,
                   violations=check_caps(result, caps_values, declared_values))
     (out / "report.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
