@@ -45,7 +45,9 @@ def privilege_verdict(command: str, detected) -> Optional[MutativeResult]:
     program = privilege_program(command)
     if program is None:
         return None
+    # A free payload's verb is a lane label, not a verb, and it would become the approval title.
+    verb = detected.verb if detected.is_mutative and detected.verb else program
     return MutativeResult(
-        is_mutative=True, category=CATEGORY_MUTATIVE, verb=detected.verb or program,
+        is_mutative=True, category=CATEGORY_MUTATIVE, verb=verb,
         confidence="high", reason=f"{program} runs the command as another user", rule=PRIVILEGE_RULE,
     )

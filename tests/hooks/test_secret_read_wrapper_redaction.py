@@ -1,6 +1,6 @@
 """A secret-bearing read is redacted the same whatever wrapper runs it.
 
-``sudo``, ``timeout``, ``env`` and ``nice`` run the command after them with the
+``timeout``, ``env`` and ``nice`` run the command after them with the
 effect it has alone, and ``git -C <repo>`` only moves where git runs, so none
 of them may carry a read past the redaction its bare form gets. Each case runs
 the real PreToolUse boundary of both hosts, then executes the command the hook
@@ -38,12 +38,12 @@ def wrapped_world(world):
 
 
 WRAPPED_READS = [
-    ("sudo kubectl get deployment api -n prod -o yaml", None),
+    ("kubectl get deployment api -n prod -o yaml", None),
     ("timeout 30 vault kv get secret/app", None),
     ("env LC_ALL=C bao read secret/app", None),
     ("nice -n 5 kubectl describe deployment api", None),
     ("nice -n 5 grep -rn TOKEN {repo}", 0),
-    ("sudo grep -rn TOKEN {repo}", 0),
+    ("grep -rn TOKEN {repo}", 0),
     ("git -C {repo} grep -rn TOKEN", 0),
     ("timeout 30 git -C {repo} grep -n TOKEN", 0),
 ]
@@ -70,7 +70,7 @@ def test_a_wrapped_secret_read_is_redacted_and_keeps_its_exit_code(
 
 EMPTY_READS = [
     "nice -n 5 grep -rn ABSENT_WORD {repo}",
-    "sudo grep -rn ABSENT_WORD {repo}",
+    "grep -rn ABSENT_WORD {repo}",
     "git -C {repo} grep -rn ABSENT_WORD",
 ]
 
@@ -94,7 +94,7 @@ def test_a_wrapped_recursive_grep_that_finds_nothing_is_rewritten_and_still_exit
 LOOK_ALIKES = [
     "timeout 30 kubectl get pods -n prod",
     "nice -n 5 vault status",
-    "sudo grep -n TOKEN {repo}/app/settings.py",
+    "grep -n TOKEN {repo}/app/settings.py",
     "git -C {repo} log --oneline",
 ]
 

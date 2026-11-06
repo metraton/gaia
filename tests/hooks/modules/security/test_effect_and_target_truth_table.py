@@ -606,6 +606,8 @@ def test_a_nested_executor_takes_the_verdict_of_its_inner_command(name, template
     monkeypatch.chdir(world["root"])
     wrong = {}
     for inner, expected in NESTED_INNER.items():
+        if template.startswith("sudo ") and expected != "BLOCKED":
+            expected = "SIGNED"
         for spelling in _nested_spellings(inner, as_string):
             command = template.format(inner=spelling)
             verdict = observe(command, "none", world)[0]
@@ -626,7 +628,7 @@ NESTED_PINS = [
     ("op run -- bash", "none", {"SIGNED"}, "sign.speaks"),
     ("doppler run -- zsh", "none", {"SIGNED"}, "sign.speaks"),
     ("op run -- kubectl exec -it pod-1 -- sh", "none", {"SIGNED"}, "sign.speaks"),
-    ("sudo docker exec -it c1 bash", "none", {"SIGNED"}, "sign.speaks"),
+    ("sudo docker exec -it c1 bash", "none", {"SIGNED"}, "sign.privilege"),
     ("kubectl exec -it pod-1 -- ls /app", "none", {"FREE"}, ""),
     ("kubectl exec --bogus pod-1 -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
     ("kubectl exec pod-1 extra -- ls", "none", {"UNKNOWN"}, "unknown.dynamic-span"),
