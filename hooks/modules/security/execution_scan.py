@@ -1,4 +1,4 @@
-"""The short execution scan (D198 point 3): an execution's entry and its literal local callees, depth 1, read for four signals."""
+"""The short execution scan (D198 point 3): an execution's entry and its literal local callees, depth 1, read for six signals."""
 
 from __future__ import annotations
 
