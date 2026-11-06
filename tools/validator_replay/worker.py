@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 RULE = re.compile(r"Rule: (\S+)\.")
@@ -58,15 +59,19 @@ def _classify(harness, world: dict, unit: dict) -> dict:
 
 
 def main(root: str, source: str, target: str) -> None:
+    """Append one JSON line per classified unit to *target*, after a ``{"ready": true}`` line once the world is built."""
     base = Path(os.environ["GAIA_DATA_DIR"]).parent
     harness = _harness(Path(root))
     world = _world(harness, base)
     units = json.loads(Path(source).read_text(encoding="utf-8"))
-    results = {}
-    for index, (key, unit) in enumerate(units.items(), 1):
-        results[key] = _classify(harness, world, unit)
-        if index % 500 == 0 or index == len(units):
-            Path(target).write_text(json.dumps(results), encoding="utf-8")
+    with open(target, "a", encoding="utf-8") as out:
+        out.write(json.dumps({"ready": True}) + "\n")
+        out.flush()
+        for key, unit in units.items():
+            started = time.monotonic()
+            result = _classify(harness, world, unit)
+            out.write(json.dumps(dict(result, key=key, seconds=round(time.monotonic() - started, 3))) + "\n")
+            out.flush()
 
 
 if __name__ == "__main__":

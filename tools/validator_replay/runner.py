@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
+import signal
 import subprocess
 import sys
 import tarfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Tuple
 
 WORKER = Path(__file__).with_name("worker.py")
-BATCH_TIMEOUT_SECONDS = 6 * 3600
+STARTUP_TIMEOUT_SECONDS = 300
+COMMAND_TIMEOUT_SECONDS = 60
+POLL_SECONDS = 0.2
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -39,20 +44,62 @@ def checkout(repo: Path, revision: str, cache: Path) -> Path:
     return target
 
 
-def _batch(root: Path, units: Dict[str, dict], work: Path) -> Dict[str, dict]:
-    work.mkdir(parents=True, exist_ok=True)
-    source, target = work / "in.json", work / "out.json"
-    source.write_text(json.dumps(units), encoding="utf-8")
-    data = work / "gaia-data"
-    env = dict(os.environ, GAIA_DATA_DIR=str(data), GAIA_DB=str(data / "gaia.db"), PYTHONDONTWRITEBYTECODE="1")
-    with open(work / "worker.log", "w", encoding="utf-8") as log:
+def _lines(target: Path) -> List[dict]:
+    lines = []
+    for line in target.read_text(encoding="utf-8").splitlines() if target.exists() else []:
         try:
-            subprocess.run([sys.executable, str(WORKER), str(root), str(source), str(target)], cwd=work, env=env,
-                           stdout=log, stderr=subprocess.STDOUT, timeout=BATCH_TIMEOUT_SECONDS, check=False)
-        except subprocess.TimeoutExpired:
-            pass
-    found = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
-    return {key: found.get(key, {"verdict": "ERROR", "rule": "worker-lost"}) for key in units}
+            lines.append(json.loads(line))
+        except json.JSONDecodeError:
+            break
+    return lines
+
+
+def _attempt(root: Path, units: Dict[str, dict], work: Path, attempt: int, log) -> Tuple[List[dict], bool]:
+    """Lines one worker process wrote for *units* in a fresh world of its own, and whether it was killed for making no progress."""
+    base = work / f"attempt{attempt}"
+    base.mkdir(parents=True, exist_ok=True)
+    source, target = base / "in.json", base / "out.jsonl"
+    source.write_text(json.dumps(units), encoding="utf-8")
+    data = base / "gaia-data"
+    env = dict(os.environ, GAIA_DATA_DIR=str(data), GAIA_DB=str(data / "gaia.db"), PYTHONDONTWRITEBYTECODE="1")
+    process = subprocess.Popen([sys.executable, str(WORKER), str(root), str(source), str(target)], cwd=base, env=env,
+                               stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    size, moved, limit = -1, time.monotonic(), STARTUP_TIMEOUT_SECONDS
+    while process.poll() is None:
+        time.sleep(POLL_SECONDS)
+        now_size = target.stat().st_size if target.exists() else 0
+        if now_size != size:
+            size, moved = now_size, time.monotonic()
+            limit = COMMAND_TIMEOUT_SECONDS if now_size else STARTUP_TIMEOUT_SECONDS
+        elif time.monotonic() - moved > limit:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            return _lines(target), True
+    return _lines(target), False
+
+
+def _batch(root: Path, units: Dict[str, dict], work: Path) -> Dict[str, dict]:
+    """Classify *units* in one worker, restarting it past any unit it stalls or dies on, which is reported as an ERROR."""
+    work.mkdir(parents=True, exist_ok=True)
+    results: Dict[str, dict] = {}
+    pending = list(units)
+    with open(work / "worker.log", "w", encoding="utf-8") as log:
+        for attempt in itertools.count():
+            if not pending:
+                break
+            lines, killed = _attempt(root, {key: units[key] for key in pending}, work, attempt, log)
+            for line in lines:
+                if "key" in line:
+                    results[line.pop("key")] = line
+            pending = [key for key in pending if key not in results]
+            if not pending:
+                break
+            if not lines:
+                results.update({key: {"verdict": "ERROR", "rule": "worker-lost"} for key in pending})
+                break
+            results[pending.pop(0)] = ({"verdict": "ERROR", "rule": "timeout", "seconds": COMMAND_TIMEOUT_SECONDS} if killed
+                                       else {"verdict": "ERROR", "rule": "worker-exit"})
+    return results
 
 
 def classify(root: Path, units: Dict[str, dict], work: Path, workers: int) -> Dict[str, dict]:
