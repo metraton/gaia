@@ -84,14 +84,14 @@ def test_d198_1_change_verb_leaving_the_machine(command, expected, project):
 
 @pytest.mark.parametrize("command,expected", [
     _case("program-var", "$WYVEX_BIN list widgets", ASKS),
-    _case("program-braced-var", '"${WYVEX_BIN}" status', ASKS),
+    _case("program-braced-var", '"${{WYVEX_BIN}}" status', ASKS),
     _case("program-substitution", "$(command -v wyvexctl) list widgets", ASKS),
     _case("program-backtick", "`printf wyvexctl` list widgets", ASKS),
     _case("program-glob", "wyvex* list widgets", ASKS, FREE),
     _case("verb-var", "wyvexctl $WYVEX_VERB widgets", ASKS),
-    _case("verb-quoted-var", 'wyvexctl "${WYVEX_VERB}" widget w1', ASKS),
+    _case("verb-quoted-var", 'wyvexctl "${{WYVEX_VERB}}" widget w1', ASKS),
     _case("verb-substitution", "wyvexctl $(wyvexgen --verb) widgets", ASKS),
-    _case("verb-brace", "wyvexctl {list,purge} widgets", ASKS),
+    _case("verb-brace", "wyvexctl {{list,purge}} widgets", ASKS),
     _case("argument-var-control", "wyvexctl list $WYVEX_FILTER", FREE),
 ])
 def test_d198_2_expansion_in_program_or_verb_position(command, expected, project):
