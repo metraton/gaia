@@ -30,7 +30,6 @@ import shlex
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, FrozenSet, List, Optional, Tuple
 
-from .effect_lattice import DIRECT, FS_READ, FS_WRITE, NET_EGRESS, NET_INGRESS, REMOTE, Effect, floor_effect
 
 if TYPE_CHECKING:
     from .mutative_verbs import LocalWorkCaller
@@ -62,16 +61,6 @@ class FlagClassifierResult:
     @property
     def is_blocked(self) -> bool:
         return self.outcome == OUTCOME_BLOCKED
-
-    @property
-    def effects(self) -> FrozenSet[Effect]:
-        """The effect set this flag reading reports; a network client reads or sends remotely, any other program on files."""
-        remote = self.command_family in _NETWORK_FAMILIES or self.command_family == "git_push"
-        if self.is_blocked:
-            return floor_effect(f"floor.{self.command_family}")
-        if self.outcome == OUTCOME_READ_ONLY:
-            return frozenset({Effect(NET_INGRESS, DIRECT, REMOTE) if remote else Effect(FS_READ)})
-        return frozenset({Effect(NET_EGRESS, DIRECT, REMOTE) if remote else Effect(FS_WRITE)})
 
     @property
     def is_mutative(self) -> bool:

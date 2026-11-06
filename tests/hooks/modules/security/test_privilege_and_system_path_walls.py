@@ -30,7 +30,6 @@ def test_privilege_programs_sign_under_their_own_rule(command):
     assert not result.allowed
     assert result.approval_id
     assert result.rule == "sign.privilege"
-    assert any(effect.kind == "priv" for effect in result.effects)
 
 
 @pytest.mark.parametrize("command", ["sudo rm -rf /", "doas mkfs.ext4 /dev/sda1", "dd if=/tmp/a of=/boot/gaia-probe"])
