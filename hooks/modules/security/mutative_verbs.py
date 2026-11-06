@@ -6272,6 +6272,18 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if package_result is not None:
         return package_result
 
+    # Step 3c, ahead of steps 2 and 3: a heredoc program is judged by its body, never by its opener line.
+    program = heredoc_program(command)
+    if program is not None and program.interpreter == base_cmd and program.is_shell:
+        return _classify_script_content_by_regex(
+            program.body, "<heredoc>", family, cwd=cwd, _depth=_depth + 1,
+        )
+    if base_cmd in _INLINE_CODE_CLIS and "<<" in command and (
+        program is not None
+        or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
+    ):
+        return _check_inline_code(command, base_cmd, family, skip_length_check=True, cwd=cwd, _depth=_depth)
+
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
         return MutativeResult(
@@ -6383,24 +6395,6 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         )
     if runs_inline_code:
         return _check_inline_code(command, base_cmd, family, cwd=cwd, _depth=_depth)
-
-    # --- Step 3c: Heredoc safety check ---
-    # When a runtime interpreter is invoked with '-' (stdin) and the command
-    # contains a heredoc ('<<'), the heredoc body is script source --
-    # not shell subcommands.  Route through inline code analysis.
-    # The length heuristic is suppressed: multi-line heredocs are normal
-    # and must not be flagged on size alone. A shell's heredoc program is a
-    # script, so it is read line by line as ``bash script.sh`` would be.
-    program = heredoc_program(command)
-    if program is not None and program.interpreter == base_cmd and program.is_shell:
-        return _classify_script_content_by_regex(
-            program.body, "<heredoc>", family, cwd=cwd, _depth=_depth + 1,
-        )
-    if base_cmd in _INLINE_CODE_CLIS and "<<" in command and (
-        program is not None
-        or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
-    ):
-        return _check_inline_code(command, base_cmd, family, skip_length_check=True, cwd=cwd, _depth=_depth)
 
     # --- Step 3d: CLI-specific mutative command paths ---
     command_path = tuple(token.lower() for token in semantics.non_flag_tokens)
