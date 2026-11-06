@@ -282,6 +282,21 @@ def _option_value_positions(semantics: "CommandSemantics") -> FrozenSet[int]:
     return frozenset(positions)
 
 
+def _pytest_option_value_positions(semantics: "CommandSemantics") -> FrozenSet[int]:
+    """Return the semantic head positions that hold a value of a pytest option, for a command that runs pytest."""
+    if _pytest_arguments(semantics.base_cmd, list(semantics.tokens[1:])) is None:
+        return frozenset()
+    positions, index, previous = set(), 0, ""
+    expected = semantics.non_flag_tokens_raw
+    for token in semantics.args:
+        if index < len(expected) and token == expected[index]:
+            index += 1
+            if previous in _PYTEST_VALUE_OPTIONS:
+                positions.add(index)
+        previous = token
+    return frozenset(positions)
+
+
 # Global options of the cloud CLIs and how many words each takes. They hold no command word, so they are read
 # away before the command path is classified; an option missing here may take a value, so it is read both ways.
 _CLOUD_GLOBAL_OPTIONS: Dict[str, Dict[str, int]] = {
@@ -5192,13 +5207,21 @@ def _check_nested_executor(
 
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
+_VERB_WORD_FAMILIES: FrozenSet[str] = _VERB_FIRST_FAMILIES | {"package", "build"}
+_OPERAND_ONLY_BUILTINS: FrozenSet[str] = frozenset({
+    "cd", "pushd", "popd", "export", "unset", "source", ".", "exit", "return", "wait", "sleep", "kill",
+    "read", "local", "declare", "readonly", "typeset", "shift", "seq",
+})
 # CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
 _GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil", "oci"})
 _SHARED_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS | {"ls", "ps", "rm", "cp", "mv"}
 
 
+_BRACE_EXPANSION_RE = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")
+
+
 def _is_shell_expansion(word: str) -> bool:
-    return word[:1] in ("$", "`")
+    return word[:1] in ("$", "`") or _BRACE_EXPANSION_RE.search(word) is not None
 
 
 def _verb_word_effect(word: str) -> str:
@@ -5944,9 +5967,13 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS | _EXPRESSION_FIRST_TOOLS
         and any(_is_known_verb(word) for word in literal_words)
     )
+    unmodelled_program = (
+        "/" not in tokens[0] and base_cmd not in _OPERAND_ONLY_BUILTINS | _EXPRESSION_FIRST_TOOLS
+        and _is_unmodelled_cli(base_cmd) and not _scan_dangerous_flags(tokens, base_cmd)
+    )
     if program_is_dynamic:
         dynamic_word = tokens[0]
-    elif family in _VERB_FIRST_FAMILIES or unlisted_subcommand:
+    elif family in _VERB_WORD_FAMILIES or unlisted_subcommand or unmodelled_program:
         dynamic_word = _dynamic_verb_span_word(base_cmd, tokens[1:])
     else:
         dynamic_word = None
@@ -6765,7 +6792,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
 
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
+    pytest_values = _pytest_option_value_positions(semantics)
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
+        if semantic_index in pytest_values:
+            continue
         # `deploy-key` is a noun, so hyphen-splitting it onto `deploy` reads a
         # listing as a deployment; add/delete still reach the split below.
         if token == "deploy-key" and tuple(
@@ -9907,7 +9937,7 @@ def _check_inline_code_shape(
         return None
     for index, token in enumerate(tokens[1:], start=1):
         flag, attached, payload = token.partition("=")
-        if not attached and index + 1 < len(tokens):
+        if not attached and index + 1 < len(tokens) and not is_boolean_short_flag(base_cmd, flag):
             payload = tokens[index + 1]
         if flag in _INLINE_CODE_SHAPE_FLAGS and _re.search(r"[\s();{}]", payload):
             return _unrecognised_interpreter(base_cmd, f"the code passed to {flag}", family)

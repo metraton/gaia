@@ -1,0 +1,21 @@
+{
+ "task": 1129,
+ "truth_rows": [
+  "unknown-unlisted-cli-dynamic-verb",
+  "unknown-unlisted-cli-equals-flag-dynamic-verb",
+  "unknown-limit-dynamic-verb-path-object",
+  "unknown-v9-b13",
+  "unknown-v7-r1", "unknown-v7-r2", "unknown-v7-r3", "unknown-v7-r4", "unknown-v7-r5", "unknown-v7-r6",
+  "unknown-v7-r7", "unknown-v7-r8", "unknown-v7-r10", "unknown-v7-r11", "unknown-v7-r12", "unknown-v7-r13",
+  "unknown-v7-r14", "unknown-v7-r15", "unknown-v7-r16", "unknown-v7-r18", "unknown-v7-r19", "unknown-v7-r20",
+  "friction-jq-object-construction"
+ ],
+ "reviews": {
+  "friction-jq-object-construction": "Curated friction: jq -c is jq's boolean compact-output flag, so the filter after it is jq's operand, not inline code; UNKNOWN(unknown.dynamic-span) -> FREE.",
+  "jq -c \".[] | select(.id==1987 or .id==1988 or .id==1989) | {id,gate_id,polarity,ac_id,text,created_at}\" /home/jorge/.claude/projects/-home-jorge-ws/fcd612ec-f757-4a32-8f71-bf01428f22b7/tool-results/bd5twrof3.txt": "jq filter after the boolean -c flag, read-only jq over a file; UNKNOWN -> FREE.",
+  "jq -c \"{t:.dashboard.timezone,v:.dashboard.version,title:.dashboard.title}\" /tmp/claude-1001/-home-jorge-ws/80f4c61f-24b8-4354-ae28-98d20bed72b8/scratchpad/v461-voice.json /tmp/claude-1001/-home-jorge-ws/80f4c61f-24b8-4354-ae28-98d20bed72b8/scratchpad/v461-home.json /tmp/claude-1001/-home-jorge-ws/80f4c61f-24b8-4354-ae28-98d20bed72b8/scratchpad/v461-infra.json /tmp/claude-1001/-home-jorge-ws/80f4c61f-24b8-4354-ae28-98d20bed72b8/scratchpad/v461-env.json /tmp/claude-1001/-home-jorge-ws/80f4c61f-24b8-4354-ae28-98d20bed72b8/scratchpad/v461-plat.json": "jq filter after the boolean -c flag, read-only jq over files; UNKNOWN -> FREE.",
+  "jq -c '[.results[] | select(.status==\"FAIL\")] | map({desc: (.desc|.[0:160]), detail: (.detail|.[0:160]), required})' /home/jorge/ws/century-inc/.project-worktrees/branchkinect-platform/52fd0b6940b024399471cfb8b557f611/tests/e2e-runs/e2e-191e0245e7427a15/reports/cross-console/voice-runs/test-all-full-r437487865478-1/voice-08-branch-info.json": "jq filter after the boolean -c flag, read-only jq over a file; UNKNOWN -> FREE.",
+  "jq -c 'paths(scalars) | map(tostring) | join(\".\")' /home/jorge/ws/century-inc/.project-worktrees/branchkinect-platform/52fd0b6940b024399471cfb8b557f611/tests/e2e-runs/e2e-73f629acd0adcca0/reports/cross-console/voice-runs/test-all-full-r849817775760-1/voice-02-two-jobs.json --unbuffered -r": "jq filter after the boolean -c flag, read-only jq over a file; UNKNOWN -> FREE."
+ },
+ "justification": "Replay 5afe2dab -> task/1129 (sample 2000, since 2026-10-30, report ~/.gaia/scratch/a8ed76cf0c418467a.c6400df70581/report.md): 28 changes. 22 truth rows FREE -> UNKNOWN(unknown.dynamic-span), closing the accepted residual of a variable verb on an unmodelled CLI (D198 point 2, accepted by the coordinator 2026-11-06). 5 UNKNOWN -> FREE, all jq filters after the boolean -c flag (1 curated case, 4 history). 1 history SIGNED -> UNKNOWN (dpkg-query -W -f '${Package}...'), still asking. 0 SIGNED -> FREE, 0 history commands newly asking."
+}
