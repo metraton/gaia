@@ -53,7 +53,6 @@ READ_ONLY = {
     "trap-single-quoted-variable": "trap 'echo $HOME' EXIT",
     "program-mention": "ldd /usr/bin/ls",
     "lone-read-only": "xvfb-run ls",
-    "variable-payload-accepted-residual": "systemd-run --user \"$RUN\"",
 }
 
 

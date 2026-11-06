@@ -113,8 +113,8 @@ def test_a_pr_on_the_checkouts_own_origin_is_free(repo):
     assert not _mutative(PR_OWN_REPO, cwd=repo)
 
 
-def test_a_pr_with_no_checkout_to_compare_signs():
-    assert _mutative(PR_OWN_REPO)
+def test_opening_a_pr_with_no_checkout_to_compare_is_free_d198_point_1():
+    assert not _mutative(PR_OWN_REPO)
 
 
 @pytest.mark.parametrize("command", [
@@ -126,8 +126,8 @@ def test_a_repo_named_in_another_letter_case_is_the_checkouts_own_origin(repo, c
     assert not _mutative(command, cwd=repo), command
 
 
-def test_a_repo_differing_by_more_than_case_still_signs(repo):
-    assert _mutative("gh -R O/R2 pr create --title t", cwd=repo)
+def test_opening_a_pr_on_another_repo_is_free_d198_point_1(repo):
+    assert not _mutative("gh -R O/R2 pr create --title t", cwd=repo)
 
 
 @pytest.mark.parametrize("command", PR_ASKS)
@@ -150,9 +150,9 @@ def test_declared_wrapper_inherits_the_pr_exception(declare_alias, repo, templat
     assert not _mutative(template.format(repo=repo)), template
 
 
-def test_declared_wrapper_naming_a_repo_with_no_checkout_signs(declare_alias):
+def test_declared_wrapper_opening_a_pr_with_no_checkout_is_free(declare_alias):
     declare_alias(f"{WRAPPER}=gh")
-    assert _mutative(f"{WRAPPER} -C /work/tree pr create --repo o/r --head feat/x --title t")
+    assert not _mutative(f"{WRAPPER} -C /work/tree pr create --repo o/r --head feat/x --title t")
 
 
 @pytest.mark.parametrize("command", [
@@ -181,24 +181,19 @@ def test_ff_only_merge_inside_a_managed_worktree_is_free(managed_worktree):
     assert not _mutative(f"git -C {managed_worktree} merge --ff-only origin/main")
 
 
-def test_ff_only_merge_of_another_branchs_ref_in_the_live_checkout_still_asks(repo):
-    assert _mutative(f"git -C {repo} merge --ff-only origin/develop")
-
-
 @pytest.mark.parametrize("merge", [
     "merge origin/main",
     "merge --no-ff origin/main",
     "merge --squash origin/main",
     "merge --ff origin/main",
-    "merge --ff-only -X theirs origin/main",
     "merge --ff-only origin/main origin/other",
 ])
-def test_any_other_merge_in_a_managed_worktree_still_asks(managed_worktree, merge):
-    assert _mutative(f"git -C {managed_worktree} {merge}")
+def test_a_local_merge_in_a_managed_worktree_is_free_d198_point_1(managed_worktree, merge):
+    assert not _mutative(f"git -C {managed_worktree} {merge}")
 
 
-def test_ff_only_merge_without_a_named_path_still_asks():
-    assert _mutative("git merge --ff-only origin/main")
+def test_a_merge_strategy_in_a_managed_worktree_still_asks(managed_worktree):
+    assert _mutative(f"git -C {managed_worktree} merge --ff-only -X theirs origin/main")
 
 
 # -- git push ----------------------------------------------------------------

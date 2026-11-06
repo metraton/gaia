@@ -80,20 +80,6 @@ def test_trigger_ff_only_merge_is_free_with_the_checkout_on_main(base):
     assert _boundary_tier(command) == "T0"
 
 
-def test_trigger_ff_only_merge_asks_with_the_checkout_on_another_branch(base):
-    _on(base, "feat")
-    command = f"git -C {base} merge --ff-only origin/main"
-    assert _asks(command)
-    assert _boundary_tier(command) == "T3"
-
-
-def test_a_verdict_is_read_fresh_when_the_branch_changes_between_calls(base):
-    command = f"git -C {base} merge --ff-only origin/main"
-    assert not _asks(command)
-    _on(base, "feat")
-    assert _asks(command)
-
-
 def test_ff_only_merge_of_the_current_branch_is_free_on_a_feature_branch(base):
     _on(base, "feat")
     assert not _asks(f"git -C {base} merge --ff-only origin/feat")
@@ -125,31 +111,28 @@ def test_a_switch_to_a_branch_is_free_in_the_callers_directory(base, command):
     assert not _asks(f"git {command}", cwd=base)
 
 
-def test_ff_only_merge_of_another_branchs_ref_asks(base):
-    assert _asks(f"git -C {base} merge --ff-only origin/feat")
-
-
-def test_ff_only_merge_of_a_local_branch_asks(base):
-    _on(base, "feat")
-    assert _asks(f"git -C {base} merge --ff-only main")
-
-
-def test_ff_only_merge_on_a_detached_head_asks(base):
-    _git(Path(base), "checkout", "-q", "--detach")
-    assert _asks(f"git -C {base} merge --ff-only origin/main")
-
-
-@pytest.mark.parametrize("merge", [
-    "merge origin/main",
-    "merge --no-ff origin/main",
-    "merge --squash origin/main",
-    "merge --ff origin/main",
-    "merge --ff-only -X theirs origin/main",
-    "merge --ff-only origin/main origin/feat",
-    "merge --ff-only nowhere/main",
+@pytest.mark.parametrize("setup, merge", [
+    (None, "merge --ff-only origin/feat"),
+    ("feat", "merge --ff-only main"),
+    ("feat", "merge --ff-only origin/main"),
+    ("--detach", "merge --ff-only origin/main"),
+    (None, "merge origin/main"),
+    (None, "merge --no-ff origin/main"),
+    (None, "merge --squash origin/main"),
+    (None, "merge --ff origin/main"),
+    (None, "merge --ff-only origin/main origin/feat"),
+    (None, "merge --ff-only nowhere/main"),
 ])
-def test_merges_that_can_create_commits_ask(base, merge):
-    assert _asks(f"git -C {base} {merge}")
+def test_a_local_merge_with_listed_flags_is_free_d198_point_1(base, setup, merge):
+    if setup == "--detach":
+        _git(Path(base), "checkout", "-q", "--detach")
+    elif setup:
+        _on(base, setup)
+    assert not _asks(f"git -C {base} {merge}")
+
+
+def test_a_merge_strategy_option_still_asks(base):
+    assert _asks(f"git -C {base} merge --ff-only -X theirs origin/main")
 
 
 @pytest.mark.parametrize("command", [
@@ -167,18 +150,6 @@ def test_merges_that_can_create_commits_ask(base, merge):
 ])
 def test_rewriting_or_forcing_commands_ask(base, command):
     assert _asks(f"git -C {base} {command}")
-
-
-@pytest.mark.parametrize("command", [
-    "git merge --ff-only origin/main",
-    "git -C . merge --ff-only origin/main",
-])
-def test_an_unknown_repository_fails_closed(command):
-    assert _asks(command)
-
-
-def test_a_path_that_is_not_a_repository_fails_closed(tmp_path):
-    assert _asks(f"git -C {tmp_path} merge --ff-only origin/main")
 
 
 @pytest.mark.parametrize("command", [

@@ -240,7 +240,7 @@ GIT = [
     ("diff-output-indicator", "git diff --output-indicator-new=+", FREE),
     ("grep-open-in-pager", "git grep -O TODO", ASK),
     ("grep-open-in-named-pager", "git grep --open-files-in-pager=vim TODO", ASK),
-    ("merge", "git merge feature-x", ASK),
+    ("merge", "git merge feature-x", FREE),
     ("update-ref", "git update-ref refs/heads/x HEAD", ASK),
 ]
 
