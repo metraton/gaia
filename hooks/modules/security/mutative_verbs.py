@@ -9640,7 +9640,7 @@ _NO_MODEL_VERBS: FrozenSet[str] = frozenset({
 
 
 def _check_execution_scan(command: str, result: MutativeResult, cwd: "Optional[str]") -> MutativeResult:
-    """*result* with the short scan applied (D198 point 3, decision B): a signal adds an ask, and no signal frees only a no-model ask."""
+    """*result* with the short scan applied (D198 point 3, decision B): a signal adds an ask; no signal frees only a no-model ask, never one on inline code."""
     relievable = result.is_mutative and result.verb in _NO_MODEL_VERBS
     if result.is_mutative and not relievable:
         return result
@@ -9653,7 +9653,7 @@ def _check_execution_scan(command: str, result: MutativeResult, cwd: "Optional[s
             cli_family=result.cli_family, confidence="high",
             reason=f"{verdict.kind} {verdict.entry}: {verdict.signal} at {verdict.evidence}", rule=verdict.rule,
         )
-    if not relievable:
+    if not relievable or verdict.kind == "inline":
         return result
     return MutativeResult(
         is_mutative=False, category=CATEGORY_READ_ONLY, verb="execution-scan", cli_family=result.cli_family,
