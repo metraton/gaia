@@ -5,7 +5,7 @@
 --   kind=tool only. Written only by `gaia memory declare`, never by add.
 -- command_declarations: an exact literal command form a project declares
 --   with an effect, matched word for word (gaia/store/declarations.py).
--- Both are read by hooks/modules/security/declared_effects.py.
+-- Both are recorded, not read by the validator yet (no hook reads them).
 --
 -- Backward: older code never writes effect or the new table.
 

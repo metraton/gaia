@@ -1,4 +1,5 @@
-"""The declaration channel: a user tool's effect and a project's exact command forms, written only under signature."""
+"""Signed declarations of a tool's effect or a project's exact command form: recorded, not read by the validator yet
+(no hook calls tool_effects or project_commands; pending thread_gaia_memory_declare_sin_lector_tras_1130_20261106)."""
 
 from __future__ import annotations
 

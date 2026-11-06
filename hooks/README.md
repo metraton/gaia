@@ -42,7 +42,15 @@ Orchestrator dispatches agent (Task/Agent tool call)
         |                 except a named list of command-free built-ins
         |  AskUserQuestion calls: an approval question must be the exact object
         |        `gaia approvals question` printed; the hook shows each signature's text
-        |  Bash calls: security gate (gaia_cli_only_guard for the orchestrator's Gaia coordination console, blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard)
+        |  Bash calls: security gate (modules/tools/bash_validator.py::BashValidator.validate):
+        |        phase 0 gaia_cli_only_guard for the orchestrator's Gaia coordination console;
+        |        then the guards host_consent_verb, publish_attribution, comment_push_gate,
+        |        gaia_db_write, subagent_memory_write, memory_skill, subagent_resume_point,
+        |        contract_ownership, protected_path, shell_write (system paths sign), sensitive_read;
+        |        then unwrap -> decompose -> classify (blocked_commands, cloud_pipe_validator,
+        |        mutative_verbs with the closed verb lexicon and the depth-1 execution scan)
+        |        -> composition -> aggregate, where privilege_guard (sudo/su/doas) and
+        |        production targets can only add a signature
         |  Task/Agent calls: validates the dispatch and births its contract row; the context
         |        kernel is injected later, at SubagentStart
         |  Write/Edit calls: protected path validation (protected_paths.is_protected_hook_path)
@@ -81,7 +89,7 @@ Claude Code replaces a hook's `additionalContext` over 10,000 chars with a 2,000
 **The birth block** (`modules/session/session_manifest.py::build_session_context`) is one assembler for every start source. A compaction is one more birth of the same session, not a special refresh: `session_lifecycle.start_context` calls the same function for `startup`, `resume`, `clear`, `fork` and `compact`, and OpenCode's `adapt_session_start` calls it for its first message and for the first message after a compaction. `modules/context/compact_context_builder.py` keeps only the instructions for the summarizer, which end the summary with the same `gaia map` pointer. The block reads, in order:
 
 1. a heading naming the source (`# Gaia session context (source: compact)`), which is the orchestrator's cue that the context was compacted;
-2. the alarms that condition every write (database upgrade, data home, workspace, schema mismatch). A database at a newer schema than this install gets `## Database schema` with one line (`session_manifest.py::install_behind_line`): this Gaia is behind gaia.db, whether it still writes or refuses every write, and the update command for its channel;
+2. the alarms that condition every write (database upgrade, data home, workspace, install integrity, schema mismatch). `## Install integrity` names each install link or Gaia settings key that drifted from the hashes the install recorded (`modules/session/install_integrity.py::integrity_notice`); it is a notice, never a block. A database at a newer schema than this install gets `## Database schema` with one line (`session_manifest.py::install_behind_line`): this Gaia is behind gaia.db, whether it still writes or refuses every write, and the update command for its channel;
 3. `## User memory`, the user's live facts and preferences, each a title and its `ref=` (`user_sections.USER_HEADER`);
 4. `## Due`: the reminders and routines due now (`build_due_section`), absent when none is;
 5. `## Resume point`, only for `compact`, `resume` and `fork` (`build_resume_section`): this session's ledger (`gaia/session_ledger.py::render_resume_point`). After a compaction it is the ledger `pre_compact.py` stored at `<data_dir>/session_ledger/<session_id>.json`; on resume or fork it is rebuilt from the database with the stored compaction count. Lines are `session=` and `compactions=`, then `in_flight:` this session's open contract chains (a turn still running or waiting, or a task-bound one whose task is pending; an unbound NEEDS_VERIFICATION and a cut or dead turn are left to `gaia contract list`, `gaia/session_snapshot.py::_open_contracts`), `pending:` approvals pending or approved and unused, `written:` memory rows (`origin_session_id`, or a signal this session wrote), `changed:` memory rows other sessions changed since this one was born, `branches:` worktrees whose sidecar names one of its contracts, each list capped by `gaia/session_ledger.py::LIST_CAPS` with `(+N)`, then `note:`, the hand note, only when this session wrote it. Startup and clear carry no resume section and no global count of plans, proposals or signatures;
@@ -103,7 +111,7 @@ Every hook entry point is thin by design. The entry point reads stdin, calls the
 ```
 hooks/pre_tool_use.py              <- Entry point: stdin/stdout glue only
   -> adapters/claude_code.py       <- Adapter: parses event, dispatches to modules
-    -> modules/security/           <- blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard
+    -> modules/security/           <- blocked_commands, mutative_verbs, verb_lexicon, execution_scan, privilege_guard, protected_path_guard, shell_write_guard
     -> modules/context/            <- context_injector, contracts_loader
     -> modules/agents/             <- contract_validator, skill_injection, artifact_skill_map, artifact_skill_reminder
     -> modules/validation/         <- commit_validator

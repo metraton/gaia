@@ -6,9 +6,9 @@ Simplified three-category pipeline:
   mutative_verbs.py    ->  MUTATIVE (needs user approval)
   everything else      ->  SAFE (auto-approved by elimination)
 
-This module detects MUTATIVE commands by scanning tokens for known verb patterns,
-dangerous flags, and command aliases. If a command is not blocked and not mutative,
-it is safe by elimination -- no allowlist needed.
+A word changes state only in the closed lexicon MUTATIVE_VERBS (verb_lexicon.CHANGE_VERB_CLASSES), save the
+shapes verb_lexicon.EFFECT_OVER_VERB_EXCEPTIONS names; an expanded program or verb word asks, and
+_check_execution_scan adds asks from the depth-1 scan. Neither blocked nor mutative is safe by elimination.
 
 Categories retained internally for verb classification:
 - MUTATIVE: ALL state-modifying verbs (approvable with the user's consent)

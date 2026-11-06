@@ -2787,7 +2787,7 @@ _EDIT_RETIRED = (
 
 
 def _cmd_declare(args) -> int:
-    """Write one declaration: a tool's effect, or a project's exact command form; the hooks sign it."""
+    """Write one signed tool-effect or project-command declaration; recorded, not read by the validator yet."""
     as_json = getattr(args, "json", False)
     effect = None if args.withdraw else args.effect
     if not args.withdraw and effect is None:
@@ -3794,12 +3794,13 @@ def register(subparsers):
         allow_abbrev=False,
         help="T3: declare a tool's effect or a project's exact command form",
         description=(
-            "Declare what a command does, so the hooks judge it by the declaration instead of "
-            "as an unknown program. --binary names a live user tool row (one that replaces no "
-            "CLI); --project with --command names one exact literal form, matched word for "
-            "word in that project only. A declaration never lowers a floor, a guard or a "
-            "program the classifier models. T3 for every caller: it changes what the hooks "
-            "conclude, so the user signs it; a subagent is refused and proposes it instead."
+            "Record what a command does. The declaration is recorded, not read by the "
+            "validator yet: no hook consults it, so the command is still judged as if it "
+            "were undeclared (open pending: "
+            "thread_gaia_memory_declare_sin_lector_tras_1130_20261106). --binary names a "
+            "live user tool row (one that replaces no CLI); --project with --command names "
+            "one exact literal form of that project. T3 for every caller, so the user signs "
+            "it; a subagent is refused and proposes it instead."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(

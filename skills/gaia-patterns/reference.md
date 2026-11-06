@@ -29,12 +29,12 @@ On the plugin channel, which never runs `gaia install`, SessionStart first bring
 | Package | Files | Purpose |
 |---------|-------|---------|
 | `core/` | `hook_entry`, `paths`, `plugin_mode`, `plugin_setup`, `state`, `stdin` | Entry dispatch, path resolution, mode detection, shared state |
-| `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval grant lifecycle |
+| `security/` | `blocked_commands`, `mutative_verbs`, `verb_lexicon`, `execution_scan`, `verdict`, `tiers`, `command_semantics`, `forge_shapes`, `nested_executors`, `targets`, `privilege_guard`, `store_code_guard`, `gaia_db_write_guard`, `protected_path_guard`, `shell_write_guard`, `sensitive_read_guard`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator`, and the other guards | T3 gate: closed change-verb lexicon, depth-1 execution scan, verdicts and targets, blocked commands, path and store walls, approval grant lifecycle |
 | `audit/` | `logger`, `metrics`, `event_detector`, `workflow_auditor`, `workflow_recorder` | Structured logging, metrics collection, workflow audit trail |
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder` (summarizer instructions only), `anchor_tracker` | Context freshness checks, contract loading, context writing |
 | `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | agent_contract_handoffs row validation, skill verification, transcript analysis |
-| `session/` | `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders; `pending_scanner` is retired (cross-session pending surfacing removed -- formatting helpers only remain) |
+| `session/` | `session_lifecycle`, `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `install_integrity`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders, the `## Install integrity` notice; `pending_scanner` is retired (cross-session pending surfacing removed -- formatting helpers only remain) |
 | `orchestrator/` | `delegate_mode` | Delegation mode detection |
 | `validation/` | `commit_validator` | Git commit validation |
 | `scanning/` | `scan_trigger` | Auto-scan trigger |
@@ -88,7 +88,8 @@ On the plugin channel, which never runs `gaia install`, SessionStart first bring
 | gaia_simulator | `tools/gaia_simulator/` | Routing simulator: `cli`, `extractor`, `reporter`, `routing_simulator`, `runner`, `skills_mapper` |
 | memory | `tools/memory/` | `episodic` -- episodic memory store |
 | scan | `tools/scan/` | Project scanner: `core` (single nucleus -- all entry points call `scan_workspace`), `orchestrator`, `registry`, `scanners/`, `config`, `merge`, `verify`, `walk`, `workspace`, `ui` |
-| validation | `tools/validation/` | `approval_gate`, `validate_skills` |
+| validation | `tools/validation/` | `approval_gate`, `validate_skills` -- hand-run helpers; nothing imports them |
+| validator_replay | `tools/validator_replay/` | `replay`, `corpus`, `runner`, `worker`, `caps.json`, `declared/` -- old vs working-tree Bash validator replay |
 
 ### CLI Tools
 
@@ -390,13 +391,13 @@ hooks/modules/agents/transcript_analyzer.py
 
 Analyzes agent transcripts for contract compliance, skill adherence, and behavioral patterns. Used by `subagent_stop.py` to validate agent output. Paired with `transcript_reader.py` for parsing.
 
-### Approval Gate
+### Validator replay
 
 ```bash
-python3 tools/validation/approval_gate.py
+python3 -m pytest tests/replay/test_validator_replay_diff.py -m replay
 ```
 
-Validates the T3 approval grant lifecycle: request, scope matching, expiry, grant/deny.
+Classifies the truth table, curated cases, the store's shell history and sealed approvals with the merge-base Bash validator and the working tree, and fails past a cap in `tools/validator_replay/caps.json` (`tools/validator_replay/replay.py::check_caps`). Run it before landing a validator change; `tools/validator_replay/README.md` covers the variables and the declared files. The T3 grant lifecycle is tested under `tests/approvals/`; `tools/validation/approval_gate.py` enforces nothing and has no entry point.
 
 ### Doctor
 

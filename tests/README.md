@@ -75,6 +75,8 @@ tests/
 ├── layer3_e2e/                      # Layer 3: end-to-end with real Claude Code session (pre-release)
 ├── ci/                              # CI-only smoke (e.g. windows_smoke.py)
 ├── performance/                     # Performance benchmarks
+├── replay/                          # Validator replay: old vs working-tree Bash validator held to
+│                                    #   tools/validator_replay/caps.json; skipped unless -m replay
 ├── system/                          # Layer 1: agent definitions and fixture-precondition audit
 ├── tools/                           # Layer 1: context_provider, episodic tests +
 │                                    #   route_agent_id_constants.py (codemod, not collected)
@@ -131,11 +133,14 @@ python3 -m pytest tests/layer2_llm_evaluation/ -v -m llm
 # Layer 3 — end-to-end (pre-release)
 python3 -m pytest tests/layer3_e2e/ -v -m e2e
 
+# Validator replay (opt-in, before landing a validator change; see tools/validator_replay/README.md)
+python3 -m pytest tests/replay/test_validator_replay_diff.py -m replay
+
 # Coverage report (Layer 1)
 python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 ```
 
-**Markers:** Layer 2 tests use `@pytest.mark.llm`, Layer 3 tests use `@pytest.mark.e2e`. The default pytest run ignores both — you must opt in with `-m` or by pointing pytest directly at the layer directory.
+**Markers:** Layer 2 tests use `@pytest.mark.llm`, Layer 3 tests use `@pytest.mark.e2e`. The default pytest run ignores both — you must opt in with `-m` or by pointing pytest directly at the layer directory. The validator replay uses `@pytest.mark.replay`, registered in `tests/replay/conftest.py`; the default run collects it and skips it, because it reads the real store's history and runs for minutes, so it runs only with `-m replay`.
 
 **Durations:** `.test_durations` at the repo root is what CI partitions the shards by; a test missing from it counts as the average, so a stale file unbalances the shards without dropping a test. Every CI run publishes a fresh merged copy as the `test-durations` artifact: refresh the committed file with `gh run download <run-id> --repo metraton/gaia --name test-durations --dir .`.
 
