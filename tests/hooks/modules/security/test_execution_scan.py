@@ -1,4 +1,4 @@
-"""The short execution scan (D198 point 3): every execution kind signs on each of the four signals, naming it, and runs free otherwise."""
+"""The short execution scan (D198 point 3): every execution kind signs on each of the six signals, naming it, and keeps its prior verdict otherwise."""
 
 from __future__ import annotations
 
@@ -15,8 +15,15 @@ for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "hooks")):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
+from modules.security import mutative_verbs as mutative_verbs_module  # noqa: E402
 from modules.security import tiers as tiers_module  # noqa: E402
-from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
+from modules.security.execution_scan import scan_execution  # noqa: E402
+from modules.security.mutative_verbs import (  # noqa: E402
+    CATEGORY_MUTATIVE,
+    CLI_FAMILY_LOOKUP,
+    MutativeResult,
+    detect_mutative_command,
+)
 from modules.tools.bash_validator import BashValidator  # noqa: E402
 
 LINES = {
@@ -154,3 +161,50 @@ def test_reading_the_network_and_deleting_inside_the_project_run_free(files, com
 def test_plain_in_repo_pytest_keeps_its_d195_verdict(command, repo):
     _write(repo, {"tests/test_a.py": 'import subprocess\nsubprocess.run(["kubectl", "apply", "-f", "a.yaml"])\n'})
     assert _allowed(command, repo), command
+
+
+def _scan(command: str, root: Path):
+    return scan_execution(command, str(root), CLI_FAMILY_LOOKUP)
+
+
+def _prior(command: str, root: Path, monkeypatch):
+    with monkeypatch.context() as unscanned:
+        unscanned.setattr(mutative_verbs_module, "scan_execution", lambda *args, **kwargs: None)
+        return _detect(command, root)
+
+
+@pytest.mark.parametrize("files, command", [
+    ({"run.sh": "bash helper.sh\n", "helper.sh": "bash deep.sh\n", "deep.sh": "kubectl apply -f app.yaml\n"}, "bash run.sh"),
+    ({"tool.cjs": 'require("./lib.cjs");\n', "lib.cjs": 'require("./deep.cjs");\n', "deep.cjs": "eval(payload);\n"}, "node tool.cjs"),
+])
+def test_a_signal_only_at_depth_two_keeps_the_prior_verdict(files, command, repo, monkeypatch):
+    _write(repo, files)
+    prior = _prior(command, repo, monkeypatch)
+    assert _scan(command, repo).signal is None
+    assert mutative_verbs_module._check_execution_scan(command, prior, str(repo)) == prior
+
+
+@pytest.mark.parametrize("files, command", [
+    ({"run.sh": "bash helper.sh\n", "helper.sh": "echo ok\n"}, "bash run.sh"),
+    ({"tool.cjs": 'require("./lib.cjs");\n', "lib.cjs": 'console.log("ok");\n'}, "node tool.cjs"),
+])
+def test_a_clean_entry_and_callee_keep_the_prior_verdict(files, command, repo, monkeypatch):
+    _write(repo, files)
+    prior = _prior(command, repo, monkeypatch)
+    assert not prior.is_mutative, prior
+    assert _scan(command, repo).signal is None
+    assert mutative_verbs_module._check_execution_scan(command, prior, str(repo)) == prior
+    assert _allowed(command, repo), command
+
+
+@pytest.mark.parametrize("command", ['python3 -c "print(1)"', "node - <<'JS'\nconsole.log(1)\nJS"])
+def test_the_scan_never_frees_a_no_model_ask_on_inline_code(command, repo):
+    asked = MutativeResult(is_mutative=True, category=CATEGORY_MUTATIVE, verb="script-file-unreadable")
+    assert _scan(command, repo).kind == "inline"
+    assert mutative_verbs_module._check_execution_scan(command, asked, str(repo)) == asked
+
+
+def test_the_scan_frees_a_no_model_ask_on_a_clean_script_file(repo):
+    _write(repo, {"run.sh": "echo ok\n"})
+    asked = MutativeResult(is_mutative=True, category=CATEGORY_MUTATIVE, verb="script-file-unreadable")
+    assert not mutative_verbs_module._check_execution_scan("bash run.sh", asked, str(repo)).is_mutative
