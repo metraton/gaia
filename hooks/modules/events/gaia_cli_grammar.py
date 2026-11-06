@@ -198,7 +198,7 @@ OPTIONS = {
     'memory add': (
         '--binary --body --body-file --class --description --help --initiative --json --kind '
         '--measured-at --method --name --project --project-ref --replace --replaces --status '
-        '--type --until --workspace -h'
+        '--surface --type --until --workspace -h'
     ),
     'memory append': '--body --body-file --help --json --workspace -h',
     'memory checkpoint': '--file --help --initiative --json --project --project-ref --workspace -h',
@@ -220,7 +220,7 @@ OPTIONS = {
         '--from --from-file --help --initiative --json --kind --project --to --type '
         '--workspace -h'
     ),
-    'memory reclassify': '--class --from --from-file --help --json --status --workspace -h',
+    'memory reclassify': '--class --from --from-file --help --json --status --surface --workspace -h',
     'memory search': (
         '--all --class --help --include-superseded --json --limit --scope --type --workspace '
         '-h'
