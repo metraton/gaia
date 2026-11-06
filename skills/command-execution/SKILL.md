@@ -148,6 +148,26 @@ shows the gate where it reads and writes runs free; reach for these first
 - Keep a Python probe's argv literal: names bound once to literals and passed
   to `subprocess.run` are judged as the command they spell
   (`tests/hooks/modules/security/test_script_file_readonly_subprocess.py::test_argv_names_bound_once_to_literals_run_free`).
+- Merge locally with plain flags and a literal ref:
+  `git -C /repo merge --no-ff -m 'merge x' feature-x`, `--squash`, `--abort`.
+  A strategy option (`-s`, `-X`) or a computed operand (`$BRANCH`) signs
+  (`tests/hooks/modules/security/test_verb_lexicon.py::test_local_or_own_work_runs_free`,
+  `test_verb_lexicon.py::test_shared_state_or_unproven_local_signs`).
+- Push your own named branch, then open the change request on any repository:
+  `git -C /repo push -u origin feat/x`, then
+  `gh pr create --repo o/r --head feat/x --base main --body-file x.md`.
+  Merging it, retargeting it with `--base`, or editing one on another origin
+  signs
+  (`tests/hooks/modules/security/test_pr_push_relief.py::test_push_of_a_named_feature_branch_is_free`,
+  `test_pr_push_relief.py::test_opening_a_pr_on_another_repo_is_free_d198_point_1`).
+- Write the program and verb words literally; a variable is fine as an operand
+  (`kubectl get pods $NAME`) but asks as the word that decides what runs
+  (`tests/hooks/modules/security/test_literal_verb_word.py::test_an_expanded_operand_keeps_its_verdict`,
+  `test_literal_verb_word.py::test_an_expanded_program_or_verb_word_asks_naming_it`).
+- Run a script, package script, `make` target, `just` recipe, `go run` or
+  `cargo run` whose entry and the local files it names show none of the six
+  signals of the execution scan (`security-tiers`, "The validator model")
+  (`tests/hooks/modules/security/test_execution_scan.py::test_a_clean_entry_runs_free`).
 
 ## Examples
 

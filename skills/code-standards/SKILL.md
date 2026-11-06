@@ -168,14 +168,17 @@ fixture. For non-behavioral changes, show preservation of behavior rather than
 manufacturing tests for prose. State what ran, what it establishes, and what remains
 unverified; loading this skill or passing a linter is not evidence of its application.
 
-How much to run, and when, comes in three rings, each run once and only when its cost
-is justified. Ring 1 is the test of what changed, written red before the edit and green
-after. Ring 2, at feature close, is the tests of the modules that import what was
-touched: chosen by blast radius, not by running everything. Ring 3 is the whole suite,
-run only in CI, once per integration push, never locally. A red in a wider ring is
-reproduced as the single failing test, fixed in ring 1, and pushed again; the wider
-ring is not re-run locally. A verifier re-runs only the gates and probes the producer
-declared, never a wider run.
+How much to run, and when, follows five steps:
+
+1. Find the tests that exercise the change and read what they assert, before editing.
+2. Make the change.
+3. Run only those tests locally, never a whole folder or suite.
+4. Push; CI runs the whole suite.
+5. Collect every CI failure and fix them all in one round, re-running locally only the
+   failing tests, then push again.
+
+A change in a central path is done only when CI on the pushed branch is green. A
+verifier re-runs only the gates and probes the producer declared, never a wider run.
 
 ### 10. Write everything versioned in English
 
