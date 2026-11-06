@@ -1020,6 +1020,7 @@ CREATE TABLE IF NOT EXISTS memory (
     binary             TEXT,  -- v72: a tool's executable on PATH; the writer verifies it resolves. One live tool row per (workspace, binary).
     replaces           TEXT,  -- v72: the CLI the hooks judge a tool as (hooks/modules/security/cli_aliases.py); only a CLI the classifier models.
     effect             TEXT,  -- v74: read | local | runs-project-code, kind=tool only; written only by the signed `gaia memory declare` (gaia/store/declarations.py).
+    surface            TEXT,  -- v75: conversation | sent | document, kind=preference only: the human-register surface the preference sets the form of. NULL = none named.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -1159,6 +1160,30 @@ BEGIN
             THEN RAISE(ABORT, 'effect belongs to kind=tool only')
         WHEN NEW.effect NOT IN ('read', 'local', 'runs-project-code')
             THEN RAISE(ABORT, 'a tool effect is read, local or runs-project-code')
+    END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memory_surface_insert
+BEFORE INSERT ON memory
+WHEN NEW.surface IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind IS NOT 'preference'
+            THEN RAISE(ABORT, 'surface belongs to kind=preference only')
+        WHEN NEW.surface NOT IN ('conversation', 'sent', 'document')
+            THEN RAISE(ABORT, 'a preference surface is conversation, sent or document')
+    END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memory_surface_update
+BEFORE UPDATE OF surface, kind ON memory
+WHEN NEW.surface IS NOT NULL
+BEGIN
+    SELECT CASE
+        WHEN NEW.kind IS NOT 'preference'
+            THEN RAISE(ABORT, 'surface belongs to kind=preference only')
+        WHEN NEW.surface NOT IN ('conversation', 'sent', 'document')
+            THEN RAISE(ABORT, 'a preference surface is conversation, sent or document')
     END;
 END;
 

@@ -808,9 +808,12 @@ def _cmd_add(args) -> int:
     until_flag = getattr(args, "until", None)
     binary_flag = getattr(args, "binary", None)
     replaces_flag = getattr(args, "replaces", None)
+    surface_flag = getattr(args, "surface", None)
     workspace = _resolve_workspace(workspace_flag)
 
-    from gaia.store.memory_placement import MEMORY_KINDS, kinds_text
+    from gaia.store.memory_placement import (
+        MEMORY_KINDS, kinds_text, preference_description_refusal,
+    )
 
     if kind_flag is None:
         return _err_structured(
@@ -826,6 +829,10 @@ def _cmd_add(args) -> int:
             f"for the user a tool; `gaia map memory` explains each.",
             as_json, code="kind_unknown",
         )
+    if kind_flag == "preference":
+        refusal = preference_description_refusal(description)
+        if refusal:
+            return _err_structured(refusal, as_json, code="preference_shape")
 
     if measured_at is not None:
         try:
@@ -983,6 +990,7 @@ def _cmd_add(args) -> int:
             until=until_flag,
             binary=binary_flag,
             replaces=replaces_flag,
+            surface=surface_flag,
         )
     except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -1025,6 +1033,8 @@ def _cmd_add(args) -> int:
         if "class" in res:
             out["class"] = res["class"]
             out["memory_status"] = res["memory_status"]
+        if res.get("surface"):
+            out["surface"] = res["surface"]
         if host_scoped_notice:
             out["host_scoped"] = True
         if user_scoped_notice:
@@ -2907,10 +2917,11 @@ def _cmd_reclassify(args) -> int:
     name = args.name
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
+    surface_flag = getattr(args, "surface", None)
     from_file = getattr(args, "from_file", None)
 
     if from_file is not None:
-        if name or class_flag or status_flag:
+        if name or class_flag or status_flag or surface_flag:
             return _err("--from-file takes no slug, --class or --status: each line carries "
                         "slug<TAB>class=<c>[,status=<s>][<TAB>note]", as_json)
         try:
@@ -2925,16 +2936,32 @@ def _cmd_reclassify(args) -> int:
 
     status_touches, status_for_writer = _normalize_status_flag(status_flag)
 
-    if class_flag is None and not status_touches:
+    if class_flag is None and not status_touches and surface_flag is None:
         return _err(
-            "at least one of --class or --status is required",
+            "at least one of --class, --status or --surface is required",
             as_json,
         )
 
     try:
-        from gaia.store.writer import get_memory, reclassify_memory
+        from gaia.store.writer import get_memory, reclassify_memory, set_memory_surface
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    if surface_flag is not None and class_flag is None and not status_touches:
+        try:
+            res = set_memory_surface(workspace, name, "" if surface_flag == "null" else surface_flag)
+        except ValueError as exc:
+            return _err(str(exc), as_json)
+        except PermissionError as exc:
+            return _err(str(exc), as_json)
+        if as_json:
+            print(json.dumps(res, indent=2, default=str))
+        else:
+            print(f"Marked {name}: surface={res['surface']} in workspace {workspace}")
+        _emit_write_warnings([], as_json)
+        return 0
+    if surface_flag is not None:
+        return _err("--surface is set alone: run it apart from --class and --status", as_json)
 
     try:
         res = reclassify_memory(
@@ -3507,7 +3534,7 @@ def register(subparsers):
     """Register the memory subcommand with nested sub-actions."""
     import argparse as _argparse
 
-    from gaia.store.memory_placement import MEMORY_KINDS
+    from gaia.store.memory_placement import MEMORY_KINDS, SURFACES
 
     mem_parser = subparsers.add_parser(
         "memory",
@@ -3900,6 +3927,7 @@ def register(subparsers):
             "  gaia memory reclassify thread_old --status=graduated\n"
             "  gaia memory reclassify thread_promoted --class=anchor "
             "--status=null   # explicit clear\n"
+            "  gaia memory reclassify user_pref_short_answers --surface=conversation\n"
             "  gaia memory reclassify --from-file ~/.gaia/scratch/closes.tsv --from ws "
             "--json\n"
         ),
@@ -3916,6 +3944,14 @@ def register(subparsers):
         help=(
             "Lifecycle for class=thread "
             "(open|carry_forward|graduated|closed). Use 'null' to clear."
+        ),
+    )
+    reclass_p.add_argument(
+        "--surface", default=None, choices=(*SURFACES, "null"),
+        help=(
+            "Mark a live preference with the surface whose output it sets the form "
+            "of (Skill('human-register')); 'null' clears it. Set alone: a user row is "
+            "never rewritten, and this is how it gains a surface."
         ),
     )
     reclass_p.add_argument(
@@ -4068,7 +4104,8 @@ def _add_parser(actions):
     import argparse as _argparse
 
     from gaia.store.memory_placement import (
-        MEMORY_KINDS, TOOL_TITLE_MAX, kinds_text, owner_matrix_text,
+        MEMORY_KINDS, PREFERENCE_DESCRIPTION_MAX, SURFACES, TOOL_TITLE_MAX, kinds_text,
+        owner_matrix_text,
     )
 
     # No abbreviations: the signature and the orchestrator lane both match the
@@ -4087,7 +4124,8 @@ def _add_parser(actions):
             + owner_matrix_text() + "\n\n"
             "The description is the title: for a preference it is the rule "
             "itself, imperative, '<Where it applies>: <what to do>', readable "
-            f"alone; for a tool it is how to use it, at most {TOOL_TITLE_MAX} "
+            f"alone, one sentence of at most {PREFERENCE_DESCRIPTION_MAX} characters "
+            f"(refused beyond); for a tool it is how to use it, at most {TOOL_TITLE_MAX} "
             "characters. The title is the only line injected, with "
             "ref=memory:<owner>/<slug>; the body is the why, origin, date and "
             "examples, opened on demand.\n\n"
@@ -4156,7 +4194,8 @@ def _add_parser(actions):
         help=(
             "One sentence that starts with its kind of claim (listed above), "
             "because listings and the birth block show this line and read the "
-            f"body only on demand. Warns over {_DESCRIPTION_WARN_CHARS} chars."
+            f"body only on demand. Warns over {_DESCRIPTION_WARN_CHARS} chars; a "
+            "preference over that, or holding two sentences, is refused."
         ),
     )
     _add_project_group = add_p.add_mutually_exclusive_group()
@@ -4236,6 +4275,15 @@ def _add_parser(actions):
             "A preference's expiry: a date (2026-12-31) after which it stops "
             "being injected, or a memory coordinate -- it holds while that row "
             "is live (a defect that forces the rule). Refused on any other kind."
+        ),
+    )
+    add_p.add_argument(
+        "--surface", default=None, choices=SURFACES,
+        help=(
+            "kind=preference only: the output whose form the rule sets, by "
+            "Skill('human-register')'s three surfaces. A conversation preference "
+            "travels beside every prompt and is never cut from the birth block. "
+            "An existing row is marked with `gaia memory reclassify <slug> --surface`."
         ),
     )
     add_p.add_argument(

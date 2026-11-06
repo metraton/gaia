@@ -159,6 +159,43 @@ def test_the_difference_question_routes_a_universal_rule_to_the_harness_and_keep
     assert "worked perfectly" not in message
 
 
+@pytest.mark.parametrize("description", [
+    "Conversation: " + "keep it plain " * 9,
+    "Conversation: a few plain sentences. Tables only when he asks.",
+])
+def test_a_preference_longer_than_its_title_or_holding_two_rules_is_refused_with_the_shape(gaia, description):
+    """A preference is its title: one rule in 120 characters, the why in the body."""
+    result = gaia("memory", "add", "--name", "user_pref_long", "--type", "user", "--kind", "preference",
+                  "--description", description, "--body", "why", "--json")
+
+    assert result.returncode != 0
+    message = json.loads(result.stdout)["error"]
+    assert "'<where>: <rule>'" in message and "body" in message
+    assert gaia("memory", "show", "user_pref_long").returncode != 0
+
+
+def test_a_surface_names_a_preference_only_and_marks_an_existing_row_in_place(gaia):
+    """--surface is written with a preference, refused on a fact, and set on a stored row by reclassify."""
+    preference = gaia("memory", "add", "--name", "user_pref_plain", "--type", "user", "--kind", "preference",
+                      "--description", "Conversation: a few plain sentences.", "--body", "why",
+                      "--surface", "conversation", "--json")
+    fact = gaia("memory", "add", "--name", "user_fact_tz", "--type", "user", "--kind", "fact",
+                "--description", "Lives in Chile.", "--body", "b", "--surface", "conversation", "--json")
+    for name, kind, title in (("user_pref_later", "preference", "Documents: English only."),
+                              ("user_fact_zone", "fact", "Lives in Santiago.")):
+        gaia("memory", "add", "--name", name, "--type", "user", "--kind", kind,
+             "--description", title, "--body", "why", "--json")
+    marked = gaia("memory", "reclassify", "user_pref_later", "--surface=document", "--json")
+    on_fact = gaia("memory", "reclassify", "user_fact_zone", "--surface=document", "--json")
+
+    assert preference.returncode == 0, preference.stdout + preference.stderr
+    assert json.loads(preference.stdout)["surface"] == "conversation"
+    assert fact.returncode != 0 and "kind=preference only" in fact.stdout + fact.stderr
+    assert marked.returncode == 0, marked.stdout + marked.stderr
+    assert json.loads(marked.stdout)["surface"] == "document"
+    assert on_fact.returncode != 0 and "kind=preference only" in on_fact.stdout
+
+
 def test_a_preference_that_mentions_a_hook_gets_no_extra_warning(gaia):
     """Whether a preference is really a harness rule is judgment the CLI does not guess at."""
     codes = _add(

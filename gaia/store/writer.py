@@ -2553,6 +2553,7 @@ def upsert_memory(
     until: str | None = None,
     binary: str | None = None,
     replaces: str | None = None,
+    surface: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -2564,7 +2565,8 @@ def upsert_memory(
     ``until`` is a preference's expiry, a date or ``memory:<ws>/<slug>``.
     ``binary`` and ``replaces`` belong to a tool: the executable on PATH it
     is about (verified, one live row per workspace) and the CLI the hooks
-    judge it as (``memory_placement.tool_refusal``).
+    judge it as (``memory_placement.tool_refusal``). A ``replace`` without
+    ``surface`` keeps a preference's stored one.
 
     Without ``replace`` an existing name, live or deleted, raises
     :class:`MemoryNameExistsError`; a ``type='user'`` name raises
@@ -2648,7 +2650,8 @@ def upsert_memory(
         origin_session_id = os.environ.get("GAIA_SESSION_ID") or None
 
     from gaia.store.memory_placement import (
-        default_kind, derive_owner_level, parse_until, placement_refusal, tool_refusal,
+        default_kind, derive_owner_level, parse_until, placement_refusal, surface_refusal,
+        tool_refusal,
     )
 
     if until is not None:
@@ -2658,8 +2661,9 @@ def upsert_memory(
     con = _connect(db_path)
     try:
         owner_level = derive_owner_level(type, initiative, project_ref, con)
-        refusal = placement_refusal(owner_level, kind, until) or tool_refusal(
-            kind, description, binary, replaces)
+        refusal = (placement_refusal(owner_level, kind, until)
+                   or tool_refusal(kind, description, binary, replaces)
+                   or surface_refusal(kind, surface))
         if refusal:
             raise ValueError(f"cannot write {name!r} as {kind} owned by {owner_level}: {refusal}")
         if binary:
@@ -2687,8 +2691,8 @@ def upsert_memory(
                                     project_ref, initiative, origin_session_id,
                                     updated_at, audience, created_at, class,
                                     measured_at, method, kind, owner_level, until,
-                                    binary, replaces)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    binary, replaces, surface)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2705,7 +2709,9 @@ def upsert_memory(
                     until             = excluded.until,
                     binary            = excluded.binary,
                     replaces          = excluded.replaces,
-                    effect            = CASE WHEN binary IS excluded.binary THEN effect END
+                    effect            = CASE WHEN binary IS excluded.binary THEN effect END,
+                    surface           = CASE WHEN excluded.kind = 'preference'
+                                             THEN COALESCE(excluded.surface, surface) END
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no
@@ -2721,7 +2727,7 @@ def upsert_memory(
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
                  now, born_class, measured_at, method, kind, owner_level, until,
-                 binary, replaces, audience),
+                 binary, replaces, surface, audience),
             )
             result = {
                 "status": "applied",
@@ -2731,6 +2737,7 @@ def upsert_memory(
                 "owner_level": owner_level,
                 "binary": binary,
                 "replaces": replaces,
+                "surface": surface,
                 "updated_at": now,
                 # The workspace actually written -- may differ from the
                 # caller's requested workspace when host-scope forced it.
@@ -3365,6 +3372,26 @@ def reclassify_memory(
             "note_appended": bool(note and note.strip()),
             "updated_at": now,
         }
+    finally:
+        con.close()
+
+
+def set_memory_surface(workspace: str, name: str, surface: str, *, db_path: Path | None = None) -> dict:
+    """Mark the live preference ``name`` with ``surface`` (``""`` clears it), leaving ``updated_at``: the rule itself did not change."""
+    from gaia.store.memory_placement import surface_refusal
+
+    _assert_dispatch_can_write_memory()
+    con = _connect(db_path)
+    try:
+        row = _live_memory_row(con, workspace, name, "kind")
+        refusal = surface_refusal(row["kind"], surface or None)
+        if refusal:
+            raise ValueError(f"cannot mark {name!r}: {refusal}")
+        con.execute("UPDATE memory SET surface = ? WHERE workspace = ? AND name = ?",
+                    (surface or None, workspace, name))
+        con.commit()
+        return {"status": "applied", "action": "surface_set", "workspace": workspace,
+                "name": name, "surface": surface or None}
     finally:
         con.close()
 

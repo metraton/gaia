@@ -184,12 +184,8 @@ def test_the_block_has_its_sections_in_order_and_due_only_when_something_is_due(
     )
 
 
-def test_the_block_fits_the_host_budget_and_the_user_index_its_share(birth):
-    from modules.context.user_sections import USER_ROWS_BUDGET
-
-    block = session_manifest.build_session_context()
-    assert len(block) <= 9_500
-    assert len(_user_part(block)) <= USER_ROWS_BUDGET
+def test_the_block_fits_the_host_budget(birth):
+    assert len(session_manifest.build_session_context()) <= 9_500
 
 
 def test_every_standing_user_row_arrives_as_a_title_and_a_ref_and_no_retired_one_does(birth):

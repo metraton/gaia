@@ -3,8 +3,8 @@
 Stop hook for Claude Code Agent System.
 
 Fires when Claude finishes responding. It logs the adapter's quality result
-(adapt_stop reports quality_sufficient=True unconditionally) and always exits 0,
-allowing the stop.
+(adapt_stop reports quality_sufficient=True unconditionally), records the
+answer's form against the user's conversation preferences, and always exits 0.
 """
 
 import os
@@ -45,9 +45,23 @@ def _handle_stop(event) -> None:
         quality_result.score,
     )
 
+    _measure_answer_form(event.payload)
     response = adapter.format_quality_response(quality_result)
     print(json.dumps(response.output))
     sys.exit(0)
+
+
+def _measure_answer_form(payload: dict) -> None:
+    """Record the form of the final answer against the user's conversation preferences; nothing reaches the user."""
+    try:
+        from gaia.store.reader import user_memory_rows
+        from modules.session.answer_form import measure_final_answer
+
+        answer = payload.get("last_assistant_message") or ""
+        if answer:
+            measure_final_answer(str(payload.get("session_id") or ""), answer, user_memory_rows())
+    except Exception as exc:
+        logger.debug("answer form measurement skipped (non-fatal): %s", exc)
 
 
 if __name__ == "__main__":

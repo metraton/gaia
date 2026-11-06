@@ -519,7 +519,7 @@ def user_anchor_rows(
 
 
 _USER_MEMORY = (
-    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.until, m.updated_at "
+    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.until, m.updated_at, m.surface "
     "FROM memory m "
     "WHERE m.owner_level = 'user' AND m.kind IN ('fact', 'preference') "
     "  AND m.class = 'anchor' AND m.deleted_at IS NULL "

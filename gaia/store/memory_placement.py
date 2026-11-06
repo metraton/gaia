@@ -51,6 +51,15 @@ OWNER_FLAGS = {
 
 TOOL_TITLE_MAX = 80
 
+SURFACES = ("conversation", "sent", "document")
+PREFERENCE_DESCRIPTION_MAX = 120
+_SENTENCE_BREAK = re.compile(r"[.!?]\s+[A-ZÁÉÍÓÚÑ¿¡]")
+_PREFERENCE_SHAPE = (
+    "A preference is its title: one imperative rule as '<where>: <rule>', with the literal "
+    "form inside it (Conversation: a few plain sentences; no bold, headers or tables). "
+    "The why, the origin, the date and what it replaced go in the body."
+)
+
 _KIND_BY_WORD = {
     "preference": "preference", "preferencia": "preference", "regla": "preference",
     "principio": "preference", "requisito": "preference",
@@ -203,6 +212,28 @@ def tool_refusal(
     if len(title) > TOOL_TITLE_MAX:
         return (f"a tool's title is at most {TOOL_TITLE_MAX} characters (how to use it; the why "
                 f"goes in the body), this one has {len(title)}")
+    return None
+
+
+def surface_refusal(kind: str | None, surface: str | None) -> str | None:
+    """Why ``surface`` is refused: not one of :data:`SURFACES`, or on a row that is not a preference."""
+    if surface is None:
+        return None
+    if surface not in SURFACES:
+        return f"--surface {surface!r} is not a surface; the list is closed: {', '.join(SURFACES)}"
+    if kind != "preference":
+        return "--surface belongs to kind=preference only: it names the output a rule sets the form of"
+    return None
+
+
+def preference_description_refusal(description: str | None) -> str | None:
+    """Why a preference's description cannot be its title: over :data:`PREFERENCE_DESCRIPTION_MAX` characters, or more than one sentence."""
+    text = (description or "").strip()
+    if len(text) > PREFERENCE_DESCRIPTION_MAX:
+        return (f"the description has {len(text)} characters, the limit is "
+                f"{PREFERENCE_DESCRIPTION_MAX}. {_PREFERENCE_SHAPE}")
+    if _SENTENCE_BREAK.search(strip_kind_word(text)):
+        return f"the description holds more than one sentence, so more than one rule. {_PREFERENCE_SHAPE}"
     return None
 
 

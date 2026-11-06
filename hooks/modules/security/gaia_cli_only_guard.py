@@ -1107,7 +1107,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("memory", "add"): _flags(
         "--name --type --body --body-file --description --project --project-ref "
         "--initiative --class --status --measured-at --method --kind --until "
-        "--binary --replaces --workspace", "--json"),
+        "--binary --replaces --surface --workspace", "--json"),
     ("memory", "append"): _flags("--body --body-file --workspace", "--json"),
     ("memory", "checkpoint"): _flags(
         "--file --project --project-ref --initiative --workspace", "--json"),
@@ -1125,7 +1125,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("memory", "move"): _flags(
         "--to --type --workspace --initiative --project --kind --from --from-file", "--json"),
     ("memory", "reclassify"): _flags(
-        "--class --status --workspace --from --from-file", "--json"),
+        "--class --status --surface --workspace --from --from-file", "--json"),
     ("memory", "search"): _flags(
         "--limit --scope --type --class --workspace", "--all --include-superseded --json"),
     ("memory", "show"): _flags("--workspace", "--links --history --no-count --json"),

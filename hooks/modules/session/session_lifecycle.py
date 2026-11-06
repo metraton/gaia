@@ -96,8 +96,10 @@ def run_start_maintenance(start: SessionStart) -> None:
 
     if start.source == "compact":
         from modules.security.memory_skill_guard import record_skill_dropped
+        from modules.session import register_skill
 
         record_skill_dropped(start.session_id)
+        register_skill.record_dropped(start.session_id)
 
     try:
         if start.session_id and start.session_id != "default":
@@ -254,8 +256,26 @@ def start_context(source: str, alarms: list, session_id: str = "", notices: list
 def prompt_context(session_id: str, workspace: Optional[str]) -> str:
     """Refresh the session heartbeat, then return the context a user prompt carries."""
     refresh_heartbeat(session_id)
-    lines = (notifications_counter(workspace), signals_line(session_id), conclusions_lines(session_id))
+    lines = (
+        preferences_line(session_id), notifications_counter(workspace), signals_line(session_id),
+        conclusions_lines(session_id),
+    )
     return "\n".join(line for line in lines if line)
+
+
+def preferences_line(session_id: str) -> str:
+    """Return the line naming the user's conversation preferences, with the human-register reminder until the skill is loaded; "" when none or on failure."""
+    try:
+        from gaia.store.reader import user_memory_rows
+        from modules.context.user_sections import is_conversation_preference
+        from modules.context.user_sections import preferences_line as render
+        from modules.session import register_skill
+
+        rows = [row for row in user_memory_rows() if is_conversation_preference(row)]
+        return render(rows, remind_register=not register_skill.loaded(session_id)) if rows else ""
+    except Exception as exc:
+        logger.warning("preferences line failed (advisory, skipping): %s", exc)
+        return ""
 
 
 def refresh_heartbeat(session_id: str) -> None:

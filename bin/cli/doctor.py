@@ -249,7 +249,7 @@ def _package_root() -> Path:
 # scripts/migrations/v<PREV>_to_v<N>.sql bumps this constant in the same commit
 # (tests/cli/test_schema_version_lockstep.py enforces it). A database behind
 # this number makes `check_schema_version` warn and point at `gaia migrate apply`.
-EXPECTED_SCHEMA_VERSION = 74
+EXPECTED_SCHEMA_VERSION = 75
 
 # Locations the doctor reads outside the workspace, module-level so tests can
 # redirect them to a tmp path.

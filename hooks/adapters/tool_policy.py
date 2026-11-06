@@ -1044,9 +1044,12 @@ class ToolPolicy:
         success = tool_result.exit_code == 0
 
         from modules.security.memory_skill_guard import is_memory_skill, record_skill_loaded
+        from modules.session import register_skill
 
         if not hook_data.get("agent_id") and is_memory_skill(tool_name, parameters):
             record_skill_loaded(post_session_id)
+        if not hook_data.get("agent_id") and register_skill.is_register_skill(tool_name, parameters):
+            register_skill.record_loaded(post_session_id)
         _record_skill_use(tool_name, parameters, hook_data)
         if str(tool_name).lower() in SHELL_TOOLS:
             _record_command_run(parameters, tool_result, hook_data)

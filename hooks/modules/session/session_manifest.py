@@ -768,10 +768,12 @@ def build_schema_direction_block() -> str:
 
 
 def orchestrator_user_rows() -> list[dict]:
-    """The user rows the orchestrator's context indexes: every live fact and preference of the user."""
+    """The user rows the orchestrator's context indexes: every live fact and preference of the user, conversation preferences first."""
     from gaia.store.reader import user_memory_rows
 
-    return user_memory_rows()
+    from ..context.user_sections import conversation_first
+
+    return conversation_first(user_memory_rows())
 
 
 def record_user_rows_injected(rows: list[dict]) -> None:

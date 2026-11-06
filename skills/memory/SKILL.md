@@ -99,7 +99,8 @@ Gaia delivers by kind and owner; no row is marked for a reader.
 
 | Where | Who reads it | What it carries |
 |---|---|---|
-| `## User memory`, at birth | the orchestrator only | the user's live facts and preferences, grouped by kind, each line its title, `until=` when it has one, and `ref=memory:user/<slug>` |
+| `## User memory`, at birth | the orchestrator only | the user's live facts and preferences, grouped by kind, conversation preferences first, each line its title, `surface=` and `until=` when it has them, and `ref=memory:user/<slug>` |
+| `~ Your conversation preferences:`, beside every prompt | the orchestrator only | the titles of up to three conversation preferences within 400 characters, else their count and coordinates |
 | `## Environment`, at birth and in every kernel | everyone | one `tool=<binary>` line per user tool whose binary is on PATH, with `replaces=` and its ref; a kernel carries at most five |
 | `# Scope memory`, in a kernel | a dispatched agent | the preferences, facts and lessons of its workspace > group > project chain, each line marked `scope=` |
 | The project card, `gaia context project <name>` | the orchestrator, once the project is named | the project's rows indexed by kind |
@@ -110,9 +111,17 @@ an agent's output travel written in its goal, where a verifier can check them;
 that is the orchestrator's rule, in its identity.
 
 Only the title travels in an index, so a title is written to be obeyed alone. A
-preference's title is the rule, imperative, as `<Where it applies>: <what to
-do>`. A tool's title is how to invoke it, at most 80 characters. The why, the
-origin, the date and the examples go in the body, opened with
+preference is its title: one rule, imperative, as `<Where it applies>: <what to
+do>`, with the literal form inside it ("no bold, headers or tables", not "keep it
+simple"), in at most 120 characters; nothing needed to obey it lives outside the
+title, and `memory add` refuses a longer one or two sentences. Its body holds only
+why it exists, where it came from, the date and the row it replaced. A
+preference that sets the form of one surface names it with `--surface`
+(`conversation`, `sent`, `document`, the three of `human-register`); a
+conversation one travels beside every prompt and is never cut from the birth
+block, and an existing row gains one with `gaia memory reclassify <slug>
+--surface=<s>`. A tool's title is how to invoke it, at most 80 characters. The
+why, the origin, the date and the examples go in the body, opened with
 `gaia memory show <slug>`.
 
 ## Other home first
