@@ -37,6 +37,12 @@ from .cli_aliases import as_wrapped_cli, declared_wrapper
 from .effect_lattice import Effect, classification_effects
 from .flag_classifiers import AWK_PROGRAMS
 from .forge_shapes import change_request_action
+from .verb_lexicon import (
+    CHANGE_REQUEST_OWN_WORK,
+    CHANGE_VERB_CLASSES,
+    CONSENT_REDUCING_VERBS,
+    ambiguous_verb_relieved,
+)
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
     CommandSemantics,
@@ -172,42 +178,6 @@ def change_verb_class(verb: str) -> Optional[str]:
 # ============================================================================
 # Verb Taxonomy Constants
 # ============================================================================
-
-# One class per change verb; a new synonym joins the class whose effect it names. Free by
-# elimination: add/commit/stash (local), release (`gh release view`), link, unlink (`npm unlink`).
-CHANGE_VERB_CLASSES: Dict[str, FrozenSet[str]] = {
-    "create": frozenset({
-        "create", "put", "insert", "register", "import", "install", "provision",
-        "attach", "bind", "connect", "mount", "tag", "label", "annotate",
-    }),
-    "update": frozenset({
-        "update", "patch", "set", "modify", "edit", "configure", "replace", "overwrite",
-        "write", "upsert", "mutate", "upgrade", "downgrade", "scale", "resize", "autoscale",
-        "move", "rename", "copy", "migrate", "transfer", "rebase", "rollback", "reconcile",
-        "rsync", "grant", "assign", "select", "get-credentials", "enable", "disable",
-        "suspend", "unsuspend", "pause", "resume", "cordon", "uncordon", "seal", "unseal",
-        "approve", "close", "reopen",
-    }),
-    # "cleanup" is its own word: `gaia cleanup` has no hyphen for the split to reach "clean".
-    "delete": frozenset({
-        "delete", "destroy", "remove", "drop", "purge", "wipe", "clean", "cleanup",
-        "trash", "shred", "srm", "truncate", "kill", "terminate", "uninstall", "unpublish",
-        "drain", "evict", "deregister", "detach", "disconnect", "unbind", "force-delete",
-        "force-remove", "erase", "revoke", "stop", "shutdown", "halt", "poweroff",
-        "nuke", "obliterate", "zap", "annihilate", "expunge", "eradicate", "decommission",
-        "teardown", "deprovision",
-    }),
-    "publish": frozenset({
-        "apply", "deploy", "publish", "promote", "push", "merge", "sync", "export",
-        "send", "reply", "post", "comment", "login", "upload", "submit", "ship",
-    }),
-    # "replay" re-runs a stored command (`gaia approvals replay`), the same effect as its first run;
-    # run/build/test/make stay out until the exec class gets its own lexicon.
-    "exec": frozenset({
-        "exec", "execute", "invoke", "trigger", "replay", "rerun", "dispatch", "cancel",
-        "start", "restart", "reboot", "reload", "refresh", "abort", "up",
-    }),
-}
 
 MUTATIVE_VERBS: FrozenSet[str] = frozenset().union(*CHANGE_VERB_CLASSES.values())
 
@@ -787,11 +757,7 @@ NESTED_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str, str], FrozenSet[str]] =
 #
 # Key:   (base_cmd, subcommand-group)  — e.g. ("gaia", "approvals").
 # Value: frozenset of consent-REDUCING verbs under that group that are exempt.
-CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = {
-    ("gaia", "approvals"): frozenset({
-        "revoke", "reject", "reject-all", "clean",
-    }),
-}
+CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = CONSENT_REDUCING_VERBS
 
 
 # Actions exempted by name under a group whose other actions stay gated: verbs proven not to write, or (approvals)
@@ -807,7 +773,7 @@ SUBCOMMAND_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
 }
 
 # A change request runs nothing until merged; these flags take the merge's decision.
-_CHANGE_REQUEST_OWN_WORK: FrozenSet[str] = frozenset({"create", "edit", "update"})
+_CHANGE_REQUEST_OWN_WORK: FrozenSet[str] = CHANGE_REQUEST_OWN_WORK
 _CHANGE_REQUEST_LANDING_FLAGS: Tuple[str, ...] = ("--auto-complete", "--auto-merge", "--bypass-policy")
 _CHANGE_REQUEST_EDIT_FLAGS: Tuple[str, ...] = (
     "--base", "-B", "--target-branch", "--ready", "--draft", "--status", "--state",
@@ -3747,6 +3713,8 @@ def _check_git_publish_relief(
         and _is_inside_managed_worktrees_root(path)
     ):
         reason = "'git merge --ff-only' inside a Gaia-managed worktree"
+    elif subcommand == "merge" and _git_merge_is_local(rest):
+        reason = "'git merge' of a ref into the checked-out branch stays local; publishing it is a push"
     else:
         return None
     return MutativeResult(
@@ -3770,6 +3738,33 @@ def _git_current_branch(repo: str) -> Optional[str]:
 
 def _git_remote_names(repo: str) -> List[str]:
     return (_git_read(repo, "remote") or "").split()
+
+
+_GIT_LOCAL_MERGE_FLAGS: FrozenSet[str] = frozenset({
+    "--no-ff", "--ff", "--ff-only", "--squash", "--no-edit", "--no-commit", "-q", "--quiet", "--stat", "--no-stat",
+})
+_GIT_MERGE_SEQUENCE_FLAGS: FrozenSet[str] = frozenset({"--abort", "--continue", "--quit"})
+
+
+def _git_merge_is_local(rest: List[str]) -> bool:
+    """True for ``merge [listed flags] [-m <msg>] <ref>...`` or a bare ``merge --abort|--continue|--quit``."""
+    if len(rest) == 1 and rest[0] in _GIT_MERGE_SEQUENCE_FLAGS:
+        return True
+    operands, index = [], 0
+    while index < len(rest):
+        word = rest[index]
+        if word in ("-m", "--message") and index + 1 < len(rest):
+            index += 2
+            continue
+        if word.startswith("-"):
+            if word not in _GIT_LOCAL_MERGE_FLAGS:
+                return False
+        elif _GIT_SYNC_OPERAND_RE.match(word):
+            operands.append(word)
+        else:
+            return False
+        index += 1
+    return bool(operands)
 
 
 def _git_merge_is_own_fast_forward(repo: str, rest: List[str]) -> bool:
@@ -3868,7 +3863,7 @@ def _repo_segments(location: str) -> List[str]:
 
 
 def _change_request_elsewhere(command: str, cwd: Optional[str]) -> "Optional[MutativeResult]":
-    """Sign a change request whose ``-R/--repo`` is not provably this checkout's origin; reads git, so uncached."""
+    """Sign editing a change request whose ``-R/--repo`` is not provably this checkout's origin; reads git, so uncached."""
     for reading in _peel_wrapper_readings(command)[0]:
         try:
             tokens = shlex.split(reading)
@@ -3882,7 +3877,7 @@ def _change_request_elsewhere(command: str, cwd: Optional[str]) -> "Optional[Mut
         path = [a for a in args if not a.startswith("-")]
         targets = _repo_option_values(args)
         if not targets or not any(
-            change_request_action(path[i:]) in _CHANGE_REQUEST_OWN_WORK for i in range(len(path))
+            change_request_action(path[i:]) in _CHANGE_REQUEST_OWN_WORK - {"create"} for i in range(len(path))
         ):
             continue
         repo = _git_repo_dir(directory, cwd)
@@ -6875,6 +6870,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 confidence=confidence,
                 reason=f"Simulation verb '{verb}'",
             )
+
+        if not compound_change and ambiguous_verb_relieved(
+            candidate if candidate in MUTATIVE_VERBS else full_lower, family,
+        ):
+            continue
 
         if compound_change or candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
             verb = candidate if compound_change or candidate in MUTATIVE_VERBS else full_lower

@@ -559,9 +559,9 @@ class TestGitMergeBase:
         assert result.is_mutative is False
         assert result.category == "READ_ONLY"
 
-    def test_git_merge_still_mutative(self):
-        """Plain git merge must remain MUTATIVE."""
-        result = detect_mutative_command("git merge main")
+    def test_git_merge_with_a_strategy_still_mutative(self):
+        """A plain local git merge is free (local-merge); one with a strategy option stays MUTATIVE."""
+        result = detect_mutative_command("git merge -X theirs main")
         assert result.is_mutative is True
         assert result.verb == "merge"
 
@@ -1073,12 +1073,12 @@ class TestDetectMutativeCommand:
         assert result.verb == expected_verb
 
     @pytest.mark.parametrize("cmd,expected_verb", [
-        ("git merge feature-x", "merge"),
+        ("git merge -s ours feature-x", "merge"),
         ("git rebase main", "rebase"),
         ("git tag v1.0.0", "tag"),
         ("git tag -d v1.0.0", "tag"),
     ], ids=[
-        "merge",
+        "merge-strategy",
         "rebase",
         "tag-create",
         "tag-delete",

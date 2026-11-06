@@ -303,11 +303,9 @@ def test_every_brief_criterion_has_rows_and_every_tightening_has_a_free_twin():
 
 TWINS = [
     ("ctl-push-feature", "mined-push-default-twin"),
-    ("ctl-ff-own-upstream", "git-merge-ff-other-branch"),
     ("ctl-npm-ci-no-lifecycle", "ctl-npm-ci-postinstall"),
     ("mined-scratch-tar-x", "mined-tar-x-root-twin"),
     ("forge-gh-edit", "forge-gh-retarget"),
-    ("forge-own-repo-gh-create", "forge-other-repo-gh-create"),
     ("ctl-gcloud-login-no-activate", "ctl-gcloud-login"),
 ]
 
