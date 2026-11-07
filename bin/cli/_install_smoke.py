@@ -170,6 +170,7 @@ def _tail(text: str, size: int = 600) -> str:
 
 def _drive_all(channels: list[Channel], home: Path, workspace: Path, data_dir: Path, *,
                tarball: Path | None, version: str) -> tuple[list[str], list[str]]:
+    (workspace / ".claude").mkdir(exist_ok=True)
     env = _environment(home, data_dir)
     seeds, problems = _seed(channels[0], workspace, env)
     if seeds is None:
