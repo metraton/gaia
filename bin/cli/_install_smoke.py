@@ -18,6 +18,8 @@ SUBAGENT_ID = "a0000000000000000"
 IDENTITY_CHECKS = ("Package integrity", "Install provenance")
 TIMEOUT = 240
 _WINDOWS = os.name == "nt"
+# A contract is closed by the specialist that owns it; the orchestrator's guard refuses it by design.
+_SUBAGENT_ONLY_GROUPS = ("contract",)
 _PACKAGE_PATH = ("@jaguilar87", "gaia")
 
 _VALIDATE = """
@@ -26,8 +28,8 @@ root, workspace = sys.argv[1], sys.argv[2]
 sys.path[:0] = [root + "/hooks", root]
 from modules.tools.bash_validator import BashValidator
 verdicts = []
-for command in json.load(sys.stdin):
-    for agent_type, agent_id in (("gaia-orchestrator", None), ("developer", "SUBAGENT_ID")):
+for command, roles in json.load(sys.stdin):
+    for agent_type, agent_id in (("gaia-orchestrator", None), ("developer", "SUBAGENT_ID"))[2 - roles:]:
         payload = {"session_id": "release-smoke", "agent_type": agent_type}
         if agent_id:
             payload["agent_id"] = agent_id
@@ -230,13 +232,16 @@ def _drive(channel: Channel, workspace: Path, env: dict[str, str], seeds: dict[s
         ["--version"], ["now"], ["doctor"], ["memory", "show", PREFERENCE_SLUG],
         ["approvals", "question", seeds["approval_id"]], ["contract", "finalize", "--draft-id", seeds["draft_id"]],
     ]
-    commands = [" ".join([spelling, *args]) for spelling in [*channel.spellings, "gaia"] for args in session]
+    commands = [
+        (" ".join([spelling, *args]), 1 if args[0] in _SUBAGENT_ONLY_GROUPS else 2)
+        for spelling in [*channel.spellings, "gaia"] for args in session
+    ]
     problems = _refusals(channel, workspace, env, commands)
 
     if tarball is not None and channel.name == "npm-local":
         problems += _switch_from_dev(channel, workspace, env, tarball, version)
     for args in session:
-        argv = ["doctor", "--json"] if args == ["doctor"] else args
+        argv = ["doctor", "--json", "--workspace", str(workspace)] if args == ["doctor"] else args
         rc, out = _run([*channel.run, *argv], cwd=workspace, env=env)
         if args == ["doctor"]:
             problems += _identity_errors(out)
