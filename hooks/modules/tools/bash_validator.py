@@ -48,6 +48,7 @@ import json
 import shlex
 import shutil
 import logging
+from pathlib import Path
 from typing import Dict, Any, FrozenSet, Optional, List, Tuple
 from dataclasses import dataclass, field
 
@@ -569,7 +570,8 @@ class BashValidator:
             if is_bare_gaia_token:
                 if resolved_path is None:
                     which_result = shutil.which("gaia") or ""
-                    resolved_path = which_result if os.path.isabs(which_result) else _own_install_cli()
+                    found = which_result if os.path.isabs(which_result) else _own_install_cli()
+                    resolved_path = Path(found).as_posix() if found else ""
                 if resolved_path:
                     text = resolved_path + text[4:]
                     rewrote_any = True
