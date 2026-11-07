@@ -2533,6 +2533,30 @@ def canonical_project_key(
     return initiative_from_project_ref(project_ref)
 
 
+def _user_preference_cap_refusal(con, name: str, surface: str | None, *, adding: bool) -> str | None:
+    """Why the user's preference ``name`` cannot take ``surface`` or be added: the live ones (anchor, not superseded, ``until`` holding) are at a cap."""
+    from gaia.store.memory_placement import (
+        conversation_cap_refusal, until_holds, user_preference_cap_refusal,
+    )
+    from gaia.store.reader import not_superseded
+
+    rows = con.execute(
+        "SELECT m.name, m.surface, m.until FROM memory m "
+        "WHERE m.owner_level = 'user' AND m.kind = 'preference' AND m.class = 'anchor' "
+        f"AND m.deleted_at IS NULL AND {not_superseded('m')} "
+        "ORDER BY COALESCE(m.updated_at, ''), m.name"
+    ).fetchall()
+    live = [row for row in rows if until_holds(row["until"], con)]
+    marked = [row["name"] for row in live if row["surface"] == "conversation"]
+    if surface == "conversation" and name not in marked:
+        refusal = conversation_cap_refusal(marked)
+        if refusal:
+            return refusal
+    if adding and name not in {row["name"] for row in live}:
+        return user_preference_cap_refusal([row["name"] for row in live[:5]], len(live))
+    return None
+
+
 def upsert_memory(
     workspace: str,
     name: str,
@@ -2664,6 +2688,8 @@ def upsert_memory(
         refusal = (placement_refusal(owner_level, kind, until)
                    or tool_refusal(kind, description, binary, replaces)
                    or surface_refusal(kind, surface))
+        if not refusal and owner_level == "user" and kind == "preference" and born_class == "anchor":
+            refusal = _user_preference_cap_refusal(con, name, surface, adding=True)
         if refusal:
             raise ValueError(f"cannot write {name!r} as {kind} owned by {owner_level}: {refusal}")
         if binary:
@@ -3383,8 +3409,10 @@ def set_memory_surface(workspace: str, name: str, surface: str, *, db_path: Path
     _assert_dispatch_can_write_memory()
     con = _connect(db_path)
     try:
-        row = _live_memory_row(con, workspace, name, "kind")
+        row = _live_memory_row(con, workspace, name, "kind, owner_level")
         refusal = surface_refusal(row["kind"], surface or None)
+        if not refusal and row["owner_level"] == "user":
+            refusal = _user_preference_cap_refusal(con, name, surface or None, adding=False)
         if refusal:
             raise ValueError(f"cannot mark {name!r}: {refusal}")
         con.execute("UPDATE memory SET surface = ? WHERE workspace = ? AND name = ?",

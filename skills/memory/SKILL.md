@@ -100,7 +100,7 @@ Gaia delivers by kind and owner; no row is marked for a reader.
 | Where | Who reads it | What it carries |
 |---|---|---|
 | `## User memory`, at birth | the orchestrator only | the user's live facts and preferences, grouped by kind, conversation preferences first, each line its title, `surface=` and `until=` when it has them, and `ref=memory:user/<slug>` |
-| `~ Your conversation preferences:`, beside every prompt | the orchestrator only | the titles of the first three conversation preferences in full, within 540 characters; past three rows, the count of the rest with their coordinates |
+| `~ Your conversation preferences:`, beside every prompt | the orchestrator only | the titles of the first four conversation preferences in full, within 660 characters; past four rows, the count of the rest with their coordinates |
 | `## Environment`, at birth and in every kernel | everyone | one `tool=<binary>` line per user tool whose binary is on PATH, with `replaces=` and its ref; a kernel carries at most five |
 | `# Scope memory`, in a kernel | a dispatched agent | the preferences, facts and lessons of its workspace > group > project chain, each line marked `scope=` |
 | The project card, `gaia context project <name>` | the orchestrator, once the project is named | the project's rows indexed by kind |
@@ -120,7 +120,11 @@ preference that sets the form of one surface names it with `--surface`
 (`conversation`, `sent`, `document`, the three of `human-register`); a
 conversation one travels beside every prompt and is never cut from the birth
 block, and an existing row gains one with `gaia memory reclassify <slug>
---surface=<s>`. A tool's title is how to invoke it, at most 80 characters. The
+--surface=<s>`. At most four conversation preferences travel with every prompt,
+and the write that would mark a fifth is refused, naming the four: unmark one with
+`--surface=null` or retire it. The user keeps at most 25 live preferences (anchor,
+not superseded, not expired); the 26th is refused with the oldest listed, to merge
+into one rule with a `supersedes` link or retire. A tool's title is how to invoke it, at most 80 characters. The
 why, the origin, the date and the examples go in the body, opened with
 `gaia memory show <slug>`.
 

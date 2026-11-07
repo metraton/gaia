@@ -53,6 +53,8 @@ TOOL_TITLE_MAX = 80
 
 SURFACES = ("conversation", "sent", "document")
 PREFERENCE_DESCRIPTION_MAX = 120
+CONVERSATION_PREFERENCES_MAX = 4
+USER_PREFERENCES_MAX = 25
 _SENTENCE_BREAK = re.compile(r"[.!?]\s+[A-ZÁÉÍÓÚÑ¿¡]")
 _PREFERENCE_SHAPE = (
     "A preference is its title: one imperative rule as '<where>: <rule>', with the literal "
@@ -224,6 +226,24 @@ def surface_refusal(kind: str | None, surface: str | None) -> str | None:
     if kind != "preference":
         return "--surface belongs to kind=preference only: it names the output a rule sets the form of"
     return None
+
+
+def conversation_cap_refusal(marked: list[str]) -> str | None:
+    """Why one more preference cannot be marked for the conversation: ``marked``, the slugs already, holds :data:`CONVERSATION_PREFERENCES_MAX`."""
+    if len(marked) < CONVERSATION_PREFERENCES_MAX:
+        return None
+    return (f"the user already has {len(marked)} preferences marked for the conversation, the most "
+            f"that travel with every prompt: {', '.join(marked)}. Unmark one with "
+            f"`gaia memory reclassify <slug> --surface=null`, or retire it, first.")
+
+
+def user_preference_cap_refusal(oldest: list[str], live: int) -> str | None:
+    """Why a new user preference is refused: ``live`` already holds :data:`USER_PREFERENCES_MAX`; ``oldest`` are the slugs to merge or retire."""
+    if live < USER_PREFERENCES_MAX:
+        return None
+    return (f"the user already has {live} live preferences, the most Gaia keeps. Merge two into one "
+            f"rule (`gaia memory link <new> <old> --kind=supersedes`) or retire one "
+            f"(`gaia memory delete <slug>`) first; the oldest are {', '.join(oldest)}.")
 
 
 def preference_description_refusal(description: str | None) -> str | None:

@@ -19,9 +19,9 @@ CONTEXT_BUDGET = 9_500
 KIND_ORDER = ("preference", "fact", "lesson")
 
 CONVERSATION = "conversation"
-# Three titles of 120 characters (the cap on write), the clause and the reminder.
-PREFERENCES_LINE_MAX = 540
-PREFERENCES_LINE_ROWS = 3
+# CONVERSATION_PREFERENCES_MAX titles at PREFERENCE_DESCRIPTION_MAX characters, the clause and the reminder.
+PREFERENCES_LINE_MAX = 660
+PREFERENCES_LINE_ROWS = 4
 PREFERENCES_CLAUSE = "They set the form of your answer, ahead of norm 7's shape and the host output style."
 REGISTER_REMINDER = "Load Skill('human-register') before answering."
 
@@ -119,7 +119,7 @@ def fit_user_sections(rows: list[dict], max_chars: int) -> tuple[str, list[dict]
 
 
 def preferences_line(rows: list[dict], *, remind_register: bool) -> str:
-    """The line beside a prompt naming the user's conversation preferences: the titles of the first three in full, then the count and coordinates of any others; "" when none."""
+    """The line beside a prompt naming the user's conversation preferences: the titles of the first four in full, then the count and coordinates of any others; "" when none."""
     governing = [row for row in rows if is_conversation_preference(row)]
     if not governing:
         return ""
