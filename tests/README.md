@@ -6,7 +6,7 @@ The default CI path runs Layer 1 only. It covers hooks, modules, routing, contex
 
 The practical rule: if you changed a hook module, a config file, or a utility function, Layer 1 is sufficient. If you changed an agent's scope, an agent's skills, or a prompt injection path, Layer 2 catches regressions that Layer 1 cannot see. Layer 3 exists for the final check before publishing — it confirms the packaged plugin works when installed from the registry.
 
-## Cuándo se activa
+## When it runs
 
 The test suite activates through explicit invocation — either by a developer at the terminal or by the CI pipeline. It is not triggered by Claude Code events.
 
@@ -39,7 +39,7 @@ Pre-release pipeline additionally runs Layer 3 against published artifact
 | Layer 2 | Changed agent behavior, skills, or prompt injection | Minutes, LLM tokens |
 | Layer 3 | Before publishing a release (beta or stable) | Minutes, full session spawn |
 
-## Qué hay aquí
+## What's here
 
 ```
 tests/
@@ -55,6 +55,11 @@ tests/
 │       ├── tools/                   # bash_validator, shell_parser, task_validator
 │       ├── core/                    # paths, state
 │       └── context/                 # context_writer
+├── approvals/                       # Layer 1: approval core, request phrases, grant activation and retry
+├── context/                         # Layer 1: dispatch kernel rendering (workflow, environment line, user rows)
+├── memory/                          # Layer 1: memory kinds and owners, tool rows, birth rendering
+├── store/                           # Layer 1: store writer and reader (project keys, links, relocation)
+├── opencode/                        # OpenCode adapter: TypeScript plugin drivers and tests; live/ needs a running host
 ├── unit/                            # Layer 1: focused unit tests (context_provider, helpers, …)
 ├── contract/                        # Layer 1: agent_contract_handoff validation + finalize/store tests
 ├── integration/                     # Layer 1: context enrichment and subagent lifecycle
@@ -70,16 +75,20 @@ tests/
 ├── layer3_e2e/                      # Layer 3: end-to-end with real Claude Code session (pre-release)
 ├── ci/                              # CI-only smoke (e.g. windows_smoke.py)
 ├── performance/                     # Performance benchmarks
+├── replay/                          # Validator replay: old vs working-tree Bash validator held to
+│                                    #   tools/validator_replay/caps.json; skipped unless -m replay
 ├── system/                          # Layer 1: agent definitions and fixture-precondition audit
 ├── tools/                           # Layer 1: context_provider, episodic tests +
 │                                    #   route_agent_id_constants.py (codemod, not collected)
 ├── cli/                             # CLI subcommand tests
 ├── e2e/                             # E2E installation and lifecycle tests
 └── fixtures/                        # JSON fixtures (project-context AWS/GCP/full) +
-                                     #   agent_ids.py (minted conforming agent_id handles)
+                                     #   agent_ids.py (minted conforming agent_id handles) +
+                                     #   comment_repo.py (throwaway git repos with a known comment count;
+                                     #   used by test_comment_lint.py and hooks/modules/security/test_comment_push_gate.py)
 ```
 
-## Convenciones
+## Conventions
 
 ### OpenCode transport delivery boundary
 
@@ -98,7 +107,7 @@ remain failures; restored current-contract context is an unexpected pass requiri
 The deferred debt is `feedback_opencode_compaction_contexto_ambiguo_tras_resume`.
 A one-off comparison against baseline `c407aadd643051d320a3fc90ffbcbe3fdf75cb5a`
 (a commit that exists on no remote) observed empty compaction context in both
-plugins (comparison handoff `a9a53c512721e9aad.078a62d3492c`); the test now runs
+plugins; the test now runs
 only the current plugin. Transport delivery does not claim that context recovery
 is healthy. Deferring this specific debt does not waive transport or grant failures.
 
@@ -124,11 +133,14 @@ python3 -m pytest tests/layer2_llm_evaluation/ -v -m llm
 # Layer 3 — end-to-end (pre-release)
 python3 -m pytest tests/layer3_e2e/ -v -m e2e
 
+# Validator replay (opt-in, before landing a validator change; see tools/validator_replay/README.md)
+python3 -m pytest tests/replay/test_validator_replay_diff.py -m replay
+
 # Coverage report (Layer 1)
 python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 ```
 
-**Markers:** Layer 2 tests use `@pytest.mark.llm`, Layer 3 tests use `@pytest.mark.e2e`. The default pytest run ignores both — you must opt in with `-m` or by pointing pytest directly at the layer directory.
+**Markers:** Layer 2 tests use `@pytest.mark.llm`, Layer 3 tests use `@pytest.mark.e2e`. The default pytest run ignores both — you must opt in with `-m` or by pointing pytest directly at the layer directory. The validator replay uses `@pytest.mark.replay`, registered in `tests/replay/conftest.py`; the default run collects it and skips it, because it reads the real store's history and runs for minutes, so it runs only with `-m replay`.
 
 **Durations:** `.test_durations` at the repo root is what CI partitions the shards by; a test missing from it counts as the average, so a stale file unbalances the shards without dropping a test. Every CI run publishes a fresh merged copy as the `test-durations` artifact: refresh the committed file with `gh run download <run-id> --repo metraton/gaia --name test-durations --dir .`.
 
@@ -144,7 +156,7 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 pip install pytest pytest-cov
 ```
 
-## Ver también
+## See also
 
 - [`hooks/README.md`](../hooks/README.md) — code under test in Layer 1
 - [`agents/README.md`](../agents/README.md) — behavior under test in Layer 2

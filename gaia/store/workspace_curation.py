@@ -15,7 +15,7 @@ keeps every history row readable:
   (``UNEVIDENCED_INTEGRATION_SQL``). Listings leave it out; it is kept.
 - a dangling facet: a ``worktree`` or ``copy`` facet whose folder is gone.
 
-:func:`find_conditions` reads all four for ``gaia doctor``;
+:func:`find_conditions` reads all four;
 :func:`plan_curation` reports exactly what :func:`apply_curation` writes.
 """
 
@@ -185,7 +185,7 @@ def _curate(
     per applied retire, its item, ledger path and unsaved ledger, which name
     ``backup``.
     """
-    from gaia.store.workspace_retire import WorkspaceRetireError, _safe, retire_in_transaction
+    from gaia.store.workspace_retire import WorkspaceRetireError, _backup_stem, _safe, retire_in_transaction
 
     strategies = _retire_on_conflict(on_conflict)
     con.execute("PRAGMA defer_foreign_keys = ON")
@@ -217,7 +217,7 @@ def _curate(
     ledgers = []
     for item in retire:
         ledger_path = backup.with_name(
-            f"{backup.stem}-retire-{_safe(item['workspace'])}-into-{_safe(item['into'])}-ledger.json"
+            f"{_backup_stem(backup)}-retire-{_safe(item['workspace'])}-into-{_safe(item['into'])}-ledger.json"
         )
         try:
             report, ledger = retire_in_transaction(

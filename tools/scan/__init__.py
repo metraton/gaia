@@ -4,7 +4,7 @@ Scan Module: Modular project scanner for gaia
 This module provides a pluggable scanner system that detects project stack,
 infrastructure, git configuration, tools, orchestration, and environment.
 Each scanner is a pure function (filesystem path -> JSON sections) that runs
-independently and in parallel. The system produces an agnostic project-context.json
+independently (in parallel when config.parallel is set). The system produces an agnostic project-context.json
 schema that works for any project type.
 
 Main components:

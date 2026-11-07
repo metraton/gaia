@@ -162,6 +162,105 @@ def test_signature_surface_same_template_for_n_commands():
     assert rendered.text.splitlines() == [q["question"] for q in rendered.questions]
 
 
+def test_signature_surface_approve_option_agrees_with_what_one_question_authorizes():
+    """A Claude Code question signs the whole set, an OpenCode question one command; each Approve says so."""
+    from gaia.approvals import surface
+
+    two = _seal(
+        [{"command": "git push origin feat/x"}, {"command": "gh pr merge 7 --squash"}],
+        what="Publicar y fusionar.", question="¿Publico y fusiono?", rollback=None,
+    )
+
+    claude = surface.render_signature(two, APPROVAL_ID, 1, 1)
+    assert [option["description"] for option in claude.details_questions[0]["options"]] == [
+        "Authorizes exactly these 2 commands",
+        "Rejects the signature; nothing runs",
+        "What it does, impact, verification and how to undo it",
+    ]
+    assert [q["options"] for q in surface.render(two, APPROVAL_ID).questions] == [OPTIONS] * 2
+    one = surface.render_signature(_d12_payload(), APPROVAL_ID, 1, 1).questions[0]
+    assert one["options"][0]["description"] == "Authorizes exactly this command"
+
+
+def _signature_text(items, what):
+    from gaia.approvals import surface
+
+    payload = _seal(items, what=what, question="¿Sigo?", rollback=None)
+    return surface.render_signature(payload, APPROVAL_ID, 1, 2).questions[0]
+
+
+def test_signature_surface_lifts_a_shared_git_folder_and_the_lines_rebuild_each_sealed_command():
+    """Naming the folder once loses nothing: each numbered line plus the opening's folder is the sealed command."""
+    from pathlib import Path
+
+    folder = str(Path.home() / ".gaia" / "scratch" / "t3-demo")
+    sealed = [f"git -C {folder} tag demo-tag", f"git -C {folder} branch -f demo-branch"]
+
+    question = _signature_text([{"command": command} for command in sealed], "Etiqueta y mueve la rama.")
+
+    assert question["header"] == "Signature 1/2"
+    assert question["question"] == (
+        "Signature 1/2: gaia-system requests 2 commands in ~/.gaia/scratch/t3-demo\n\n"
+        "1. git tag demo-tag\n"
+        "2. git branch -f demo-branch\n\n"
+        "What they do: Etiqueta y mueve la rama."
+    )
+    opening, _, *steps, _, _ = question["question"].split("\n")
+    shown = opening.removeprefix("Signature 1/2: gaia-system requests 2 commands in ")
+    rebuilt_folder = str(Path.home()) + shown[1:] if shown.startswith("~/") else shown
+    rebuilt = [
+        "git -C " + rebuilt_folder + " " + step.split(". ", 1)[1].removeprefix("git ")
+        for step in steps
+    ]
+    assert rebuilt == sealed
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        ["git -C /srv/a tag demo-tag", "git -C /srv/b tag demo-tag"],
+        ["git -C /srv/a tag demo-tag", "rm -rf /srv/a/build"],
+        ["git -C /srv/a tag demo-tag", "/usr/bin/git -C /srv/a push origin demo-tag"],
+        ["terraform -chdir=/srv/a apply", "terraform -chdir=/srv/a output"],
+        ["git -C srv/a tag demo-tag", "git -C srv/a push origin demo-tag"],
+    ],
+)
+def test_signature_surface_any_other_block_shows_every_command_verbatim(commands):
+    question = _signature_text([{"command": command} for command in commands], "Publica.")
+
+    assert question["question"] == (
+        f"Signature 1/2: gaia-system requests 2 commands\n\n1. {commands[0]}\n2. {commands[1]}\n\nWhat they do: Publica."
+    )
+
+
+def test_signature_surface_details_names_each_full_command_even_when_the_question_lifts_the_folder():
+    from gaia.approvals import surface
+
+    sealed = ["git -C /srv/a tag demo-tag", "git -C /srv/a push origin demo-tag"]
+    payload = _seal([{"command": command} for command in sealed], what="Publica.", rollback=None)
+
+    details = surface.render_signature(payload, APPROVAL_ID, 1, 1).details_questions[0]
+
+    assert details["header"] == "Details 1/1"
+    assert details["question"].startswith(
+        "Details 1/1: gaia-system requests 2 commands\n\n1. git -C /srv/a tag demo-tag\n"
+    )
+    assert "\n2. git -C /srv/a push origin demo-tag\n" in details["question"]
+
+
+def test_signature_surface_flags_the_earlier_spanish_signature_as_a_lookalike():
+    """A question copied from an earlier release still reads as a signature, so the hook refuses it."""
+    from gaia.approvals import surface
+
+    old = {"header": "Firma 1/1", "question": "gaia-system pide 1 comando:\n\n1. git push", "options": []}
+
+    assert surface.reads_as_request(old)
+    assert surface.reads_as_request({**old, "header": "Pregunta"})
+    assert surface.reads_as_request({"header": "Pregunta", "question": "x requests 2 commands:", "options": []})
+    assert surface.reads_as_request({"header": "Pregunta", "question": "Signature 1/2: x wants git push", "options": []})
+    assert not surface.reads_as_request({"header": "Pregunta", "question": "¿Sigo con el plan?", "options": []})
+
+
 def test_signature_surface_shows_the_exits_a_command_may_end_with_only_when_declared():
     from gaia.approvals import surface
 
@@ -353,14 +452,14 @@ def _question(**overrides):
 def test_signature_surface_question_within_host_limits_passes():
     from gaia.approvals import surface
 
-    surface.check_question(_question(header="x" * 12, description=" ".join(["palabra"] * 8)))
+    surface.check_question(_question(header="x" * 12, description=" ".join(["palabra"] * 10)))
 
 
 @pytest.mark.parametrize(
     "override, match",
     [
         ({"header": "x" * 13}, "header.*12"),
-        ({"description": " ".join(["palabra"] * 9)}, "8 words"),
+        ({"description": " ".join(["palabra"] * 11)}, "10 words"),
     ],
 )
 def test_signature_surface_question_rejects_each_host_limit(override, match):

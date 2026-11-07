@@ -5,8 +5,7 @@ Cross-platform exclusive file locking for gaia hooks.
 OS-level exclusive lock on a dedicated lock file for the ``with`` block.
 
 ``fcntl`` does not exist on Windows, so each backend's import stays inside its
-platform branch; importing it at module scope crashed every hook that reached
-the session context writer.
+platform branch.
 
 Backends, both polled without blocking until the wait bound expires:
     - POSIX:   ``fcntl.flock(fd, LOCK_EX | LOCK_NB)`` -- advisory, whole-file.
@@ -22,7 +21,7 @@ from pathlib import Path
 from typing import Iterator, Union
 
 # A peer that dies or hangs while holding the lock must not hang every hook
-# behind it; hooks run under the host's own timeout, well above this bound.
+# behind it.
 DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.05
 

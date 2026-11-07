@@ -3,9 +3,7 @@
 Git Invalidation Module for GAIA Episodic Memory
 
 Scans recent git commits for migration/deprecation patterns and weakens
-matching episodic memories by reducing their relevance_score.
-
-Inspired by hippo-memory's invalidation.ts patterns.
+matching episodic memories by halving their relevance_score in index.json.
 """
 
 import json
@@ -15,13 +13,12 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 
-# Patterns that signal a tool/library/concept has changed or been removed.
-# Each entry is a (compiled_regex, group_extractor_fn) tuple.
-# The extractor receives a re.Match and returns a list of affected term strings.
 _PATTERNS: List[tuple] = []
 
 def _build_patterns() -> List[tuple]:
-    """Build compiled pattern list once."""
+    """(compiled_regex, extractor) pairs that signal a tool, library or concept
+    changed or was removed; the extractor takes the re.Match and returns the
+    affected terms."""
     raw = [
         # "migrate from X" / "migrated from X to Y"
         (
@@ -80,7 +77,6 @@ def _get_git_log(commit_count: int, cwd: Optional[Path] = None) -> Optional[str]
             return None
         return result.stdout
     except FileNotFoundError:
-        # git not available
         return None
 
 
@@ -97,7 +93,6 @@ def _scan_commits(log_output: str) -> tuple:
     affected_terms: set = set()
 
     for line in log_output.splitlines():
-        # Strip the short SHA prefix (7-char hex + space)
         message = re.sub(r'^[0-9a-f]{7,}\s+', '', line).strip()
         if not message:
             continue
@@ -109,7 +104,7 @@ def _scan_commits(log_output: str) -> tuple:
                 patterns_detected.append(message)
                 for term in terms:
                     affected_terms.add(term.lower())
-                break  # one pattern per commit line is enough
+                break
 
     return patterns_detected, affected_terms
 
@@ -181,17 +176,14 @@ def check_recent_commits(
         "commits_scanned": 0,
     }
 
-    # Step 1: get git log
     log_output = _get_git_log(commit_count)
     if log_output is None:
         return empty_result
 
     commits_scanned = len([l for l in log_output.splitlines() if l.strip()])
 
-    # Step 2: detect patterns
     patterns_detected, affected_terms = _scan_commits(log_output)
 
-    # If nothing matched, short-circuit
     if not affected_terms:
         return {
             "affected_episodes": [],
@@ -200,7 +192,6 @@ def check_recent_commits(
             "commits_scanned": commits_scanned,
         }
 
-    # Step 3: load index.json
     index_path = _find_index_json()
     if index_path is None:
         return {
@@ -222,7 +213,6 @@ def check_recent_commits(
 
     episodes: List[Dict[str, Any]] = index_data.get("episodes", [])
 
-    # Step 4: find matching episodes
     affected_ids: List[str] = []
     for ep in episodes:
         if _episode_mentions_terms(ep, affected_terms):
@@ -232,7 +222,6 @@ def check_recent_commits(
 
     would_modify = len(affected_ids)
 
-    # Step 5: apply changes if not dry_run
     if not dry_run and affected_ids:
         affected_set = set(affected_ids)
         for ep in episodes:

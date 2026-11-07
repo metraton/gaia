@@ -72,7 +72,7 @@ def test_every_write_verb_is_checked(rows, verb):
 
 
 def test_write_to_the_turns_own_draft_is_allowed(rows):
-    command = f"gaia contract set work_phase framing --draft-id {OWN_ROW['contract_id']}"
+    command = f"gaia contract set agent_status.next_action framing --draft-id {OWN_ROW['contract_id']}"
     assert guard.check(command, MINE) == (True, None)
 
 

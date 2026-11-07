@@ -5,13 +5,9 @@ in this package, owned by neither ``fs_rules`` (state-based FS retention) nor
 strictly read-only connection to gaia.db, and the grace-window threshold
 applied before any entry is collectible.
 
-Extracted from ``fs_rules.py`` to break a one-way import cycle: ``liveness.py``
-needed these two symbols from ``fs_rules.py`` at module level, while
-``fs_rules.py`` could only reach ``liveness.session_dead_past_grace`` through
-an import deferred to call time -- the deferral masked the cycle rather than
-avoiding it. Both retention modules now depend on this module instead of on
-each other for infrastructure, so the composite liveness predicate imports
-cleanly at module level in ``fs_rules.py``.
+``liveness.py`` and ``fs_rules.py`` both depend on this module, so
+``fs_rules.py`` imports ``liveness.session_dead_past_grace`` at module level
+without an import cycle.
 """
 
 from __future__ import annotations

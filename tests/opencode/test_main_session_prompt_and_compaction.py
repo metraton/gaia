@@ -42,11 +42,11 @@ def isolated(tmp_path, monkeypatch, bootstrapped_db_template):
 def due_notifications(monkeypatch):
     workspaces: list = []
 
-    def count(workspace=None, db_path=None):
+    def due(workspace=None):
         workspaces.append(workspace)
-        return DUE_NOTIFICATIONS
+        return [{"id": i, "kind": "reminder", "headline": f"due-{i}"} for i in range(DUE_NOTIFICATIONS)]
 
-    monkeypatch.setattr("gaia.store.reader.count_unread_notifications", count)
+    monkeypatch.setattr("gaia.store.reader.due_now", due)
     return workspaces
 
 
@@ -86,13 +86,39 @@ def test_prompt_submit_bridge_refreshes_the_heartbeat_and_returns_the_due_notifi
 def test_prompt_submit_bridge_returns_nothing_when_no_notification_is_due(isolated, monkeypatch):
     import bridge
 
-    monkeypatch.setattr(
-        "gaia.store.reader.count_unread_notifications", lambda workspace=None, db_path=None: 0,
-    )
+    monkeypatch.setattr("gaia.store.reader.due_now", lambda workspace=None: [])
 
     response = bridge.handle({"event": "chat.prompt", "sessionID": MAIN_SESSION})
 
     assert response == {"action": "allow", "additional_context": ""}
+
+
+def test_a_main_session_prompt_carries_the_same_itemized_change_lines_on_both_hosts(isolated):
+    import json
+    import os
+
+    import bridge
+    from gaia.store.writer import upsert_memory
+
+    def claude_code_prompt(session_id: str) -> str:
+        result = subprocess.run(
+            [sys.executable, str(_ROOT / "hooks" / "user_prompt_submit.py")],
+            input=json.dumps({"session_id": session_id, "prompt": "hi"}),
+            env=dict(os.environ), capture_output=True, text=True, timeout=60,
+        )
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def opencode_prompt(session_id: str) -> str:
+        return bridge.handle({"event": "chat.prompt", "sessionID": session_id})["additional_context"]
+
+    assert opencode_prompt(MAIN_SESSION) == claude_code_prompt("ses-cc-prompt") == ""
+    upsert_memory("_gaia_user", "user_pref_parity", type="user", kind="preference",
+                  description="answer in Spanish", body="b")
+
+    expected = ('~ user memory changed:\n  added    kind=preference "answer in Spanish"  '
+                "ref=memory:user/user_pref_parity")
+    assert opencode_prompt(MAIN_SESSION) == expected
+    assert claude_code_prompt("ses-cc-prompt") == expected
 
 
 def test_primary_compaction_gives_the_summarizer_only_the_summary_instructions(isolated):
@@ -111,7 +137,7 @@ def test_primary_compaction_gives_the_summarizer_only_the_summary_instructions(i
 def test_first_message_after_compaction_carries_claude_codes_refresh_for_that_session(isolated):
     import bridge
     from gaia.session_snapshot import write_resume_point
-    from modules.context.compact_context_builder import build_compact_context
+    from modules.session.session_manifest import build_session_context
 
     write_resume_point(MAIN_SESSION, "finish task 892, then run its gate")
     write_resume_point(CHILD_SESSION, "another session's resume point")
@@ -119,8 +145,8 @@ def test_first_message_after_compaction_carries_claude_codes_refresh_for_that_se
     response = bridge.handle({"event": "chat.message", "sessionID": MAIN_SESSION, "source": "compact"})
 
     context = response["additional_context"]
-    assert context == build_compact_context(session_id=MAIN_SESSION)
-    assert "## Environment" in context and "## Session Snapshot" in context
+    assert context == build_session_context(source="compact", session_id=MAIN_SESSION)
+    assert "## Environment" in context and "## Resume point" in context
     assert "finish task 892, then run its gate" in context
     assert "another session's resume point" not in context
 

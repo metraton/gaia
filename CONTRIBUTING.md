@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Gaia. This guide covers how to se
 ### Prerequisites
 
 - **Node.js** >= 18.0.0
-- **Python** >= 3.9
+- **Python** >= 3.12 (`requires-python` in `pyproject.toml`)
 - **Git** >= 2.30
 - **Claude Code** (latest version, for end-to-end testing)
 
@@ -19,10 +19,10 @@ cd gaia
 npm install
 ```
 
-Python test dependencies:
+Python test dependencies are listed in the `dev` extra of `pyproject.toml`. pytest-xdist is required, because `addopts = "-n auto"` runs every pytest invocation in parallel:
 
 ```bash
-pip install pytest
+pip install 'pytest==8.3.5' pytest-cov pytest-xdist pytest-split pyyaml
 ```
 
 ## Running Tests
@@ -46,7 +46,11 @@ npm run test:layer3
 npm run test:all
 
 # Run pytest directly with stop-on-first-failure
-python -m pytest tests/ -x
+python3 -m pytest tests/ -x
+
+# Validator replay, before landing a change to the Bash validator
+# (opt-in; see tools/validator_replay/README.md)
+python3 -m pytest tests/replay/test_validator_replay_diff.py -m replay
 
 # Linting
 npm run lint
@@ -63,9 +67,9 @@ See [README.md](./README.md) for the full directory tree. Key areas for contribu
 | `agents/` | Agent definition files (`.md`) - identity, scope, routing |
 | `skills/` | Skill modules (`SKILL.md` files) - injected procedural knowledge |
 | `hooks/` | Runtime validators (`pre_tool_use.py`, `post_tool_use.py`, `subagent_stop.py`) |
-| `hooks/modules/` | Modular hook components (blocked commands, safe commands, dangerous verbs) |
-| `tools/` | Orchestration tools (context provider, memory, validation) |
-| `config/` | Configuration files (contracts, git standards, rules) |
+| `hooks/modules/` | Modular hook components (blocked commands, the closed change-verb lexicon, the execution scan, the path and store guards) |
+| `tools/` | Orchestration tools (context provider, memory, scanners, the validator replay) |
+| `config/` | Only its README today; surface routing moved to the `surface_routing` table, seeded from agent frontmatter |
 | `tests/` | Test suite organized by layer |
 | `bin/` | Unified `gaia` CLI -- subcommands live in `bin/cli/*.py` |
 
@@ -123,6 +127,7 @@ The `hooks/` directory contains runtime validators that enforce security and wor
 - Every change to a hook module must have a corresponding test in `tests/`.
 - Hook modules must be deterministic -- no network calls, no randomness.
 - Test both the allow and deny paths for any new validation rule.
+- A change to the Bash validator also runs the validator replay against the caps in `tools/validator_replay/caps.json`, and declares the verdicts it means to move in `tools/validator_replay/declared/<task>.json`.
 
 ## Skills Development
 
@@ -137,8 +142,8 @@ skills/
     scripts/          # Executable tools (optional)
 ```
 
-- `SKILL.md` must stay under 100 lines (it is injected on every agent call).
-- Heavy content goes in `reference.md` (loaded on-demand).
+- The frontmatter, which is loaded on every agent call, stays under 100 lines. Content read on demand stays under 500 lines (`skills/skill-creation/SKILL.md`, Step 5).
+- Deep mechanics an implementer needs only occasionally go in `reference.md`.
 - Skills define process; agents define identity. Do not duplicate between them.
 
 For detailed guidance, see `skills/skill-creation/SKILL.md`.

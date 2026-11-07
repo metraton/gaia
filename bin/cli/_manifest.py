@@ -59,8 +59,8 @@ MANIFEST_VERSION = 1
 OPENCODE_CHANNEL = "opencode"
 # OpenCode 1.18.32 runs subagents in the background only under this variable
 # or the OPENCODE_EXPERIMENTAL umbrella (effect/runtime-flags.ts); it has no
-# config key, and Gaia writes nothing outside the workspace, so the user's
-# shell sets it.
+# config key, and Gaia never edits a shell profile, so install and doctor print
+# this line for the user to add.
 OPENCODE_BACKGROUND_SUBAGENTS_EXPORT = "export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"
 CLAUDE_CODE_CHANNELS = ("npm", "plugin")
 _PACKAGE_COPY_CHANNELS = ("npm", OPENCODE_CHANNEL)
@@ -77,8 +77,8 @@ class ChannelNotRecorded(ValueError):
 
 
 # Names Gaia links (or copies, where symlinks are unavailable) into .claude/,
-# current and retired; an entry under one of these names found as a link in an
-# unmanifested install is Gaia's.
+# current and retired; in an unmanifested install an entry under one of these
+# names is Gaia's when it is a link, or a copy the fallback stamp lists.
 _GAIA_LINK_NAMES = frozenset({
     "agents", "tools", "hooks", "config", "skills", "opencode", "commands",
     "CHANGELOG.md", "README.md", "README.en.md",
@@ -104,10 +104,6 @@ def load(workspace: Path) -> dict | None:
         return None
     return data if isinstance(data, dict) and isinstance(data.get("entries"), list) else None
 
-
-# ---------------------------------------------------------------------------
-# Capture: the observable state of every entry an install may touch.
-# ---------------------------------------------------------------------------
 
 def _state_of(path: Path) -> dict:
     """Snapshot of one path: absent, symlink (target), dir, or file (bytes).
@@ -155,10 +151,6 @@ def capture(workspace: Path, extra: Iterable[Path] = ()) -> dict[str, dict]:
         paths.extend(opencode_skills.iterdir())
     return {_key(workspace, p): _state_of(p) for p in paths}
 
-
-# ---------------------------------------------------------------------------
-# JSON key diff -- the reversible edit of a settings file.
-# ---------------------------------------------------------------------------
 
 def json_ops(before: Any, after: Any, path: tuple = ()) -> list[dict]:
     """Edits that turn *before* into *after*, each carrying what reverting it needs."""
@@ -242,10 +234,6 @@ def _dump_json(doc: Any) -> bytes:
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
-
-# ---------------------------------------------------------------------------
-# Diff (install) and revert (uninstall, and baseline of a reinstall).
-# ---------------------------------------------------------------------------
 
 def diff(baseline: dict[str, dict], after: dict[str, dict]) -> list[dict]:
     """Manifest entries for every path whose state went from *baseline* to *after*."""
@@ -408,10 +396,6 @@ def _is_gaia_copy(workspace: Path, path: Path) -> bool:
     return path.parent == workspace / ".claude" and path.name in _GAIA_LINK_NAMES
 
 
-# ---------------------------------------------------------------------------
-# Adoption of an install that predates manifests.
-# ---------------------------------------------------------------------------
-
 def is_unmanifested_install(workspace: Path) -> bool:
     """True when Gaia is wired into *workspace* but no manifest records it."""
     if load(workspace) is not None:
@@ -567,10 +551,6 @@ def adopted_baseline(workspace: Path, current: dict[str, dict]) -> dict[str, dic
     baseline.update(_strip_opencode(workspace, current))
     return baseline
 
-
-# ---------------------------------------------------------------------------
-# Entry points used by install and uninstall.
-# ---------------------------------------------------------------------------
 
 def external_paths(manifest: dict | None) -> list[Path]:
     """The absolute (outside-workspace) paths a manifest records."""
@@ -751,8 +731,9 @@ def uninstall(workspace: Path, *, dry_run: bool = False, package_manager_owns_pa
     """Revert *workspace* to its pre-Gaia state as its manifest (or adoption) records it.
 
     Returns ``{"source", "reverted", "env", "artifacts", "kept"}``: whether the
-    manifest existed or was derived by adoption, the manifest paths changed (or
-    that would change), the user environment variables restored, the leftovers
+    manifest existed, was derived by adoption, or there was no install
+    (``"none"``), the manifest paths changed (or that would change), the user
+    environment variables restored, the leftovers
     outside the manifest removed or edited (``_leftovers``), and what stays
     with the reason. A dry run returns what the real run returns.
     *package_manager_owns_package* leaves the package entry, dependency and

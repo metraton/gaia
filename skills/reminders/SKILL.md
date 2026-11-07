@@ -1,11 +1,13 @@
 ---
 name: reminders
-description: Use when the user wants to be reminded of something at a time, or wants something offered to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning". Also when a due reminder or routine shows at session start or in the prompt counter and has to be acted on. NOT for work to do once now in this session.
+description: Use when the user wants to be reminded of something at a time, or wants something brought to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning" -- or the user says yes to a reminder proposed for a time or a date mentioned beside something to do. Also when a due reminder or routine shows at session start or in the prompt counter and has to be acted on. NOT for work done or polled inside this session, which is the host's timer.
 ---
 
 # Reminders
 
-A reminder is a row that comes due, not a job that starts. Gaia has no scheduler, no daemon, no system timer and no unattended AI session: nothing runs while the user is away. A row is due when a read finds it open with its time passed, and the reads happen when the user is present -- the `Recurring work pending` line at session start and the `N notifications due` counter on the next prompt. A reminder for 16:00 shows after 16:00, the next time Gaia is used.
+A reminder is a row that comes due, not a job that starts. Gaia has no scheduler, no daemon, no system timer and no unattended AI session: nothing runs while the user is away. A row is due when a read finds it open with its time passed, and the reads happen when the user is present, both from one rule (`gaia/store/reader.py::due_now`: open reminders and routines whose time has passed, in the workspace or global, reports excluded). At session start the `## Due` section lists them, `overdue=N` then one line each with the title, `due=` or `repeat=`/`missed=`, `late=`, `ref=` and `id=` (`hooks/modules/session/session_manifest.py::build_due_section`). On every later prompt a line arrives: up to three due, `🔔 N notifications due:` (`🔔 1 notification due:` for one) followed by those same item lines; more than three, ``🔔 N notifications due (`gaia notifications list --unread` to see them)`` (`hooks/modules/session/session_lifecycle.py::notifications_counter`). A reminder for 16:00 shows after 16:00, the next time Gaia is used.
+
+A reminder is Gaia's persistence, not the host's clock: it outlives the session and is acted on with the user present. A timer the host offers (`CronCreate`, the `loop` skill) lives inside one session and dies with it -- the tool for polling while the user is here, never for anything that must come back tomorrow.
 
 ## The three kinds
 
@@ -54,7 +56,7 @@ With no pointer the headline has to carry everything.
 
 ## When something is due
 
-Offer the user three ways out, in their words.
+Give the user three ways out, in their words.
 
 - **Do it now.** Follow the pointer: load the skill, read the memory with `gaia memory show <slug> --workspace <w>`, or bring the project with `gaia context project <name>`. Work in a domain goes to the specialist the procedure names. With the user present, anything that needs approval asks for it.
 - **Later.** `gaia notifications snooze <id> --for 2h`, or `--until <local time>`. It hides until then.
@@ -64,4 +66,4 @@ Offer the user three ways out, in their words.
 
 ## What this gives up
 
-A monitor that acts while the user is away cannot exist, because nothing starts without them. Recurring work is offered when the user returns and done with them. Scheduled tasks that predate this were converted by migration into routines that point at the skill of the same name; if no such skill exists, cancel that routine.
+A monitor that acts while the user is away cannot exist, because nothing starts without them. Recurring work is delivered when the user returns and done with them. Scheduled tasks that predate this were converted by migration into routines that point at the skill of the same name; if no such skill exists, cancel that routine.

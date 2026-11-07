@@ -2,10 +2,10 @@
 
 A dispatch carrying ``ceiling=<N>`` is born with that prompt; the subagent's
 tool calls then reach each host's real ``adapt_post_tool_use``. The notice
-must fire exactly once, at the recorded threshold, and never for a dispatch
-without the token or for the orchestrator's own session. Neither host hands a
-hook the turn's context use, so a token-less dispatch with a large transcript
-gets no notice either: that row is the declared gap, asserted as behavior.
+must fire exactly once, at the threshold of the token or else of the agent's
+``maxTurns``, and never for the orchestrator's own session. Neither host hands
+a hook the turn's context use, so a dispatch with neither and a large
+transcript gets no notice: that row is the declared gap, asserted as behavior.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _isolated_substrate(tmp_path, monkeypatch):
     monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
 
 
-def _born_turn(prompt: str, harness_agent_id: str, token: str) -> None:
+def _born_turn(prompt: str, harness_agent_id: str, token: str, agent_name: str = "gaia-system") -> None:
     agent_id = valid_agent_id(token)
     contract_id = f"{agent_id}.{token}"
     birth_dispatched_row(
@@ -53,7 +53,7 @@ def _born_turn(prompt: str, harness_agent_id: str, token: str) -> None:
         agent_id=agent_id,
         workspace="me",
         kind="investigation",
-        agent_name="gaia-system",
+        agent_name=agent_name,
         dispatch_prompt=prompt,
     )
     assert stamp_harness_agent_id(contract_id, harness_agent_id)["status"] == "applied"
@@ -184,18 +184,44 @@ def test_opencode_notice_fires_once_at_threshold():
     _assert_single_notice_at_threshold(contexts)
 
 
-def test_no_token_large_transcript_gets_no_notice_on_claude_code(tmp_path):
+@pytest.fixture
+def fixture_agents(tmp_path, monkeypatch):
+    from modules.context import kernel_builder
+
+    agents = tmp_path / "pkg" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "bounded.md").write_text(f"---\nname: bounded\nmaxTurns: {CEILING}\n---\n")
+    (agents / "unbounded.md").write_text("---\nname: unbounded\n---\n")
+    monkeypatch.setattr(kernel_builder, "_PACKAGE_ROOT", tmp_path / "pkg")
+
+
+def test_no_token_falls_back_to_agent_max_turns_on_both_hosts(fixture_agents):
+    _born_turn(FREE_PROMPT, "cc-harness-7", "a1cc00007", agent_name="bounded")
+    _assert_single_notice_at_threshold(_claude_code_turn(CEILING + 2, agent_id="cc-harness-7"))
+    _born_turn(FREE_PROMPT, "ses-child-7", "a1oc00007", agent_name="bounded")
+    _assert_single_notice_at_threshold(
+        _opencode_turn(CEILING + 2, session_id="ses-child-7", dispatch_handle="call-task-7")
+    )
+
+
+def test_token_overrides_agent_max_turns(fixture_agents):
+    _born_turn("project=gaia ceiling=20\n\nWork.", "cc-harness-8", "a1cc00008", agent_name="bounded")
+    contexts = _claude_code_turn(CEILING + 2, agent_id="cc-harness-8")
+    assert not any(NOTICE_MARK in text for text in contexts)
+
+
+def test_no_token_large_transcript_gets_no_notice_on_claude_code(tmp_path, fixture_agents):
     """Declared gap: no Claude Code hook field carries context use, so a large
-    transcript does not stand in for the missing ceiling."""
-    _born_turn(FREE_PROMPT, "cc-harness-2", "a1cc00002")
+    transcript does not stand in for a missing token and maxTurns."""
+    _born_turn(FREE_PROMPT, "cc-harness-2", "a1cc00002", agent_name="unbounded")
     transcript = _write_large_transcript(tmp_path)
     contexts = _claude_code_turn(12, agent_id="cc-harness-2", transcript_path=transcript)
     assert not any(NOTICE_MARK in text for text in contexts)
 
 
-def test_no_token_gets_no_notice_on_opencode():
+def test_no_token_gets_no_notice_on_opencode(fixture_agents):
     """Declared gap: OpenCode's tool.execute.after carries no context use."""
-    _born_turn(FREE_PROMPT, "ses-child-2", "a1oc00002")
+    _born_turn(FREE_PROMPT, "ses-child-2", "a1oc00002", agent_name="unbounded")
     contexts = _opencode_turn(12, session_id="ses-child-2", dispatch_handle="call-task-2")
     assert not any(NOTICE_MARK in text for text in contexts)
 
@@ -207,7 +233,15 @@ def test_kernel_names_the_ceiling_and_its_notice_call():
     assert f"ceiling: {CEILING} tool calls (close notice at call {THRESHOLD_CALL})" in (
         build_dispatch_kernel(row)
     )
-    assert "ceiling:" not in build_dispatch_kernel({**row, "dispatch_prompt": FREE_PROMPT})
+    free = {**row, "dispatch_prompt": FREE_PROMPT}
+    assert "ceiling:" not in build_dispatch_kernel(free)
+    assert "ceiling: 200 tool calls (close notice at call 160)" in (
+        build_dispatch_kernel(free, agent_name="gaia-system")
+    )
+    birth = json.dumps({"agent_state": "DISPATCHED", "agent_name": "cloud-troubleshooter"})
+    assert "ceiling: 120 tool calls (close notice at call 96)" in (
+        build_dispatch_kernel({**free, "raw_handoff_json": birth})
+    )
 
 
 def test_accepted_close_drops_the_count(tmp_path):

@@ -7,11 +7,11 @@ this tool extracts the CHECK clause text from ``sqlite_master.sql`` and
 compares the canonical value set declared in Python with the values listed
 in the SQL clause. Any difference is emitted as a unified-style diff.
 
-Output behaviour matches AC-5 of the gaia-state-machines brief:
+Output:
 
-  * When Python and DB agree, the artifact path is empty (zero bytes).
-  * When they disagree, the artifact contains a human-readable diff
-    pointing at the offending column and listing the divergent values.
+  * When Python and DB agree, the artifact is empty (zero bytes).
+  * When they disagree, it holds a human-readable diff naming the column and
+    the divergent values.
 
 Usage::
 
@@ -33,7 +33,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-# Ensure the gaia package is importable
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -54,7 +53,7 @@ def _extract_check_values(table_sql: str, column: str) -> list[str] | None:
     """
     if "CHECK" not in (table_sql or "").upper():
         return None
-    # Match: column IN ('a', 'b', 'c'). Allow IS NULL OR prefix.
+    # Matches `column IN ('a', 'b', 'c')`; an `IS NULL OR` prefix is ignored.
     pattern = re.compile(
         rf"\b{re.escape(column)}\s+IN\s*\(\s*(.*?)\s*\)",
         re.IGNORECASE | re.DOTALL,
@@ -64,7 +63,6 @@ def _extract_check_values(table_sql: str, column: str) -> list[str] | None:
         return []
     inner = match.group(1)
     values = re.findall(r"'((?:[^']|'')*)'", inner)
-    # Un-escape doubled single-quotes.
     return [v.replace("''", "'") for v in values]
 
 

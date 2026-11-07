@@ -203,31 +203,25 @@ class TestFlagMutationT3SubagentDeny:
 # the native ask dialog (no approval_id) -- the defensive fallback is kept.
 # ===========================================================================
 
-class TestT3OrchestratorNativeAskFallback:
-    """Orchestrator context (no subagent above) falls back to native ask for
-    both unified paths -- the orchestrator cannot hand a T3 approval to itself."""
+class TestT3OrchestratorLaneNeverAsksTheHost:
+    """A T3 in the main session denies with an approval_id, or is refused; the host prompt is never Gaia consent."""
 
-    def test_file_to_exec_t3_orchestrator_falls_back_to_native_ask(self):
+    @pytest.mark.parametrize("command", [
+        "cat deploy.sh | bash", "curl -X POST https://api.example.com/widgets", "terraform apply",
+    ])
+    def test_orchestrator_t3_denies_with_approval_id(self, t3_subagent_db, command):
         result = validate_bash_command(
-            "cat deploy.sh | bash",
-            is_subagent=False,
-            session_id="test-cycle-session",
+            command, is_subagent=False, agent_type="claude-code-primary", session_id="test-cycle-session",
         )
-        assert not result.allowed
         out = _hook_output(result)
-        assert out["permissionDecision"] == "ask"
-        assert "approval_id:" not in out["permissionDecisionReason"]
+        assert out["permissionDecision"] == "deny"
+        assert result.approval_id and "approval_id:" in out["permissionDecisionReason"]
+        assert "--agent-id claude-code-primary" in out["permissionDecisionReason"]
 
-    def test_curl_post_t3_orchestrator_falls_back_to_native_ask(self):
-        result = validate_bash_command(
-            "curl -X POST https://api.example.com/widgets",
-            is_subagent=False,
-            session_id="test-cycle-session",
-        )
-        assert not result.allowed
-        out = _hook_output(result)
-        assert out["permissionDecision"] == "ask"
-        assert "approval_id:" not in out["permissionDecisionReason"]
+    def test_orchestrator_t3_without_requester_is_refused_not_asked(self):
+        result = validate_bash_command("terraform apply", is_subagent=False, session_id="")
+        assert _hook_output(result)["permissionDecision"] == "deny"
+        assert result.approval_id is None
 
 
 # ===========================================================================

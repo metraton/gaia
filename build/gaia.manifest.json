@@ -28,7 +28,8 @@
       "PostToolUse": [
         {"matcher": "Bash|PowerShell|Monitor"},
         {"matcher": "Task"},
-        {"matcher": "AskUserQuestion"}
+        {"matcher": "AskUserQuestion"},
+        {"matcher": "Skill"}
       ],
       "PostToolUseFailure": [{"matcher": "Bash|PowerShell|Monitor"}],
       "SubagentStop": [{"matcher": "*"}],

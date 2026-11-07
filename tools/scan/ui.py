@@ -16,18 +16,10 @@ import sys
 from typing import Any, Dict, List, Optional
 
 
-# ---------------------------------------------------------------------------
-# Glyphs
-# ---------------------------------------------------------------------------
+_GLYPH_DIAMOND_OUTLINE = "◇"
+_GLYPH_WARNING = "⚠"
+_GLYPH_CORNER_BL = "└"
 
-_GLYPH_DIAMOND_OUTLINE = "◇"  # ◇
-_GLYPH_WARNING = "⚠"          # ⚠
-_GLYPH_CORNER_BL = "└"        # └
-
-
-# ---------------------------------------------------------------------------
-# ANSI color helpers
-# ---------------------------------------------------------------------------
 
 def _supports_color() -> bool:
     """Check if the terminal supports ANSI colors."""
@@ -65,10 +57,6 @@ def _dim(text: str) -> str:
 def _bold(text: str) -> str:
     return _c("1", text)
 
-
-# ---------------------------------------------------------------------------
-# Rail UI
-# ---------------------------------------------------------------------------
 
 class RailUI:
     """Clack-style rail output for scan results.
@@ -188,12 +176,7 @@ class RailUI:
         """
         self._write(f"{self._rail()}  Updated: {sections_updated} sections")
         self._write(f"{self._rail()}  Preserved: {sections_preserved} agent-enriched sections")
-        # NOTE: scan NEVER writes settings.json / settings.local.json (or any
-        # .claude/ file) -- that is install/update territory (cli/install.py +
-        # cli/_install_helpers.py). The previous "Synced: settings.json,
-        # settings.local.json" line here was a false claim that the scan touched
-        # .claude/; removed as part of the DEMOTE fix (BUG-2). scan syncs only
-        # gaia.db; the footer already states "gaia.db updated".
+        # Scan writes no .claude/ file, only gaia.db, so no "Synced" line here.
         self._write(self._rail())
 
     def footer(self, message: str) -> None:
@@ -204,10 +187,6 @@ class RailUI:
         """
         self._write(f"{self._dim(_GLYPH_CORNER_BL)}  {message}")
 
-
-# ---------------------------------------------------------------------------
-# Format scanner results for display
-# ---------------------------------------------------------------------------
 
 def format_scanner_results(output: Any, project_root: Any = None) -> List[Dict[str, Any]]:
     """Transform raw scan output into display sections for RailUI.
@@ -337,7 +316,6 @@ def _build_single_project(
     else:
         line1_parts.append("Single app")
 
-    # Service count from Dockerfiles (non-worktree)
     infra = scan_sections.get("infrastructure", {})
     service_count = _count_services(infra)
     if service_count > 0:
@@ -391,9 +369,10 @@ def _build_single_project(
 
 
 def _count_services(infra: Dict[str, Any]) -> int:
-    """Count unique services from Docker container files.
+    """Count the docker container files as a proxy for the service count.
 
-    Counts non-worktree Dockerfiles as a proxy for service count.
+    Paths under ``worktrees/``, paths containing "template" and ``.example``
+    files are left out.
 
     Args:
         infra: Infrastructure section from scan results.
@@ -405,7 +384,6 @@ def _count_services(infra: Dict[str, Any]) -> int:
     for ct in containers:
         if ct.get("tool") == "docker":
             files = ct.get("files", [])
-            # Count non-worktree, non-template, non-example Dockerfiles
             count = sum(
                 1 for f in files
                 if not f.startswith("worktrees/")
@@ -542,7 +520,6 @@ def collect_warnings(output: Any) -> List[str]:
     """
     warnings = []
 
-    # Check for no git directory
     git_section = output.context.get("sections", {}).get("git", {})
     remotes = git_section.get("remotes", [])
     if not remotes and not git_section.get("platform"):
@@ -591,11 +568,11 @@ def collect_created_summary(project_root: "Path", output: Any) -> Dict[str, str]
     if settings.is_file():
         items["settings.json"] = "hooks + permissions"
 
-    # project-context contracts (T1.3: DB-backed read -- no longer from JSON file)
+    # project-context contracts, counted from the DB
     try:
         import sys as _sys
         _repo_root = Path(project_root).resolve().parents[0]
-        # Walk up to find repo root containing gaia/ package
+        # The repo root two levels above this file holds the gaia package
         _candidate = Path(__file__).resolve().parents[2]
         if str(_candidate) not in _sys.path:
             _sys.path.insert(0, str(_candidate))
@@ -619,12 +596,8 @@ def collect_created_summary(project_root: "Path", output: Any) -> Dict[str, str]
     return items
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _capitalize(s: str) -> str:
-    """Capitalize first letter, keep rest. Handle known names."""
+    """Display name from ``name_map`` for known names, else ``str.capitalize()``."""
     name_map = {
         "javascript": "JavaScript",
         "typescript": "TypeScript",

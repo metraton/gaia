@@ -41,7 +41,8 @@ class ToolDefinition:
         version_regex: Regex to extract version from output (None = first line).
         preference_key: If this tool is a preferred alternative, the preference key.
         preference_priority: Higher = more preferred (e.g., bat=10, cat=1).
-        extended: If True, only scanned with --full flag (low-value tools).
+        extended: If True, only scanned when ToolScanner runs with full=True
+            (low-value tools).
     """
 
     name: str
@@ -83,7 +84,6 @@ class ScanConfig:
                 pass  # Keep default if env var is not a valid integer
 
 
-# Default tool definitions per data-model.md section 5.3
 TOOL_DEFINITIONS: List[ToolDefinition] = [
     # Kubernetes
     ToolDefinition(
@@ -210,8 +210,7 @@ def load_scan_config(project_root: Path) -> ScanConfig:
     """Return a ScanConfig for the given project root.
 
     Staleness threshold is read from the GAIA_SCAN_STALENESS_HOURS env var
-    if set; otherwise the default (24 h) is used. The legacy JSON read path
-    has been retired -- gaia.db is the sole persistence layer.
+    if set; otherwise the default (24 h) is used.
 
     Args:
         project_root: Absolute path to the project root directory.

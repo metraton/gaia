@@ -64,10 +64,8 @@ T2_PATTERNS = [
     r"\bdiff\b",
 ]
 
-# Ultra-common commands that should fast-path to T0
-# These are commands that appear in >80% of sessions
-# NOTE: Only include commands that are ALWAYS read-only regardless of flags.
-# "git branch" was removed because it has mutative variants (-D, -m, -M, etc.).
+# Commands that fast-path to T0. Only commands that are read-only whatever
+# their flags belong here: "git branch" has the mutative variants -D and -M.
 ULTRA_COMMON_T0_COMMANDS = frozenset({
     "ls", "pwd", "cat", "echo", "git status", "git diff",
     "git log", "kubectl get",
@@ -119,14 +117,9 @@ def _classify_command_tier_cached(
     if result.is_mutative:
         return SecurityTier.T3_BLOCKED
 
-    # Check for dry-run operations (T2)
-    # Subordinated to the mutative detector, not short-circuiting past it: the
-    # flag is a claim made by the invocation line, and this check is a raw
-    # substring test that cannot tell a flag the payload READS from one it
-    # ignores -- or from one merely quoted inside another argument. Where the
-    # detector finds a real mutation anyway (a script whose content writes and
-    # never reads the flag), returning T2 here would hand back, at tier level,
-    # exactly the absolution the detector withheld.
+    # Subordinated to the mutative detector above: the flag is a claim made by
+    # the invocation line, and this raw substring test cannot tell a flag the
+    # payload reads from one it ignores or one merely quoted in another argument.
     if "--dry-run" in command or "--plan-only" in command:
         return SecurityTier.T2_DRY_RUN
 
@@ -211,62 +204,39 @@ def classify_command_tier(
         and is_blocked_command(command).is_blocked
     )
 
-    # The raw scan above needs both sides to match, and the raw side sees no
-    # wrapper-normalization: every deny regex is ``^``-anchored on the base
-    # command, and a grouping character glued to the front moves that command
-    # off position 0. ``(mkfs.ext4 /dev/sda1)`` classified T0 here while the
-    # permanent floor blocked it -- the forms with no mutative-verb backup
-    # (``^dd``/``^fdisk``/``^mkfs``) are exactly the ones that show it. Scan the
-    # unwrapped form too; strictly additive, since it can only set the flag.
+    # The raw side sees no wrapper normalization: every deny regex is
+    # ``^``-anchored on the base command, and a grouping character glued to the
+    # front moves it off position 0 (``^dd``/``^fdisk``/``^mkfs`` have no
+    # mutative-verb backup). Scan the unwrapped form too; it can only set the flag.
     if not has_blocked:
         ungrouped = strip_grouping_wrappers(command)
         if ungrouped != command:
             has_blocked = _matches_any(ungrouped, blocked_patterns)
 
-    # Same reasoning one token further right: a command substitution is
-    # evaluated by the shell BEFORE the outer command runs, so ``echo $(rm -rf
-    # /)`` reaches the same effect while presenting ``echo`` at position 0.
-    # ``extract_substitutions`` returns only what would genuinely execute -- a
-    # single-quoted, escaped or commented-out mention yields nothing.
+    # A command substitution runs BEFORE the outer command, so ``echo $(rm -rf
+    # /)`` presents ``echo`` at position 0; ``extract_substitutions`` returns
+    # only what would genuinely execute. Two departures from the scans above:
     #
-    # TWO departures from the two scans above, both deliberate:
+    # 1. Bodies go through ``is_blocked_command`` rather than the raw regexes,
+    #    which have no READ_ONLY_BASE_CMDS carrier check and would escalate a
+    #    body that merely QUOTES a dangerous form (``grep -rn "git push --force"``).
     #
-    # 1. Bodies go through ``is_blocked_command`` rather than the raw regexes.
-    #    The raw scan has no false-positive fast path, so a body that merely
-    #    QUOTES a dangerous form (``x=$(grep -rn "git push --force" .)``) would
-    #    match a non-anchored deny pattern and escalate a search to permanent
-    #    deny. ``is_blocked_command`` applies the READ_ONLY_BASE_CMDS carrier
-    #    check first, which is what tells that mention from a use -- and it is
-    #    the same function bash_validator phase 3a runs, so the two layers
-    #    cannot disagree about a body.
-    #
-    # 2. The verdict returns T3 HERE instead of setting ``has_blocked``. The
-    #    cached classifier consults its ultra-common fast path (``echo``,
-    #    ``ls``, ``cat``, ``pwd`` ...) BEFORE it reads that flag, so a flag set
-    #    on ``echo $(rm -rf /)`` would be discarded on the way in. Reordering
-    #    the cached function instead was considered and rejected: the fast path
-    #    is what currently keeps the raw-regex scan on line 208 from escalating
-    #    a quoted mention carried by ``echo``, and moving the flag ahead of it
-    #    would convert that suppression into a fresh false-positive class --
-    #    the exact trade this work is forbidden to make.
+    # 2. The verdict returns T3 here instead of setting ``has_blocked``: the
+    #    cached classifier takes its ultra-common fast path (``echo``, ``ls``)
+    #    BEFORE it reads that flag, so a flag set on ``echo $(rm -rf /)`` would
+    #    be discarded. That same fast path is what keeps the raw-regex scan
+    #    above from escalating a quoted mention carried by ``echo``.
     substitution_bodies = extract_substitutions(command)
     for inner in substitution_bodies:
         if is_blocked_command(inner).is_blocked:
             return SecurityTier.T3_BLOCKED
 
-    # The loop above answers for the permanent floor only, which left the tier
-    # ladder disagreeing with the detector about the SAME string: a body that is
-    # merely mutative (a project directory removed, a cluster workload deleted)
-    # made ``detect_mutative_command`` return mutative while this function still
-    # reported T0, because the ultra-common fast path answers for the CARRIER
-    # (``echo``, ``ls``, ``cat``) before the detector is ever consulted. A gate
-    # that fires in one layer and not the other is the discrepancy this
-    # repository has already paid for once, so the detector's own verdict is
-    # taken here, where the fast path cannot discard it.
-    #
-    # Scoped to commands that actually carry a substitution: every other command
-    # keeps the cached path and its fast path untouched, so this cannot escalate
-    # a quoted mention -- ``extract_substitutions`` returns nothing for one.
+    # The loop above answers for the permanent floor only. A body that is merely
+    # mutative would still classify T0, because the fast path answers for the
+    # CARRIER (``echo``, ``ls``, ``cat``) before the detector is consulted, so
+    # the detector's verdict is taken here. Only commands that carry a
+    # substitution reach it; ``extract_substitutions`` returns nothing for a
+    # quoted mention.
     if substitution_bodies:
         from .mutative_verbs import detect_mutative_command
         if detect_mutative_command(command).is_mutative:

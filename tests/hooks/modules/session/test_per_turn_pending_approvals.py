@@ -82,9 +82,9 @@ class TestNoPendingSurfacingBuilderRemains:
         monkeypatch.setattr(reader, "user_anchor_rows", lambda *a, **kw: [])
         monkeypatch.setattr(session_manifest, "build_schema_direction_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_environment_section", lambda session_id="": "ENV")
-        monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "PROJ")
+        monkeypatch.setattr(session_manifest, "projects_renderer", lambda: lambda _max: "PROJ")
 
         result = session_manifest.build_session_context()
-        assert result == "PROJ\n\nENV"
+        assert result == "# Gaia session context (source: startup)\n\nENV\n\nPROJ"
         assert "[ACTIONABLE]" not in result
         assert "PENDING-APPROVALS-VERIFIED" not in result

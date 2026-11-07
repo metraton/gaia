@@ -241,24 +241,20 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 
 ### DESTRUCTIVE (permanently blocked)
 
-| Command / Pattern | Reason |
-|---|---|
-| `git push --force` / `git push -f` | Rewrites remote history, loses others' commits |
-| `git push --force` to `main`/`master` | Especially catastrophic on default branch |
+None. `BLOCKED_PATTERNS` in `hooks/modules/security/blocked_commands.py` has no git entry: a force push rewrites remote history and loses others' commits, so it signs under `sign.destroys` (`hooks/modules/security/verdict.py::effect_rule`), and is never refused.
 
 ### MUTATIVE (approvable T3)
 
 | Command / Pattern | Notes |
 |---|---|
-| `git commit` | Normal commit |
-| `git push` (without force) | Normal push |
-| `git push --force-with-lease` | Safe force push (checks remote state) |
-| `git merge` | Branch merge |
-| `git rebase` | Rebasing |
+| `git push --force` / `-f` / `--force-with-lease`, a `+` or `:` refspec | Signs as `sign.destroys`; on a default branch it rewrites what everyone builds on |
+| `git push` to the default branch, `HEAD`, or a `src:dst` onto another branch | Signs as `sign.lands`; a push of your own named non-default branch is free (`mutative_verbs.py::_git_push_targets_feature_branch`) |
+| `git merge` with a strategy option (`-s`, `-X`) or a computed operand | A merge with only the flags in `mutative_verbs.py::_GIT_LOCAL_MERGE_FLAGS` and literal refs is free in any repository (`mutative_verbs.py::_git_merge_is_local`) |
+| `git rebase` | Free only for unpushed commits in a managed worktree (`mutative_verbs.py::_git_rebase_rewrites_only_unpushed`) |
 | `git cherry-pick` | Cherry-picking |
 | `git stash drop` / `git stash clear` | Stash management |
-| `git branch -d` / `git branch -D` | Branch deletion |
-| `git branch -m` / `git branch -M` | Branch rename |
+| `git branch -D` / `git branch --delete` | Force or long-form deletion; `git branch -d` is ungated, since git itself refuses an unmerged branch |
+| `git branch -M` | Forced rename; `git branch -m` is ungated |
 | `git tag -d` | Tag deletion |
 | `git reset --hard` | Discards uncommitted changes -- T3 approvable (NOT permanently blocked) |
 | `git reset --soft` / `git reset --mixed` | Safe resets |
@@ -271,8 +267,8 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 
 | Flag | Escalation |
 |---|---|
-| `--force` / `-f` (on push) | DESTRUCTIVE -- rewrites remote history |
-| `--force-with-lease` (on push) | MUTATIVE -- checks remote state first |
+| `--force` / `-f` (on push) | T3 (`sign.destroys`) -- rewrites remote history |
+| `--force-with-lease` (on push) | T3 (`sign.destroys`) -- checks remote state first, still a rewrite |
 | `-D` (on branch) | Force-deletes unmerged branch |
 | `--hard` (on reset) | T3 (approvable) -- routed through `mutative_verbs.py`; NOT in `blocked_commands.py` |
 | `-f` / `-d` (on clean) | Removes untracked files/directories |
@@ -419,12 +415,11 @@ gh uses `delete` -- never `destroy`.
 
 | Command / Pattern | Notes |
 |---|---|
-| `gh pr create` | Create pull request |
-| `gh pr merge <number>` | Merge pull request |
+| `gh pr merge <number>` | Merge pull request; `gh pr create` on any repository is free (`forge_shapes.py::change_request_action`) |
 | `gh pr close <number>` | Close pull request |
 | `gh pr reopen <number>` | Reopen pull request |
 | `gh pr comment <number>` | Add comment |
-| `gh pr edit <number>` | Edit PR metadata |
+| `gh pr edit <number> --base <b>` (or `--ready`, `--draft`), or on another repository | Retarget, ready/draft, or speaking elsewhere (`mutative_verbs.py::_change_request_elsewhere`); a plain edit on this checkout's origin is free |
 | `gh pr review <number>` | Submit review |
 | `gh issue create` | Create issue |
 | `gh issue close <number>` | Close issue |
@@ -463,13 +458,12 @@ glab uses `delete` -- never `destroy`.
 
 | Command / Pattern | Notes |
 |---|---|
-| `glab mr create` | Create merge request |
-| `glab mr merge <number>` | Merge MR |
+| `glab mr merge <number>` | Merge MR; `glab mr create` is free, as for any forge binary (`forge_shapes.py::change_request_action`) |
 | `glab mr close <number>` | Close MR |
 | `glab mr reopen <number>` | Reopen MR |
 | `glab mr approve <number>` | Approve MR |
 | `glab mr note <number>` | Add comment |
-| `glab mr update <number>` | Update MR metadata |
+| `glab mr update <number> --target-branch <b>`, or on another repository | Retarget or speaking elsewhere; a plain update on this checkout's origin is free |
 | `glab issue create` | Create issue |
 | `glab issue close <number>` | Close issue |
 | `glab issue delete <number>` | Delete single issue |
@@ -592,7 +586,7 @@ Commands where the same verb is DESTRUCTIVE in one context and MUTATIVE in anoth
 | `docker prune` | + `system prune -a`, `volume prune` | + `system prune` (dangling only) |
 | `docker rm` | N/A (always mutative per-container) | Single container |
 | `terraform destroy` | Without `-target` (whole state) | With `-target=<resource>` |
-| `git push` | + `--force` / `-f` | Without force, or with `--force-with-lease` |
+| `git push` | N/A (no push is permanently blocked) | + `--force`, `-f`, `--force-with-lease` (`sign.destroys`); to a default branch (`sign.lands`) |
 | `git reset` | N/A (no reset variant is permanently blocked) | + `--hard`, `--soft`, `--mixed` (all T3 approvable) |
 | `aws s3 rm` | + `--recursive` on bucket root | Single object |
 | `gsutil rm` | + `-r` (recursive) | Single object |

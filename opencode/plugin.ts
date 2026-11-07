@@ -81,7 +81,7 @@ export type SignatureRequest = {
   correlationID: string
   mode: SignatureMode
   metadata: Record<string, unknown>
-  /** One question per sealed command, Gaia's text for `mode` (D33). */
+  /** One question per sealed command, Gaia's text for `mode`. */
   questions: SignatureQuestion[]
 }
 
@@ -387,7 +387,7 @@ export function forwardsPastOpenControls(type: string): boolean {
 
 /**
  * The bridge event that records a host permission request matching no Gaia
- * verdict. Must stay equal to bridge.py's UNCORRELATED_PERMISSION_EVENT: the
+ * verdict. Must stay equal to bridge.py's _UNCORRELATED_PERMISSION_EVENT: the
  * two halves of this adapter exchange the name by value, and a rename on one
  * side silently stops the audit rather than failing.
  */
@@ -418,7 +418,7 @@ export type ControlCloseReason =
 /**
  * What the orchestrator's question call returns once Gaia settled its answer.
  * The orchestrator asked, so it is the actor: approved means resuming the
- * requesting specialist, which alone holds the grant (D6).
+ * requesting specialist, which alone holds the grant.
  */
 export function presenterNotice(approval: PendingApproval, reason: ControlCloseReason, detail?: string): string {
   const id = approval.approvalID
@@ -445,12 +445,12 @@ const PRESENTER_NOTICE_WAIT_MS = 30_000
 
 const ORCHESTRATOR_ASK = /^(P-[0-9a-f]{32})( details)?$/
 
-/** The host's limit on questions in one call, and so on commands asked at once (D33). */
+/** The host's limit on questions in one call, and so on commands asked at once. */
 const SIGNATURE_BATCH_MAX = 4
 
 /** approval_grants statuses gaia/store/writer.py never returns to PENDING.
  *
- * REVOKED and EXPIRED hold even when a call reserved before the withdrawal
+ * REVOKED, FAILED and EXPIRED hold even when a call reserved earlier
  * settles. CONSUMED is left out: a call that never ran gets its grant back as
  * PENDING while the window is open, so only a past window makes CONSUMED final.
  */
@@ -583,12 +583,10 @@ function traceableBridgeRequest(event: Record<string, unknown>): Record<string, 
   }
 }
 
-/** The directory Gaia's own processes run from, so their writes are attributed
- * to the session's workspace: `resolve_workspace` derives the workspace from
- * the cwd, and `opencode serve` may run from a directory that is not the
- * project (measured: events from a serve started in the home directory
- * landed in a workspace named after it instead of the project's). Undefined when the host handed no absolute
- * directory, which leaves the spawn inheriting this process's cwd. */
+/** The directory Gaia's own processes run from: `resolve_workspace` derives the
+ * workspace from the cwd, and `opencode serve` may run from a directory that is
+ * not the project. Undefined when the host handed no absolute directory, which
+ * leaves the spawn inheriting this process's cwd. */
 function gaiaDirectory(input: any): string | undefined {
   const directory = input?.directory
   return typeof directory === "string" && isAbsolute(directory) ? directory : undefined
@@ -828,8 +826,8 @@ export type ConsentRetryVerdict =
  *
  * The role compared is the host role of the session the approval was
  * presented to, never `agentID`: that field is the approval's Gaia contract
- * identity (`a69d869dc02031f54`), and the session's agent is `gaia-operator`
- * (measured 2026-09-16: comparing the two refused a byte-identical retry).
+ * identity (an id such as `a69d869dc02031f54`), while the session's agent is a
+ * role name; comparing the two refused a byte-identical retry.
  */
 export function evaluateConsentRetry(
   retry: BoundRetry,
@@ -927,7 +925,7 @@ export function evaluateConsentRetry(
 }
 
 /**
- * The questions that ask one signature (D33): one one-line question per
+ * The questions that ask one signature: one one-line question per
  * command, each carrying who asks and the exact command, or on a Details
  * re-ask that command's Details line. The plugin composes no text of its own;
  * it only chooses which of Gaia's question sets is asked.
@@ -1008,7 +1006,7 @@ const SIGNATURE_ANSWERS: SignatureAnswer[] = ["once", "reject", "details"]
 
 /**
  * Fold the label selected at each of the signature's questions into one
- * answer (D33): a Reject on any question rejects the whole signature, Approve
+ * answer: a Reject on any question rejects the whole signature, Approve
  * on every question approves it, and otherwise a Details asks again. A
  * question left without exactly one of the three labels -- no answer,
  * several, or text typed in the host's free-text row -- decides nothing.
@@ -1195,10 +1193,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   const provisionalBindings = new Map<string, { parentSessionID: string; callID: string; role: string }>()
   const bindingInFlight = new Map<string, Promise<void>>()
   const shellIdentities = new ShellEnvDelivery()
-  // Replaces a real dependency with a test double only: send is the Gaia
-  // policy bridge. The run its attestation ledger is scoped to is derived by
-  // the Gaia-side process from the process that spawned it, so this edge does
-  // not name that scope -- a field it sent would be a scope its own caller
+  // `send` below is the Gaia policy bridge; input.gaiaBridge replaces it with
+  // a test double only. The run its attestation ledger is scoped to is derived
+  // by the Gaia-side process from the process that spawned it, so this edge
+  // does not name that scope -- a field it sent would be a scope its own caller
   // could name, and a claim checked against a ledger the claimant chooses
   // carries no provenance.
   const workspaceDirectory = gaiaDirectory(input)
@@ -1310,6 +1308,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const binding = childBindings.get(childSessionID)
     const dispatch = binding && authorizedDispatches.get(JSON.stringify([binding.parentSessionID, binding.callID]))
     if (dispatch?.background) dispatch.completed = true
+  }
+
+  /** Take the notices left by children of this parent whose task result already went out, as a background one does. */
+  function takeParentNotices(parentSessionID: string): string {
+    const taken: string[] = []
+    for (const [childSessionID, notices] of parentNotices) {
+      if (childBindings.get(childSessionID)?.parentSessionID !== parentSessionID) continue
+      parentNotices.delete(childSessionID)
+      taken.push(...notices)
+    }
+    return taken.join("\n")
   }
 
   /** Act on the SubagentStop gate's verdict for a child's ended turn.
@@ -1957,17 +1966,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
   }
 
-  /** Ask, in the orchestrator's own question call, the pending signatures its specialists requested (D39).
+  /** Ask, in the orchestrator's own question call, the pending signatures its specialists requested.
    *
    * OpenCode 1.18.32 gives a plugin no way to open a question, only to rewrite
    * a model's question-tool call, so the orchestrator's call carrying the
    * approval ids is the opener, and its arguments become every signature's
    * questions, one per command, at most 4 in all, each signature lettered as
-   * `surface.render_batch` letters a mixed call (D37, D38).
+   * `surface.render_batch` letters a mixed call.
    * The presentation, the decision and the grant stay each requester's: SHOWN
    * names the requesting session, and `opencode-decide` binds the grant to
-   * that session and agent. Only the attested orchestrator that dispatched a
-   * requester may ask, because only this edge knows OpenCode's session tree.
+   * that session and agent. Only the attested orchestrator that requested the
+   * signature itself or dispatched its requester may ask, because only this
+   * edge knows OpenCode's session tree.
    * Two signatures of one specialist session are refused in one call: the
    * session holds one bound retry at a time, so the second approval would
    * not activate.
@@ -2001,8 +2011,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (!shown.ok || typeof sessionID !== "string" || !sessionID || typeof role !== "string" || !role) {
         throw new Error(`Gaia found no requesting session and agent for ${ask.approvalID}`)
       }
-      if (await parentOf(sessionID) !== call.sessionID) {
-        throw new Error(`Gaia opens ${ask.approvalID} only from the orchestrator that dispatched its requester ${sessionID}`)
+      if (sessionID !== call.sessionID && await parentOf(sessionID) !== call.sessionID) {
+        throw new Error(
+          `Gaia opens ${ask.approvalID} only from the orchestrator that requested it or dispatched its requester ${sessionID}`,
+        )
       }
       if (prepared.some((entry) => entry.approval.sessionID === sessionID)) {
         throw new Error(
@@ -2109,7 +2121,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
 
   return {
     // A tool, not a command: a command is typed by the user, while the
-    // orchestrator calls tools, and task 'compactemos' needs the latter.
+    // orchestrator calls tools, and it is the orchestrator that requests compaction.
     tool: {
       gaia_compact_when_idle: {
         description: "Request compaction of this session. It runs when the session next goes idle, never mid-turn; call it once, write the resume point it names, then finish the turn.",
@@ -2274,12 +2286,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         return
       }
     },
-    // Stable hook (session/prompt.ts at 1.18.32), handed the user's message
-    // parts before they are stored. Synthetic keeps Gaia's blocks out of the
-    // transcript the user reads.
+    // Handed the user's parts before they are stored; synthetic keeps Gaia's blocks out of the transcript.
+    // message.agent is the prompt's own, absent when the client names none (1.19.0): it never decides the session.
     "chat.message": async (message: any, output: any) => {
       const sessionID = message?.sessionID
-      if (typeof sessionID !== "string" || !message.agent) return
+      if (typeof sessionID !== "string") return
       const parts = Array.isArray(output?.parts) ? output.parts : undefined
       if (!parts?.some((part: any) => part?.type === "text" && !part.synthetic)) return
       if (await hostRecordsMain(sessionID) !== true) return
@@ -2292,6 +2303,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         contexts.push(await mainMessageContext("chat.message", sessionID, "compact"))
       }
       contexts.push(await mainMessageContext("chat.prompt", sessionID))
+      contexts.push(takeParentNotices(sessionID))
       const context = contexts.filter(Boolean).join("\n\n")
       if (!context) return
       parts.push({
@@ -2408,7 +2420,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (retry && retryProof && retryBySession.get(call.sessionID) === retry) retryBySession.delete(call.sessionID)
       // A blocked specialist is asked nothing here: its denial carries the
       // request line, it returns the approval id in its contract, and only
-      // the orchestrator opens the question, when it decides (D39).
+      // the orchestrator opens the question, when it decides.
       if (approvalID(response)) {
         throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
       }
@@ -2517,8 +2529,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     },
     // Experimental hook, the only compaction point that can inject: the host
     // fires it before the summary completes, with a mutable {context, prompt}
-    // output whose context survives into the summary (measured on 1.18.32,
-    // evidence 896), while "session.compacted" fires after and cannot inject.
+    // output whose context survives into the summary (measured on 1.18.32),
+    // while "session.compacted" fires after and cannot inject.
     "experimental.session.compacting": async (compacting: any, output: any) => {
       const sessionID = compacting?.sessionID
       if (typeof sessionID !== "string") return
@@ -2543,15 +2555,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   }
 }
 
-// The installed OpenCode loader (decompiled: dk()/lk()/pk()) takes a fast
-// path when the module's default export matches {id, server: <function>},
-// calling ONLY default.server(app, options) and never scanning the rest of
-// the module's exports. Without this, the loader's fallback invokes EVERY
-// exported function/{server:fn} value in this file as if it were its own
-// plugin entry point -- including the helpers, the class, and the constants
-// below -- which is what broke live loading after 4daa9bd removed this
-// export. The official docs name only the named-export form; the decompiled
-// loader is ground truth over the docs.
+// The OpenCode loader takes a fast path when the default export matches
+// {id, server: <function>}, calling only default.server(app, options). Without
+// it the fallback scans every export of this file and rejects the first that is
+// not a plugin function, so the helpers, the class and the constants stop the
+// plugin from loading. The official docs name only the named-export form; the
+// decompiled loader is ground truth over the docs.
 export default {
   id: "gaia",
   server: GaiaOpenCodePlugin,

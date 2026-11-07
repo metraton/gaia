@@ -1,6 +1,6 @@
 ---
 name: session-reflection
-description: Use when the user asks to reflect on a session or to compact it -- "reflexionemos sobre la sesión", "cerremos esto", "guardemos lo que aprendimos", "compactemos", "compacta", "let's reflect on this session", "wrap up this session", "compact the session" -- or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, reports what changed, and when asked to compact, records the resume point and starts the compaction.
+description: Use when the user asks to reflect on a session or to compact it -- "reflexionemos sobre la sesión", "cerremos esto", "guardemos lo que aprendimos", "compactemos", "compacta", "let's reflect on this session", "wrap up this session", "compact the session" -- or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, and reports what changed. Compacting needs no reflection: asked to compact, it requests the compaction and may leave an optional hand note.
 ---
 
 # Session Reflection
@@ -12,9 +12,9 @@ every item — settled or open — with an owner a later session can find.
 
 Upstream are the transcript, the specialist contracts, and the injected digest.
 Downstream is memory curation: reflection ends when the corpus is correct.
-When the user asks to compact, compaction is the reflection's last step, never
-a step of its own: a compaction that skips the reflection loses whatever had
-no home yet.
+Compaction is a separate act: it is safe at any time and needs no reflection
+first, because the PreCompact hook rebuilds the session's in-flight state from
+the database (see "Compacting").
 
 ## Process
 
@@ -37,8 +37,10 @@ no home yet.
    working on — sweep it too. `reference.md` holds the reverse-sweep
    mechanics and the objective-state checks that verify a `SKIP`.
 3. **Classify disjointly.** Separate settled decisions and learnings,
-   genuinely open work, and Gaia improvements. When closure is uncertain,
-   classify as open; a lost pending costs more than an extra review. For
+   genuinely open work, and Gaia improvements. A user correction any user
+   would want is a Gaia improvement, not a settled preference of his: only his
+   difference becomes his row. When closure is uncertain, classify as open; a
+   lost pending costs more than an extra review. For
    anything about Gaia itself, `memory/SKILL.md`'s ownership test decides the
    initiative — `gaia_system` for an observed failure or friction,
    project-scoped `gaia` for a decision to build or change something.
@@ -108,43 +110,44 @@ Name what the next session picks up: a pointer, never a copied container.
 
 ## Compacting
 
-After step 7, when the user asked to compact. The session id is the
-`- Session id:` line of the `## Environment` block, which arrives at birth and
-after every compaction on both hosts.
+Compaction no longer waits for this reflection. Before every compaction, manual
+or automatic, the PreCompact hook writes this session's ledger from the
+database -- its open contracts, its pending signatures, the memory it wrote,
+the worktrees its agents opened -- and the birth that follows renders it as
+`## Resume point`. Reflection stays a deliberate curation pass the user asks
+for; it is not a precondition. When the user asks to compact, the session id
+is the `session=` line of the `## Environment` block:
 
 1. **Request the compaction.** Call the host's compaction tool once:
    `mcp__gaia__compact_when_idle` in Claude Code, `gaia_compact_when_idle` in
    OpenCode. It schedules the compaction for when the current turn ends, never
    mid-turn. The host can still refuse it.
-2. **Write the resume point.** `gaia session resume-point set --session-id <id>
-   --text "<text>"`, at most 2000 characters, replacing any earlier one: the
-   step 7 pointer plus what the next turn needs and no row holds -- the exact
-   next action, blockers and approvals in flight, the active files. Durable
-   objects are named by id, never copied.
-3. **End the turn** with the post-curation report and a line saying the
-   compaction was requested -- not that it will happen. The snapshot that
-   arrives after compaction carries the resume point; do not restate either in
-   the turn.
+2. **Optionally leave a hand note.** Only what comes next and no row holds --
+   the exact next action, the active files: `gaia session resume-point set
+   --session-id <id> --text "<text>"`, at most 2000 characters. It appears as
+   `note:` only in this session's Resume point; the ledger already carries the
+   contracts, signatures, memory and branches, so do not restate them.
+3. **End the turn** with a line saying the compaction was requested -- not
+   that it will happen.
 
 If the next turn carries a note that the compaction did not start, tell the
 user so, name the host's reason, and ask them to type `/compact`.
 
-When the user insists on compacting before the reflection finishes, offer it
-once; if they decline, write the unsaved items into the resume point marked as
-not durable, rather than dropping them or saving memory unasked.
+Compact when the user asks, reflection finished or not: do not offer a
+reflection first and do not hold the compaction for one. The ledger already
+carries the durable state, and the hand note is where anything else the next
+turn needs goes.
 
 **Without the tool** -- a headless Claude Code session (the desktop app, `-p`,
 the SDK), where the host cannot compact from a mod, Claude Code with mods
 disabled or older than 2.1.287, or any host that does not list it -- nothing
-the orchestrator runs can start the compaction. Skip step 1, still write the
-resume point (step 2) with the Environment block's session id, and end the
-turn asking the user to type `/compact`: the report itself is summarized away,
-the resume point survives into the snapshot. Never report a compaction you did
-not start.
+the orchestrator runs can start the compaction. Skip step 1, optionally leave
+the hand note (step 2), and end the turn asking the user to type `/compact`.
+Never report a compaction you did not start.
 
 When the user types `/compact` without asking to compact first, nothing above
-runs: the snapshot carries the last resume point written, however old, or
-none.
+runs: the PreCompact hook still writes the ledger, and the hand note appears
+only if one was written for this session.
 
 ## Ownership and consent
 

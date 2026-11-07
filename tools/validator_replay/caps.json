@@ -1,0 +1,8 @@
+{
+ "history_newly_asking_max_count": 50,
+ "history_newly_asking_max_fraction": 0.0025,
+ "pinned_changes_max_outside_declared": 0,
+ "loosened_unreviewed_max": 0,
+ "new_errors_max": 0,
+ "justification": "Baseline 2026-11-05, b631cd12 against itself: 0 transitions over 1102 truth rows, 41609 distinct history commands (34037 FREE of 40931 classified), 11317 approval commands and 18 curated cases (13 at that run, plus the 5 friction cases added with these caps), so any change is signal, not noise. 50 newly asking distinct history commands is 0.12% of history and 0.15% of its FREE share, about an eighth of the ~383 flips R0 shipped unseen; the fraction cap (0.25%, ~104 commands) only binds on a shorter --since window. Truth rows and curated cases are pinned: every change must be declared by the task. Any move to FREE, or out of BLOCKED, needs a named review. A unit that newly fails to classify is a failed run."
+}

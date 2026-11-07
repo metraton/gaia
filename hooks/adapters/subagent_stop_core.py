@@ -4,9 +4,8 @@ A host adapter translates its stop event into ``hook_data`` plus an
 ``AgentCompletion``, hands them to :func:`run_subagent_stop` with a
 :class:`SubagentStopHost`, and formats the returned
 :class:`SubagentStopOutcome` for its own wire. The gate, the rejection circuit
-and its cut, the episode write, the workflow audit, the agent's approval
-cleanup and the user_facing_summary relay all run here, so every host closes a
-turn by the same rules.
+and its cut, the episode write, the workflow audit and the agent's approval
+cleanup all run here, so every host closes a turn by the same rules.
 """
 
 from __future__ import annotations
@@ -349,6 +348,7 @@ def evaluate_contract_gate(
 GATE_SOURCE_ROW = "row"
 GATE_SOURCE_ROW_UNFINALIZED = "row_unfinalized"
 GATE_SOURCE_ROW_MISSING = "row_missing"
+GATE_SOURCE_GATE_ERROR = "gate_error"
 
 
 def _row_gate_candidate(
@@ -589,8 +589,8 @@ def resolve_dispatch_row(
       1. harness -- ``harness_agent_id`` stamped at the SubagentStart claim,
          the one coordinate the runtime writes for this exact dispatch. It
          comes first because the inexact lanes do not merely miss: they can hit
-         a contention row the backstop stamped with the same value (measured:
-         the gate rejected a correctly recorded turn). Ambiguity is declined.
+         a contention row the backstop stamped with the same value. Ambiguity
+         is declined.
       2. adopted -- the turn's own minted ``agent_id``, looked up regardless of
          state, since its finalize already converged the born row.
       3. legacy -- rows born carrying the agent NAME as ``agent_id``.
@@ -662,8 +662,7 @@ def reconstruct_contract_from_finalized_draft(
     against the drafts directory, then against the rows, then the
     ``harness_agent_id`` bridge for a turn born with its draft open. A row that
     is not finalized is salvage/backstop territory and is left alone. Every
-    miss logs: a silent miss once hid a dropped ``update_contracts`` proposal
-    (handoff row 11304). Never raises.
+    miss logs. Never raises.
     """
     if isinstance(parsed_contract, dict) and isinstance(
         parsed_contract.get("agent_status"), dict
@@ -756,8 +755,7 @@ def salvage_truncated_draft(
     """Finalize a truncated turn's partial draft as a degraded row.
 
     Keys on the same contract id the handoff backstop uses, so the two
-    converge on one row through ``ON CONFLICT(contract_id) DO NOTHING``. The
-    row is ``degraded``, marked ``salvaged="truncation"`` and cut-reasoned,
+    converge on one row. The row is ``degraded``, marked ``salvaged="truncation"`` and cut-reasoned,
     never a clean close. Returns ``{"contract_id", "resume_hint", "created"}``
     or None; never raises.
     """
@@ -953,8 +951,8 @@ class SubagentStopOutcome:
     Attributes:
         result: the hook output, free of any host channel key.
         rejected: the turn goes back to the subagent for repair.
-        user_message: text for the host's user-facing channel -- the circuit
-            cut notice or the relayed user_facing_summary. It must never travel
+        user_message: text for the host's user-facing channel -- only the
+            circuit cut notice, which Gaia writes. It must never travel
             on a channel that feeds back into the subagent: that resumes the
             turn being closed.
     """
@@ -1040,6 +1038,9 @@ def run_subagent_stop(
             result={"success": True, "native_agent": True, "agent": _native_agent_type},
             rejected=False,
         )
+    from modules.session.compaction_bracket import is_compaction_summarizer
+
+    _compaction_summarizer = is_compaction_summarizer(_native_agent_type, event_session_id)
     if not _gaia_agents:
         logger.error(
             "Agent roster did not resolve on any lane; gating '%s' instead "
@@ -1151,7 +1152,6 @@ def run_subagent_stop(
                 "(session=%s) -- treating turn as unbound.",
                 agent_type, session_id, exc_info=True,
             )
-        _gate_source = GATE_SOURCE_ROW_MISSING
         _authoritative_envelope: Any = None
         # A raising gate must not take down the approval cleanup below; it
         # degrades to a non-rejecting verdict and is logged loudly.
@@ -1169,6 +1169,17 @@ def run_subagent_stop(
                 "Contract gate raised for %s (mode=%s) -- falling back to a "
                 "non-rejecting verdict so SubagentStop cleanup still runs.",
                 agent_type, _gate_mode,
+            )
+            _gate = ContractGateVerdict(False, "", (), _gate_mode)
+            _gate_source = GATE_SOURCE_GATE_ERROR
+
+        # The host's summarizer never has a row; a turn that finalized one is gated.
+        _summarizer_without_row = (
+            _compaction_summarizer and _gate_source == GATE_SOURCE_ROW_MISSING
+        )
+        if _summarizer_without_row:
+            logger.info(
+                "Compaction summarizer (session=%s) -- no contract to gate", session_id,
             )
             _gate = ContractGateVerdict(False, "", (), _gate_mode)
 
@@ -1232,8 +1243,7 @@ def run_subagent_stop(
             if _nonce_agent_state == "APPROVAL_REQUEST" and _nonce:
                 preserved_nonces.add(_nonce)
 
-        # Grants are not swept here: they are consumed at the match in
-        # PreToolUse and an unpresented one expires on its own short TTL.
+        # Grants are not swept here: they are consumed at the match in PreToolUse.
         cleanup_approval(
             agent_type,
             session_id=session_id,
@@ -1279,6 +1289,7 @@ def run_subagent_stop(
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
                 "workspace": _update_contracts_workspace,
+                "project": (_bound_dispatch_row or {}).get("dispatch_project"),
             }
             _update_contracts_result = process_update_contracts(
                 parsed_contract, _update_contracts_task_info
@@ -1293,6 +1304,20 @@ def run_subagent_stop(
                 logger.warning(
                     "update_contracts not applied for %s: %s",
                     agent_type, _update_contracts_refused,
+                )
+            try:
+                from gaia.store.writer import record_update_contracts_outcome
+
+                record_update_contracts_outcome(
+                    parsed_contract.get("reconstructed_from_finalized_draft")
+                    or (_bound_dispatch_row or {}).get("contract_id"),
+                    refused=_update_contracts_refused,
+                    db_path=Path(task_info["db_path"]) if task_info.get("db_path") else None,
+                )
+            except Exception:
+                logger.warning(
+                    "update_contracts outcome for %s not recorded on its row",
+                    agent_type, exc_info=True,
                 )
 
         anchor_hits = None
@@ -1473,8 +1498,7 @@ def run_subagent_stop(
         )
 
         # Salvage runs before the handoff backstop and keys on the same
-        # contract_id, so the salvaged row wins and the backstop's
-        # ON CONFLICT DO NOTHING leaves one row.
+        # contract_id, so the salvaged row wins and one row remains.
         _salvage = None
         if _stop_reason_classification == STOP_REASON_TRUNCATION:
             _salvage = host.salvage_truncated_draft(
@@ -1485,24 +1509,25 @@ def run_subagent_stop(
             )
 
         _captured_contract_id = None
-        try:
-            from modules.agents.handoff_persister import persist_handoff
-            _capture = persist_handoff(
-                parsed_contract=parsed_contract,
-                agent_output=agent_output,
-                task_info=task_info,
-                session_id=session_id,
-                # The CLI finalize path cannot read the dispatch binding, so
-                # attribution is supplied here.
-                plan_task_id=_bound_plan_task_id,
-            )
-            if isinstance(_capture, dict):
-                _captured_contract_id = _capture.get("contract_id")
-        except Exception as _handoff_exc:
-            logger.warning(
-                "M4: handoff persistence call failed (non-blocking): %s",
-                _handoff_exc,
-            )
+        if not _summarizer_without_row:
+            try:
+                from modules.agents.handoff_persister import persist_handoff
+                _capture = persist_handoff(
+                    parsed_contract=parsed_contract,
+                    agent_output=agent_output,
+                    task_info=task_info,
+                    session_id=session_id,
+                    # The CLI finalize path cannot read the dispatch binding, so
+                    # attribution is supplied here.
+                    plan_task_id=_bound_plan_task_id,
+                )
+                if isinstance(_capture, dict):
+                    _captured_contract_id = _capture.get("contract_id")
+            except Exception as _handoff_exc:
+                logger.warning(
+                    "M4: handoff persistence call failed (non-blocking): %s",
+                    _handoff_exc,
+                )
 
         try:
             from modules.events.event_writer import EventWriter, AGENT_COMPLETE
@@ -1705,42 +1730,10 @@ def run_subagent_stop(
                 "como un cierre valido, aunque declare COMPLETE."
             )
 
-        # The summary comes off the envelope the gate judged, so what the user
-        # reads and the verdict share one artifact. A rejected or cut turn is
-        # excluded: its work is not a valid close. How many subagents ran is
-        # unknown here, so the relay-at-one rule stays the orchestrator's.
-        if (
-            not contract_rejected
-            and not _circuit_tripped
-            and isinstance(_authoritative_envelope, dict)
-        ):
-            try:
-                from modules.agents.contract_validator import (
-                    parse_user_facing_summary,
-                )
-
-                _user_summary = parse_user_facing_summary(_authoritative_envelope)
-            except Exception as _summary_exc:
-                _user_summary = None
-                logger.debug(
-                    "user_facing_summary relay skipped (non-fatal): %s",
-                    _summary_exc,
-                )
-            if _user_summary:
-                result["user_facing_summary"] = _user_summary
-                user_message = (
-                    f"Resumen de {agent_type} para el usuario: {_user_summary}"
-                )
-
         if _update_contracts_refused:
             result["update_contracts_refused"] = _update_contracts_refused
-            _refusal_notice = (
-                f"update_contracts from {agent_type} was NOT applied: "
-                + "; ".join(_update_contracts_refused)
-            )
-            user_message = (
-                f"{user_message}\n{_refusal_notice}" if user_message else _refusal_notice
-            )
+        if _summarizer_without_row:
+            result["compaction_summarizer"] = True
 
         # The repair message replaces the rejected one in everything the
         # orchestrator receives, so the rejected turn's work is preserved and
@@ -1781,7 +1774,7 @@ def run_subagent_stop(
                     result["contract_degraded_close_reason"] += (
                         f"\nEvidencia preservada en: {_relay['path']}"
                     )
-            else:
+            elif not _summarizer_without_row:
                 _closed = rejected_turn_relay.on_accepted(agent_output, key=_relay_key)
                 if _circuit_key:
                     rejection_circuit.reset(_circuit_key)

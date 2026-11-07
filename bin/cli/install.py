@@ -8,66 +8,68 @@ This subcommand is the Python entry point for:
 
 There is NO npm postinstall hook -- `package.json` carries no `postinstall`
 script. Bootstrap is lazy: `bin/gaia` calls `_ensure_db_bootstrapped()` on
-first CLI use (for any subcommand except `install`/`uninstall`) so the DB
-exists before anything needs it, without npm or pnpm ever running a
-lifecycle script. Workspace `.claude/` config is applied on demand by
+first CLI use (for any subcommand outside `_LAZY_BOOTSTRAP_SKIP`: `install`,
+`uninstall`, `migrate`, `now`, `lint`) so the DB exists before anything needs
+it, without npm or pnpm ever running a lifecycle script. Workspace `.claude/` config is applied on demand by
 running `gaia install` (this module) or by the SessionStart hook.
 
 Responsibilities (in order):
   1. Run `gaia migrate apply --apply-after-backup` (`cli.migrate`, engine
      `scripts/bootstrap_database.py`): a verified backup stands in for the
-     chain consent (D140) -- the cross-platform Python
+     chain consent -- the cross-platform Python
      bootstrapper for creating/upgrading `~/.gaia/gaia.db` (schema,
-     agent_permissions seed, project registration, FTS5 backfill, invariant
-     checks). The canonical schema source is `gaia/store/schema.sql`;
-     `bootstrap_database.sh` is retained as the shell/test reference.
+     agent_permissions seed, FTS5 backfill, invariant checks). The canonical
+     schema source is `gaia/store/schema.sql`. Then seed
+     `agent_contract_permissions` and `surface_routing`; a seeding failure is
+     reported and does not abort.
   2. Configure workspace `.claude/settings.json` (create if missing).
-  3. Merge gaia permissions, env vars, and agent identity into
-     `.claude/settings.local.json`.
+  3. Merge gaia permissions, env vars, agent identity and hidden attribution
+     into `.claude/settings.local.json`; outside a git working tree, also
+     force `worktree.bgIsolation: "none"` there.
   4. Register Gaia's hooks in `.claude/settings.local.json` through the single
      writer (`plugin_setup.sync_workspace_hooks`): npm mode writes each
      (event, matcher, command) `hooks.json` ships and prunes retired ones;
      plugin mode (or a workspace enabling the Gaia plugin) writes none, since
      CC reads the plugin's hooks.json directly. User entries are kept.
-  5. Create or repair `.claude/{agents,tools,hooks,config,skills}` symlinks
-     (5 directories) plus a `.claude/CHANGELOG.md` file link, pointing at the
+  5. Create or repair the `.claude/{agents,tools,hooks,config,skills,opencode}`
+     symlinks plus a `.claude/CHANGELOG.md` file link, pointing at the
      installed package (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in
      `_install_helpers.py`).
-  6. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`
-     (the single unified plugin registry identity).
-
+  6. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`.
   7. Workspace (`gaia.install_root.workspace_status`): reports the declared
      workspace the folder lies in, or the `gaia workspace declare` command
      when it lies in none. Install never declares one. Non-fatal.
 
 Idempotent: re-running over a populated workspace + DB never destroys
-state -- bootstrap.sh uses IF NOT EXISTS / INSERT OR IGNORE, the helpers
-return ``action: noop`` when nothing changed, and symlink/registry writes
-detect the already-good case.
+state -- the helpers return ``action: noop`` when nothing changed, and
+symlink/registry writes detect the already-good case.
 
 Workspace bootstrap and update logic is centralised in `_install_helpers.py`
 so `gaia install` and `gaia update` share a single source of truth.
 
 Flags:
   --postinstall      Mark this invocation as a non-interactive bootstrap path
-                     (adjusts output, never returns non-zero so a wrapping
-                     install flow does not abort). Kept for callers that want
-                     the fail-soft behaviour; nothing in the npm/pnpm
-                     lifecycle invokes this automatically -- bootstrap is
-                     lazy (see bin/gaia:_ensure_db_bootstrapped).
+                     (adjusts output). A bootstrap failure is written to the
+                     install-error marker and the exit stays 0, and so does a
+                     run that wires no channel, so a wrapping install flow does
+                     not abort; a refused run (no hook shell, channel conflict)
+                     or a `--strict-wiring` failure still exits 1. Nothing in
+                     the npm/pnpm lifecycle invokes this automatically --
+                     bootstrap is lazy (see bin/gaia:_ensure_db_bootstrapped).
   --quiet            Suppress informational output; only errors print.
-  --verbose          Stream bootstrap.sh output verbatim and report each
-                     helper individually.
-  --db-path PATH     Override target DB path (default: ~/.gaia/gaia.db,
-                     forwarded to bootstrap.sh via the GAIA_DB env var).
-   --workspace PATH   Workspace where settings/symlinks/registry are
-                      written (default: cwd).
-   --channel CHANNEL  npm wires Claude Code through this package, opencode
-                      wires OpenCode. Without it the workspace decides
-                      (`detect_channels`). An explicit npm refuses while the
-                      Claude Code plugin is enabled for the workspace;
-                      opencode joins either. `--host claude_code|opencode` is
-                      the older alias.
+  --verbose          Show the bootstrapper's output and report each helper
+                     individually.
+  --db-path PATH     Override target DB path (default: the path every gaia
+                     call resolves, ~/.gaia/gaia.db), handed to the
+                     bootstrapper explicitly.
+  --workspace PATH   Workspace where settings/symlinks/registry are
+                     written (default: $INIT_CWD when npm sets it, else cwd).
+  --channel CHANNEL  npm wires Claude Code through this package, opencode
+                     wires OpenCode. Without it the workspace decides
+                     (`detect_channels`). An explicit npm refuses while the
+                     Claude Code plugin is enabled for the workspace;
+                     opencode joins either. `--host claude_code|opencode` is
+                     the older alias.
   --skip-workspace   Bootstrap the DB only; skip workspace configuration.
                      Useful when running install just to refresh the DB
                      schema from a non-Gaia directory.
@@ -75,8 +77,13 @@ Flags:
                      ~/.local/bin/gaia launcher (a symlink to this package's
                      bin/gaia; `gaia.cmd` + `gaia.ps1` on Windows) and, on
                      Windows, `setx GAIA_WORKSPACE_PATH`. Without it install
-                     writes nothing outside the workspace. `--no-path` is
-                     still accepted and does nothing.
+                     writes no launcher and sets no variable (the database,
+                     install lock and error marker under ~/.gaia aside); a
+                     launcher a 5.x install wrote for this workspace is
+                     migrated either way. `--no-path` is still accepted and
+                     does nothing.
+  --strict-wiring    Exit 1 when any requested host or required wiring step
+                     fails or is skipped.
 
 Every file and settings key install writes is recorded in the workspace's
 manifest, `.claude/gaia-manifest.json` (`cli/_manifest.py`), which
@@ -131,7 +138,7 @@ _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing
 #     `tests/conftest.py`.
 #   * `bin/gaia` imports ONLY the single plugin module argv names, precisely so
 #     an invocation does not pay for unrelated modules. Reaching the registry
-#     would pull `hooks/adapters/claude_code.py` (>5k lines) into every
+#     would pull `hooks/adapters/claude_code.py` (1,800+ lines) into every
 #     `gaia install --help`.
 # The divergence that duplication invites is caught instead by the parity
 # tripwire in `tests/cli/test_host_multi_install.py`, which does import the
@@ -197,10 +204,10 @@ def channel_conflict(workspace: Path, channel: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# PATH launcher (~/.local/bin/gaia -- workspace-bound launcher)
+# PATH launcher (~/.local/bin/gaia)
 # ---------------------------------------------------------------------------
 #
-# Platform split (Step 6.5): the launcher form is chosen by platform. This is a
+# Platform split: the launcher form is chosen by platform. This is a
 # hard guard, not a preference -- a bash script has no meaning to the Windows
 # shell (PowerShell opens an "open with" dialog on an extensionless file), and
 # the POSIX shim's ``{workspace}/node_modules/...`` target does not exist under
@@ -218,37 +225,30 @@ def channel_conflict(workspace: Path, channel: str) -> str | None:
 #       (c) execs the ACTUAL installed ``bin/gaia`` dispatcher
 #           (``_gaia_entrypoint()`` = ``<package_root>/bin/gaia``), which is
 #           valid for BOTH a global (`-g`) and a local install, unlike the
-#           POSIX shim's workspace-relative ``node_modules`` path.
+#           legacy POSIX shim's workspace-relative ``node_modules`` path.
 #
 # PATH precedence vs npm's own shim (Windows): `npm install -g @jaguilar87/gaia`
 # writes its own ``gaia.cmd`` into the npm global prefix (on PATH), and that
-# shim execs ``bin/gaia`` WITHOUT setting GAIA_WORKSPACE_PATH -- which is
-# exactly the origin of the false-CRITICAL bug. Gaia's launcher coexists with
-# and wins over npm's by being written to Gaia's own bin dir (default
-# ``~/.local/bin``): when that dir precedes the npm prefix on PATH, cmd.exe /
-# PowerShell resolve ``gaia`` (``gaia.cmd`` / ``gaia.ps1``) to Gaia's launcher,
-# which sets GAIA_WORKSPACE_PATH before dispatching.
+# shim execs ``bin/gaia`` WITHOUT setting GAIA_WORKSPACE_PATH. Gaia's launcher
+# wins over it only when Gaia's own bin dir (default ``~/.local/bin``) precedes
+# the npm prefix on PATH.
 #
-# Where Gaia's dir is NOT ahead of the npm prefix (the common case on Windows,
-# where ``~/.local/bin`` is not on PATH by convention), npm's shim wins and
-# execs ``bin/gaia`` WITHOUT the process-scoped GAIA_WORKSPACE_PATH export. The
-# doctor `__file__` fallback does NOT save this case: with the npm global shim,
-# ``__file__`` resolves into the npm prefix, so ``doctor._derive_workspace``
-# derives the npm prefix as the "workspace" and emits a FALSE CRITICAL (this is
-# the observed rc.2 bug, not a hypothetical). Two things close it, so the fix
-# does not depend on PATH order:
-#   1. `gaia install` on Windows PERSISTS GAIA_WORKSPACE_PATH to the USER
+# Otherwise npm's shim wins, ``__file__`` resolves into the npm prefix, and
+# ``doctor._derive_workspace`` derives the npm prefix as the "workspace" and
+# emits a false CRITICAL. Two things close it, independent of PATH order:
+#   1. `gaia install --path` on Windows PERSISTS GAIA_WORKSPACE_PATH to the USER
 #      environment (`setx`, see `_persist_workspace_env`). The next `gaia
 #      doctor` is a fresh process that inherits it, so doctor resolves the
 #      workspace via the env var regardless of which `gaia` won the PATH.
-#   2. `gaia install` WARNS when Gaia's launcher dir is not ahead of the npm
-#      prefix on PATH (see `_launcher_path_precedence`), so the shadowed-launcher
-#      condition is a visible, actionable signal instead of a silent surprise.
+#   2. `gaia install --path` WARNS when Gaia's launcher dir is not ahead of the
+#      npm prefix on PATH (see `_launcher_path_precedence`), so the
+#      shadowed-launcher condition is a visible, actionable signal instead of a
+#      silent surprise.
 #
-# On Windows, re-running `gaia install` from a different workspace rewrites the
-# launchers to point at that workspace and re-persists GAIA_WORKSPACE_PATH
-# (last-install-wins, single-valued). POSIX launchers select a package, not a
-# workspace.
+# On Windows, re-running `gaia install --path` from a different workspace
+# rewrites the launchers to point at that workspace and re-persists
+# GAIA_WORKSPACE_PATH (last-install-wins, single-valued). POSIX launchers select
+# a package, not a workspace.
 
 # Legacy POSIX launcher, retained only to recognize and migrate regular wrappers
 # written by earlier versions. New POSIX installs use a package-provenance
@@ -290,7 +290,7 @@ def _gaia_entrypoint() -> Path:
 
     This is ``<package_root>/bin/gaia`` -- the real location of the running
     Gaia package, which resolves correctly under both a global (`npm i -g`)
-    and a local install. The POSIX shim's ``{workspace}/node_modules/...``
+    and a local install. The legacy POSIX shim's ``{workspace}/node_modules/...``
     assumption breaks under `-g` (there is no workspace-relative node_modules);
     the Windows launchers bake this resolved path instead.
     """
@@ -307,7 +307,7 @@ def _render_launcher(workspace: Path) -> str:
     return _LAUNCHER_TEMPLATE.format(workspace_path=str(workspace))
 
 
-# What 5.3 and 5.4 wrote at <link>.cmd / <link>.ps1: a bare `python`, no pinned
+# What 5.x installs wrote at <link>.cmd / <link>.ps1: a bare `python`, no pinned
 # interpreter. Recognized by shape so install can replace them; never rendered.
 _5X_CMD_LAUNCHER_TEMPLATE = """@echo off
 REM gaia -- workspace-bound launcher (generated by `gaia install`)
@@ -375,7 +375,7 @@ def _install_path_launcher(
 ) -> dict:
     """Install the selected package's Gaia launcher at `link_path`.
 
-    Platform-guarded (Step 6.5): on Windows this writes ``<link>.cmd`` and
+    Platform-guarded: on Windows this writes ``<link>.cmd`` and
     ``<link>.ps1`` (see ``_install_windows_launchers``); on POSIX it writes a
     symlink to the actual ``bin/gaia`` of the package running the installer.
     Resolving the PATH winner therefore reaches the package manifest's declared
@@ -385,8 +385,9 @@ def _install_path_launcher(
       - If `link_path` is the expected symlink: noop.
       - If `link_path` is another symlink: retarget it (legacy migration).
       - If `link_path` is a legacy generated wrapper: migrate it to the symlink.
+      - If `link_path` is a directory: skip.
       - If `link_path` is a regular file with different content and
-        `overwrite=False`: skip with warning.
+        `overwrite=False`: skip.
       - If `link_path` is a regular file with different content and
         `overwrite=True`: replace.
       - If `link_path` does not exist: create the symlink (and parent dir).
@@ -412,8 +413,6 @@ def _install_path_launcher(
     else:
         workspace_resolved = Path(workspace).expanduser().resolve()
 
-    # Windows: emit gaia.cmd + gaia.ps1 instead of a bash shim. The POSIX path
-    # below is left entirely unchanged.
     if _is_windows():
         entry = (
             Path(gaia_bin).expanduser() if gaia_bin is not None
@@ -553,7 +552,8 @@ def _install_windows_launchers(
     Idempotent and non-destructive, mirroring the POSIX branch:
       - missing            -> created
       - present, matches   -> noop
-      - present, drifted   -> replaced (overwrite=True) / skipped (overwrite=False)
+      - present, drifted   -> replaced (overwrite=True, or a 5.x launcher for
+                              this workspace) / skipped (otherwise)
       - a directory in the way -> skipped
 
     The aggregate ``action`` is the "strongest" over the two files: error >
@@ -628,8 +628,7 @@ def _write_windows_launcher_file(path: Path, content: str, overwrite: bool,
     return "created"
 
 
-# Backward-compatible alias -- existing tests/imports continue to work
-# while migrating to the new name.
+# Old name of _install_path_launcher; tests/cli/test_install.py still imports it.
 _create_path_symlink = _install_path_launcher
 
 
@@ -706,8 +705,7 @@ def _npm_config_prefix_posix() -> "Path | None":
 
     Resolution order (first hit wins): the ``NPM_CONFIG_PREFIX`` env var, then
     ``npm config get prefix`` (offline, no network -- it reads local config),
-    then the ``~/.npm-global`` convention the drift-free design names as the
-    global surface. Feeds only an ADVISORY warning, so a heuristic is
+    then the ``~/.npm-global`` directory when it exists. Feeds only an ADVISORY warning, so a heuristic is
     acceptable; a missing/unresolvable prefix returns None (the precedence check
     then only verifies Gaia's own dir is present).
     """
@@ -757,8 +755,8 @@ def _launcher_path_precedence(
     ``gaia`` name resolution against npm's own shim -- else None.
 
     Pure and platform-agnostic (every input is passed in), so it is unit-
-    testable on any OS. Comparison is case-insensitive and path-normalized
-    (Windows PATH entries vary in case and separators).
+    testable on any OS. Entries are compared after ``os.path.normpath`` and
+    ``os.path.normcase``, so case and separators fold on Windows only.
 
     Two shadowing conditions produce a warning:
       1. Gaia's launcher dir is not on PATH at all -> npm's shim always wins.
@@ -804,15 +802,13 @@ def _warn_launcher_shadowed(link: "Path | str", quiet: bool) -> "str | None":
 
     Windows: npm writes ``gaia.cmd`` into its prefix under ``npm install -g``, so
     the check runs on dir precedence alone (the shim is assumed present in the
-    install context -- unchanged behavior).
+    install context).
 
-    POSIX (new, per the drift-free design): a bare dir-precedence check would
-    over-warn, because npm's prefix (e.g. ``/usr/local/bin``) commonly precedes
-    ``~/.local/bin`` even when NO global ``gaia`` exists there. So on POSIX the
-    check first confirms npm's global bin actually holds a ``gaia`` shim
-    DISTINCT from Gaia's own launcher; only then does it evaluate precedence.
-    This makes the reconcile of the global surface (surface 4) an actionable
-    signal without a spurious warning on every install.
+    POSIX: a bare dir-precedence check would over-warn, because npm's prefix
+    (e.g. ``/usr/local/bin``) commonly precedes ``~/.local/bin`` even when NO
+    global ``gaia`` exists there. So on POSIX the check first confirms npm's
+    global bin actually holds a ``gaia`` shim DISTINCT from Gaia's own
+    launcher; only then does it evaluate precedence.
     """
     gaia_bin_dir = Path(link).expanduser().parent
     npm_prefix = _npm_global_prefix()
@@ -852,19 +848,15 @@ def _warn_launcher_dir_absent(link: "Path | str", quiet: bool) -> "str | None":
     where a DISTINCT npm global ``gaia`` shim WINS the name lookup). Here the
     condition is unambiguous: the launcher file was written, but its directory
     (default ``~/.local/bin``) is on no PATH entry, so the shell will never find
-    ``gaia`` regardless of any npm shim. This is exactly the wrinkle the docs
-    assumed away -- ``gaia install`` is expected to make a bare ``gaia`` work,
-    but on a fresh local install (``npm install`` / ``pnpm add``) the CLI lands
-    in ``node_modules/.bin`` (not on PATH) and ``~/.local/bin`` is frequently not
-    on PATH either. Without this signal, the ``PATH launcher: ...=created`` step
-    line misleads the user into believing a bare ``gaia`` now works.
+    ``gaia`` regardless of any npm shim. Without this signal, the
+    ``PATH launcher: ...=created`` step line misleads the user into believing a
+    bare ``gaia`` now works.
 
-    Deliberately narrow: it fires ONLY on the dir-absent case, never on npm
-    precedence (that is ``_warn_launcher_shadowed``'s concern), so it does not
-    reintroduce the over-warning the POSIX shadow check was tuned to avoid.
-    Comparison is case-insensitive and path-normalized (mirrors
-    ``_launcher_path_precedence``). Returns the warning (also printed to stderr
-    unless quiet) or None when the launcher dir is already on PATH.
+    It fires ONLY on the dir-absent case, never on npm precedence (that is
+    ``_warn_launcher_shadowed``'s concern). Entries are compared as
+    ``_launcher_path_precedence`` does (``normpath`` + ``normcase``). Returns
+    the warning (also printed to stderr unless quiet) or None when the launcher
+    dir is already on PATH.
     """
     launcher_dir = Path(link).expanduser().parent
 
@@ -893,14 +885,14 @@ def _warn_launcher_dir_absent(link: "Path | str", quiet: bool) -> "str | None":
 # ---------------------------------------------------------------------------
 
 def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
-    """Invoke bootstrap_database.py and return a structured result.
+    """Run `gaia migrate apply --apply-after-backup` (engine: bootstrap_database.py) and return a structured result.
 
     Returns a dict with:
       - ``rc``: int exit code (0 on success).
       - ``detail``: str -- short human-readable summary, suitable for the
         install-error marker. Empty string on success.
 
-    Always captures stdout/stderr so the caller (cmd_install) has the
+    Always captures stdout/stderr so the caller (_install_channels) has the
     failure detail available for ``_write_install_error_marker`` even
     under the verbose branch. Output is re-emitted to the parent's
     streams to preserve the original UX (visible bootstrap progress in
@@ -918,9 +910,7 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
         print(f"gaia install: {msg}", file=sys.stderr)
         return {"rc": 1, "detail": msg}
 
-    # In verbose mode (or not quiet), surface all bootstrap output so the
-    # user sees progress in real-ish time. In quiet mode, only show output
-    # when bootstrap fails -- success stays silent.
+    # Without --verbose, --quiet shows the output only when bootstrap fails.
     if verbose or not quiet:
         if result.stdout:
             sys.stdout.write(result.stdout)
@@ -935,9 +925,6 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
     if result.returncode == 0:
         return {"rc": 0, "detail": ""}
 
-    # Build a compact, marker-friendly detail. Prefer the last non-empty
-    # stderr line (where bash + sqlite3 surface the actual error) and fall
-    # back to a generic message keyed to the exit code.
     detail = _summarize_bootstrap_failure(
         rc=result.returncode,
         stdout=result.stdout or "",
@@ -999,8 +986,8 @@ def _seed_surface_routing(db_path: str | None, quiet: bool) -> dict:
     """Invoke seed_surface_routing to populate the surface_routing table.
 
     Mirror of ``_seed_contract_permissions``: reads each agent's ``routing:``
-    frontmatter block and seeds the DB-backed routing table that
-    surface_router.py reads (replacing config/surface-routing.json). Returns a
+    frontmatter block and seeds the routing table that
+    surface_router.py reads. Returns a
     step-result dict compatible with ``_report_step``. Never raises -- seeding
     failures are logged and reported as action='error' so the install continues.
     """
@@ -1051,8 +1038,9 @@ def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
     """Build a short detail string for the install-error marker.
 
     The marker file is read by `gaia doctor`, which shows the detail
-    inline. Keep it under ~200 chars and pull the most diagnostic line
-    (typically a sqlite3 'Parse error' or a [bootstrap] check: FAIL line).
+    inline. It carries the last stderr (else stdout) line naming an error or
+    failure; failing that, the first non-empty stderr line; the summary is
+    capped at 220 chars.
     """
     candidates: list[str] = []
     for chunk in (stderr, stdout):
@@ -1060,8 +1048,6 @@ def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
             line = raw.strip()
             if not line:
                 continue
-            # Most informative signals: sqlite3 parse errors, FAIL checks,
-            # explicit [bootstrap] ERROR lines.
             lower = line.lower()
             if (
                 "error" in lower
@@ -1075,7 +1061,6 @@ def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
     if candidates:
         summary = candidates[0]
     elif stderr.strip():
-        # Last resort: first non-empty stderr line.
         for raw in stderr.splitlines():
             line = raw.strip()
             if line:
@@ -1086,7 +1071,6 @@ def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
     else:
         summary = f"bootstrap exited rc={rc} (no stderr captured)"
 
-    # Cap to keep the marker readable.
     if len(summary) > 220:
         summary = summary[:217] + "..."
     return f"bootstrap rc={rc}: {summary}"
@@ -1177,7 +1161,7 @@ def _configure_host(
     """Wire one host into *workspace*; return whether it was configured.
 
     Host-scoped only: everything global (DB bootstrap, permission and routing
-    seeds) runs once in `cmd_install` before this is called, so wiring N hosts
+    seeds) runs once in `_install_channels` before this is called, so wiring N hosts
     re-runs none of it. Returns False instead of an exit code because with
     several hosts requested one host's failure must not decide the command's
     outcome.
@@ -1194,9 +1178,6 @@ def _configure_host(
         print(f"gaia install: {identity_res['details']}", file=sys.stderr)
         return False
 
-    # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
-    # The first four helpers early-return when .claude/ is missing, so it
-    # must exist before any Claude-specific configuration runs.
     claude_dir = workspace / ".claude"
     if not claude_dir.exists():
         try:
@@ -1417,8 +1398,8 @@ def detect_channels(workspace: Path) -> tuple[str, ...]:
     """The package channels a bare `gaia install` wires in *workspace*, decided without asking.
 
     The recorded channels are reused; an enabled Gaia plugin owns Claude Code,
-    so npm is dropped there; a workspace with nothing recorded gets npm, plus
-    opencode when it carries an opencode.json.
+    so npm is dropped there; a workspace with nothing recorded gets npm; a
+    workspace carrying an opencode.json also gets opencode.
     """
     from modules.core.plugin_setup import enabled_gaia_plugins  # type: ignore
 
@@ -1458,9 +1439,19 @@ INSTALL_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 def install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str = "gaia install") -> int:
-    """Run `_install_channels` holding the install lock beside the database, so concurrent runs never interleave."""
+    """Run `_install_channels` holding the install lock beside the database, so concurrent runs never interleave.
+
+    A workspace folder that does not exist is refused before anything is
+    written, unless the run skips the workspace or is the fail-soft postinstall.
+    """
     from modules.core.filelock import LockTimeout, exclusive_file_lock  # type: ignore
 
+    workspace = _install_workspace(args)
+    exempt = getattr(args, "skip_workspace", False) or getattr(args, "postinstall", False)
+    if not exempt and not workspace.is_dir():
+        print(f"{command}: refused, workspace folder {workspace} does not exist; nothing changed",
+              file=sys.stderr)
+        return 1
     lock_path = Path(_install_db_path(getattr(args, "db_path", None))).parent / INSTALL_LOCK_NAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -1503,27 +1494,18 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
 
     _print_header(postinstall=postinstall, quiet=quiet, workspace=workspace)
 
-    # Step 1 -- bootstrap DB (always)
     bootstrap_res = _run_bootstrap(db_path=db_path, verbose=verbose, quiet=quiet)
     rc = bootstrap_res["rc"]
     if rc == 0:
-        # Step 1a -- seed agent_contract_permissions from agent frontmatters.
-        # Runs after bootstrap so the table is guaranteed to exist (v3 migration).
-        # Non-fatal: a seeding failure should not abort an otherwise clean install.
+        # The seeders run after bootstrap; a seeding failure is reported but
+        # does not abort the install.
         seed_res = _seed_contract_permissions(db_path=db_path, quiet=quiet)
         _report_step(name="contract-permissions", result=seed_res, quiet=quiet, verbose=verbose)
-        # Step 1b -- seed surface_routing from agent `routing:` frontmatter
-        # blocks (mirror of 1a). Populates the DB-backed routing table that
-        # replaced config/surface-routing.json. Non-fatal on failure.
         routing_res = _seed_surface_routing(db_path=db_path, quiet=quiet)
         _report_step(name="surface-routing", result=routing_res, quiet=quiet, verbose=verbose)
     if rc != 0:
         if postinstall:
-            # Persist a marker so `gaia doctor` can surface the real failure.
-            # Without this, the postinstall returns 0 silently and the user
-            # only sees vague "missing file" hints from doctor -- never the
-            # bootstrap stderr that holds the root cause (e.g. a sqlite3
-            # parse error). The marker is best-effort; never blocks.
+            # postinstall returns 0, so the marker is how `gaia doctor` learns the failure.
             _write_install_error_marker(
                 workspace=workspace,
                 step="bootstrap",
@@ -1543,11 +1525,10 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
         _print_next_steps(quiet=quiet, postinstall=postinstall, hosts=hosts)
         return 0
 
-    # Steps 2-6 -- workspace configuration
     if not workspace.exists():
         if not quiet:
             print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
-        return 0
+        return 1 if strict_wiring else 0
 
     opt_path = opt_path or _legacy_launcher(workspace)
     outside = _launcher_manifest_paths() if opt_path else []
@@ -1595,25 +1576,14 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
         # postinstall stays fail-soft: a non-zero exit aborts the consumer's package install.
         return 0 if postinstall else 1
 
-    # Step 6.5 -- PATH launcher (~/.local/bin/gaia), only with --path: the one
-    # write outside the workspace, so the user asks for it.
+    # The PATH launcher (~/.local/bin/gaia) is written only with --path, or to
+    # migrate a launcher a 5.x install wrote for this workspace.
     if opt_path:
-        # Link directly to this installed package's bin/gaia so PATH resolution
-        # preserves the provenance consumed by the orchestrator guard.
         path_res = _install_path_launcher(workspace=workspace)
         _report_step(name="PATH launcher", result=path_res, quiet=quiet, verbose=verbose)
-        # Windows: the "created" line above reports the launcher was WRITTEN,
-        # not that it will WIN `gaia` resolution. Warn when Gaia's launcher dir
-        # is not ahead of the npm prefix on PATH -- an actionable signal, not a
-        # false all-clear. No-op on POSIX.
+        # Warn when a global npm `gaia` shim would win the name lookup over the launcher.
         shadow_warning = _warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=quiet)
-        # If the shadow check found nothing, the launcher may still be
-        # unreachable because its dir is entirely absent from PATH -- the common
-        # fresh-local-install case (~/.local/bin not on PATH). Surface that
-        # unambiguous condition so a bare `gaia` failing is a visible signal
-        # instead of a silent surprise. Skipped when the shadow check already
-        # warned, to avoid a double message (Windows dir-absent is covered
-        # there via _launcher_path_precedence).
+        # Skipped when the shadow check already warned.
         if shadow_warning is None:
             _warn_launcher_dir_absent(link="~/.local/bin/gaia", quiet=quiet)
 

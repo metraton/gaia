@@ -1,14 +1,8 @@
 """Session event injection for agent context.
 
-Subsystem 4 of the pre_tool_use Task/Agent path.
-
 Kernel injection is agnostic to the receiving agent: every dispatch gets the
 same digest -- the most recent events, bounded, with no filter keyed to the
-agent's name or type. This module used to carry a per-agent event-type
-allowlist (``AGENT_EVENT_FILTERS``) plus an upstream "known project agent"
-gate; both branched on agent identity, which is exactly the shape the kernel
-must not take. An agent absent from every registry now receives the same
-digest a named specialist receives.
+agent's name or type.
 """
 from __future__ import annotations
 
@@ -32,7 +26,7 @@ def format_events_summary(events: list) -> str:
     Format events as readable summary for agent context.
 
     Args:
-        events: List of filtered events
+        events: List of session events (as bounded by ``recent_events``)
 
     Returns:
         Formatted markdown string
@@ -44,7 +38,7 @@ def format_events_summary(events: list) -> str:
 
     for event in events:
         etype = event.get("event_type", "")
-        ts = event.get("timestamp", "")[:16]  # YYYY-MM-DDTHH:MM
+        ts = event.get("timestamp", "")[:16]
 
         if etype == "git_commit":
             msg = event.get("commit_message", "")
@@ -80,14 +74,12 @@ def build_session_events(parameters: dict) -> str | None:
     inject.
 
     Args:
-        parameters: Task tool parameters (read-only; kept for API
-            continuity with the PreToolUse:Task call site, unused here now
-            that injection no longer keys off ``subagent_type``).
+        parameters: Task tool parameters; unused, kept for the PreToolUse:Task
+            call site.
 
     Returns:
         Session events string, or None if nothing to inject.
     """
-    # Get session events
     from ..core.paths import get_session_dir
     context_path = get_session_dir() / "context.json"
     if not context_path.exists():
@@ -107,7 +99,6 @@ def build_session_events(parameters: dict) -> str | None:
         if not bounded:
             return None
 
-        # Format events summary
         events_summary = format_events_summary(bounded)
 
         events_string = (

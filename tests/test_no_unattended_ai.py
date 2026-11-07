@@ -47,6 +47,12 @@ _UNATTENDED_SHAPES = {
     "crontab-subprocess-write": re.compile(r"""["']crontab["']\s*,\s*["'](?!-l["'])"""),
 }
 
+# `_NEVER_INHERITING_PROGRAMS` lists "crontab" among program names the classifier
+# refuses to inherit exceptions for; it names the program and writes no crontab.
+# The shape cannot tell that word list from an argv without losing wrapped calls
+# such as ["sudo", "crontab", "-"], so the file is exempt from this one shape.
+_CRONTAB_DENY_LIST_EXEMPTION = "hooks/modules/security/mutative_verbs.py"
+
 
 def _run_gaia(env: IsolatedRuntimeEnv, *args: str, cwd: Path | None = None):
     return subprocess.run(
@@ -97,6 +103,7 @@ def test_no_shipped_file_launches_a_host_headless_or_writes_a_crontab():
                 for label, shape in _UNATTENDED_SHAPES.items()
                 if shape.search(text)
                 and not (label == "host-headless-launch" and relative == _HEADLESS_PROBE_EXEMPTION)
+                and not (label == "crontab-subprocess-write" and relative == _CRONTAB_DENY_LIST_EXEMPTION)
             )
     assert not offenders, offenders
 
@@ -121,6 +128,20 @@ def test_the_headless_launch_shape_catches_every_position_of_the_print_flag():
     shape = _UNATTENDED_SHAPES["host-headless-launch"]
     assert [text for text in launches if not shape.search(text)] == []
     assert [text for text in not_launches if shape.search(text)] == []
+
+
+def test_the_crontab_subprocess_shape_catches_wrapped_writes():
+    writes = (
+        'subprocess.run(["crontab", "-"], input=table)',
+        "subprocess.check_call(['crontab', '-r'])",
+        'argv = ("crontab", "/tmp/table")',
+        'subprocess.run(["sudo", "crontab", "-"])',
+        'subprocess.run(["env", "crontab", "/tmp/t"])',
+    )
+    not_writes = ('subprocess.run(["crontab", "-l"], capture_output=True)',)
+    shape = _UNATTENDED_SHAPES["crontab-subprocess-write"]
+    assert [text for text in writes if not shape.search(text)] == []
+    assert [text for text in not_writes if shape.search(text)] == []
 
 
 def _seed_schedules_and_a_due_reminder(db: Path, workspace_root: Path, project: Path) -> None:

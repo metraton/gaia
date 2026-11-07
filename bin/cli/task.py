@@ -1,8 +1,7 @@
 """
 gaia task -- Manage tasks (within plans) in the Gaia DB substrate.
 
-Architecture: Opción B (DB canónica). All mutating operations write only to
-``~/.gaia/gaia.db``.
+Every mutating operation writes only to ``~/.gaia/gaia.db``.
 
 Subcommands:
     gaia task set-status <brief> <task_id> <status>  Transition task status
@@ -59,17 +58,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _read_content_file(path_str: str) -> str:
     """Read content text from a file path or stdin.
 
     Pass ``"-"`` to read from ``sys.stdin`` until EOF (utf-8). Pass any other
     path string to read that file (utf-8). Raises ``FileNotFoundError`` for
-    missing paths (caller converts to _err). Mirrors ``cli.brief``'s helper
-    of the same name.
+    missing paths (caller converts to _err).
     """
     if path_str == "-":
         return sys.stdin.read()
@@ -82,8 +76,7 @@ def _resolve_field(inline_val, file_val, field_name):
     ``file_val`` of None means --X-file was not given; ``inline_val`` passes
     through unchanged in that case (including None, meaning neither was
     given). Raises ValueError (caller converts to _err) on a missing/unreadable
-    file. Mirrors ``cli.brief``'s helper of the same name -- long-text fields
-    (a goal, an evidence shape) sharing that convention across CLI files.
+    file.
     """
     if file_val is None:
         return inline_val
@@ -107,10 +100,6 @@ def _err(msg: str, as_json: bool = False) -> int:
         print(f"Error: {msg}", file=sys.stderr)
     return 1
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 # The two override flags are required to travel together, and each half of that
 # pairing is refused for its own reason. `--override` without a reason would be
@@ -444,15 +433,10 @@ def _gate_blockers(gates: list[dict]) -> list[str]:
     return blockers
 
 
-# ---------------------------------------------------------------------------
-# gate sub-action handlers (gaia task gate add|list|remove|set-status|edit)
-#
-# A gate is addressed by its parent task's order_num within a brief's plan --
-# consistent with how `gaia task add/remove/edit` address tasks. The CLI
-# persists the gate AS GIVEN, on both `add` and `edit`; the pure structural
-# validator lives separately in gaia.state.gate_validation and is not invoked
-# at write time (R1-A scope).
-# ---------------------------------------------------------------------------
+# Gate handlers (gaia task gate add|list|remove|set-status|edit). A gate is
+# addressed by its parent task's order_num within a brief's plan. `add` and
+# `edit` persist the gate as given; gaia.state.gate_validation.validate_gate is
+# not invoked by those writers.
 
 def _cmd_gate_add(args) -> int:
     from gaia.store.writer import add_gate_to_task
@@ -701,9 +685,6 @@ def _cmd_gate(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
 
 def register(subparsers) -> None:
     """Register the `task` subcommand with the root parser."""
@@ -797,7 +778,9 @@ def register(subparsers) -> None:
             "  gaia task list my-brief --format=json\n"
         ),
     )
-    list_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+    list_p.add_argument("brief", metavar="BRIEF", nargs="?", default=None, help="Parent brief slug.")
+    list_p.add_argument("--plan", metavar="SLUG", default=None,
+                        help="Same as BRIEF: a plan is named by its brief's slug.")
     list_p.add_argument("--status", default=None,
                         choices=("pending", "done", "skipped"),
                         help="Filter by task status.")
@@ -909,7 +892,6 @@ def register(subparsers) -> None:
     reorder_p.add_argument("--json", action="store_true", default=False,
                            help="Emit JSON.")
 
-    # -- gate (add|list|remove|set-status|edit) --------------------------------
     # -- cover / depend ----------------------------------------------------------
     for verb, target_help, target_type, example in (
         ("cover", "AC id(s) the task covers.", str, "gaia task cover my-brief 2 AC-1 AC-3"),
@@ -1153,6 +1135,13 @@ def cmd_task(args) -> int:
         "depend":     _cmd_link,
         "gate":       _cmd_gate,
     }
+    if action == "list":
+        plan = getattr(args, "plan", None)
+        if plan and args.brief and plan != args.brief:
+            return _err(f"--plan {plan!r} contradicts BRIEF {args.brief!r}; give one", as_json=args.json)
+        args.brief = args.brief or plan
+        if not args.brief:
+            return _err("task list needs BRIEF or --plan SLUG", as_json=args.json)
     if action in handlers:
         from cli._brief_scope import follow_brief
 

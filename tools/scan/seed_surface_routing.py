@@ -6,15 +6,12 @@ inserts one row per surface into the `surface_routing` table. This is the
 mirror of seed_contract_permissions.py: same discovery (agents/*.md), same
 frontmatter parse, same install-time invocation, same idempotency contract.
 
-Together with seed_contract_permissions.py this replaces config/surface-routing.json:
-the frontmatter is the single source of truth, the DB is the runtime SSOT, and
-tools/context/surface_router.py reads the DB (never the retired JSON).
+The frontmatter is the source of truth, and tools/context/surface_router.py
+reads the table this fills.
 
-Called during `gaia install` after bootstrap_database.sh has applied migrations
-and created the table. Idempotent: each surface row is DELETEd then re-inserted
-so a re-seed converges (surface is the PRIMARY KEY, but an agent could rename
-its surface, so a full clear-and-reinsert keyed by primary_agent is the safe
-convergence).
+Called during `gaia install` after bootstrap_database.py has applied migrations
+and created the table. Idempotent: the table is cleared and every surface is
+re-inserted in one transaction.
 
 Contract schema
 ---------------
@@ -33,13 +30,9 @@ agent frontmatter:
         owner: gaia-orchestrator
         owner_skill: brief-spec
 
-`keywords` is retired as a routing signal: tools/context/surface_router.py
-scores surfaces from `commands` and `artifacts` only. No agent frontmatter
-declares `keywords` anymore; a block that omits it seeds cleanly (the
-`keywords_json` column keeps its schema default `'[]'`). The column itself
-stays in the schema, deprecated rather than dropped, so an un-migrated
-install or a stray legacy field does not crash the seeder or the loader --
-it is simply never read by the matcher.
+`keywords` is not a routing signal: tools/context/surface_router.py scores
+surfaces from `commands` and `artifacts` only. The deprecated `keywords_json`
+column is still written, from `keywords` when a block carries one, else `[]`.
 
 Resulting row:
   surface | primary_agent | adjacent_surfaces_json | contract_sections_json |
@@ -70,10 +63,6 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_AGENTS_DIR = _REPO_ROOT / "agents"
 
 
-# ---------------------------------------------------------------------------
-# Extraction
-# ---------------------------------------------------------------------------
-
 def _as_list(value: Any) -> list[str]:
     """Coerce a frontmatter value into a clean list of strings."""
     if value is None:
@@ -103,9 +92,8 @@ def _extract_routing_row(frontmatter: dict[str, Any]) -> dict[str, Any] | None:
     if not primary_agent:
         return None
 
-    # contract_sections mirrors the agent's project_context_contracts.read --
-    # a single source of truth for both the permissions seeder and the surface
-    # context filter (see get_relevant_sections in context_provider.py).
+    # contract_sections mirrors the agent's project_context_contracts.read, the
+    # list the permissions seeder also reads.
     pcc = frontmatter.get("project_context_contracts") or {}
     read_contracts = _as_list(pcc.get("read")) if isinstance(pcc, dict) else []
 
@@ -120,20 +108,12 @@ def _extract_routing_row(frontmatter: dict[str, Any]) -> dict[str, Any] | None:
         "adjacent_surfaces_json": json.dumps(_as_list(routing.get("adjacent_surfaces"))),
         "contract_sections_json": json.dumps(read_contracts),
         "required_checks_json": json.dumps(_as_list(routing.get("required_checks"))),
-        # Deprecated: no agent frontmatter declares `keywords` anymore (the
-        # matcher in surface_router.py scores commands/artifacts only). Kept
-        # so the column's NOT NULL DEFAULT '[]' is honored explicitly and an
-        # absent field never crashes the insert.
         "keywords_json": json.dumps(_as_list(routing.get("keywords"))),
         "commands_json": json.dumps(_as_list(routing.get("commands"))),
         "artifacts_json": json.dumps(_as_list(routing.get("artifacts"))),
         "sub_surfaces_json": sub_surfaces_json,
     }
 
-
-# ---------------------------------------------------------------------------
-# Core seeder
-# ---------------------------------------------------------------------------
 
 def seed_surface_routing(db_path: Path, agents_dir: Path | None = None) -> dict[str, int]:
     """Seed surface_routing from agents/*.md frontmatters.
@@ -167,9 +147,7 @@ def seed_surface_routing(db_path: Path, agents_dir: Path | None = None) -> dict[
     con = sqlite3.connect(str(db_path))
     try:
         con.execute("BEGIN")
-        # Full replace: a surface rename in frontmatter must not leave the old
-        # surface row behind. surface is the PRIMARY KEY so a partial re-seed
-        # would orphan renamed surfaces; clearing first is the safe converge.
+        # Cleared first so a surface renamed in frontmatter leaves no old row.
         con.execute("DELETE FROM surface_routing")
         for row in rows:
             con.execute(
@@ -195,10 +173,6 @@ def seed_surface_routing(db_path: Path, agents_dir: Path | None = None) -> dict[
         "agents_skipped": agents_skipped,
     }
 
-
-# ---------------------------------------------------------------------------
-# CLI entry point (for `gaia install` invocation and manual use)
-# ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(

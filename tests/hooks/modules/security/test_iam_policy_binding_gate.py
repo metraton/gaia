@@ -184,7 +184,7 @@ def isolated_classifier_cache():
 
 @pytest.fixture
 def without_the_binding_rule(monkeypatch):
-    """Withdraw the form rule this work adds, caches cleared on both edges.
+    """Withdraw the form rule and the effect lexicon's compound reach, caches cleared on both edges.
 
     Emptying the suffix set rather than patching the classifier keeps the
     counterfactual a measurement of the ENTRY: every code path stays live and
@@ -193,6 +193,8 @@ def without_the_binding_rule(monkeypatch):
     monkeypatch.setattr(
         mutative_verbs_module, "IAM_BINDING_TOKEN_SUFFIXES", frozenset()
     )
+    monkeypatch.setattr(mutative_verbs_module, "COMPOUND_HEAD_MUTATIVE_VERBS", frozenset())
+    monkeypatch.setattr(mutative_verbs_module, "GROUP_PATH_HYPHEN_DEPTH", 2)
     _clear_classifier_caches()
     yield
     _clear_classifier_caches()
@@ -250,6 +252,14 @@ def test_iam_policy_binding_counterfactual_without_the_rule(
         f"got {result.category}: {result.reason}"
     )
     assert classify_command_tier(command) == T0
+
+
+@pytest.mark.parametrize("surface,command", CLOSED_BY_THE_RULE)
+def test_iam_policy_binding_effect_lexicon_is_a_second_cover(surface, command, monkeypatch):
+    """With only the form rule withdrawn, the compound head or group-path split still signs."""
+    monkeypatch.setattr(mutative_verbs_module, "IAM_BINDING_TOKEN_SUFFIXES", frozenset())
+    _clear_classifier_caches()
+    assert detect_mutative_command(command).is_mutative is True
 
 
 @pytest.mark.parametrize(

@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """
-seed_agent_permissions.py -- Populate agent_permissions with the full B3 mapping.
+seed_agent_permissions.py -- Populate agent_permissions from AGENT_TABLE_MAPPING.
 
-Inserts the complete mapping for the 5 domain agents into `agent_permissions`
-in `~/.gaia/gaia.db`. Uses INSERT OR IGNORE (idempotent). Exits non-zero if
-the table does not exist (B1 not applied).
-
-Mapping (B3 M3 -- agreed state):
-  developer           -> apps, libraries, services, features
-  platform-architect -> tf_modules, tf_live, releases, clusters
-  gitops-operator     -> workloads, clusters_defined
-  gaia-operator       -> integrations, gaia_installations, machines
-  cloud-troubleshooter -> clusters
-
-Total: 14 rows with allow_write=1.
-No permissions for: gaia-planner, gaia-system, gaia-orchestrator (by design).
+Inserts the missing (agent, table) rows with allow_write=1 into the gaia.db
+(INSERT OR IGNORE, idempotent). Exits non-zero if the DB or the table does not
+exist.
 
 Usage:
     python3 scripts/seed_agent_permissions.py [--dry-run] [--db-path PATH]
@@ -27,29 +17,21 @@ import sqlite3
 import sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Canonical mapping: B3 M3 source of truth (agreed state, 14 rows)
-# ---------------------------------------------------------------------------
 AGENT_TABLE_MAPPING: list[tuple[str, str]] = [
-    # developer: application layer (apps, libraries, services, features)
     ("developer", "apps"),
     ("developer", "libraries"),
     ("developer", "services"),
     ("developer", "features"),
-    # platform-architect: IaC layer + releases lifecycle
-    # NOTE: clusters write is declarative (IaC) only, not runtime state.
+    # The clusters write is declarative (IaC) only, not runtime state.
     ("platform-architect", "tf_modules"),
     ("platform-architect", "tf_live"),
     ("platform-architect", "releases"),
     ("platform-architect", "clusters"),
-    # gitops-operator: desired state (workloads, clusters_defined only)
     ("gitops-operator", "workloads"),
     ("gitops-operator", "clusters_defined"),
-    # gaia-operator: integrations, installation registry, and machine registry
     ("gaia-operator", "integrations"),
     ("gaia-operator", "gaia_installations"),
     ("gaia-operator", "machines"),
-    # cloud-troubleshooter: observed cluster state (read-heavy, write declarative)
     ("cloud-troubleshooter", "clusters"),
 ]
 
@@ -72,7 +54,6 @@ def run(db_path: Path, dry_run: bool) -> int:
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     try:
-        # Verify table exists
         table_exists = con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_permissions'"
         ).fetchone()
@@ -83,7 +64,6 @@ def run(db_path: Path, dry_run: bool) -> int:
             )
             return 1
 
-        # Load current rows
         existing = {
             (row["table_name"], row["agent_name"])
             for row in con.execute(
@@ -100,13 +80,11 @@ def run(db_path: Path, dry_run: bool) -> int:
             else:
                 to_insert.append((agent, table))
 
-        # Report already-present rows
         if already_present:
             print(f"Already present ({len(already_present)} rows):")
             for agent, table in sorted(already_present):
                 print(f"  {agent} -> {table}")
 
-        # Report rows to insert
         if to_insert:
             print(f"{'[DRY-RUN] Would insert' if dry_run else 'Inserting'} ({len(to_insert)} rows):")
             for agent, table in sorted(to_insert):
@@ -118,7 +96,6 @@ def run(db_path: Path, dry_run: bool) -> int:
             print("[DRY-RUN] No changes written.")
             return 0
 
-        # Execute inserts
         for agent, table in to_insert:
             con.execute(
                 "INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) "

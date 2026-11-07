@@ -17,14 +17,18 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import migration_guard  # noqa: E402
+
+from gaia.paths.backup import restore_gzip  # noqa: E402
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -82,6 +86,8 @@ def _stage_runner(tmp: Path, expected: int) -> Path:
             encoding="utf-8",
         )
     (scripts / "migrations").mkdir(exist_ok=True)
+    if not (tmp / "gaia").exists():
+        shutil.copytree(_REPO_ROOT / "gaia", tmp / "gaia", ignore=shutil.ignore_patterns("__pycache__"))
     doctor = tmp / "bin" / "cli"
     doctor.mkdir(parents=True, exist_ok=True)
     (doctor / "doctor.py").write_text(
@@ -326,9 +332,11 @@ class TestTheGateBitesEndToEnd(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertNotIn("BLOCKED", result.stderr)
-        backups = list((db.parent / "backups").glob("*.db"))
+        backups = list((db.parent / "backups").glob("*.db.gz"))
         self.assertEqual(1, len(backups), "an existing database is backed up first")
-        with sqlite3.connect(backups[0]) as saved:
+        restored = db.parent / "restored-backup.db"
+        restore_gzip(backups[0], restored)
+        with sqlite3.connect(restored) as saved:
             self.assertEqual(
                 self.expected - 1,
                 saved.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
@@ -470,7 +478,7 @@ class TestTheGateBitesEndToEnd(unittest.TestCase):
         )
         self.assertEqual(4, con.execute("SELECT COUNT(*) FROM memory").fetchone()[0])
         con.close()
-        self.assertEqual(1, len(list((db.parent / "backups").glob("*.db"))))
+        self.assertEqual(1, len(list((db.parent / "backups").glob("*.db.gz"))))
 
 
 if __name__ == "__main__":

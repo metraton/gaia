@@ -118,7 +118,7 @@ What this means when you author one:
 * **Fresh installs and test databases are never gated**, because their census
   is empty. Do not add a flag to skip the guard for them; there is nothing to
   skip.
-* **A data-reaching file stops the whole chain once (D68).** The refusal lists
+* **A data-reaching file stops the whole chain once.** The refusal lists
   every reaching statement of every file in the chain, with table and row
   count, and names the one command that continues --
   `gaia migrate apply --consent-chain vA..vB`. The consent names the chain, so
@@ -152,7 +152,13 @@ rewrites rows (anything `scripts/migration_guard.py` classifies as reaching rows
 `INSERT OR REPLACE`), adds a `NOT NULL` column without a default, or adds a
 `CHECK`, unique index or trigger that rejects a write the older code makes.
 Adding a table, a nullable or defaulted column, an index, or a trigger that
-only records is **backward**.
+only records is **backward**. So is an `UPDATE` whose `SET` list assigns only
+columns the same script adds with `ALTER TABLE ... ADD`, as `v70_to_v71.sql`
+does: older code neither reads nor writes them
+(`migration_guard.destructive_statements`). A `SET` list the guard cannot read
+-- row values, a `CASE`, qualified targets -- still counts as a rewrite. The
+consent gate in section 1b is separate and still stops on such a backfill when
+its table holds rows.
 
 The mark is mandatory. `tests/cli/test_migration_compat_header.py` fails on a
 file without it, and on a file declared backward that the guard classifies as
@@ -172,7 +178,10 @@ database newer than the code whose newest `min_code_version` is at or below the
 code's version is read and written, with one stderr notice per process asking
 for `gaia install` in that installation; a larger minimum, or none recorded,
 refuses every write (reads keep working) with a message naming the fix --
-install a Gaia whose schema version is at least the minimum. `gaia migrate apply`
+install a Gaia whose schema version is at least the minimum. In either case
+the session's birth block says the install is behind and gives the command
+that updates it through its own channel
+(`hooks/modules/session/session_manifest.py::install_behind_line`). `gaia migrate apply`
 on such a database changes nothing: it returns 0 inside the window and refuses
 outside it.
 

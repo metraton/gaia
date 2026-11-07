@@ -188,9 +188,8 @@ def _cmd_merge(args) -> int:
                          explicit and composable with other flags.
 
     --report-duplicates  List workspaces rows that share the same ``identity``
-                         value (potential duplicates caused by the pre-fix
-                         identity bug). Returns exit code 1 when duplicates
-                         are found, 0 when clean.
+                         value. Returns exit code 1 when duplicates are found,
+                         0 when clean.
     """
     from gaia.project import merge
 
@@ -200,7 +199,6 @@ def _cmd_merge(args) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     report_duplicates = bool(getattr(args, "report_duplicates", False))
 
-    # --report-duplicates: query the DB and report identity collisions.
     if report_duplicates:
         return _report_duplicate_identities()
 
@@ -211,7 +209,6 @@ def _cmd_merge(args) -> int:
     result = merge(from_id, to_id, confirm=confirm)
 
     if not confirm:
-        # Preview / dry-run mode
         mode_label = "Dry-run" if dry_run else "Preview"
         if not result.preview and not result.conflicts:
             print(f"# No changes: source '{from_id}' has no files (or does not exist)")
@@ -229,7 +226,6 @@ def _cmd_merge(args) -> int:
             print(f"# Re-run with --confirm to apply.")
         return 0
 
-    # Confirmed mode
     print(f"# Merged '{from_id}' -> '{to_id}'")
     for rel in result.moved:
         print(f"moved\t{rel}")

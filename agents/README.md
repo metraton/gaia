@@ -2,13 +2,13 @@
 
 Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and — for a dispatched subagent — declared skills whose loading depends on the host. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is the agent's own `agent_contract_handoffs` row — findings, changes, and a verification result, written incrementally through `gaia contract` and closed by `finalize`; the agent's final message is the signal that the turn ended, not a second copy of it.
 
-Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code (the host, not any Gaia hook) reads it to know which tools the agent may use, which model to run, and — for a dispatched subagent only — which skills to preload before the first turn. No Gaia hook loads skills: `hooks/hooks.json` carries no `Skill` tool matcher, so a `Skill(...)` call never reaches PreToolUse. The component named "skill injection" (`hooks/modules/agents/skill_injection_verifier.py`) only observes at SubagentStop: it checks transcript fingerprints for the union of frontmatter `declared_skills` and skills inferred from the turn's `written_paths` through `ARTIFACT_SKILL_RULES` in `artifact_skill_map.py`. This catches both a missing host preload and a governing skill omitted from frontmatter; it performs neither load itself. The primary agent (`gaia-orchestrator.md`) has no `skills:` field at all: Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread, so a `skills:` key there would have no effect. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
+Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code (the host, not any Gaia hook) reads it to know which tools the agent may use, which model to run, and — for a dispatched subagent only — which skills to preload before the first turn. No Gaia hook loads skills: `hooks/hooks.json` carries no PreToolUse `Skill` matcher (its catch-all excludes `Skill`), so a `Skill(...)` call never reaches PreToolUse; the PostToolUse `Skill` matcher only records the load as a `skill.loaded` event. The component named "skill injection" (`hooks/modules/agents/skill_injection_verifier.py`) only observes at SubagentStop: it checks transcript fingerprints for the union of frontmatter `declared_skills` and skills inferred from the turn's `written_paths` through `ARTIFACT_SKILL_RULES` in `artifact_skill_map.py`. This catches both a missing host preload and a governing skill omitted from frontmatter; it performs neither load itself. The primary agent (`gaia-orchestrator.md`) has no `skills:` field at all: Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread, so a `skills:` key there would have no effect. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
 
 The orchestrator (`gaia-orchestrator.md`) is special: it has no `permissionMode`; `Read` exists only to triangulate evidence with the user, while `Bash` is a lane for allowlisted coordination commands through the trusted `gaia` binary. `gaia_cli_only_guard.py` rejects every other binary and Gaia surface, so it remains unable to execute a general shell. It has no Edit, Write, Glob, or Grep.
 
-That lane covers coordination state (briefs, plans, tasks, contracts, approvals, notifications, history, metrics, memory), the substrate and installation reads (`doctor`, `status`, `defects`, `query`, `context show`/`get`, `workspace current`/`info`, `evidence show`/`list`), the coordinator-owned writes, and two verbs that read like reads and are not: `scan` — refreshing the workspace substrate is the orchestrator's own job, since that substrate is the context every dispatch carries — and `paths`, which prints the resolved storage locations and creates the `~/.gaia` layout when it is missing. What stays out is surgery on it: `context wipe`, `context prune-workspaces`, the `context move-*` family and `doctor --fix` are dispatched to a specialist. `ALLOWED_READ_PHRASES` / `ALLOWED_WRITE_PHRASES` / `EXPLICITLY_DENIED_PHRASES` in `gaia_cli_only_guard.py` are the source of truth for the exact set.
+That lane covers coordination state (briefs, plans, tasks, contracts, approvals, notifications, signals, history, metrics, memory), the substrate and installation reads (`doctor`, `status`, `defects`, `query`, `open` with `--line` or `--json`, `context show`/`get`, `workspace current`/`info`, `evidence show`/`list`), the coordinator-owned writes (among them `brief close`, `memory move` and `approvals request-set`, which files the main session's own signature request when a command it runs is denied with an `approval_id`), and two verbs that read like reads and are not: `scan` — refreshing the workspace substrate is the orchestrator's own job, since that substrate is the context every dispatch carries, and it runs with no signature because it rewrites only rows a rescan restores — and `paths`, which prints the resolved storage locations and creates the `~/.gaia` layout when it is missing. What stays out is surgery on it: `context wipe`, `context prune-workspaces`, the `context move-*` family and `doctor --fix` are dispatched to a specialist. `ALLOWED_READ_PHRASES` / `ALLOWED_WRITE_PHRASES` / `EXPLICITLY_DENIED_PHRASES` in `gaia_cli_only_guard.py` are the source of truth for the exact set.
 
-All other agents set `permissionMode: acceptEdits` so file edits inside their domain flow without extra prompts, while hooks enforce security tiers.
+The agents that edit files in their domain (`developer`, `gaia-operator`, `gaia-system`, `gitops-operator`, `platform-architect`) set `permissionMode: acceptEdits`, so their edits flow without extra prompts while the hooks enforce the security tiers. `gaia-planner` and `cloud-troubleshooter` have no Edit or Write and no `permissionMode`; `gaia-verifier` has none either, and its Write is confined to its own scratch entry.
 
 Adding a new agent is three steps: write the `.md` file here (including a `routing:` frontmatter block if the agent owns a surface), add it to `build/gaia.manifest.json` under `agents`, and run `gaia update` so `tools/scan/seed_surface_routing.py` seeds the agent's surface into the DB-backed `surface_routing` table. The agent becomes available on the next Claude Code restart. Surface routing is no longer a `config/surface-routing.json` file — each agent's `routing:` block is the source of truth.
 
@@ -44,12 +44,16 @@ agent's .md frontmatter and spawns the subagent with:
     that frontmatter's skills: list. No Gaia hook performs this load.
         |
 [subagent_start.py] claims the born row, injects the dispatch KERNEL
-(# Your Contract incl. can_read/can_write menu, # Your CLI, # What I
-know about you). Project context is NOT preloaded here either -- the
-agent pulls sections on demand within its can_read menu.
+(# Your Contract incl. can_read/can_write menu, # Scope memory,
+# Project context, # Standing notes, # Environment, # Your CLI). # Project context carries the
+dispatch project's can_read sections: whole when they fit, else one get-contract pointer per
+section, else a single count line; the agent pulls what the block only points at on demand.
         |
 Agent executes, closing its agent_contract_handoffs row with
-`gaia contract finalize`; the orchestrator reads that row
+`gaia contract finalize`; the orchestrator reads that row.
+NEEDS_VERIFICATION is accepted only from a turn bound to a plan
+task or a parent handoff; an unbound turn closes COMPLETE with
+its own verification, or BLOCKED / NEEDS_INPUT
         |
 [subagent_stop.py] fires -> validates contract, records metrics, updates episodic memory
 ```
@@ -58,7 +62,7 @@ Agent executes, closing its agent_contract_handoffs row with
 
 ```
 agents/
-├── gaia-orchestrator.md   # Routing + governance layer (no file tools, no domain); its capabilities table is `## What I can offer`
+├── gaia-orchestrator.md   # Routing + governance layer (no file tools, no domain)
 ├── gaia-operator.md       # Workspace materializer: loads a technique on demand (gmail, blog, ticket, diagram deck, explanation) and closes on the technique's own verdict
 ├── gaia-system.md         # Meta-agent: builds and audits Gaia's own machinery — agents, skills, hooks, CLI, build manifests, routing
 ├── gaia-planner.md        # Feature planning: audits feasibility against live code, decomposes a settled brief into outcome-defined tasks with gates
@@ -66,7 +70,7 @@ agents/
 ├── cloud-troubleshooter.md # Live-state diagnostics: pods, services, cloud resources, drift against desired state — read-only on production
 ├── gitops-operator.md     # Kubernetes desired state in Git: Flux/Argo HelmReleases, manifests, Kustomizations — never touches the live cluster
 ├── platform-architect.md  # Infrastructure-as-code (tool-agnostic): Terraform, Terragrunt, Pulumi, CloudFormation, OpenTofu, CDK
-└── gaia-verifier.md       # Clean-context verifier: consumes task_gates, promotes NEEDS_VERIFICATION to COMPLETE
+└── gaia-verifier.md       # Clean-context verifier: re-runs a task's gates and probes them, records each verdict with gaia task gate set-status; the producer's NEEDS_VERIFICATION row stays as it closed
 ```
 
 ## Conventions
@@ -81,6 +85,7 @@ agents/
 | `model` | Yes | Use `inherit` unless the agent needs a specific model |
 | `permissionMode` | Most agents | Set `acceptEdits` for agents that write files |
 | `routing` | Surface owners | Declares the agent's surface (`surface`, `adjacent_surfaces`, `signals` with `commands`/`artifacts`, `required_checks`, optional `sub_surfaces`); seeded into the `surface_routing` table by `tools/scan/seed_surface_routing.py`. Keywords were retired as a signal source — the matcher scores `commands` and `artifacts` only, and a legacy `keywords` key is ignored. The surface's `intent` is the `description`; `contract_sections` derives from `project_context_contracts.read`. Omit for the orchestrator (it IS the router). |
+| `surface` | Agents with no `routing:` block | The surface a dispatch of this agent is born with when it owns no `surface_routing` row (`gaia-verifier` declares `verification`). Read by `tools/context/context_provider.py::_declared_surface`, which also falls back to `routing.surface` when the table was not reseeded. `gaia contract fill-rate` reports how many clean closes carry a surface and a `conclusion` (the specialist's verdict for the orchestrator; `user_facing_summary` on rows closed before the rename). `gaia contract finalize` still accepts `user_facing_summary` as an alias, stores it as `conclusion` and stamps `conclusion_alias`, so agents born with older skills keep closing; remove the alias one release after the one that ships the rename. |
 | `contract_handoff_writer` | Fleet-seeded agents | `true` opts this agent into the handoff-writer fleet: the write-guard (`_assert_dispatch_can_write_handoff` in `gaia/store/writer.py`) allows `gaia contract finalize` to write this agent's `agent_contract_handoffs` row only when its `name:` carries this marker. Seeded by `gaia/state/permissions.py::handoff_writer_fleet`, which enumerates `agents/*.md`; every agent under `agents/` is expected to carry it (drift-checked by `tests/contract/test_finalize_store.py`). |
 | `skills` | Every agent except the orchestrator | First two are always `agent-protocol`, `security-tiers`. Read and preloaded by the HOST (Claude Code) before the first turn — no Gaia hook loads skills. Applies to a dispatched subagent only; the primary agent (`gaia-orchestrator.md`) carries no `skills:` field, since Claude Code inherits only "system prompt, tool restrictions, and model" on the main thread. |
 | `cli` | No agent currently declares it | Optional list of extra CLI lines. The one frontmatter field Gaia itself reads, at subagent birth (`hooks/modules/context/kernel_builder.py::_agent_cli_extras`) — its entries are appended verbatim to the "# Your CLI" kernel block. |

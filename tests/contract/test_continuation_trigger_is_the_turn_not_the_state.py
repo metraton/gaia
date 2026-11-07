@@ -139,6 +139,7 @@ def _envelope(state: str, note: str, agent_id: str = PRODUCER_AGENT_ID) -> dict:
         "evidence_report": {k: [] for k in _EVIDENCE_KEYS},
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
     envelope["evidence_report"]["key_outputs"] = [note]
     envelope["evidence_report"]["verification"] = {
@@ -256,6 +257,7 @@ def test_new_assignment_after_a_needs_verification_close_does_not_touch_the_prod
     assert _run(
         ["fill", "--draft-id", producer_id, "--json", json.dumps({
             "agent_status": {"agent_state": "COMPLETE", "next_action": "done"},
+            "user_facing_summary": "Work recorded for the test.",
             "evidence_report": {
                 "verification": {
                     "method": "test", "result": "pass", "details": "new assignment",
@@ -551,6 +553,7 @@ def test_a_plan_bound_turn_cannot_self_sign_through_its_continuation(cli_env):
     assert _run(
         ["fill", "--draft-id", producer_id, "--json", json.dumps({
             "agent_status": {"agent_state": "COMPLETE", "next_action": "done"},
+            "user_facing_summary": "Work recorded for the test.",
             "evidence_report": {
                 "verification": {
                     "method": "test", "result": "pass", "details": "self-signed",

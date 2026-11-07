@@ -1,0 +1,5 @@
+{
+ "task": 1127,
+ "truth_rows": ["unknown-dynamic-program-after-wrapper", "unknown-v9-d5"],
+ "justification": "sudo with a computed program word moves from UNKNOWN (unknown.dynamic-span) to SIGNED (sign.privilege): 1127 signs sudo/su/doas under their own rule before the dynamic span is judged. Observed in the b631cd12 -> integrate/gaia-5-7-b4 replay of 2026-11-06; both rows still ask for a signature."
+}

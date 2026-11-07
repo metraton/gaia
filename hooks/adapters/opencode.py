@@ -47,12 +47,9 @@ if TYPE_CHECKING:
 
 
 # The two contract-closing rules agent-protocol/SKILL.md's principles 2 and 10
-# already state, appended to every OpenCode dispatch kernel because this host
-# never preloads that skill (bin/cli/_install_helpers.py: `skills:` is access
-# control here, not a preload guarantee, unlike Claude Code's own SubagentStart
-# preload). kernel_builder.py's `# Your Contract` stays DATA ONLY for every
-# host; this constant lives at the adapter seat so the append is OpenCode-only
-# and importable by any other adapter that turns out to share the same gap.
+# state, appended to every OpenCode dispatch kernel because this host does not
+# preload that skill the way Claude Code's SubagentStart does.
+# kernel_builder.py's `# Your Contract` stays data only for every host.
 CLOSING_RULES_KERNEL = (
     "# Closing this turn\n"
     "\n"
@@ -96,10 +93,8 @@ _PATCH_PATH_MARKER = re.compile(
 # other issuer reached Gaia through something other than the host itself.
 _TRUSTED_ROLE_ISSUER = "opencode-runtime"
 
-# Read from the classifier that acts on these names rather than restated here:
-# a local literal fenced one spelling while ``classify_session_role`` accepted
-# two, so ``{"agent": "orchestrator"}`` reached the control-plane lane as bare
-# prompt text. Any spelling added to the classifier is fenced by construction.
+# Read from the classifier that acts on these names rather than restated here,
+# so any spelling it accepts is fenced by construction.
 _CONTROL_PLANE_ROLES = frozenset(
     role.strip().lower() for role in ORCHESTRATOR_AGENT_TYPES
 )
@@ -110,13 +105,11 @@ _UNATTESTED_AGENT_TYPE = "opencode-unattested"
 
 # Named literally so a fail-closed pre-bind deny is never mistaken for one
 # from any other policy lane (delegate_mode, an unattested control-plane
-# claim, the tier classifier) -- plan 65, T10, rule 3.
+# claim, the tier classifier).
 _CHILD_BINDING_BACKSTOP_EMITTER = "opencode-adapter:child-session-binding-backstop"
 
-# Dotted event category for the Layer O refusal-audit row (task 509): every
-# identity/control-plane refusal denied by _identity_rejection lands exactly
-# one harness_events row of this type. Severity warning (not info) keeps it
-# visible to the triage reader without claiming error-severity defect status.
+# Event category of the audit row each identity or control-plane refusal
+# leaves, written at severity warning.
 _IDENTITY_REFUSAL_EVENT = "opencode.identity.refused"
 
 logger = logging.getLogger(__name__)
@@ -387,10 +380,8 @@ class OpenCodeAdapter(HookAdapter):
         The plugin forwards ``chat.message`` once per session it or the host
         records as parentless, so every call here is a start or a resume, and
         again with ``source: compact`` on the first message after that
-        session's compaction, which gets back Claude Code's SessionStart(compact)
-        refresh: the Environment block and that session's snapshot, whole. The
-        bridge runs from the session's workspace directory, which is the
-        directory Claude Code's start sweeps too.
+        session's compaction. The bridge runs from the session's workspace
+        directory, which is the directory Claude Code's start sweeps too.
         """
         from modules.session import session_lifecycle
         from modules.session.session_lifecycle import SessionStart, start_context
@@ -432,18 +423,17 @@ class OpenCodeAdapter(HookAdapter):
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Bind the callID<->child-session pair this event reports, then
-        pass the event through unchanged (plan 65, T10).
+        pass the event through unchanged.
 
         OpenCode's only start-adjacent signal is ``message.part.updated`` on
         the PARENT's own tool part (part.type=tool, tool=task): it names the
-        exact callID the Task PreToolUse call was born and claimed under (T9)
+        exact callID the Task PreToolUse call was born and claimed under
         together with the child's own session id, at
         ``state.metadata.sessionId``. ``session.created`` -- which fires on
         the CHILD's own session -- carries no callID at all and never reaches
         this method (``_EVENT_TYPES`` maps no such event to SUBAGENT_START);
-        the bind's ONLY correlation key is this event's callID (enmienda E1:
-        no fallback ladder -- see
-        ``gaia.store.writer.bind_harness_child_session``).
+        the bind's only correlation key is this event's callID, with no
+        fallback ladder (``gaia.store.writer.bind_harness_child_session``).
 
         Best-effort and silent on any failure: a start event must never turn
         into an error over binding logic. This host injects no other
@@ -606,7 +596,7 @@ class OpenCodeAdapter(HookAdapter):
         refusal, naming the grant the call should have matched against what
         the call actually presented; the ``approval_events`` denial needs an
         approval row to hang off, so it is written only when a live plan-first
-        grant matches the command.
+        grant matches the command or the approval the proof names exists.
         """
         try:
             from gaia.approvals.decision_audit import (
@@ -678,8 +668,7 @@ class OpenCodeAdapter(HookAdapter):
         role ``_policy_agent_type`` yields (``gaia-operator``), so it is checked
         against the grant it names and the correlation it minted, never against
         the role. The executing role is bound by the attestation and the
-        grant's session instead (measured 2026-09-16: a byte-identical retry
-        was refused because the two namespaces were compared as one).
+        grant's session instead.
         """
         proof = event.payload.get("consentRetry")
         if proof is None:
@@ -816,11 +805,11 @@ class OpenCodeAdapter(HookAdapter):
         """Run the Task dispatch through the shared policy and, on allow, rewrite its prompt.
 
         The new prompt is the session-events digest, the born row's kernel as
-        Claude Code's SubagentStart renders it (contract, CLI, the user's rows),
-        the skills the dispatched agent's definition preloads (OpenCode
-        preloads none; a body arrives only through its ``skill`` tool) and the
-        closing rules. OpenCode has no start event that reliably precedes the child's first
-        action (``message.part.updated`` can arrive after it), so what Claude
+        Claude Code's SubagentStart renders it, the skills the dispatched
+        agent's definition preloads (OpenCode preloads none; a body arrives
+        only through its ``skill`` tool) and the closing rules. OpenCode has
+        no start event that reliably precedes the child's first action
+        (``message.part.updated`` can arrive after it), so what Claude
         Code's SubagentStart delivers rides this call's prompt instead, the
         digest ahead of the kernel as there. The kernel's goal already holds
         the original prompt, so it is not appended again. The row is claimed by
@@ -911,10 +900,10 @@ class OpenCodeAdapter(HookAdapter):
     def _resolved_attestation(event: HookEvent) -> "Attestation | None":
         """Resolve the presented claim against the issuing host's own record.
 
-        This is the provenance check the lane was missing: the plugin can only
-        present a token some Gaia-side process minted and wrote down, and every
-        field of the claim must equal that record. A claim the caller composed
-        resolves to nothing however well formed it is.
+        The plugin can only present a token some Gaia-side process minted and
+        wrote down, and every field of the claim must equal that record. A
+        claim the caller composed resolves to nothing however well formed it
+        is.
 
         The record is looked up in the host run this process belongs to, never
         in one the event names. A claim carrying its own ledger namespace would
@@ -1058,7 +1047,7 @@ class OpenCodeAdapter(HookAdapter):
     @classmethod
     def _child_binding_backstop_denial(cls, event: HookEvent) -> "HookResponse | None":
         """Fail-closed backstop for a dispatched child's tool calls before its
-        own binding has landed (plan 65, T10, rule 3).
+        own binding has landed.
 
         ``event.host_agent_id`` is the plugin's own ``dispatchHandle``: truthy
         for exactly a non-primary (dispatched) session, undefined/absent for
@@ -1115,6 +1104,7 @@ class OpenCodeAdapter(HookAdapter):
                 "session_id": event.session_id,
                 "tool_use_id": event.call_id or "",
                 "agent_id": event.host_agent_id or "",
+                "harness_agent_id": event.session_id if event.host_agent_id else "",
                 "agent_type": self._policy_agent_type(event),
                 "role_context": self._forward_role_context(event),
             }
@@ -1130,8 +1120,9 @@ class OpenCodeAdapter(HookAdapter):
         control-plane role on the mere presence of ``verified``, ``issuer`` and
         ``attestation``. A claim whose token does not resolve against the
         issuing host's ledger therefore crosses stripped of those three fields
-        and renamed, so no presence-only predicate downstream can be handed a
-        lane this side did not verify. The mapping records who granted the
+        (and renamed when its role names the control plane), so no
+        presence-only predicate downstream can be handed a lane this side did
+        not verify. The mapping records who granted the
         claim and at what delegation depth: unbounded minting is refused at
         issuance, and the record of the grant travels with the claim.
         """
@@ -1197,14 +1188,11 @@ class OpenCodeAdapter(HookAdapter):
 
     @staticmethod
     def _policy_tool_input(tool_name: object, tool_input: object) -> object:
-        """Rename OpenCode's read and grep arguments to the names Gaia's policy reads.
-
-        OpenCode's read takes ``filePath`` and its grep ``include``; the shared
-        policy reads ``file_path`` and ``glob``, as Claude Code sends them.
-        """
+        """Rename OpenCode's ``filePath`` and grep ``include`` to the ``file_path`` and ``glob`` the policy reads."""
         if not isinstance(tool_input, dict):
             return tool_input
-        renames = {"read": {"filePath": "file_path"}, "grep": {"include": "glob"}}
+        file_path = {"filePath": "file_path"}
+        renames = {"read": file_path, "write": file_path, "edit": file_path, "grep": {"include": "glob"}}
         mapping = renames.get(str(tool_name).lower(), {})
         normalized = dict(tool_input)
         for source, target in mapping.items():
@@ -1222,7 +1210,7 @@ class OpenCodeAdapter(HookAdapter):
         plugin never reads it back out of the reason. ``presentable`` marks a
         named approval that already carries its requester's phrases: only that
         one is presented, while a phraseless reactive placeholder reaches the
-        specialist as the denial's request line (PD10).
+        specialist as the denial's request line.
         """
         if verdict.refusal is not None:
             return HookResponse(
@@ -1470,8 +1458,9 @@ class OpenCodeAdapter(HookAdapter):
         Answers the experimental ``experimental.session.compacting`` hook,
         whose context survives the summary that discards the session's prior
         messages. A dispatched child gets back the kernel its row was born
-        with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
-        only the instructions that steer the summary: its snapshot reaches the
+        with. A session the plugin marks ``main`` gets
+        only the instructions that steer the summary, and its session ledger is
+        written here, as Claude Code's PreCompact writes it; the ledger reaches the
         next turn through adapt_session_start's refresh, so it is never
         paraphrased by the summarizer nor delivered twice.
         Both travel as ``context`` entries, which the host appends to its own
@@ -1486,6 +1475,13 @@ class OpenCodeAdapter(HookAdapter):
         if event.payload.get("main") is True:
             from modules.context.compact_context_builder import build_summary_instructions
 
+            try:
+                from gaia.session_ledger import write_ledger
+
+                write_ledger(event.session_id)
+            except Exception:
+                logger.warning("PreCompact: session ledger not written", exc_info=True)
+
             return HookResponse(
                 output={"action": "allow", "updated_input": {"context": [build_summary_instructions()]}}
             )
@@ -1497,20 +1493,16 @@ class OpenCodeAdapter(HookAdapter):
 
         The skills block stands in for the preload OpenCode does not perform.
         """
-        from modules.context.kernel_builder import build_kernel_context, build_skills_block
+        from modules.context.kernel_builder import build_kernel_context
 
-        kernel = build_kernel_context(row, agent_name=agent_name)
-        if not kernel:
-            return None
-        return "\n\n".join(block for block in (kernel, build_skills_block(agent_name)) if block)
+        return build_kernel_context(row, agent_name=agent_name, with_skills=True)
 
     @classmethod
     def _bound_child_kernel(cls, session_id: str, agent_name: str) -> str | None:
         """The kernel of the claimed dispatch row bound to this child session, or None.
 
         The session id is the harness_agent_id bind_harness_child_session
-        stamped on the child's row (T10), so the lookup needs no correlation
-        ladder.
+        stamped on the child's row, so the lookup needs no correlation ladder.
         """
         from gaia.store.writer import find_dispatch_row_by_harness_agent_id
 

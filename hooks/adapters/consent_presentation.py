@@ -158,13 +158,10 @@ def envelope_from_sealed_payload(
     producer declares it and otherwise states that nothing was declared -- see
     :func:`sealed_field`.
 
-    ``window`` reaches the surface the same way, and no producer seals it yet:
-    the lifetime of the grant a decision creates is decided on the grant plane
-    (the per-lane TTL constants in ``gaia.store.writer``), not in the payload,
-    so every surface currently shows its declared-absence text. That text still
-    says the thing a signer must know -- that the grant expires and the clock
-    starts at their decision -- and the exact figure arrives the day a producer
-    declares the key.
+    ``window`` reaches the surface the same way, and no producer seals it: the
+    lifetime of the grant a decision creates is decided on the grant plane (the
+    per-lane TTL constants in ``gaia.store.writer``), not in the payload, so
+    every surface shows its declared-absence text.
     """
     commands = payload_commands(payload)
     if not commands:

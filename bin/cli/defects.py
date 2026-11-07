@@ -39,7 +39,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-UNCAPPED_ROWS = -1  # SQLite reads a negative LIMIT as no limit
+# SQLite reads a negative LIMIT as no limit.
+UNCAPPED_ROWS = -1
 
 
 def _resolve_workspace(explicit: str | None) -> str | None:

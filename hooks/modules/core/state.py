@@ -4,25 +4,19 @@ Hook state management - Share state between pre and post hooks.
 Uses a temporary file to pass information from pre_tool_use to post_tool_use,
 since they run in separate processes.
 
-State keying (concurrency fix)
-------------------------------
-Historically ALL pre-hook state was written to a single global file
-(``.hooks_state.json``) resolved by cwd. Under concurrent subagents that one
-file is clobbered: subagent A writes its ``consumed_approval_id``, subagent B
-overwrites it before A's PostToolUse reads it, and A's terminal
-(EXECUTED/FAILED) event is silently lost. That race is what produced the
-EXECUTED-under-recording (261 executed vs 778 approved).
-
-The fix keys each entry by ``(session_id, tool_use_id)`` -- the host stdin
+State keying
+------------
+Each entry is keyed by ``(session_id, tool_use_id)``: a single global file
+would be clobbered by concurrent subagents, losing the terminal
+(EXECUTED/FAILED) event of the call whose state was overwritten. The host stdin
 carries the same top-level ``tool_use_id`` in PreToolUse and in the call's
 terminal event (PostToolUse or PostToolUseFailure), so a keyed entry written at
 PreToolUse is retrieved unambiguously at the terminal event regardless of how
 many other tool calls are in flight. Keyed entries live as individual files
 under ``.hooks_state/``.
 
-Safe fallback: when either id is absent the code degrades to the prior global
-single-file behavior (never crashes), preserving back-compat for callers that
-cannot supply a key.
+When either id is absent the code uses the single global file
+(``.hooks_state.json``) instead of raising.
 """
 
 import json

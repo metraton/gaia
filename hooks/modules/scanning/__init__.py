@@ -1,8 +1,7 @@
 """
 Scanning Module
 
-Provides tools for triggering project scans:
-- scan_trigger: Lightweight scan invocation for session-start auto-refresh
+- scan_trigger: lightweight in-process scan (tools and environment scanners)
 """
 
 __all__ = []

@@ -5,7 +5,7 @@ description: Use when writing, drafting, or publishing a blog article for metrat
 
 # Blog Writing
 
-Jorge's blog (metraton.github.io) is where he thinks out loud about agentic systems, context engineering, and the intersection of architecture and AI. The articles are bilingual (English and Spanish), grounded in real experience, and written in first person. They are not corporate content -- they are reflections from someone building these systems daily.
+Jorge's blog (metraton.github.io) is where he thinks out loud about agentic systems, context engineering, and the intersection of architecture and AI. The articles are bilingual (English and Spanish), grounded in real experience, and written in first person. They are not corporate content -- they are reflections from someone building these systems daily. The register is `human-register`'s; this skill owns the article's process and voice.
 
 ## The Writing Process
 

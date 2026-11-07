@@ -79,16 +79,15 @@ function findPlaywrightModule() {
   return candidates[0] || null;
 }
 
-// Conventional Playwright browser-cache roots, in priority order. The
-// location is not one fixed path: the PLAYWRIGHT_BROWSERS_PATH override wins
-// when set, then the per-OS default. Do not assume a single directory.
+// Playwright browser-cache roots in priority order: the PLAYWRIGHT_BROWSERS_PATH
+// override when set, then the per-OS default (Linux/WSL, macOS, Windows).
 function browserCacheRoots() {
   const roots = [];
   const override = process.env.PLAYWRIGHT_BROWSERS_PATH;
   if (override && override !== '0') roots.push(override);
-  roots.push(path.join(os.homedir(), '.cache', 'ms-playwright')); // Linux / WSL
-  roots.push(path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright')); // macOS
-  roots.push(path.join(os.homedir(), 'AppData', 'Local', 'ms-playwright')); // Windows
+  roots.push(path.join(os.homedir(), '.cache', 'ms-playwright'));
+  roots.push(path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright'));
+  roots.push(path.join(os.homedir(), 'AppData', 'Local', 'ms-playwright'));
   return roots;
 }
 
@@ -180,7 +179,7 @@ async function main() {
     for (const scheme of schemes) {
       for (const width of widths) {
         const opts = { viewport: { width, height: 1000 } };
-        if (scheme) opts.colorScheme = scheme; // sets prefers-color-scheme
+        if (scheme) opts.colorScheme = scheme;
         const page = await browser.newPage(opts);
         await page.goto(url);
         await page.waitForTimeout(300);

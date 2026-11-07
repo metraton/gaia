@@ -49,8 +49,8 @@ def test_redirect_sign_inside_quoted_json_is_not_a_redirect(value):
 
 
 @pytest.mark.parametrize("text", ["'reads $(date) as text'", "'a `code` span'"])
-def test_substitution_inside_single_quotes_runs_nothing(text):
-    verdict = _verdict(f"{GAIA} memory search {text}", ORCHESTRATOR)
+def test_substitution_inside_single_quotes_runs_nothing(text, installed_gaia):
+    verdict = _verdict(f"{installed_gaia} memory search {text}", ORCHESTRATOR)
 
     assert verdict.allowed is True, verdict.reason
 
@@ -122,7 +122,8 @@ def test_git_grep_that_opens_a_pager_is_not_a_reader(pager_flag):
     verdict = _verdict(f"git -C {REPO} grep {pager_flag} opencode-present", SUBAGENT)
 
     assert verdict.allowed is False
-    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.reason.split("\n", 1)[0].endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.rule == "floor.host-consent-verb", verdict.reason
 
 
 def test_mutation_inside_double_quoted_substitution_stays_t3():
@@ -140,11 +141,13 @@ def test_consent_verb_run_through_a_shell_wrapper_is_refused():
     verdict = _verdict(f"bash -c 'git -C {REPO} grep x; gaia approvals opencode-present P-1'", SUBAGENT)
 
     assert verdict.allowed is False
-    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.reason.split("\n", 1)[0].endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.rule == "floor.host-consent-verb", verdict.reason
 
 
 def test_git_config_flag_does_not_make_git_a_reader():
     verdict = _verdict("git -c core.pager=less grep opencode-decide", SUBAGENT)
 
     assert verdict.allowed is False
-    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.reason.split("\n", 1)[0].endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.rule == "floor.host-consent-verb", verdict.reason

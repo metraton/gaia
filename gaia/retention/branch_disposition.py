@@ -1,30 +1,20 @@
 """
 gaia.retention.branch_disposition -- deletion-safety verdict for a LOCAL
-branch. Pruning a worktree frees the branch it had checked out; it does NOT
-delete it (see ``gaia.retention.worktree_reclaim``). Deciding whether that
-freed branch may THEN be deleted is a separate act, and this module is that
-decision -- it never runs ``git branch -d``/``-D`` itself.
+branch. Removing a worktree frees the branch it had checked out and
+``gaia.retention.worktree_reclaim`` deletes it only on request
+(``delete_branch=True``). Deciding whether a branch may be deleted is the
+decision this module makes -- it never runs ``git branch -d``/``-D`` itself.
 
-THE MEASURED FAILURE THIS MODULE EXISTS TO PREVENT: the recipe that
-circulates everywhere -- delete a local branch when its upstream is gone --
-was checked against 83 local branches across four real repositories. 26
-were already merged (safe by inspection). Of the remaining 57, 13 carried
-commits absent from every remote ref; of THOSE 13, six were false positives
-(a squash merge already carried their content into main under a single new
-commit hash) and seven carried genuinely unique work -- five of the seven
-with their upstream gone. The upstream-gone recipe would have deleted
-exactly the branches this module is built to protect: seven branches, 23
-commits that exist nowhere else. A same-session agent that measured
-reachability alone (skipping the squash-match test) reported 13 deletion
-candidates where the composed criterion finds 7 -- reachability alone
-over-counts by exactly the six squash false positives it cannot resolve on
-its own.
+It never reads whether a branch's upstream is configured or gone: deleting a
+branch because its upstream is gone destroys branches whose commits exist
+nowhere else, and squash-merged branches look the same as unique work to a
+reachability test alone.
 
-THE THREE INDEPENDENT TESTS, and why none alone is the criterion:
+THE FOUR INDEPENDENT TESTS, and why none alone is the criterion:
 
 1. ``is_merged_into_remote_main`` -- is the branch tip a direct ancestor of
    the remote main branch? Catches the ordinary fast-forward/merge-commit
-   case (26 of the 83 measured).
+   case.
 2. ``commits_reachable_from_any_remote`` -- does every commit unique to the
    branch already exist on SOME remote ref (its own feature remote, an open
    PR branch, any ref at all)? A branch is not at risk of being lost by
@@ -59,16 +49,10 @@ THE THREE INDEPENDENT TESTS, and why none alone is the criterion:
    a commit with no twin all leave the branch not integrated.
 
 THE COMPOSITION: deletable if ANY of the four tests is true --
-``merged OR reachable OR squashed OR integrated``. This is not a simplification to one
-test; it is the union of independent ways a branch's content can be
-proven to survive its own deletion, and each is necessary because each
-catches cases the others miss (see the numbers above). A branch is
-judged NEVER deletable only when all of them independently fail to find its
-content anywhere else -- which is precisely the "genuinely unique work"
-case, and precisely the case an upstream-gone heuristic cannot distinguish
-from an abandoned, safely-discardable branch. This module never reads
-whether a branch's upstream is configured or gone; that signal is
-deliberately absent from the decision.
+``merged OR reachable OR squashed OR integrated``. It is the union of
+independent ways a branch's content can be proven to survive its own
+deletion, and each catches cases the others miss. A branch is judged not
+deletable only when all of them fail to find its content anywhere else.
 
 Public API::
 
@@ -113,7 +97,7 @@ def _is_ancestor(repo_path: Path, ancestor: str, descendant: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: fusionada contra la rama principal remota
+# Test 1: merged into the remote main branch
 # ---------------------------------------------------------------------------
 
 def is_merged_into_remote_main(repo_path: Path, branch: str, remote_main: str) -> bool:
@@ -122,7 +106,7 @@ def is_merged_into_remote_main(repo_path: Path, branch: str, remote_main: str) -
 
 
 # ---------------------------------------------------------------------------
-# Test 2: alcanzabilidad -- existen sus commits en algun ref remoto?
+# Test 2: reachability -- do its commits exist on some remote ref?
 # ---------------------------------------------------------------------------
 
 def commits_reachable_from_any_remote(repo_path: Path, branch: str) -> bool:
@@ -140,8 +124,8 @@ def commits_reachable_from_any_remote(repo_path: Path, branch: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: deteccion de fusion por squash (rebase solo si la rama es de un
-# unico commit -- ver la nota en el docstring del modulo)
+# Test 3: squash-merge detection (a rebase only when the branch has a single
+# commit -- see the module docstring)
 # ---------------------------------------------------------------------------
 
 def _patch_id_of_diff(repo_path: Path, diff_output: str) -> Optional[str]:

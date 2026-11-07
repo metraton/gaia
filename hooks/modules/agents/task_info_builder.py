@@ -37,22 +37,19 @@ def build_task_info_from_hook_data(
       - permission_mode: str
 
     We map these to the task_info format expected by subagent_stop_hook().
-    The exit_code is derived from the agent's AGENT_STATUS block.
+    The exit_code is derived from the handoff envelope's agent_state.
     task_description is extracted from the first user message in the transcript.
-    tier_real is parsed from the AGENT_STATUS block (not hardcoded T0).
+    tier is the first T0-T3 token found anywhere in the agent output, else T0.
     """
     exit_code = extract_exit_code_from_output(agent_output) if agent_output else 0
     plan_status = extract_plan_status_from_output(agent_output) if agent_output else ""
 
-    # Extract tier from agent output (e.g. agents report tier in their context)
-    # Look for explicit tier references in agent output: T0, T1, T2, T3
     tier_real = "T0"
     if agent_output:
         tier_match = re.search(r"\bT([0-3])\b", agent_output)
         if tier_match:
             tier_real = f"T{tier_match.group(1)}"
 
-    # Extract real task description from the first user message in the transcript
     transcript_path = hook_data.get("agent_transcript_path", "")
     task_description = extract_task_description_from_transcript(transcript_path)
     agent_type = hook_data.get("agent_type", "") or "unknown"

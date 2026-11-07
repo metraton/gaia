@@ -287,7 +287,7 @@ class TestFeedbackIsAFirstClassProposalType:
 
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
-        assert "memorialize_suggestions" in result.reason
+        assert "memory_delta" in result.reason
         # Categorical deny: no grant is offered and none was consumed.
         assert "not approvable" in result.reason
         assert result.consumed_approval_id is None

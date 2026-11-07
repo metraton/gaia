@@ -8,6 +8,7 @@ operating system's own local-time rule.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -46,6 +47,11 @@ def from_iso(value: str) -> datetime:
 def format_local(instant: datetime) -> str:
     """Render an instant as the local date and hour the user reads."""
     return instant.astimezone().strftime("%a %Y-%m-%d %H:%M %Z")
+
+
+def format_value(instant: datetime) -> str:
+    """Render an instant as ``YYYY-MM-DD HH:MM`` in the machine's zone, the one ``zone_name`` names."""
+    return instant.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def _iana_name(text: str) -> str | None:
@@ -184,6 +190,59 @@ def cron_spec(expression: str) -> dict:
     except ValueError as exc:
         raise ValueError(f"cannot read cron {expression!r}: {exc}") from None
     return spec
+
+
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+_INTERVAL_UNITS = ((604800, "w"), (86400, "d"), (3600, "h"), (60, "m"), (1, "s"))
+
+
+def _runs(values: list[int], name) -> str:
+    """Sorted *values* named by *name*, three or more consecutive ones collapsed to ``first-last``."""
+    parts: list[str] = []
+    index = 0
+    while index < len(values):
+        end = index
+        while end + 1 < len(values) and values[end + 1] == values[end] + 1:
+            end += 1
+        if end - index >= 2:
+            parts.append(f"{name(values[index])}-{name(values[end])}")
+        else:
+            parts.extend(name(value) for value in values[index:end + 1])
+        index = end + 1
+    return ",".join(parts)
+
+
+def _calendar_label(spec: dict) -> str:
+    hours, minutes = spec["hour"], spec["minute"]
+    if hours is None:
+        time_part = "every minute" if minutes is None else "hourly " + ",".join(f":{m:02d}" for m in minutes)
+    else:
+        time_part = ",".join(f"{h:02d}:{m:02d}" for h in hours for m in (minutes if minutes is not None else [0]))
+    weekdays = None if spec["day_of_week"] is None else sorted((d - 1) % 7 for d in spec["day_of_week"])
+    dates = None if spec["day_of_month"] is None else f"day {_runs(spec['day_of_month'], str)}"
+    days = " or ".join(
+        part for part in (weekdays is not None and _runs(weekdays, _WEEKDAYS.__getitem__), dates) if part
+    )
+    months = "" if spec["month"] is None else _runs(spec["month"], lambda m: _MONTHS[m - 1])
+    return " ".join(part for part in (months, days or "daily", time_part) if part)
+
+
+def describe_recurrence(stored: str) -> str:
+    """A stored recurrence as the short form the user reads: ``mon-fri 09:15``, ``day 30 18:00``, ``every 6h``.
+
+    Derived from the stored fields only; text that is not a recognised
+    recurrence comes back as stored, so nothing is hidden.
+    """
+    try:
+        spec = json.loads(stored)
+        if spec["kind"] == "interval":
+            seconds = int(spec["seconds"])
+            unit_seconds, unit = next((s, u) for s, u in _INTERVAL_UNITS if seconds % s == 0)
+            return f"every {seconds // unit_seconds}{unit}"
+        return _calendar_label(spec)
+    except (ValueError, KeyError, TypeError, StopIteration):
+        return str(stored)
 
 
 def _day_matches(spec: dict, day: date) -> bool:

@@ -182,7 +182,7 @@ def test_backstop_persists_cleaned_envelope(db):
     assert "scratch_notes" not in payload, (
         "an undeclared key must not reach the row through the backstop"
     )
-    assert payload["work_phase"] == "verifying"
+    assert "work_phase" not in payload
     assert payload["evidence_report"]["verification"]["result"] == "pass"
     # The provenance flags are added AFTER cleaning, so cleaning never eats them.
     assert payload.get("degraded") is True
@@ -204,7 +204,7 @@ def test_salvage_persists_cleaned_envelope(db):
     assert "scratch_notes" not in payload, (
         "an undeclared key must not reach the row through the salvage"
     )
-    assert payload["work_phase"] == "verifying"
+    assert "work_phase" not in payload
     assert payload["evidence_report"]["verification"]["result"] == "pass"
     assert payload.get("salvaged") == "truncation"
     assert payload.get("degraded") is True

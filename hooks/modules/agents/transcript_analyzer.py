@@ -20,16 +20,11 @@ from typing import Any, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# T004 — Dataclasses
-# ============================================================================
-
-
 @dataclass(frozen=True)
 class ToolCall:
-    """A single tool invocation extracted from the transcript."""
+    """A single tool invocation extracted from the transcript; ``index`` is its 1-based position."""
 
-    index: int  # 1-based position in the tool sequence
+    index: int
     tool_name: str
     arguments: Dict[str, Any]
     # 0 before the first coordinator resume, +1 at each resume boundary.
@@ -54,13 +49,9 @@ class TranscriptAnalysis:
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     output_tokens: int = 0
-    # duration_ms is the sum of duration_segments_ms: total time spent
-    # actively working, excluding the wall-clock gap(s) spent idle while
-    # waiting to be resumed after a coordinator-relayed cut (see
-    # _is_resume_boundary). duration_segments_ms holds each continuous
-    # segment separately so a caller that specifically needs "the longest
-    # single uninterrupted stretch" (e.g. a stalled-agent check) is not
-    # forced to read that off a sum that a resume can dilute.
+    # duration_ms sums duration_segments_ms, the idle wait before each resume
+    # excluded (see _is_resume_boundary). The segments stay separate because
+    # a resume dilutes the sum, and workflow_auditor needs the longest stretch.
     duration_ms: Optional[int] = None
     duration_segments_ms: List[int] = field(default_factory=list)
     first_timestamp: Optional[str] = None
@@ -78,22 +69,15 @@ class TranscriptAnalysis:
     failed_tool_use_ids: Set[str] = field(default_factory=set)
 
 
-# ============================================================================
-# T005 — analyze() function
-# ============================================================================
-
-# Matches <command-name>...</command-name> tags in user messages
 _COMMAND_NAME_RE = re.compile(r"<command-name>\s*(.+?)\s*</command-name>")
 
 
 def _has_unquoted_pipe(command: str) -> bool:
     """Detect unquoted pipe characters in a bash command string.
 
-    Uses a character-walk approach to track quote state, which is more
-    reliable than regex for nested quotes. A `|` that is part of the `||`
-    logical-OR operator is not a pipe: mirrors the negative-lookaround
-    criterion in ``cloud_pipe_validator.VIOLATIONS`` (`(?<!\\|)\\|(?!\\|)`)
-    by checking the adjacent raw characters before counting a hit.
+    Walks the characters tracking quote state. A `|` that is part of the `||`
+    logical-OR operator is not a pipe, as in the negative-lookaround criterion
+    of ``cloud_pipe_validator.VIOLATIONS`` (`(?<!\\|)\\|(?!\\|)`).
     """
     in_single = False
     in_double = False
@@ -206,7 +190,6 @@ def _extract_tool_calls_from_content(
         if result.first_tool_name is None:
             result.first_tool_name = tool_name
 
-        # Bash command extraction
         if tool_name in ("Bash", "bash"):
             cmd = arguments.get("command", "")
             if isinstance(cmd, str) and cmd:
@@ -214,7 +197,6 @@ def _extract_tool_calls_from_content(
                 if _has_unquoted_pipe(cmd):
                     result.pipe_commands.append(cmd)
 
-        # Duplicate detection
         h = _hash_tool_call(tool_name, arguments)
         hash_map.setdefault(h, {"tool_name": tool_name, "indices": []})
         hash_map[h]["indices"].append(idx)
@@ -245,7 +227,7 @@ def _extract_skills_from_content(content: Any, result: TranscriptAnalysis) -> No
 def analyze(transcript_path: str) -> TranscriptAnalysis:
     """Single-pass JSONL parser for Claude Code agent transcripts.
 
-    Reads the transcript file line by line and accumulates:
+    Reads the transcript file and walks its lines, accumulating:
     - Token usage (input, cache_creation, cache_read, output)
     - Model name (from first assistant turn)
     - Stop reasons
@@ -283,9 +265,8 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
     if not lines:
         return result
 
-    # Mutable counter for tool indexing (1-based)
     tool_index_counter = [1]
-    # Hash map for duplicate detection: hash -> {tool_name, indices}
+    # hash -> {tool_name, indices}
     hash_map: Dict[str, Dict[str, Any]] = {}
 
     first_ts_dt: Optional[datetime] = None
@@ -311,7 +292,6 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
         if _is_resume_boundary(entry):
             segment += 1
 
-        # --- Timestamp tracking ---
         timestamp = entry.get("timestamp", "")
         if isinstance(timestamp, str) and timestamp:
             parsed_ts = _parse_timestamp(timestamp)
@@ -345,11 +325,9 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
         role = msg.get("role", "")
         content = msg.get("content", "")
 
-        # --- Assistant turns ---
         if role == "assistant":
-            # Usage accumulation — check both top-level and nested in message
-            # Claude Code transcripts store usage/model/stop_reason inside
-            # message object, but some formats keep them at entry level.
+            # Claude Code transcripts store usage, model and stop_reason inside
+            # the message object; some formats keep them at entry level.
             usage = entry.get("usage") or msg.get("usage") or {}
             if isinstance(usage, dict):
                 result.input_tokens += int(usage.get("input_tokens", 0))
@@ -361,25 +339,20 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
                 )
                 result.output_tokens += int(usage.get("output_tokens", 0))
 
-            # Model from first assistant turn — check both locations
             model = entry.get("model") or msg.get("model") or ""
             if isinstance(model, str) and model and not result.model:
                 result.model = model
 
-            # Stop reason — check both locations
             stop_reason = entry.get("stop_reason") or msg.get("stop_reason") or ""
             if isinstance(stop_reason, str) and stop_reason:
                 result.stop_reasons.append(stop_reason)
 
-            # API call count
             result.api_call_count += 1
 
-        # --- Tool calls from all content lists ---
         _extract_tool_calls_from_content(
             content, result, tool_index_counter, hash_map, segment
         )
 
-        # --- User messages: skill injection detection ---
         if role == "user":
             _extract_skills_from_content(content, result)
             if isinstance(content, list):
@@ -391,7 +364,6 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
                     and block.get("is_error") is True
                 )
 
-    # --- Duration computation ---
     if first_ts_dt is not None and last_ts_dt is not None and segment_start_dt is not None:
         segment_durations_ms.append(
             int((last_ts_dt - segment_start_dt).total_seconds() * 1000)
@@ -399,7 +371,6 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
         result.duration_segments_ms = segment_durations_ms
         result.duration_ms = sum(segment_durations_ms)
 
-    # --- Duplicate detection finalization ---
     for h, info in hash_map.items():
         if len(info["indices"]) > 1:
             result.duplicate_tool_calls.append(
@@ -413,11 +384,6 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
     return result
 
 
-# ============================================================================
-# T006 — ComplianceScore
-# ============================================================================
-
-
 @dataclass(frozen=True)
 class ComplianceScore:
     """Compliance score computed from transcript analysis and external signals."""
@@ -428,7 +394,6 @@ class ComplianceScore:
     deductions: List[str]
 
 
-# Tools considered disciplined as first-tool choices
 _DISCIPLINED_FIRST_TOOLS = {"Read", "Glob", "Grep"}
 
 
@@ -485,7 +450,7 @@ def compute_compliance_score(
         contract_valid: Whether the agent's response contract passed validation.
         has_scope_escalation: Whether the agent escalated beyond its scope.
         anchor_hit_rate: Float 0.0-1.0 representing how many context anchors
-            the agent referenced in its evidence.
+            the agent referenced in its early tool calls (``anchor_tracker``).
 
     Returns:
         ComplianceScore with total, grade, factors breakdown, and deductions.
@@ -493,14 +458,12 @@ def compute_compliance_score(
     factors: Dict[str, int] = {}
     deductions: List[str] = []
 
-    # 1. contract_valid (25 pts, binary)
     if contract_valid:
         factors["contract_valid"] = 25
     else:
         factors["contract_valid"] = 0
         deductions.append("contract_valid: invalid contract (-25)")
 
-    # 2. investigation_discipline (20 pts)
     first_tool = analysis.first_tool_name
     if first_tool is None or first_tool in _DISCIPLINED_FIRST_TOOLS:
         factors["investigation_discipline"] = 20
@@ -519,7 +482,6 @@ def compute_compliance_score(
             f"expected Read/Glob/Grep/None (-20)"
         )
 
-    # 3. context_utilization (15 pts, proportional)
     clamped_rate = max(0.0, min(1.0, anchor_hit_rate))
     ctx_points = round(15 * clamped_rate)
     factors["context_utilization"] = ctx_points
@@ -529,7 +491,6 @@ def compute_compliance_score(
             f"(-{15 - ctx_points})"
         )
 
-    # 4. no_pipe_violations (15 pts, -3 per pipe, floor 0)
     pipe_count = len(analysis.pipe_commands)
     pipe_points = max(0, 15 - 3 * pipe_count)
     factors["no_pipe_violations"] = pipe_points
@@ -538,7 +499,6 @@ def compute_compliance_score(
             f"no_pipe_violations: {pipe_count} pipe command(s) (-{15 - pipe_points})"
         )
 
-    # 5. no_duplicate_calls (10 pts, -2 per duplicate group, floor 0)
     dup_count = len(analysis.duplicate_tool_calls)
     dup_points = max(0, 10 - 2 * dup_count)
     factors["no_duplicate_calls"] = dup_points
@@ -547,7 +507,6 @@ def compute_compliance_score(
             f"no_duplicate_calls: {dup_count} duplicate group(s) (-{10 - dup_points})"
         )
 
-    # 6. no_scope_escalation (15 pts, binary)
     if not has_scope_escalation:
         factors["no_scope_escalation"] = 15
     else:

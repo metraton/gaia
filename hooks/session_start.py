@@ -24,37 +24,18 @@ from modules.core.plugin_setup import recorded_in_manifest
 from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
 
 
-# ---------------------------------------------------------------------------
-# Headless detection
-# ---------------------------------------------------------------------------
-
 def _detect_headless(proc_root: Optional[Path] = None) -> bool:
-    """Best-effort detection of headless / non-interactive sessions.
+    """Whether this session runs without an interactive TUI.
 
-    Returns True when this Claude Code session is running without an
-    interactive TUI. Sources, in order of confidence:
-
-      1. Explicit env: CLAUDE_HEADLESS=1, CI=true, NONINTERACTIVE=1.
-         These are the most reliable signals and the only ones the user
-         can opt into deliberately.
-      2. SDK CLI invocation: the parent process is `claude` invoked with
-         a print/output flag (`-p`, `--print`, `--output-format json`).
-         The SDK CLI does NOT set CLAUDE_HEADLESS, so without this fallback
-         every print-mode call of the host CLI would register as interactive
-         and pollute liveness tracking.
-      3. Stdout is not a TTY. This is the weakest signal -- pipes happen
-         in interactive sessions too -- so it is only used as a tertiary
-         tiebreaker, never as a primary trigger.
-
-    The /proc/<pid>/cmdline read is Linux-only. On other platforms the
-    function silently falls through to the TTY check. Any unexpected error
-    in the parent-cmdline probe is swallowed -- this hook must never block
-    session start.
+    Signals, in order: CLAUDE_HEADLESS=1, CI=true or NONINTERACTIVE=1; a parent
+    ``claude`` process started with ``-p``/``--print`` or ``--output-format``
+    (print mode sets no CLAUDE_HEADLESS); neither stdout nor stdin a TTY. The
+    /proc read is Linux-only and a probe error falls through to the TTY check,
+    so detection never blocks session start.
 
     Args:
         proc_root: Override for /proc (test injection). Defaults to /proc.
     """
-    # (1) Explicit env signals.
     if os.environ.get("CLAUDE_HEADLESS") == "1":
         return True
     if os.environ.get("CI", "").lower() == "true":
@@ -62,7 +43,6 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
     if os.environ.get("NONINTERACTIVE") == "1":
         return True
 
-    # (2) Parent-process probe for SDK CLI invocations.
     if proc_root is None:
         proc_root = Path("/proc")
     try:
@@ -70,13 +50,10 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
             ppid = os.getppid()
             cmdline_path = proc_root / str(ppid) / "cmdline"
             if cmdline_path.exists():
-                # /proc/<pid>/cmdline is NUL-separated, with a trailing NUL.
                 raw = cmdline_path.read_bytes().decode("utf-8", errors="replace")
                 argv = [a for a in raw.split("\x00") if a]
                 if argv:
                     exe = Path(argv[0]).name.lower()
-                    # Match the claude SDK CLI -- not the interactive TUI.
-                    # Interactive `claude` has no -p/--print flag.
                     if "claude" in exe:
                         for arg in argv[1:]:
                             if arg in ("-p", "--print"):
@@ -84,17 +61,10 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
                             if arg.startswith("--output-format"):
                                 return True
     except (OSError, ValueError, UnicodeDecodeError):
-        # /proc missing (non-Linux), cmdline gone (race), or unparseable.
-        # All non-fatal: fall through to TTY check.
         pass
 
-    # (3) Tertiary: stdout not a TTY. Weak signal -- only return True if
-    # explicitly non-tty AND the process likely lacks a controlling
-    # terminal. We do NOT use this alone because piping stdout in an
-    # interactive session is common.
     try:
         if not sys.stdout.isatty() and not sys.stdin.isatty():
-            # Both pipes closed: very likely a headless invocation.
             return True
     except (AttributeError, ValueError):
         pass
@@ -105,8 +75,6 @@ from modules.core.stdin import has_stdin_data
 from modules.core.logging_setup import configure_hook_logging
 from modules.session.session_lifecycle import SessionStart, start_session
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("session_start")
 logger = logging.getLogger(__name__)
 
@@ -114,9 +82,8 @@ logger = logging.getLogger(__name__)
 def _pinned_build() -> Optional[dict]:
     """Return the content digest of the hooks tree this process runs, or None.
 
-    This file's own tree is what Claude Code loaded for the session, which a
-    repack could already have re-pointed ``.claude/hooks`` away from; doctor
-    compares the digest to tell a restart is due.
+    Hashed from this file's own directory, which may no longer be where
+    ``.claude/hooks`` points; doctor compares the digest to tell a restart is due.
     """
     try:
         from gaia.hooks_build import hooks_content_hash
@@ -146,13 +113,8 @@ if __name__ == "__main__":
         except (json.JSONDecodeError, TypeError):
             event_data = {}
 
-        # The event carries session_id; CLAUDE_SESSION_ID is not guaranteed
-        # to be exported into the hook subprocess.
         from modules.core.state import resolve_session_id
 
-        # "compact" is the only SessionStart source Claude Code fires after
-        # compaction, and SessionStart the only event whose additionalContext
-        # it consumes around it (see hooks/post_compact.py).
         outcome = start_session(SessionStart(
             session_id=resolve_session_id(event_data),
             source=event_data.get("source", ""),

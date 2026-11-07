@@ -24,13 +24,19 @@ gives its tokens per session and per agent, split into bound, unbound and main (
 
 ## Reading order
 
-**Phase 0 — triage, always, cheap.** Read `agent_status.agent_state`, then `cut_reason`, then
-`continues_contract_id`, in that order. `agent_state` routes everything downstream. `cut_reason` says
+**Phase 0 — triage, always, cheap.** Read the row with `gaia contract view --contract-id <id> --row
+--json` -- `agent_state`, `cut_reason` and `harness_agent_id` together; `--field` reads the envelope
+only and exits 1 on a row column -- then `gaia contract chain --contract-id <id>` for continuation.
+`agent_state` routes everything downstream. `cut_reason` says
 whether that state is honest: it is stamped at birth and cleared only by a clean finalize, so
-clean-versus-cut is recorded by design, not inferred. `never_finalized` means the turn never closed
-itself; `backstop_capture` and `reaped` are the stop hook's forensic cleanup; `salvaged_truncation` is
+clean-versus-cut is recorded by design, not inferred; a cut row keeps whatever state it last mirrored,
+so `agent_state` alone never says the turn is alive. `never_finalized` means the turn never closed
+itself; `backstop_capture` is the stop hook's capture; `reaped` has two authors -- the stop hook, for a
+turn that stopped without its own close, and SessionStart's host-death reaper
+(`hooks/modules/agents/dispatch_lifecycle.py::reap_stale_turn`), for a DISPATCHED row with no tool call
+inside two hours (`gaia contract reap --older-than-seconds N` runs it by hand); `salvaged_truncation` is
 rebuilt purely from the agent's incremental on-disk draft — which is why incremental writes are what
-survive a cut. `continues_contract_id` says whether "empty" means anything: a continuation row is born
+survive a cut. The chain says whether "empty" means anything: a continuation row is born
 empty by design (Trap 3), and reading this before judging any field as empty is what keeps that design
 from reading as a failure. What the row does not hold was never delivered — an `open_gaps` entry the
 agent only narrated in its message did not survive the turn; treat the row's silence as the finding it
@@ -41,9 +47,9 @@ is rather than reading the prose as if it had been persisted.
 | `agent_state` | Load |
 |---|---|
 | `APPROVAL_REQUEST` | `approval_request`, and nothing else matters until the user signs. Load `orchestrator-present-approval`; do not execute. |
-| `NEEDS_INPUT` | `pending_steps` and `next_action`: the turn is stuck in the ORCHESTRATOR, not the user, and resuming the SAME agent keeps its state. |
+| `NEEDS_INPUT` | `pending_steps` and `next_action`: the turn is stuck on an answer the orchestrator must obtain -- from the user or from context it holds -- and resuming the SAME agent keeps its draft. |
 | `BLOCKED` | `failure_report` and `open_gaps`, read with the rule proven true today: the block is usually a stale premise in the dispatch itself — information about the dispatch, not about the agent. Route only when another owner can resolve it. |
-| `NEEDS_VERIFICATION` | Not "done": a plan-task-bound turn cannot seal itself. Dispatch `gaia-verifier`, binding `parent_handoff_id` to this producer row. A verifier pass may promote the work to `COMPLETE`; a fail returns it to `IN_PROGRESS` with evidence. Never accept a plan-task-bound producer's self-asserted `COMPLETE` as independent verification. |
+| `NEEDS_VERIFICATION` | Not "done": a plan-task-bound turn cannot seal itself. First read `open_gaps` and `pending_steps` against the task goal: a gap that contradicts the goal, or a declared check left unrun, resumes the producer -- a verifier would only rediscover it, and a gap declared costs one round where a hidden one costs two. Otherwise dispatch `gaia-verifier`, binding `parent_handoff_id` to this producer row. What a verifier promotes is the task's gate (`gaia task gate set-status`), never the row, which stays as it closed; a fail returns the task to the producer with evidence. An unbound `NEEDS_VERIFICATION` (no `plan_task_id`, no `parent_handoff_id`; finalize now refuses it, so only older rows carry it) is a producer that took the free door: resume it to close `COMPLETE` or `BLOCKED`, and dispatch no verifier for a row no task owns. Never accept a plan-task-bound producer's self-asserted `COMPLETE` as independent verification. |
 | `COMPLETE` | `evidence_report.verification` first, then `open_gaps`. Terminal: relay/synthesize the verified result. |
 
 Only `COMPLETE` is terminal. A finalized `IN_PROGRESS`, `APPROVAL_REQUEST`, `BLOCKED`, `NEEDS_INPUT`,
@@ -56,7 +62,12 @@ terminal/frozen grant, and route fresh investigation plus a new request/approval
 retry or remainder.
 
 **Phase 2 — the findings.** `key_outputs`, and `report_prose` when the why is needed or when this
-row's coordinate is about to be handed to another agent.
+row's coordinate is about to be handed to another agent. Read `memory_delta` too: its proposals are
+the specialist's, not yet memory, and what is kept, merged or dropped is yours to curate per
+Skill('memory'). The dispatch result flags a non-empty one with a line, `N project facts proposed
+for <project> — contract <id>`; a result without that line carries none. A project-context proposal
+(`update_contracts`) is curated by you too, flagged by its own line, and if you accept it you apply it
+with `gaia context accept <contract-id>`.
 
 **Phase 3 — evidence on demand, only for the claim about to be made.** `commands_run` and
 `verbatim_outputs` for a positive; `patterns_checked` for a NEGATIVE; `cross_layer_impacts` before
@@ -72,7 +83,23 @@ calling a PR green, compare that SHA with the PR head you are about to report. A
 evidence is stale: it describes a commit that is no longer the head. Answer it with a re-dispatch of
 the owning specialist, never with a reading of the forge of your own.
 
-**Phase 4 — handoff.** Pass the COORDINATE, not the narrative.
+**Phase 4 — handoff.** Pass the COORDINATE, not the narrative. Ids that arrive in a return — a
+contract, a handoff, a plan, a slug — are appended to the project's thread row before answering,
+so the coordinates survive the session.
+
+## When the return is not clean
+
+| Situation | Action |
+|---|---|
+| A specialist's command was blocked by a hook | Relay the hook's message verbatim when resuming it — a paraphrase drops the `approval_id` or softens "do NOT retry", and the specialist follows your version instead of the security layer's. A denial with NO `approval_id` is categorical, not a tier decision: `orchestrator-present-approval` says what it is and what it is not |
+| A contract claims verification without evidence | Open the artifact yourself, or re-dispatch narrowly declaring that pasted output is the only evidence that counts |
+| A return arrives truncated, empty, or repeated with no new tool calls | Read the rows — `contract list --cut`, then `contract view --harness-id <agentId>`, which resolves the latest link of a resume chain and lists every link in `links` — and re-dispatch only what the rows are genuinely missing; a stalled turn shows zero delta in tool-call count |
+| A turn in flight is heading the wrong way | Correct it in flight, continue it once it closes, or dispatch fresh — `dispatch` principle 8; the return is not the only moment to act |
+| A verification fails | Its cause decides: `product` sends the fix to the owning surface with the refuting probe's evidence id, and the producer adds that probe to the suite as its red run before changing code, so the finding stays a test; `environment` or `broken_test` makes the check itself the object — a mis-designed gate is not a code defect, and whether it guards something a user or a release would feel decides between mending it and cutting it, before any fix is re-dispatched; `requirement_changed` goes to `gaia-planner`, whose gate wording claims more than its task |
+| A verifier leaves a user-judged gate pending | Ask the user and record the answer with `gaia task gate set-status` and its evidence, as `gaia-planner` step 5 lays out |
+| A return hands the user steps an agent could run — in the `Human steps:` block of `conclusion`, or in prose, a command that needs no person | Resume the producer with those steps as its own work, to run and to request as one signed set (`agent-protocol` principle 4). What reaches the user is the step that is irreducibly theirs — an interactive login, a value only they hold, a judgment — ready to paste and run, and a step a Gaia defect blocks, named as a defect with its `memory_delta` proposal curated; a procedure written for a human operator describes what must happen, not who does it |
+| A specialist refutes a premise the user stated | The refutation reaches the user first, with the evidence id that carries it, never filtered by the intent: the goal carried the premise as a claim (`dispatch`), and the refutation is the deliverable it owed |
+| Several agents are in flight | The consolidated result, said once when all have returned; an interim finding that stands alone may be reported early, a pending result is awaited rather than anticipated |
 
 ## Three traps, all measured today on real rows
 
@@ -82,17 +109,23 @@ the owning specialist, never with a reading of the forge of your own.
 2. **`patterns_checked` is the only field a zero-result search survives in.** If the claim about to be
    made is that something does NOT exist, this is the only possible evidence for it.
 3. **A continuation row is born empty by design.** That is exactly why `cut_reason` and
-   `continues_contract_id` are read in Phase 0, before any field is judged empty — and why
+   the chain are read in Phase 0, before any field is judged empty — and why
    completeness is judged over the CHAIN, never the last link alone.
 
 ## Relaying to the user
 
-On a valid single-agent `COMPLETE`, SubagentStop parses `user_facing_summary` off the same envelope the
-gate treated as authoritative (`parse_user_facing_summary`) and emits it as the turn's `systemMessage`
--- a channel that reaches the USER's display and does NOT continue your conversation (measured by
-suppression; see the comment over the relay in `hooks/adapters/claude_code.py`). Nothing arrived in
-front of you: the field lives on the row, and the one read that fetches it is `contract view --field
-user_facing_summary --harness-id <agentId>`. Read it when the user-facing report needs it and relay it
-near-verbatim. Synthesizing from `key_outputs`, verification, failures and open gaps is the fallback for
-when the field is absent, and at N>1 the per-agent summaries are inputs to one synthesis rather than N
-relays. Preserve ownership boundaries and do not hide evidence the row and the verdict disagree on.
+A specialist answers you, never the user: nothing it writes reaches the user's display before you
+handled it (`decision_gaia_especialistas_responden_al_orquestador_no_al_usuario_20261022`). Its
+`conclusion` is its verdict for you, in its technical register, and arrives once on both hosts: as
+`conclusion: <text>` on the dispatch result's contract summary line when the turn closed before that
+result, otherwise -- a background dispatch -- as `<agentId>: closed <state>, conclusion: <text>` in the
+next prompt's context, at most three per prompt and the rest named by their reader; `contract view --field conclusion
+--harness-id <agentId>` reads it again (a row closed before the rename answers from its
+`user_facing_summary`). Treat it as a claim, not as copy: validate it against the row's evidence, the
+artifacts it names and the user's intent, discuss with the specialist when they disagree, and only then
+answer the user in plain language in your own words. At N>1 the conclusions are inputs to one synthesis.
+A `Human steps:` block inside `conclusion` is the one part of it written to be relayed: the steps the
+user does with their own hands, each with why it is theirs. Each line is judged before it travels — an
+agent-runnable one is the row above — and the rest reach the user in their language, as what they
+decide or type, never as a runbook.
+Preserve ownership boundaries and do not hide evidence the row and the verdict disagree on.

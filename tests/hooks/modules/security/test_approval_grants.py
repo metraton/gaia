@@ -411,9 +411,9 @@ class TestCleanup:
 class TestNonceEndToEnd:
     """The full nonce flow should still work end-to-end.
 
-    The bash_validator now returns 'ask' (native dialog) for T3 commands
-    without generating nonces. The nonce flow is driven by pre_tool_use.py.
-    These tests exercise the approval_grants module directly.
+    The bash_validator denies a T3 command without generating nonces. The
+    nonce flow is driven by pre_tool_use.py. These tests exercise the
+    approval_grants module directly.
     """
 
     def test_full_flow_block_activate_passthrough(self, clean_grants_dir):
@@ -423,15 +423,15 @@ class TestNonceEndToEnd:
         """
         from modules.tools.bash_validator import BashValidator
 
-        command = "git push origin feat/auth"
+        command = "git push origin main"
         session_id = "test-nonce-flow"
         validator = BashValidator()
 
-        # bash_validator returns "ask" for T3 commands (no nonce, orchestrator context)
         result = validator.validate(command)
         assert result.allowed is False
         assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert result.rule == "floor.no-requester" and result.approval_id is None
 
         # Seed the DB grant the activation path would create after user approval.
         _write_active_grant(clean_grants_dir, command, session_id=session_id)
@@ -441,17 +441,14 @@ class TestNonceEndToEnd:
         assert result2.allowed is True
         assert "grant" in result2.reason.lower()
 
-    def test_blocked_t3_returns_ask_without_nonce(self, clean_grants_dir):
-        """BashValidator returns 'ask' for T3 commands without creating pending approvals.
-
-        Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
-        """
+    def test_a_blocked_t3_without_a_requester_seals_nothing(self, clean_grants_dir):
         from modules.tools.bash_validator import BashValidator
 
-        result = BashValidator().validate("git push origin feat/auth")
+        result = BashValidator().validate("git push origin main")
         assert result.allowed is False
         assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert result.rule == "floor.no-requester" and result.approval_id is None
 
         # No pending approval is created by bash_validator directly
         assert get_pending_approvals_for_session("test-session-123") == []
@@ -518,17 +515,17 @@ class TestBashValidatorIntegration:
 
         assert check_approval_grant("terraform apply prod/vpc") is None
 
-    def test_block_response_returns_ask(self, clean_grants_dir):
-        """BashValidator returns 'ask' for T3 commands (no nonce in response).
-
-        Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
-        """
+    def test_block_response_denies_with_an_approval_id(self, clean_grants_dir):
+        """A main-session T3 is denied with the approval it can be signed through, and no nonce."""
         from modules.tools.bash_validator import BashValidator
 
-        result = BashValidator().validate("git push origin feat/test")
+        result = BashValidator().validate(
+            "git push origin main", session_id="test-session-123", agent_type="claude-code-primary",
+        )
         assert result.allowed is False
         assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert result.approval_id
         # No NONCE in the reason (nonce flow is driven by pre_tool_use.py)
         block_msg = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
         assert "NONCE:" not in block_msg

@@ -149,7 +149,7 @@ def test_approval_live_fixes_pre_accepts_only_the_printed_object_byte_for_byte(h
     [question] = _question_cli(approval_id)
 
     typed_phrase = {**question, "question": "¿Publico la rama?"}
-    one_byte_off = {**question, "question": question["question"].replace("[ GAIA-SECURITY ]", "[ GAIA-SECURITY]", 1)}
+    one_byte_off = {**question, "question": question["question"].replace("\n", " ", 1)}
     for impostor in (typed_phrase, one_byte_off):
         assert _denied(_ask_pre([impostor], "toolu_impostor")), impostor["question"]
     assert _events(approval_id, "SHOWN") == []
@@ -178,8 +178,10 @@ def test_approval_live_fixes_no_hook_response_uses_system_message(host):
 
 
 def test_approval_live_fixes_details_comes_back_as_the_reasked_question(host):
+    from gaia.approvals import core
+
     approval_id = _request(host["repo"])
-    rendered = _rendered(approval_id)
+    [rendered] = core.question_batch([approval_id])
     [question] = _question_cli(approval_id)
     _ask_pre([question], "toolu_first")
 
@@ -189,7 +191,7 @@ def test_approval_live_fixes_details_comes_back_as_the_reasked_question(host):
     assert f"gaia approvals question --details {approval_id}" in context
     [again] = _question_cli(approval_id, details=True)
     assert again == rendered.details_questions[0]
-    assert again["header"] == "Detalle 1/1"
+    assert again["header"] == "Details 1/1"
     assert _ask_pre([again], "toolu_details") == {}
     _ask_post([again], {again["question"]: "Approve"}, "toolu_details")
     assert [event["event_type"] for event in _events(approval_id)].count("APPROVED") == 1

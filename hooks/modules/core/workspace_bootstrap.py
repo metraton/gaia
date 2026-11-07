@@ -5,8 +5,8 @@ plugin cache dir, so <workspace>/.claude/settings.local.json ends up with
 paths like <workspace>/.claude/hooks/pre_tool_use.py that don't exist.
 
 Workaround: on first hook fire, create <workspace>/.claude/hooks as a symlink
-(POSIX) or junction (Windows) pointing to the real hooks dir inside the plugin
-cache. This mirrors the pattern in bin/gaia-update.js updateSymlinks().
+(POSIX) or junction (Windows) pointing to the hooks dir of the fresher
+installed gaia package (see ``ensure_workspace_hooks_link``).
 """
 
 import json
@@ -97,17 +97,15 @@ def ensure_workspace_hooks_link() -> None:
     cwd inside a managed worktree has no workspace, and no installed package
     qualifies when both candidates are git checkouts: either way nothing is linked.
 
-    Never raises. All failures are logged as warnings so that a broken
-    workspace layout never prevents the hook from running its real logic.
+    Never raises: failures are logged so that a broken workspace layout never
+    prevents the hook from running its real logic.
 
-    Freshness fix: the desired target is the top-level installed package's
-    hooks dir (``<workspace>/node_modules/@jaguilar87/gaia/hooks``) whenever
-    it is present and at least as new as the EXECUTING copy. The executing
-    copy (``__file__``'s hooks dir) can be an OLDER extraction -- e.g. a stale
-    pnpm virtual-store entry -- so anchoring the link to "wherever this file
-    runs from" pins the workspace to old code. Comparing package versions and
-    re-pointing at the fresher install is what lets a new install actually
-    reach the runtime.
+    The target is the fresher of the top-level installed package's hooks dir
+    (``<workspace>/node_modules/@jaguilar87/gaia/hooks``, winning ties) and the
+    EXECUTING copy's (``__file__``'s hooks dir), compared by package version.
+    The executing copy can be an older extraction -- e.g. a stale pnpm
+    virtual-store entry -- so anchoring the link to where this file runs from
+    would pin the workspace to old code.
     """
     try:
         # hooks/modules/core/workspace_bootstrap.py → up 3 levels = hooks/
@@ -129,8 +127,6 @@ def ensure_workspace_hooks_link() -> None:
             logger.info("workspace_bootstrap: no installed gaia hooks dir -- no hooks link")
             return
 
-        # Case 1: real directory with files — npm install placed real files,
-        # nothing to do.
         try:
             st = workspace_hooks_dir.lstat()
             is_symlink = _is_link(workspace_hooks_dir)
@@ -139,14 +135,12 @@ def ensure_workspace_hooks_link() -> None:
             st = None
 
         if st is not None and not is_symlink:
-            # A real directory exists — check if it has files.  If it does,
-            # this is the npm-install path and we must not touch it.
+            # A real directory with files is what an npm install placed: leave
+            # it. An empty one falls through and is replaced.
             if any(workspace_hooks_dir.iterdir()):
                 return
-            # Empty real directory — fall through and replace.
 
         if is_symlink:
-            # Resolve what the symlink points to.
             try:
                 current_target = Path(os.readlink(workspace_hooks_dir))
                 if not current_target.is_absolute():
@@ -161,7 +155,6 @@ def ensure_workspace_hooks_link() -> None:
                     cache_hooks_dir.exists()
                     and current_target.resolve(strict=False) == cache_hooks_dir.resolve(strict=False)
                 ):
-                    # Already correct — no-op.
                     return
             except OSError as exc:
                 logger.warning("workspace_bootstrap: readlink failed (%s) — will recreate", exc)
@@ -176,10 +169,8 @@ def ensure_workspace_hooks_link() -> None:
                 logger.warning("workspace_bootstrap: unlink failed (%s) — skipping", exc)
                 return
 
-        # Ensure parent .claude/ exists.
         workspace_hooks_dir.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create the symlink / junction.
         _create_link(cache_hooks_dir, workspace_hooks_dir)
 
     except Exception as exc:  # pragma: no cover — safety net

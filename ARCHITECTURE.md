@@ -14,7 +14,7 @@ The package is published as `@jaguilar87/gaia` on npm and installed into a proje
 | **Skill** | Injected procedural knowledge (in `skills/`) -- the HOW for agents |
 | **Hook** | Python scripts that intercept tool calls before and after execution |
 | **Tool** | Python modules in `tools/` providing context assembly, memory, and validation |
-| **Config** | JSON files in `config/` defining contracts, rules, surface routing, and security |
+| **Config** | `config/` is reserved for data files and holds only its README; contracts, routing and security rules live in `gaia.db` and in the Python modules that enforce them |
 | **Orchestrator** | Agent definition in `agents/gaia-orchestrator.md`, activated via `settings.json: { "agent": "gaia-orchestrator" }`; routes requests to the correct agent via on-demand skills |
 
 ## Runtime Flow
@@ -38,7 +38,7 @@ pre_tool_use.py  (PreToolUse hook)
     v
 subagent_start.py  (SubagentStart hook)
     |  Claim the born row and inject the dispatch kernel:
-    |  # Your Contract, # Your CLI, # How the user works
+    |  # Your Contract, # Scope memory, # Project context, # Standing notes, # Environment, # Your CLI
     v
 Agent executes
     |  Pulls project context and memory on demand (gaia context, gaia memory),
@@ -63,17 +63,27 @@ Entry point for all Bash and Task/Agent tool validation. With `Bash(*)` in the s
 
 ### Bash Command Validation (BashValidator)
 
-Order is short-circuit -- first match wins:
+`BashValidator.validate` (`hooks/modules/tools/bash_validator.py`) runs in this order, and the first refusal ends it:
 
 ```
-1. blocked_commands.py    --> permanently denied patterns (exit 2)
-2. Claude footer strip    --> auto-remove Co-Authored-By (transparent updatedInput)
-3. Commit message check   --> conventional commits format validation
-4. cloud_pipe_validator   --> block pipes/redirects/chains on cloud CLIs (exit 0, corrective)
-5. mutative_verbs.py      --> scan tokens 1-5 for MUTATIVE verbs
-   |                          If mutative + no active grant -> block with an approval_id
-   |                          If mutative + active grant -> allow (T3)
-   |                          If not mutative -> safe by elimination (T0)
+0. gaia_cli_only_guard     --> the orchestrator's closed Gaia CLI lane, on the raw string
+1. Guards                  --> host consent verbs, then AI-attribution footer strip
+   |                           (transparent updatedInput), publish attribution, comment-push
+   |                           limit, gaia.db writes, subagent memory writes, memory skill
+   |                           loaded, subagent resume point, contract ownership, protected
+   |                           paths, shell writes into a git tree, secret reads; a shell write under
+   |                           /etc, /usr or /boot asks (sign.system-path)
+2. Unwrap + decompose      --> wrapper-shell depth, indirect execution, operator-linked stages
+3. Classify                --> blocked_commands (exit 2), conventional commit message,
+   |                           cloud_pipe_validator, then mutative_verbs:
+   |                             a word in the closed change-verb lexicon (verb_lexicon.py),
+   |                             a program or verb word the shell expands asks,
+   |                             the depth-1 execution scan (execution_scan.py) only adds asks
+4. Composition             --> pipe rules (exfiltration, decode or download into exec)
+5. Aggregate               --> privilege_guard (sudo/su/doas) and production targets add a
+   |                           signature; mutative + no active grant -> deny with an approval_id
+   |                           mutative + active grant -> allow (T3)
+   |                           not mutative -> safe by elimination (T0)
 ```
 
 ### Task/Agent Validation
@@ -152,16 +162,25 @@ A dispatched subagent starts with a small, data-only kernel, not a preloaded
 project-context snapshot. At PreToolUse the hook births the turn's
 `agent_contract_handoffs` row; at SubagentStart `claim_dispatch_row`
 correlates the starting subagent to that row and
-`hooks/modules/context/kernel_builder.py` renders three blocks from it:
+`hooks/modules/context/kernel_builder.py` renders these blocks from it, in this
+order (the host keeps the head of an over-long hook context, so the CLI index,
+which `gaia --help` can rebuild, comes last):
 
 ```
 # Your Contract       identity, goal, role and surface, the dispatch project and the
                       workflow it declared, can_read / can_write section scope, and the
                       acceptance gates when the turn is bound to a plan task
+# Scope memory       an index of the preferences, facts and lessons the dispatch's
+                      workspace, group and project hold, each line scope= and ref=;
+                      never the user's rows
+# Standing notes      the dispatch project's live anchors, one line each, freshest
+                      first, under PROJECT_NOTES_BUDGET; absent when the project has none
+# Environment         one capped line (ENVIRONMENT_LINE_MAX): OS (WSL named), the gaia
+                      CLI path, and the tools on PATH: the known-tool probe, then the
+                      user's own executables from PATH entries under $HOME that are
+                      not package-manager trees
 # Your CLI            the gaia verbs the turn uses to pull context (gaia context),
                       memory (gaia memory) and its own contract (gaia contract)
-# How the user works  the user's standing rows, bodies inline, minus those whose
-                      audience is the orchestrator alone
 ```
 
 `can_read` is the menu of `project_context_contracts` sections the turn pulls on
@@ -182,17 +201,21 @@ T3 approval lifecycle, the same on Claude Code and OpenCode:
    the user nothing.
 3. The orchestrator runs `gaia approvals question <approval_id> ...` and opens
    its output unchanged: AskUserQuestion on Claude Code, `question` on
-   OpenCode. Each command is one one-line question opened by
-   [ GAIA-SECURITY ], at most four per signature (gaia/approvals/surface.py);
-   `--details` re-asks with what it does, impact, verification and rollback.
+   OpenCode. On Claude Code each signature is one question listing its
+   commands one per line and what the set does; on OpenCode each command is
+   one one-line question opened by [ GAIA-SECURITY ]. A signature holds at
+   most four commands (gaia/approvals/surface.py); `--details` re-asks with
+   what each does, impact, verification and rollback.
 4. Gaia checks the call before it opens -- the PreToolUse hook on Claude Code,
    the plugin on OpenCode, where only the orchestrator may open it -- and ties
-   each answer to its signature. Approve on every question approves; Reject on
-   any one rejects the whole signature.
+   each answer to its signature. Approve on every question of a signature
+   approves it; Reject on any one rejects the whole signature.
 5. The orchestrator resumes the same specialist, which retries the
    byte-identical command; the grant is single-use and consumed at match, and
    a sealed file that changed asks for a new signature.
 ```
+
+The orchestrator's own T3 takes the same route with no specialist in it. No T3 falls to the host's permission prompt (`hooks/modules/tools/bash_validator.py::decide_t3_outcome`): the command is denied with an `approval_id`, and the denial carries the `gaia approvals request-set` line with `--agent-id`, because the main session's shell has no dispatch identity to seal the request under. The orchestrator runs that line with its phrases, which its Bash lane admits, then steps 3 to 5 above, retrying the command itself. A host event that names no requester is denied with no `approval_id` (`floor.no-requester`), and a chain of several T3 commands is denied whole, to be requested plan-first as one set.
 
 Pending approvals and grants are rows in `~/.gaia/gaia.db` (`gaia/approvals/store.py`), read with `gaia approvals pending|show`.
 
@@ -311,11 +334,13 @@ Besides the `hooks` event table, `hooks/hooks.json` carries a top-level `modules
 |-----------|-------|
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
 | **File (npm channel)** | `hooks/hooks.json` (symlinked into `.claude/hooks/`) |
-| **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
-| **Compaction delivery** | The session snapshot reaches the model once per compaction, through the SessionStart(compact) refresh alone (`compact_context_builder.build_compact_context`), which the host raises after manual and automatic compactions. The refresh also carries the birth block's `## Environment` section (`session_manifest.build_environment_section`), so the `gaia CLI:` path survives the compaction, and the snapshot carries the stored resume point whole, up to the 2000 characters `write_resume_point` accepts. On OpenCode the summary is a model's text that may drop or paraphrase both, so the compacting hook gives the summarizer only `build_summary_instructions` and the plugin attaches the same refresh, once, to the main session's first user message after the compaction (`chat.message` with `source: compact`). The compaction mod (`hooks/mods/compaction/`) adds Gaia's steering to the summarizer's instructions and registers `mcp__gaia__compact_when_idle`; a call from the main session makes the mod start a compaction (`$.session.compact`) once that turn ends. Only the host's "a turn is running" is retried (growing waits, then the next main turn end, for at most 15 minutes); any other refusal (DISABLE_COMPACT, turnHeld, a vetoing hook) or an expiry is final and is reported as a toast to the user and as context on the orchestrator's next prompt, both naming `/compact`. It appends nothing and starts no process, so the refresh stays the only deliverer. OpenCode's counterpart is the plugin tool `gaia_compact_when_idle`, run on the next `session.idle`. Both replies name the session id the resume point is written under. The tool is registered only in an interactive session (`SessionStartInput.isInteractive`): a headless one -- `-p`, the SDK, and the desktop app, which drives Claude Code through the SDK -- refuses `$.session.compact()` ("not available in a headless (-p / SDK) session yet"). There, and without the mod (mods disabled, Claude Code older than 2.1.287), no tool is listed and the user types `/compact`. |
-| **Resume point** | The orchestrator's own note of where work stands and what comes next, one per session: `gaia session resume-point set --session-id <id> --text <text>` (at most 2000 characters, replaced on every write) stores it at `<data_dir>/session_resume/<session_id>.txt` through `write_resume_point`; the snapshot reads it with `read_resume_point` and shows its first 600 characters. Points older than 30 days are pruned on the next write. `session-reflection` writes it as the step before a compaction, under the session id the compaction tool's reply names. |
-| **Session snapshot** | `gaia/session_snapshot.py::build_snapshot(session_id)` / `render_snapshot`, the one host-neutral block both hosts deliver: Claude Code through the SessionStart(compact) refresh, OpenCode through `adapt_pre_compact` (`experimental.session.compacting`), both via `start_context("compact", ...)`. Every section always renders (`none` when empty): the active brief/plan/task, the resume point, pending signatures (`approvals` rows `pending` for the session) and open contracts. One session id can span days, so a contract is open only while it is the latest row of a pending task (a verifier binds through its producer's task) or, unbound to a task, while it waits on the orchestrator (NEEDS_INPUT, APPROVAL_REQUEST, BLOCKED: always listed, first) or its last recorded activity (`claimed_at`, else `created_at`) is under 24 hours old; the remaining unbound rows are counted in the block and listed under `older_unbound` by `--json`. The block is capped at 1500 characters, cut on line and word boundaries. `gaia session snapshot --session-id <id> [--json]` prints it. |
-| **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage, AskUserQuestion, and the file and web tools), PostToolUse (Bash, Task, AskUserQuestion), PostToolUseFailure (Bash), SubagentStop, SubagentStart, SessionStart (`startup\|resume\|clear\|compact\|fork`), SessionEnd, PreCompact, PostCompact, Stop, TaskCompleted, UserPromptSubmit (sparse notices) |
+| **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, and the tool matchers, generated from `build/gaia.manifest.json`. It holds no permissions: the plugin's settings merge is `hooks/modules/core/plugin_setup.py`. |
+| **Compaction delivery** | A compaction is one more birth of the same session: the SessionStart(compact) start, which the host raises after manual and automatic compactions, delivers the same birth block as any start (`session_manifest.build_session_context`, see hooks/README.md "The birth block and the kernel"), held under the host's 10,000-char cap. Its `## Resume point` section carries this session's ledger once, the one the PreCompact hook wrote, with the session's own hand note whole, up to the 2000 characters `write_resume_point` accepts; so a compaction is safe at any moment, manual or automatic, with no reflection first. The block also brings back `## Environment`, so the `gaia CLI:` path survives the compaction, and the user's rows, so the user's standing rules survive it too. On OpenCode the summary is a model's text that may drop or paraphrase both, so the compacting hook gives the summarizer only `build_summary_instructions` and the plugin attaches the same birth block, once, to the main session's first user message after the compaction (`chat.message` with `source: compact`). The compaction mod (`hooks/mods/compaction/`) adds Gaia's steering to the summarizer's instructions and registers `mcp__gaia__compact_when_idle`; a call from the main session makes the mod start a compaction (`$.session.compact`) once that turn ends. Only the host's "a turn is running" is retried (growing waits, then the next main turn end, for at most 15 minutes); any other refusal (DISABLE_COMPACT, turnHeld, a vetoing hook) or an expiry is final and is reported as a toast to the user and as context on the orchestrator's next prompt, both naming `/compact`. It appends nothing and starts no process, so the birth block stays the only deliverer. OpenCode's counterpart is the plugin tool `gaia_compact_when_idle`, run on the next `session.idle`. Both replies name the session id the resume point is written under. The tool is registered only in an interactive session (`SessionStartInput.isInteractive`): a headless one -- `-p`, the SDK, and the desktop app, which drives Claude Code through the SDK -- refuses `$.session.compact()` ("not available in a headless (-p / SDK) session yet"). There, and without the mod (mods disabled, Claude Code older than 2.1.287), no tool is listed and the user types `/compact`. |
+| **Resume point** | Rendered only for `compact`, `resume` and `fork` starts, never `startup` or `clear`: this session's ledger plus the orchestrator's optional hand note. The note is `gaia session resume-point set --session-id <id> --text <text>` (at most 2000 characters, replaced on every write), stored as `{text, written_by}` at `<data_dir>/session_resume/<session_id>.json` by `gaia/session_snapshot.py::write_resume_point`. A write from a host session other than `<id>` is refused, and `read_resume_point` returns the note only when `written_by` is the session reading it. Notes older than 30 days are pruned on the next write. Active plans, pending proposals and pending signatures never reach the birth: they are `gaia plan list --status active`, `gaia contract proposals list` and `gaia approvals list`. |
+| **Session ledger** | `gaia/session_ledger.py`, built from the database for one session id: `in_flight` (its open contract chains, `session_snapshot._open_contracts`: a link stays open only while it runs or waits, and a task-bound one only while its task is pending and it is the task's latest row; an unbound NEEDS_VERIFICATION and a cut or dead turn are closed here and left to `gaia contract list`), `pending` (its approvals `pending`, or `approved` with outcome `unused`), `written` (live memory rows whose `origin_session_id` is the session, or that a `signals` row this session wrote names), `branches` (worktrees under each declared workspace's `.project-worktrees` whose `gaia-worktree.json` sidecar names one of its contracts; gaia.db records no worktree), `changed` (memory rows other sessions changed since this one was born, `gaia.signals.changed_since_birth`) and `compactions`. `hooks/pre_compact.py`, and OpenCode's `adapt_pre_compact` for the main session, write it to `<data_dir>/session_ledger/<session_id>.json` with the count raised by one; any failure is logged and never blocks the compaction. Each list is capped by `LIST_CAPS` (in_flight 8, pending 6, written 5, changed 6, branches 5) with a `(+N)` remainder. `gaia session snapshot --session-id <id> [--json]` prints the ledger as it stands now under `## Session ledger`. |
+| **Dead-turn reaper** | Every SessionStart runs `session_lifecycle._reap_dead_turns`, which closes `DISPATCHED` contract rows that have shown no sign of life for `STALE_TURN_SECONDS` (two hours) through `dispatch_lifecycle.reap_stale_turn`. A row is spared when its harness agent made a tool call in that window, when an attestation ledger modified in it names the row's session, when its session is one the approvals registry holds live (`gaia.approvals.reading.live_sessions`), or, on a `compact` or `resume` start, when it belongs to the starting session. An unreadable registry reaps nothing. |
+| **Schema direction** | `session_manifest.build_schema_direction_block` compares `gaia.db`'s schema with the one this code expects, reading the database without creating it. Behind, it names `gaia migrate plan` and `gaia migrate apply`; ahead, `install_behind_line` says whether this install still writes and gives its own channel's update command (`install_update_command`: `claude plugin update gaia@gaia-marketplace`, `npm install` into the workspace or global prefix, or `gaia dev` from a checkout), which the orchestrator hands to the user. SessionStart writes nothing to a newer database. |
+| **Events configured** | PreToolUse (Task, Agent, SendMessage, AskUserQuestion, the file and web tools, and a catch-all negative-lookahead matcher that reaches every other tool -- Bash, PowerShell, Monitor, MCP tools -- except a named list of built-ins that carry no command), PostToolUse (`Bash\|PowerShell\|Monitor`, Task, AskUserQuestion, Skill), PostToolUseFailure (`Bash\|PowerShell\|Monitor`), SubagentStop, SubagentStart, SessionStart (`startup\|resume\|clear\|compact\|fork`), SessionEnd, PreCompact, PostCompact, Stop, TaskCompleted, UserPromptSubmit (sparse notices) |
 
 ### HookAdapter ABC Contract
 
@@ -371,6 +396,9 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | `hooks/modules/tools/task_validator.py` | Task/Agent invocation validator |
 | `hooks/modules/security/blocked_commands.py` | Permanently denied command patterns |
 | `hooks/modules/security/mutative_verbs.py` | CLI-agnostic mutative verb detector |
+| `hooks/modules/security/verb_lexicon.py` | Closed change-verb lexicon and the effect-over-verb exceptions |
+| `hooks/modules/security/execution_scan.py` | Depth-1 scan of what a script or package script runs |
+| `tools/validator_replay/` | Old vs working-tree validator replay, held to friction caps |
 | `hooks/modules/security/approval_grants.py` | Approval grant lifecycle management |
 | `hooks/adapters/subagent_stop_core.py` | SubagentStop contract gate and close |
 | `hooks/modules/agents/contract_validator.py` | Agent contract envelope validator |

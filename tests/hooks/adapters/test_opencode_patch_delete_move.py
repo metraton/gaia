@@ -3,8 +3,8 @@
 ``apply_patch`` reaches policy as an Edit of each path, and an Edit verdict
 cannot see a deletion or a rename. The adapter therefore refuses the two
 markers and names the ``rm``/``mv`` command that carries the same effect, so
-the only route to it is the Bash tier: free inside Gaia scratch, a signature
-anywhere else. Every path is a stand-in under a temporary HOME.
+the only route to it is the Bash tier, which asks for a signature: scratch
+relief needs an entry the caller owns, and an OpenCode child owns none. Every path is a stand-in under a temporary HOME.
 """
 
 from __future__ import annotations
@@ -100,7 +100,8 @@ def test_patch_delete_of_a_repo_file_is_refused_and_its_rm_asks_the_signature(ho
     assert _signature_request(bash), bash
 
 
-def test_patch_delete_inside_scratch_is_refused_and_its_rm_runs_free(home):
+def test_patch_delete_inside_scratch_is_refused_and_its_rm_asks_since_the_child_owns_no_entry(home):
+    """Scratch relief belongs to the entry's owner, and an OpenCode child's id never names one."""
     target = str(home.parent / "gaia_data" / "scratch" / "probe.txt")
     command = f"rm -- {target}"
 
@@ -108,7 +109,7 @@ def test_patch_delete_inside_scratch_is_refused_and_its_rm_runs_free(home):
     assert _refused_toward(patched, command), patched
 
     bash = _opencode("bash", {"command": command}, "call-rm-scratch")
-    assert bash["decision"] == "allow", bash
+    assert _signature_request(bash), bash
 
 
 def test_patch_move_of_a_repo_file_is_refused_and_its_mv_asks_the_signature(home):
@@ -127,15 +128,19 @@ def test_patch_move_of_a_repo_file_is_refused_and_its_mv_asks_the_signature(home
     assert _signature_request(bash), bash
 
 
-def test_patch_move_inside_scratch_is_refused_and_its_mv_still_asks_the_signature(home):
+@pytest.mark.parametrize("moved", ["a6666666666666666.tok1/moved.txt", "other.token/moved.txt", "moved.txt"])
+def test_patch_move_inside_scratch_is_refused_and_its_mv_asks_since_the_child_owns_no_entry(home, moved):
+    """Even a move within one scratch entry asks: an OpenCode child's id is never the entry owner."""
     scratch = home.parent / "gaia_data" / "scratch"
-    command = f"mv -- {scratch / 'probe.txt'} {scratch / 'moved.txt'}"
+    (scratch / "a6666666666666666.tok1").mkdir()
+    (scratch / "a6666666666666666.tok1" / "probe.txt").write_text("probe\n", encoding="utf-8")
+    command = f"mv -- {scratch / 'a6666666666666666.tok1' / 'probe.txt'} {scratch / moved}"
 
     patched = _opencode(
         "apply_patch",
         _patch(
-            f"*** Update File: {scratch / 'probe.txt'}",
-            f"*** Move to: {scratch / 'moved.txt'}",
+            f"*** Update File: {scratch / 'a6666666666666666.tok1' / 'probe.txt'}",
+            f"*** Move to: {scratch / moved}",
             "@@", "-probe", "+probe",
         ),
         "call-move-scratch",

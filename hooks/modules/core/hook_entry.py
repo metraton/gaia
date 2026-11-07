@@ -91,7 +91,7 @@ def run_hook(
         logger.error("Invalid JSON from stdin in %s: %s", hook_name, e)
         sys.exit(1)
     except SystemExit:
-        raise  # Let explicit sys.exit() calls propagate
+        raise
     except Exception as e:
         logger.error("Error processing %s hook: %s", hook_name, e)
         sys.exit(1)

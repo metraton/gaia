@@ -102,7 +102,7 @@ ORDINARY_WRITES = [
     ("tmp-redirect", "echo hello > /tmp/notes.txt"),
     ("unrelated-config", "tee ~/.config/nvim/init.lua"),
     ("neighbour-of-a-sensitive-name", "tee ~/.gitconfig.bak"),
-    ("neighbour-of-a-sensitive-prefix", "tee ~/.config/github-copilot/hosts.json"),
+    ("neighbour-of-a-sensitive-prefix", "tee ~/.config/github-copilot/versions.json"),
 ]
 
 
@@ -164,7 +164,7 @@ def test_account_path_write_is_approvable_not_categorical(case, command):
     out-of-band ``deny`` whose reason carries the ``approval_id`` the user
     decides against. What must never appear is a denial with neither.
     """
-    result = validate_bash_command(command)
+    result = validate_bash_command(command, session_id="ses-account-path", agent_type="claude-code-primary")
     assert result.block_response is not None, (
         f"{case}: {command!r} was denied with no approval path"
     )

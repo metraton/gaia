@@ -10,15 +10,14 @@ How it works
 A committed fingerprint file (scripts/migrations/schema.checksum) pins the
 sha256 of schema.sql to the EXPECTED_SCHEMA_VERSION it corresponds to:
 
-    version=18
+    version=<N>
     sha256=<hex digest of gaia/store/schema.sql>
 
 The guard reads EXPECTED_SCHEMA_VERSION from bin/cli/doctor.py and the live
 sha256 of schema.sql, then:
 
   1. No fingerprint file yet (first run): record the current
-     (version, sha256) and pass. This is how the baseline for the current
-     floor (v18) is established.
+     (version, sha256) and pass.
 
   2. Recorded version == EXPECTED but sha256 differs: schema.sql changed
      without a version bump. FAIL with a message telling the dev to bump
@@ -142,7 +141,6 @@ def main() -> None:
         )
         sys.exit(0)
 
-    # Case 1: first run -- establish the baseline for the current version.
     if recorded is None:
         _write_checksum_file(expected, live_sha)
         print(
@@ -153,7 +151,6 @@ def main() -> None:
 
     rec_version, rec_sha = recorded
 
-    # Case 5: recorded ahead of the CLI -- misconfiguration.
     if rec_version > expected:
         _fail(
             f"recorded schema fingerprint is for v{rec_version} but "
@@ -162,7 +159,6 @@ def main() -> None:
             f"EXPECTED_SCHEMA_VERSION to >= v{rec_version}."
         )
 
-    # Case 3: a version bump happened -- require the migration, then re-record.
     if rec_version < expected:
         mig = _migration_for(expected)
         if not mig.is_file():
@@ -180,9 +176,6 @@ def main() -> None:
         )
         sys.exit(0)
 
-    # rec_version == expected from here on.
-
-    # Case 4: fingerprint matches -- no drift.
     if rec_sha == live_sha:
         print(
             f"[schema-drift] OK: schema.sql matches the recorded fingerprint "
@@ -190,7 +183,6 @@ def main() -> None:
         )
         sys.exit(0)
 
-    # Case 2: schema.sql changed without a version bump -- DRIFT.
     _fail(
         f"gaia/store/schema.sql changed but EXPECTED_SCHEMA_VERSION is still "
         f"v{expected} and no new migration was added.\n"

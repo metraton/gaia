@@ -1,12 +1,10 @@
 """Load context contracts and agent permissions from gaia.db.
 
-Subsystem 2 of the pre_tool_use Task/Agent path.
-
-Queries agent_contract_permissions and project_context_contracts in
-~/.gaia/gaia.db to find writable contracts and check emptiness.
+Queries agent_contract_permissions for writable contracts and the workspace's
+stored context sections to check emptiness, and builds the reminder that
+names the writable sections that are empty.
 """
 
-import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -27,11 +25,9 @@ def _load_writable_contracts_from_db(
     agent_name: str,
     db_path: Optional[Path] = None,
 ) -> list:
-    """Return the list of contract names the agent may write, from gaia.db.
+    """Return the contract names the agent may write (can_write = 1), from gaia.db.
 
-    Rows with cloud_scope IS NULL match all providers. Non-NULL cloud_scope rows
-    are included without additional filtering at this layer (the broader grant
-    includes them). Returns empty list when the DB is unavailable.
+    Returns an empty list when the DB is unavailable.
     """
     resolved = db_path or _get_db_path()
     if resolved is None or not resolved.exists():
@@ -72,23 +68,21 @@ def _load_context_sections_from_db(
         return {}
 
     try:
+        from gaia.store.project_context import workspace_sections
+
         con = sqlite3.connect(str(resolved))
-        rows = con.execute(
-            "SELECT contract_name, payload FROM project_context_contracts WHERE workspace = ?",
-            (workspace,),
-        ).fetchall()
-        con.close()
+        try:
+            stored = workspace_sections(con, workspace)
+        finally:
+            con.close()
     except sqlite3.Error as exc:
         logger.warning("DB error loading context sections for '%s': %s", workspace, exc)
         return {}
 
-    sections = {}
-    for contract_name, payload_str in rows:
-        try:
-            sections[contract_name] = json.loads(payload_str) if payload_str else {}
-        except (json.JSONDecodeError, TypeError):
-            sections[contract_name] = {}
-    return sections
+    return {
+        name: section["payload"] if section["payload"] is not None else {}
+        for name, section in stored.items()
+    }
 
 
 def _derive_workspace() -> str:
@@ -108,8 +102,9 @@ def build_context_update_reminder(
 ) -> str:
     """Check which writable contracts are empty and build a reminder.
 
-    Queries agent_contract_permissions for writable contracts, then checks
-    project_context_contracts to see which payloads are empty.
+    Queries agent_contract_permissions for writable contracts, then reads the
+    workspace's stored sections (``workspace_sections``) to see which payloads
+    are empty.
 
     Args:
         subagent_type: The agent type string (e.g. developer).

@@ -2,19 +2,17 @@
 Session Registry — track active host sessions by their session id.
 
 Provides a user-scoped JSON registry at ~/.claude/session_registry.json that
-records which sessions are currently alive. Liveness is heartbeat-only: hooks
-that run inside a session call ``touch_session()`` to refresh
+records which sessions are currently alive. Liveness is heartbeat-only: the
+per-prompt hook calls ``touch_session()`` to refresh
 ``last_heartbeat``; sessions whose heartbeat is stale beyond
 ``HEARTBEAT_TTL_SECONDS`` are treated as dead.
 
 Why heartbeat-only:
-    The previous design persisted ``pid`` and ``pid_create_time`` of the hook
-    process. Hook processes are ephemeral — each event spawns a fresh Python
-    interpreter that exits in milliseconds — so the persisted PID was always
-    dead by the time another hook tried to use it for liveness. Claude Code
-    does not expose its own parent PID to hooks (no CLAUDE_PARENT_PID), which
-    rules out PID-based tracking entirely. Heartbeat freshness is the only
-    signal hooks can produce that survives between events.
+    Hook processes are ephemeral — each event spawns a fresh Python
+    interpreter that exits in milliseconds — so a persisted hook PID is dead
+    by the time another hook reads it, and Claude Code does not expose its own
+    parent PID to hooks. Heartbeat freshness is the only liveness signal hooks
+    can produce that survives between events.
 
 Storage format:
     {
@@ -31,41 +29,20 @@ Storage format:
         }
     }
 
-    Legacy entries with ``pid`` / ``pid_create_time`` fields are tolerated on
-    read: they have no ``last_heartbeat``, so the freshness check treats them
-    as dead immediately. That is the correct outcome — a registry written by
-    the old code is by definition stale. An ``identity`` field left by an
-    earlier build is ignored.
+    Entries without ``last_heartbeat`` are tolerated on read and treated as
+    dead (``cleanup_stale_entries`` removes them). Unknown fields are ignored.
 
-    ``pinned_build`` is likewise OPTIONAL on read: entries written before this
-    field existed simply lack it. Consumers (``gaia doctor``'s "Hooks active &
-    fresh" check) MUST treat an absent ``pinned_build`` as UNKNOWN, never as a
-    match/pass — the marker is rewritten by a fresh session (source
-    "startup"), a ``--continue``/``--resume`` of an existing session id
-    (source "resume"), a ``/compact`` (source "compact"), AND the new session
-    id of a ``/clear`` or a fork: SessionStart's matcher is
-    ``startup|resume|clear|compact|fork``, so Claude Code re-reads settings
-    and re-fires this hook on resume and on compact too, and this hook does
-    not branch on ``source`` for registration/pinning -- it always
-    re-registers and re-pins regardless (only the *content* of
-    ``additionalContext`` branches on ``source == "compact"``, see
-    ``hooks/session_start.py``'s call to ``build_compact_context()``). Only
-    a session that never re-fires SessionStart at all (e.g. one still
-    running from before this wiring change) can be left with a stale or
-    absent marker.
+    ``pinned_build`` is OPTIONAL on read. Consumers (``gaia doctor``'s "Hooks
+    active & fresh" check) MUST treat an absent ``pinned_build`` as UNKNOWN,
+    never as a match/pass. SessionStart's matcher is
+    ``startup|resume|clear|compact|fork`` and the hook always re-registers and
+    re-pins, whatever the ``source``, so only a session that never re-fires
+    SessionStart can be left with a stale or absent marker.
 
 Concurrency:
     All writes are atomic via os.rename() after writing to a per-call .tmp
-    file. Reads are best-effort; a corrupt or absent file returns an empty
-    set.
-
-Public API:
-    register_session(session_id, started_at=None, is_headless=False, pinned_build=None) -> None
-    unregister_session(session_id) -> None
-    is_session_alive(session_id) -> bool
-    touch_session(session_id) -> None
-    get_live_sessions(include_headless=True) -> set[str]
-    cleanup_stale_entries(grace_seconds=86400) -> int
+    file. Reads are best-effort; a corrupt or absent file reads as an empty
+    registry.
 
 Errors:
     SessionRegistryError — raised for expected failure modes (e.g., bad path).
@@ -82,10 +59,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Tunables
-# ---------------------------------------------------------------------------
-
 #: A session whose last_heartbeat is older than this is treated as dead by
 #: get_live_sessions(). 30 minutes is generous enough to absorb a long-running
 #: subagent (no user prompts in flight) while still catching real crashes
@@ -97,26 +70,14 @@ HEARTBEAT_TTL_SECONDS = 1800
 _HEARTBEAT_THROTTLE_SECONDS = 30
 
 
-# ---------------------------------------------------------------------------
-# Public exception
-# ---------------------------------------------------------------------------
-
 class SessionRegistryError(Exception):
     """Raised for expected failure modes in session registry operations."""
 
-
-# ---------------------------------------------------------------------------
-# Registry path
-# ---------------------------------------------------------------------------
 
 def _get_registry_path() -> Path:
     """Return the path to session_registry.json under ~/.claude/."""
     return Path.home() / ".claude" / "session_registry.json"
 
-
-# ---------------------------------------------------------------------------
-# Low-level I/O helpers
-# ---------------------------------------------------------------------------
 
 def _load_registry() -> dict:
     """Load the registry from disk.
@@ -176,10 +137,6 @@ def _save_registry(data: dict) -> None:
         ) from exc
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 def register_session(
     session_id: str,
     started_at: Optional[str] = None,
@@ -200,18 +157,13 @@ def register_session(
         is_headless: True when this session has no live human watching
             (CI, cron, ``claude --headless``). Headless sessions can be
             filtered out via ``get_live_sessions(include_headless=False)``
-            so their pending approvals surface to interactive sessions.
+            so their pending approvals are not hidden as belonging to a live
+            session.
         pinned_build: Optional ``{"hooks_path": str, "hooks_hash": str}``
-            snapshot of the hooks tree THIS session actually loaded at start.
-            ``gaia doctor`` later recomputes the wired hooks' hash and compares
-            it against this marker to tell the user whether the running hooks
-            are the freshly-installed build (ACTIVE) or a restart is needed to
-            load newly-installed code (STALE). Omitted -> the entry carries no
-            marker (doctor reports UNKNOWN). This self-heals on the next
-            SessionStart fire for this session id -- which includes a plain
-            ``--continue``/``--resume`` or a ``/compact``, since the
-            SessionStart matcher is ``startup|resume|clear|compact|fork`` and this hook
-            re-pins on every fire regardless of ``source``.
+            snapshot of the hooks tree THIS session loaded at start.
+            ``gaia doctor`` compares the wired hooks' hash against it to
+            report ACTIVE or STALE. Omitted -> the entry carries no marker
+            (doctor reports UNKNOWN).
 
     Raises:
         SessionRegistryError: If session_id is empty or saving fails.
@@ -319,17 +271,13 @@ def get_live_sessions(include_headless: bool = True) -> set:
 
     Args:
         include_headless: When False, sessions registered with
-            ``is_headless=True`` are excluded from the result. The
-            [ACTIONABLE] pending-approval injection path uses
-            ``include_headless=False`` so headless sessions don't suppress
-            their own pendings — nobody is watching them live, so their
-            pendings must surface to interactive sessions that can act on
-            them.
+            ``is_headless=True`` are excluded from the result. ``gaia
+            approvals`` passes ``include_headless=False`` when excluding live
+            sessions' pendings, so a headless session's pendings still show.
 
     Returns:
         set[str] of session IDs considered live. Entries with no
-        ``last_heartbeat`` (e.g., legacy PID-only entries written by the
-        previous schema) are filtered out by the freshness check.
+        ``last_heartbeat`` are filtered out by the freshness check.
     """
     data = _load_registry()
     now = time.time()
@@ -352,8 +300,7 @@ def cleanup_stale_entries(grace_seconds: int = 86400) -> int:
     keep the registry small. A grace window is used instead of the live-TTL
     so a session that briefly went inactive — closed laptop, suspended VM —
     isn't garbage-collected before it has a chance to send another
-    heartbeat. Default of 24h matches the typical "I'm done for the day"
-    boundary; tune as needed.
+    heartbeat.
 
     Args:
         grace_seconds: Heartbeat age (seconds) beyond which an entry is

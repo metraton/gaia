@@ -1,13 +1,10 @@
 """
-Actionable BLOCKED message formatter for permanently blocked commands.
+Actionable BLOCKED message formatter for categorical denials.
 
-When the hook blocks a T3 command (exit 2), this module produces messages that:
+The message carries:
 - Line 1: What was blocked and why (irreversible, for a blocked-command pattern)
-- Line 2: The specific suggestion (from BLOCKED_COMMAND_SUGGESTIONS if available)
+- Line 2: The specific suggestion, when the result or its category supplies one
 - Line 3: Which agent to dispatch to (mapped from command category)
-
-This replaces the generic "[BLOCKED] Command blocked by security policy" message
-with actionable guidance for the orchestrator.
 """
 
 import logging
@@ -43,21 +40,18 @@ def format_blocked_message(result) -> str:
     Returns:
         A multi-line message with domain, suggestion, and agent routing.
     """
-    # Extract category from reason (format: "Command blocked by security policy: <category>")
     category = _extract_category(result.reason)
 
-    # Line 1: What was blocked and why. Only a blocked-command pattern is an
-    # irreversible operation; a categorical guard (a sensitive read, a
-    # protected path, a shell writer) states its own reason.
+    # Only a blocked-command pattern is an irreversible operation; a
+    # categorical guard (a sensitive read, a protected path, a shell writer)
+    # states its own reason.
     irreversible = " (irreversible operation)" if category else ""
     msg = f"[BLOCKED] {result.reason}{irreversible}\n"
 
-    # Line 2: Specific suggestion
     suggestion = _get_suggestion(result, category)
     if suggestion:
         msg += f"Suggestion: {suggestion}\n"
 
-    # Line 3: Agent to dispatch to
     agent = CATEGORY_AGENT_MAP.get(category)
     if agent:
         msg += f"Dispatch to: {agent}\n"
@@ -80,8 +74,8 @@ def _extract_category(reason: str) -> Optional[str]:
 def _get_suggestion(result, category: Optional[str]) -> Optional[str]:
     """Get the best suggestion for the blocked command.
 
-    Prefers the suggestion from the result (sourced from BLOCKED_COMMAND_SUGGESTIONS),
-    falls back to the reason text.
+    Prefers the suggestion from the result, then a notice naming the category,
+    then the reason text.
     """
     if result.suggestions:
         return result.suggestions[0]

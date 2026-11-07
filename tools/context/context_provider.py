@@ -20,9 +20,8 @@ from typing import Dict, List, Any, Optional
 
 # Ensure the package root is on sys.path so that `gaia.store.reader` resolves
 # when this module is imported in-process by hooks
-# (the dispatch-kernel path in hooks/adapters/claude_code.py) or invoked via
-# the CLI entry point.
-# Pattern: same as hooks/pre_tool_use.py line 22.
+# (e.g. hooks/modules/context/kernel_builder.py) or invoked via the CLI entry
+# point.
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, _PACKAGE_ROOT)
@@ -41,10 +40,6 @@ except ImportError:
     )
 
 
-# ============================================================================
-# DB CONNECTION
-# ============================================================================
-
 def _get_db_path() -> Optional[Path]:
     """Resolve path to ~/.gaia/gaia.db via gaia.paths, or fallback default."""
     try:
@@ -60,10 +55,6 @@ def _db_connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     return con
 
-
-# ============================================================================
-# CLOUD PROVIDER DETECTION
-# ============================================================================
 
 def detect_cloud_provider(sections: Dict[str, Any]) -> str:
     """Detects the cloud provider from the infrastructure contract payload.
@@ -90,34 +81,30 @@ def detect_cloud_provider(sections: Dict[str, Any]) -> str:
 
 
 def load_project_context(workspace: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load project context for a workspace from project_context_contracts in gaia.db.
+    """Load project context as ``workspace`` reads it (``gaia.store.project_context.workspace_sections``).
 
     Returns a dict shaped as ``{metadata: {}, sections: {contract_name: payload, ...}}``
     to remain compatible with the rest of the pipeline. Returns an empty context when the
     workspace has no rows rather than exiting.
     """
+    from gaia.store.project_context import workspace_sections
+
     try:
         con = _db_connect(db_path)
-        rows = con.execute(
-            "SELECT contract_name, payload, metadata, updated_at "
-            "FROM project_context_contracts WHERE workspace = ?",
-            (workspace,),
-        ).fetchall()
-        con.close()
+        try:
+            stored = workspace_sections(con, workspace)
+        finally:
+            con.close()
     except sqlite3.Error as exc:
         print(f"Warning: DB error reading project context for '{workspace}': {exc}", file=sys.stderr)
-        rows = []
+        stored = {}
 
     sections: Dict[str, Any] = {}
     last_updated = ""
-    for row in rows:
-        try:
-            payload = json.loads(row["payload"]) if row["payload"] else {}
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        sections[row["contract_name"]] = payload
-        if row["updated_at"] and row["updated_at"] > last_updated:
-            last_updated = row["updated_at"]
+    for name, section in stored.items():
+        sections[name] = section["payload"] if section["payload"] is not None else {}
+        if section["updated_at"] and section["updated_at"] > last_updated:
+            last_updated = section["updated_at"]
 
     if not sections:
         print(f"Warning: No project context found for workspace '{workspace}' in gaia.db", file=sys.stderr)
@@ -154,15 +141,11 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
         print(f"Warning: DB error reading permissions for '{agent_name}': {exc}", file=sys.stderr)
         rows = []
 
-    # Dedupe defensively; order is deterministic via the query's ORDER BY
-    # contract_name. The row set can carry the same contract_name more than
-    # once -- e.g. a NULL cloud_scope row plus a provider-scoped overlay, or
-    # (observed in the field) accumulated duplicate NULL-scope rows because
-    # SQLite treats NULL as distinct in the composite PRIMARY KEY, so
-    # INSERT OR REPLACE never conflicts on NULL scope. Without this dedupe the
-    # readable/writable lists fan out into thousands of repeated entries, which
-    # the subagent Permissions block renders verbatim (~93% payload bloat
-    # observed). See FIX (c).
+    # The row set can carry the same contract_name more than once: a NULL
+    # cloud_scope row plus a provider-scoped overlay, or duplicate NULL-scope
+    # rows, since NULL is distinct in the composite PRIMARY KEY. Without the
+    # dedupe the readable/writable lists repeat entries, and the subagent
+    # Permissions block renders them verbatim. Order follows the ORDER BY.
     def _dedupe(names: list[str]) -> list[str]:
         seen: set[str] = set()
         out: list[str] = []
@@ -184,9 +167,23 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
     }
 
 
-# ============================================================================
-# DISPATCH KERNEL DATA (no routing, no preloaded context)
-# ============================================================================
+def _declared_surface(agent_name: str) -> str:
+    """The ``routing.surface`` or top-level ``surface`` in ``agents/<name>.md`` frontmatter, or ""."""
+    if not agent_name or Path(agent_name).name != agent_name:
+        return ""
+    path = Path(_PACKAGE_ROOT) / "agents" / f"{agent_name}.md"
+    try:
+        from tools.scan.seed_contract_permissions import _parse_frontmatter
+
+        frontmatter = _parse_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(frontmatter, dict):
+        return ""
+    routing = frontmatter.get("routing")
+    declared = routing.get("surface") if isinstance(routing, dict) else None
+    return str(declared or frontmatter.get("surface") or "").strip()
+
 
 def build_kernel_sections(
     agent_name: str,
@@ -206,8 +203,9 @@ def build_kernel_sections(
         provider-scoped exactly as the retired telemetry path was, so the set
         is identical to what ``get_context_update_contract`` produced).
       * ``surface`` is the agent's own declared surface -- the ``surface_routing``
-        row whose ``primary_agent`` is this agent -- a fact of the assignment,
-        not a classification of it. Empty for an agent that owns no surface.
+        row whose ``primary_agent`` is this agent, else the surface its
+        frontmatter declares (:func:`_declared_surface`) -- a fact of the
+        assignment, not a classification of it.
       * ``role`` is dispatch data: ``verifier`` when the binding says so,
         ``primary`` otherwise (the orchestrator dispatched this agent as the
         owner of the task).
@@ -240,6 +238,7 @@ def build_kernel_sections(
                 break
     except Exception:
         surface = ""
+    surface = surface or _declared_surface(agent_name)
 
     sections = {
         "role": "verifier" if turn_role == "verifier" else "primary",
@@ -262,6 +261,15 @@ def _project_identity_entries(
     return identity if isinstance(identity, dict) else {}
 
 
+def name_variants(name: str) -> list:
+    """``name`` followed by its underscore and hyphen spellings, without repeats.
+
+    ``projects.name`` is hyphenated while ``project_identity`` keys are
+    underscore slugs, so a reference may arrive in either spelling.
+    """
+    return list(dict.fromkeys((name, name.replace("_", "-"), name.replace("-", "_"))))
+
+
 def _dispatched_project_row(
     workspace: str,
     ref: str,
@@ -271,19 +279,21 @@ def _dispatched_project_row(
     """The active ``projects`` row a dispatch names, in whichever workspace holds it, or None.
 
     Matched by path when the dispatch carries one, else by project_identity,
-    else by name; a name several projects hold resolves to the one in
-    ``workspace`` or to none.
+    else by name, trying each spelling of ``ref`` (:func:`name_variants`); a
+    name several projects hold resolves to the one in ``workspace`` or to none.
     """
     if local_path:
         lookups = [("path = ?", local_path)]
     else:
-        lookups = [("project_identity = ?", ref), ("name = ? COLLATE NOCASE", ref)]
+        lookups = [("project_identity = ?", ref)] + [
+            ("name = ? COLLATE NOCASE", variant) for variant in name_variants(ref)
+        ]
     try:
         con = _db_connect(db_path)
         try:
             for where, value in lookups:
                 rows = [dict(r) for r in con.execute(
-                    "SELECT workspace, name, path, remote_url FROM projects "
+                    "SELECT workspace, name, path, remote_url, project_identity FROM projects "
                     f"WHERE {where} AND status = 'active'", (value,),
                 )]
                 if len(rows) > 1:
@@ -333,6 +343,8 @@ def resolve_project_by_name(
     entry = _project_entry(row, db_path) if row else None
     if entry and entry.get("name"):
         return _project_display(entry)
+    if row is None and _names_group(workspace, wanted, db_path):
+        return wanted
     for entry in _project_identity_entries(workspace, db_path=db_path).values():
         if not isinstance(entry, dict):
             continue
@@ -340,6 +352,20 @@ def resolve_project_by_name(
         if entry_name and str(entry_name).lower() == wanted.lower():
             return _project_display(entry)
     return wanted
+
+
+def _names_group(workspace: str, name: str, db_path: Optional[Path] = None) -> bool:
+    """Whether ``name`` is a project group, which a dispatch keeps whole rather than one member's entry."""
+    from gaia.store.project_context import resolve_group
+
+    try:
+        con = _db_connect(db_path)
+        try:
+            return bool(resolve_group(con, name, workspace))
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
 
 
 def resolve_dispatch_project(
@@ -429,6 +455,29 @@ def dispatch_project_workspace(
     return row["workspace"] if row else None
 
 
+def dispatch_project_key(
+    workspace: str,
+    dispatch_project: Optional[str],
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """The canonical memory project key of the project a born row's ``dispatch_project`` names, or None.
+
+    Derived the way a project-anchored memory write derives its ``initiative``
+    (``gaia.store.writer.initiative_from_project_ref`` of the row's
+    ``project_identity``), so it matches the notes ``gaia memory add --project``
+    stored; a project the substrate does not know keys by its normalized name.
+    """
+    if not dispatch_project:
+        return None
+    from gaia.store.writer import initiative_from_project_ref, normalize_initiative
+
+    row = _dispatch_project_row(workspace, dispatch_project, db_path) if workspace else None
+    return (
+        initiative_from_project_ref((row or {}).get("project_identity"))
+        or normalize_initiative(dispatch_project.partition(" (")[0])
+    )
+
+
 def dispatch_project_entry(
     workspace: str,
     dispatch_project: Optional[str],
@@ -455,10 +504,6 @@ def dispatch_project_entry(
             return entry
     return None
 
-
-# ============================================================================
-# CONTEXT EXTRACTION
-# ============================================================================
 
 def get_relevant_sections(
     sections: Dict[str, Any],
@@ -569,10 +614,6 @@ def get_context_update_contract(
         "source": "agent_contract_permissions in ~/.gaia/gaia.db",
     }
 
-
-# ============================================================================
-# EPISODIC MEMORY
-# ============================================================================
 
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters."""
@@ -772,10 +813,6 @@ def load_relevant_episodes(
         print(f"Warning: Could not load episodic memory: {e}", file=sys.stderr)
         return {}
 
-
-# ============================================================================
-# MAIN FUNCTION
-# ============================================================================
 
 def build_context_payload(
     agent_name: str,

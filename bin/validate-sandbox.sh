@@ -57,7 +57,9 @@ Options:
                       "@jaguilar87/gaia@5.0.0-rc1". Default: "@rc".
   --tarball <path>    Install from a local tarball (from `npm pack`).
                       Takes precedence over --version.
-  --target <mode>     sandbox (default): ephemeral /tmp/gaia-sandbox-<ts>/.
+  --target <mode>     sandbox (default): ephemeral gaia-sandbox-<ts>/ under
+                      $TMPDIR, /tmp or $HOME/.cache/gaia-sandbox (the first
+                      one not mounted noexec).
                       local: install over a real workspace (see --workspace
                       or auto-detect from cwd).
                       Local mode skips the settings-preservation check
@@ -279,8 +281,6 @@ if [[ "${TARGET}" == "sandbox" ]]; then
   mkdir -p "${WORKSPACE}"
 else
   if [[ -n "${WORKSPACE_OVERRIDE}" ]]; then
-    # Explicit override from --workspace flag. Resolve relative paths
-    # against cwd, then verify directory exists.
     if [[ "${WORKSPACE_OVERRIDE}" != /* ]]; then
       WORKSPACE_OVERRIDE="$(cd "$(dirname "${WORKSPACE_OVERRIDE}")" 2>/dev/null && pwd)/$(basename "${WORKSPACE_OVERRIDE}")"
     fi
@@ -350,12 +350,10 @@ now_ms() {
 
 prepare_sandbox() {
   echo "[prepare] copying fixture -> ${WORKSPACE}"
-  # Copy tree, stripping .template and .fixture suffixes.
   (
     cd "${FIXTURE_DIR}"
     find . -type f | while IFS= read -r src; do
       local dest="${WORKSPACE}/${src#./}"
-      # Strip .template / .fixture suffix
       case "${dest}" in
         *.template)
           dest="${dest%.template}"
@@ -364,7 +362,6 @@ prepare_sandbox() {
           dest="${dest%.fixture}"
           ;;
       esac
-      # Rename sandbox-settings.local.json -> settings.local.json
       dest="${dest//sandbox-settings.local.json/settings.local.json}"
       mkdir -p "$(dirname "${dest}")"
       cp "${src}" "${dest}"
@@ -380,11 +377,7 @@ prepare_sandbox() {
 install_package() {
   cd "${WORKSPACE}"
 
-  # --fresh: wipe install metadata before npm install. Only meaningful in
-  # local mode (sandbox dirs are always pristine by construction). Removes
-  # node_modules/, package.json, and package-lock.json so npm starts from
-  # a clean slate -- avoids stale `dependencies` entries from prior installs
-  # (e.g. self-referencing `file:*.tgz` artefacts).
+  # --fresh only acts in local mode: a sandbox directory starts empty.
   if [[ "${FRESH}" -eq 1 && "${TARGET}" == "local" ]]; then
     echo "[install] --fresh: wiping node_modules/, package.json, package-lock.json"
     rm -rf \
@@ -398,7 +391,6 @@ install_package() {
     return 1
   fi
 
-  # In local mode, ensure a package.json exists so npm install has an anchor.
   if [[ "${TARGET}" == "local" && ! -f package.json ]]; then
     echo "[install] local mode: no package.json in ${WORKSPACE}, creating minimal one"
     npm init -y --silent >/dev/null 2>&1 || npm init -y
@@ -408,14 +400,11 @@ install_package() {
     echo "[install] installing tarball ${TARBALL_PATH}"
     npm install --no-audit --no-fund "${TARBALL_PATH}"
   else
-    # Accept forms: "@rc", "5.0.0-rc1", "@5.0.0-rc1",
-    # "@jaguilar87/gaia@5.0.0-rc1"
+    # VERSION_SPEC forms: "@rc", "@5.0.0-rc1", "5.0.0-rc1" or the full package spec.
     local spec="${VERSION_SPEC}"
     if [[ "${spec}" == @* && "${spec}" != @jaguilar87/* ]]; then
-      # e.g. "@rc" or "@5.0.0-rc1"
       spec="@jaguilar87/gaia${spec}"
     elif [[ "${spec}" != @jaguilar87/* && "${spec}" != "" ]]; then
-      # Bare "5.0.0-rc1"
       spec="@jaguilar87/gaia@${spec}"
     fi
     echo "[install] installing ${spec}"
@@ -427,23 +416,16 @@ install_package() {
 # Wire the workspace (BOTH targets)
 # ---------------------------------------------------------------------------
 #
-# There is no npm postinstall hook (bootstrap is lazy, see bin/cli/install.py
-# and package.json's `_install_note`): `npm install` alone drops the package
-# into node_modules/ but never touches the workspace's .claude/ settings,
-# symlinks, or plugin registry. Both targets therefore need this explicit
-# wiring step -- without it the workspace is installed-but-unwired and
-# `gaia doctor` (check 2) reports rc=2 (Symlinks/Identity/Settings/Hook files
-# = error). This mirrors the real consumer flow: a `gaia install` (or the
-# plugin install) always follows `npm install`. `gaia install --workspace`
-# merges hooks + permissions + agent identity into settings.local.json
-# authoritatively but non-destructively (see merge_local_permissions /
-# merge_local_hooks in _install_helpers.py), so the sandbox's
-# settings-preservation check (check 8) still passes -- the user sentinel
-# keys survive the merge.
+# There is no npm postinstall hook (package.json `_install_note`), so
+# `npm install` leaves the workspace's .claude/ unwired and `gaia doctor` would
+# fail. `gaia install` merges hooks, permissions and agent identity into
+# settings.local.json (merge_local_permissions / merge_local_hooks in
+# _install_helpers.py) and leaves the fixture's user keys, which the
+# settings-preservation check reads.
 #
-# The sandbox passes --no-path: the PATH launcher is a machine-global surface
-# (~/.local/bin/gaia), and a throwaway sandbox must never become the gaia the
-# user's shells run.
+# The sandbox passes --no-path: the PATH launcher (~/.local/bin/gaia) is
+# machine-global, and a throwaway sandbox must not become the gaia the user's
+# shells run.
 wire_workspace() {
   local install_args=(--channel npm --workspace "${WORKSPACE}")
   if [[ "${TARGET}" == "sandbox" ]]; then
@@ -454,10 +436,9 @@ wire_workspace() {
 }
 
 # Sandbox only: every `gaia` call after this point sees a HOME inside the
-# sandbox, so home-anchored state (~/.gaia/last-install-error.json, the PATH
-# launcher, anything a future install writes under ~) lands in the throwaway
-# dir instead of the user's. PYTHONUSERBASE keeps the user's site-packages
-# importable, since Python derives that path from HOME.
+# sandbox, so state written under ~ lands in the throwaway dir. PYTHONUSERBASE
+# keeps the user's site-packages importable, since Python derives that path
+# from HOME.
 isolate_sandbox_home() {
   local user_base
   user_base="$(python3 -m site --user-base)"
@@ -485,23 +466,15 @@ sha256() {
 # Sandbox DB isolation + fixture seeding (sandbox target only)
 # ---------------------------------------------------------------------------
 #
-# Problem: without GAIA_DATA_DIR, `gaia memory search` and `gaia memory stats`
-# hit the global ~/.gaia/gaia.db, which is scoped by the ephemeral sandbox
-# workspace-id (directory basename). The sandbox workspace never has episodes
-# there, so check 6 (deploy search) returns 0 hits (FAIL) and check 5 counts
-# global episodes instead of sandbox-local ones.
-#
-# Fix: create a sandbox-local data dir, export GAIA_DATA_DIR before running
-# any check, run bootstrap to initialize the schema, then seed the episodes
-# from the fixture file into the sandbox-local DB with the sandbox workspace-id.
-# The episodes_fts FTS5 table is populated automatically via the INSERT trigger.
+# Without a sandbox-local database, the memory checks (stats, search) would read
+# the user's ~/.gaia/gaia.db, which holds no episodes for the throwaway
+# workspace. The function creates one, bootstraps the schema and seeds the
+# fixture's episodes; the episodes_fts trigger indexes them on insert.
 
 seed_sandbox_db() {
   local sandbox_data_dir="${WORKSPACE}/.gaia-sandbox"
   mkdir -p "${sandbox_data_dir}"
 
-  # Export GAIA_DATA_DIR so every subsequent gaia CLI call (including installed
-  # node_modules/.bin/gaia) resolves db_path() to the sandbox-local DB.
   export GAIA_DATA_DIR="${sandbox_data_dir}"
 
   # GAIA_DB outranks GAIA_DATA_DIR, so an inherited one would send every
@@ -511,12 +484,10 @@ seed_sandbox_db() {
 
   echo "[sandbox-db] initializing sandbox-local DB at ${sandbox_db}"
 
-  # Run bootstrap to apply the full schema (tables, triggers, FTS5 mirrors).
   local bootstrap_script="${REPO_ROOT}/scripts/bootstrap_database.sh"
   if [[ -f "${bootstrap_script}" ]]; then
     bash "${bootstrap_script}" >/dev/null
   else
-    # Fallback: create the schema directly from the installed package's schema.sql
     local schema_sql="${WORKSPACE}/node_modules/@jaguilar87/gaia/gaia/store/schema.sql"
     if [[ -f "${schema_sql}" ]]; then
       sqlite3 "${sandbox_db}" < "${schema_sql}"
@@ -526,19 +497,13 @@ seed_sandbox_db() {
     fi
   fi
 
-  # Declare the sandbox as a workspace rooted at its own directory, so the
-  # episodes below (FK on workspaces) belong to the workspace gaia.project.current()
-  # resolves from inside the sandbox.
+  # Episodes carry a foreign key to workspaces, so the sandbox is declared as one.
   local sandbox_ws_id="gaia-sandbox"
   local sandbox_root
   sandbox_root="$(cd "${WORKSPACE}" && pwd -P)"
   sqlite3 "${sandbox_db}" \
     "INSERT OR IGNORE INTO workspaces(name, status, root_path) VALUES('${sandbox_ws_id}', 'active', '${sandbox_root}');"
 
-  # Seed episodes from the fixture's episodes.jsonl into the sandbox DB.
-  # Each JSONL line is a complete episode object. We extract the fields that
-  # match the episodes table columns and INSERT them. The episodes_fts FTS5
-  # table is populated automatically by the AFTER INSERT trigger.
   local episodes_jsonl="${FIXTURE_DIR}/.claude/project-context/episodic-memory/episodes.jsonl"
   if [[ -f "${episodes_jsonl}" ]]; then
     local seeded=0
@@ -607,39 +572,21 @@ fi
 
 install_package
 
-# Put installed bin at head of PATH so we can call `gaia` directly
-# (runtime check: node-independent invocation, no npx indirection).
 export PATH="${WORKSPACE}/node_modules/.bin:${PATH}"
 
-# Sandbox: isolate the DB from the global ~/.gaia/gaia.db and seed it
-# with fixture episodes so checks 5 (FTS5 stats) and 6 (deploy search)
-# validate against sandbox-local data, not the user's global state. This
-# MUST run before wire_workspace so `gaia install`'s own DB writes land in
-# the isolated sandbox DB (via the GAIA_DATA_DIR seed_sandbox_db exports),
-# never in the user's global ~/.gaia/gaia.db.
+# Runs before wire_workspace so `gaia install` writes to the sandbox database
+# (seed_sandbox_db exports GAIA_DATA_DIR and GAIA_DB), never to ~/.gaia/gaia.db.
 if [[ "${TARGET}" == "sandbox" ]]; then
   isolate_sandbox_home
   seed_sandbox_db
 fi
 
-# Wire the workspace for BOTH targets: no postinstall hook exists, so
-# `npm install` alone leaves .claude/ unconfigured (see wire_workspace()
-# above). Runs after seed_sandbox_db so a sandbox install writes to the
-# isolated DB.
 wire_workspace
 
-# Isolate the PARENT Claude session identity before running the read-side
-# checks. This harness runs headless -- there is NO live Claude Code session
-# for the sandbox workspace -- but when invoked from inside a Claude session
-# (e.g. `gaia release check`), the child `gaia doctor` inherits the parent's
-# CLAUDE_CODE_SESSION_ID/CLAUDE_SESSION_ID. The "Hooks active & fresh" doctor
-# check then compares the PARENT session's pinned build (a DIFFERENT workspace/
-# install) against this sandbox's freshly-installed build, reports a spurious
-# STALE warning, and `gaia doctor` exits rc=1 -- which this gate treats as a
-# hard failure even though the sandbox install is perfectly fresh. Unsetting
-# the session vars makes the check see "no live session" and return INFO (its
-# correct headless verdict), mirroring how the sandbox already isolates
-# GAIA_DATA_DIR/GAIA_DB from the user's global state.
+# Without a live session in the sandbox, `gaia doctor` should return INFO for
+# "Hooks active & fresh"; a parent session's id inherited from the caller would
+# make it compare the parent's pinned build with this one (doctor.py
+# _SESSION_ID_ENV_VARS) and exit 1.
 unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID
 
 echo
@@ -669,9 +616,8 @@ else
   rc=$?
 fi
 ms=$(( $(now_ms) - t0 ))
-# The harness gate must not pass a degraded doctor: a non-zero rc means at
-# least one check is warning/error, so treat rc>=1 as a hard FAILURE. Only a
-# clean rc=0 (all checks pass/info) with parseable JSON counts as PASS.
+# A non-zero doctor rc (warning or error) fails the gate; PASS needs rc 0 and
+# at least 5 parsed checks.
 if [[ "${rc}" -ne 0 ]]; then
   nonpass="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(', '.join(f\"{r['name']}={r['severity']}\" for r in d['checks'] if r['severity'] not in ('pass','info')))" "${out}" 2>/dev/null || echo "unparseable output")"
   record "gaia doctor --json" "FAIL" "doctor returned rc=${rc}; non-pass: ${nonpass:-none}" "${ms}"
@@ -707,7 +653,7 @@ else
   record "gaia context show" "FAIL" "exit non-zero: ${out:0:60}" "${ms}"
 fi
 
-# 5. gaia memory stats --json (verify FTS5 backfill triggered)
+# 5. gaia memory stats --json
 t0="$(now_ms)"
 if out="$(gaia memory stats --json 2>&1)"; then
   ms=$(( $(now_ms) - t0 ))
@@ -720,11 +666,9 @@ if out="$(gaia memory stats --json 2>&1)"; then
       record "memory stats (FTS5 backfill)" "FAIL" "indexed=${indexed}/${total} (need >=9)" "${ms}"
     fi
   else
-    # Local mode: workspace memory state is real and arbitrary.
-    # total_episodes reflects only the rolling index.json window, so comparing
-    # indexed (FTS5 count across all of search.db) against it is meaningless.
-    # Instead count episode-*.json files on disk — the true source of truth —
-    # and accept if FTS5 has indexed at least 80% of them (allows minor lag).
+    # Local mode: the memory is the real workspace's, so the sandbox floor of 9
+    # does not apply; require `indexed` to reach 80% of the episode-*.json
+    # files under .claude.
     json_files=$(find "${WORKSPACE}/.claude" -name "episode-*.json" -type f 2>/dev/null | wc -l)
     threshold=$(( json_files * 8 / 10 ))
     if [[ "${indexed}" -ge "${threshold}" ]]; then
@@ -739,10 +683,9 @@ else
 fi
 
 # 6. gaia memory search "deploy" --limit 3 --json --scope=episodes
-# Use --scope=episodes so the JSON output carries a top-level "results" key
-# ({"scope":"episodes","results":[...]}) that the hit-count extractor below
-# can parse. The default scope "both" produces {"episodes":[...],"curated":[]}
-# which the extractor would misread as 0 hits even when episodes are present.
+# --scope=episodes yields {"scope","results"}, the key the hit counter reads;
+# the default scope "both" yields "episodes" and "curated" keys, which it would
+# count as 0 hits.
 t0="$(now_ms)"
 if out="$(gaia memory search deploy --limit 3 --json --scope=episodes 2>&1)"; then
   ms=$(( $(now_ms) - t0 ))
@@ -769,8 +712,7 @@ except Exception:
       record "memory search deploy" "FAIL" "0 hits (expected >=1)" "${ms}"
     fi
   else
-    # Local mode: "deploy" is not guaranteed to appear in the real
-    # workspace memory. Only assert the command ran successfully.
+    # Local mode asserts only that the command ran: "deploy" need not be in the real memory.
     record "memory search deploy" "PASS" "${hits} hit(s) (local)" "${ms}"
   fi
 else
@@ -778,9 +720,7 @@ else
   record "memory search deploy" "FAIL" "exit non-zero: ${out:0:60}" "${ms}"
 fi
 
-# 7. gaia scan (exit 0)
-# `gaia context scan --dry-run` validates freshness without running the
-# scanners or writing project-context.json.
+# 7. gaia context scan --dry-run (recorded as "gaia scan"); exit 0 is the pass
 t0="$(now_ms)"
 if out="$(gaia context scan --dry-run 2>&1)"; then
   ms=$(( $(now_ms) - t0 ))
@@ -790,13 +730,9 @@ else
   record "gaia scan" "FAIL" "exit non-zero: ${out:0:60}" "${ms}"
 fi
 
-# 8. User-key preservation: the wire step (gaia install --workspace) merges
-#    hooks/permissions/agent into settings.local.json AUTHORITATIVELY but must
-#    never clobber pre-existing user keys. This asserts the fixture's sentinel
-#    + env marker survive that merge (see merge_local_permissions /
-#    merge_local_hooks in _install_helpers.py -- they load-then-merge, leaving
-#    unknown top-level keys and user env values intact).
-#    Sandbox only -- local mode has no meaningful "pre" snapshot.
+# 8. User-key preservation: the fixture's sentinel and env marker must survive
+#    the settings.local.json merge `gaia install` does in the wire step.
+#    Sandbox only: local mode has no pre-install snapshot.
 if [[ "${TARGET}" == "sandbox" ]]; then
   if [[ -n "${PRE_CHECKSUM}" && -f "${SETTINGS_FILE}" ]]; then
     POST_CHECKSUM="$(sha256 "${SETTINGS_FILE}")"
@@ -820,8 +756,8 @@ else
   record "settings preservation" "SKIP" "local mode (no pre-snapshot)" "0"
 fi
 
-# 9. Install seeders: `gaia install` reports a seeder error and carries on, as a
-# user install must, so the gate reads the tables the seeders fill instead.
+# 9. Install seeders: `gaia install` reports a seeder error and carries on, so
+# the gate reads the tables the seeders fill.
 if [[ "${TARGET}" == "sandbox" ]]; then
   t0="$(now_ms)"
   routing_rows="$(sqlite3 "${GAIA_DB}" 'SELECT COUNT(*) FROM surface_routing;' 2>/dev/null || echo 0)"

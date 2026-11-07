@@ -1,19 +1,13 @@
 #!/usr/bin/env node
 /**
- * release-prepare -- atomically bump every version source, rebuild dist/, and
- * validate, in one command. Invoked by the gaia-release skill's "release" flow
- * (step b), NOT run by hand: the whole point is that no human has to remember
- * the five files that must agree or the order they move in.
+ * release-prepare -- bump every version source, regenerate the package-root
+ * plugin manifests, and validate, in one command. Invoked by the gaia-release
+ * skill's "release" flow (step b), not run by hand.
  *
- * The saga this prevents: bumping package.json but forgetting pyproject.toml
- * (which then ships stale and fails CI's validate-manifests leg AFTER the tag
- * is pushed -- a 5.0.3 -> 5.0.4 re-release). pre-publish:validate is the gate
- * that catches drift; this script makes drift impossible to introduce by hand
- * by writing all sources from a single target version, then running that same
- * gate locally so a drift fails here, loudly, before any tag exists.
+ * All sources are written from one target version, then the pre-publish:validate
+ * drift gate runs locally, so a drift fails here before any tag exists.
  *
- * Steps (atomic -- a failure leaves the working tree for inspection, never
- * half-published):
+ * Steps (a failure stops the run and leaves the working tree for inspection):
  *   1. Bump ALL version sources to <version>:
  *        - package.json
  *        - pyproject.toml         ([project].version)
@@ -28,12 +22,8 @@
  *      .claude-plugin/marketplace.json is never written: its gaia entry has
  *      source "." and no version, so the ref a user adds the marketplace from
  *      is the code that installs, at the version plugin.json declares.
- *   2. npm run generate:plugin-root  (regenerates the ROOT .claude-plugin/plugin.json
- *                                     (metadata only) + the canonical hooks/hooks.json
- *                                     from the manifest -- the source:npm plugin
- *                                     surface. Hooks live ONLY in hooks/hooks.json,
- *                                     never inline in plugin.json. No dist/ bundle
- *                                     exists anymore.)
+ *   2. npm run generate:plugin-root  (regenerates the root .claude-plugin/plugin.json
+ *                                     and hooks/hooks.json from the manifest)
  *   3. npm run pre-publish:validate  (the drift gate -- fails loud on any
  *                                     source that did not move)
  *
@@ -155,7 +145,6 @@ function main() {
 
   log(`Target version: ${version}`, 'step');
 
-  // Step 1 -- atomic bump of every version source.
   log('Step 1: Bumping all version sources atomically...', 'step');
   const results = [];
   try {
@@ -168,9 +157,6 @@ function main() {
   }
   for (const r of results) log(`  ${r}`, 'success');
 
-  // Step 2 -- regenerate the ROOT plugin manifests (plugin.json is metadata
-  // only; hooks live ONLY in the canonical hooks/hooks.json, never inline)
-  // so the source:npm plugin surface carries the new version. No dist/ bundle.
   log('Step 2: Regenerating root plugin manifests (npm run generate:plugin-root)...', 'step');
   try {
     run('npm run generate:plugin-root');
@@ -179,7 +165,6 @@ function main() {
   }
   log('root manifests regenerated', 'success');
 
-  // Step 3 -- the drift gate. Fails loud if any source did not move.
   log('Step 3: Validating version sync (npm run pre-publish:validate)...', 'step');
   try {
     run('npm run pre-publish:validate');

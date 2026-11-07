@@ -1,13 +1,9 @@
 """
-Lightweight scan trigger for SessionStart hook.
+Lightweight scan: runs a subset of the tools/scan scanners (default tools and
+environment) in-process through ScanOrchestrator.
 
-Runs a subset of project scanners (e.g., tools + environment) to refresh
-project-context rows in ~/.gaia/gaia.db without significant startup delay
-(<3s target). The scanner writes directly to the gaia.db substrate via the
-store API; there is no JSON intermediate.
-
-Uses the scan engine directly (in-process) — no dependency on bin/gaia-scan.py.
-Works in both npm and plugin mode since tools/scan/ is always available.
+Nothing under hooks/, gaia/, bin/ or tools/ calls it; SessionStart scans no
+workspace (see hooks/session_start.py).
 
 Public API:
     - trigger_lightweight_scan(project_root: Path, scanners: list) -> bool
@@ -34,13 +30,13 @@ def trigger_lightweight_scan(
             ["tools", "environment"].
 
     Returns:
-        True on success, False on failure. Designed to complete in <3s.
+        True on success; False on an import failure, scanner errors or an exception.
     """
     if scanners is None:
         scanners = ["tools", "environment"]
 
-    # Ensure tools.scan is importable by adding plugin root to sys.path
-    hooks_dir = Path(__file__).resolve().parents[2]  # hooks/
+    # tools.scan lives at the plugin root, which is not on sys.path in a hook process.
+    hooks_dir = Path(__file__).resolve().parents[2]
     plugin_root = hooks_dir.parent
     if str(plugin_root) not in sys.path:
         sys.path.insert(0, str(plugin_root))

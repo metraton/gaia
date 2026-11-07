@@ -11,14 +11,14 @@ User runs: gaia <subcommand> [args]
         |
 bin/gaia (Python entry point) loads the dispatcher
         |
-bin/cli/__init__.py imports every module in bin/cli/ that defines register()
+bin/gaia imports the bin/cli/<name>.py named by the first argument (every module for --help, no argument or an unknown name) and keeps those that define register()
         |
 Each module's register(subparsers) attaches its argparse + cmd_<name>() handler
         |
 Dispatcher routes to the matched handler, which exits with a status code
 ```
 
-There is **no npm `postinstall` hook** — install is non-invasive and bootstrap is lazy. The DB is created on the first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped for `install`, `uninstall`, `migrate` and `now`, `_LAZY_BOOTSTRAP_SKIP`), and the install folder's `.claude/` config is written by `gaia install`. Every SessionStart also writes there (`run_first_time_setup` in `hooks/modules/core/plugin_setup.py`): it creates `plugin-registry.json` if missing (plugin data dir, else `.claude/`), merges Gaia's permissions and attribution into `.claude/settings.local.json`, and syncs the npm channel's hook entries into it; `.claude/hooks` is the only link it creates or repairs:
+There is **no npm `postinstall` hook** — install is non-invasive and bootstrap is lazy. The DB is created on the first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped for `install`, `uninstall`, `migrate`, `now` and `lint`, `_LAZY_BOOTSTRAP_SKIP`), and the install folder's `.claude/` config is written by `gaia install`. Every SessionStart also writes there (`run_first_time_setup` in `hooks/modules/core/plugin_setup.py`): it creates `plugin-registry.json` if missing (plugin data dir, else `.claude/`), merges Gaia's permissions and attribution into `.claude/settings.local.json`, and syncs the npm channel's hook entries into it; the `.claude/hooks` link is the only link SessionStart creates or repairs (`ensure_workspace_hooks_link` in `hooks/modules/core/workspace_bootstrap.py`):
 
 ```
 npm|pnpm install @jaguilar87/gaia
@@ -51,14 +51,17 @@ No Claude Code session is involved in either case. The subcommands run in a norm
 
 ```
 bin/
-├── gaia                       # Python entry point — dispatches to bin/cli/<name>; its --help epilog is the lane map the orchestrator guard enforces
+├── gaia                       # Python entry point — dispatches to bin/cli/<name>; its --help epilog is the lane map the orchestrator guard enforces;
+│                              #   main sets GAIA_STORE_ENTRY_POINT, so it and its children may write the real gaia.db (gaia/store/writer.py::real_store_refusal)
+├── plugin-dryrun.sh           # Plugin dry-run harness used by the release gate
 ├── pre-publish-validate.js    # Pre-publish gate for the release pipeline
 ├── python-detect.js           # Python runtime detection helper for npm lifecycles
 ├── validate-sandbox.sh        # End-to-end consumer-install verification harness
 ├── README.md
 └── cli/                       # Subcommand modules (one file per subcommand)
-    ├── __init__.py            # Discovery: imports every sibling that defines register()
+    ├── __init__.py            # Package marker; discovery lives in bin/gaia
     ├── _install_helpers.py    # Shared helpers for install/update (private, leading _)
+    ├── _legacy_cleanup.py     # What install removes of a 5.3 or 5.4 workspace: .claude runtime data, approval grant files, old launchers (private)
     ├── _manifest.py           # The install manifest (.claude/gaia-manifest.json): record on install, revert on uninstall, per-channel ownership (private)
     ├── _leftovers.py          # What uninstall removes or lists as left beyond the manifest: package lines, gaia dev caches (private)
     ├── _dev_plugin.py         # gaia dev --channel plugin: the local gaia-dev marketplace and its undo (private)
@@ -66,31 +69,37 @@ bin/
     ├── _converge.py           # Shared drift-free convergence primitives for dev/release (private, no register())
     ├── _pack_helpers.py       # shared `npm pack` primitive for dev/release (private, no register())
     ├── ac.py                  # gaia ac         — acceptance criteria for briefs (DB-canonical)
-    ├── approvals.py           # gaia approvals  — list/pending/show/question/request-set/approve/revoke/reject/reject-all/history/replay/clean/stats T3 grants
+    ├── approvals.py           # gaia approvals  — list/pending/show/question/request-set/request-file-write/approve/revoke/reject/reject-all/history/replay/clean/stats/audit-secrets T3 grants
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle, set-project, history (brief_events)
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
     ├── context.py             # gaia context    — show / scan / get / query / wipe / prune-workspaces project context from gaia.db
     ├── contract.py            # gaia contract   — build/validate an agent_contract_handoff draft by-value: init/set/add/view (--field for one subtree)/validate/finalize + fill --json, plus reconcile for hook-written residue rows
+    ├── contract_proposals.py  # gaia contract proposals — list/accept/dismiss/backfill what turns proposed (update_contracts, memory_delta); attached to contract.py's parser
     ├── defects.py             # gaia defects    — row-level triage of subagent anomalies and graded hook-log failures
     ├── dev.py                 # gaia dev        — fast local dev loop: pack/link + install + wire, one command, per --channel
     ├── doctor.py              # gaia doctor     — system health check (the model to learn)
     ├── evidence.py            # gaia evidence   — per-AC evidence (three-tier storage)
     ├── history.py             # gaia history    — recent agent sessions
     ├── install.py             # gaia install    — migrate the DB, wire settings and symlinks, record the manifest (run manually; no postinstall; declares no workspace)
-    ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/checkpoint; add --replace and delete signed) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
+    ├── lint.py                # gaia lint       — read-only checks over a branch; `lint comments` is the pre-push comment limit
+    ├── login.py               # gaia login      — start a CLI login in its own session and print its link as JSON; status reports pending/complete/failed
+    ├── map.py                 # gaia map        — what is live now with the verb that moves it, the five habits, intent -> capability; read-only
+    ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/move/checkpoint, --from-file batches for reclassify/link/move; add --replace and link --delete signed; declare, signed, records a tool's effect or a project command form that no hook reads yet) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
     ├── memory_story.py        # backs `gaia memory story` (lineage narration); imported by memory.py, no register() of its own
     ├── metrics.py             # gaia metrics    — usage analytics (DB-canonical episodes/anomalies + audit-log tier/commands)
     ├── migrate.py             # gaia migrate    — plan | apply the schema migration chain: backup, one transaction, --consent-chain for data-reaching chains
     ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
     ├── notifications.py       # gaia notifications — reports, reminders and routines (add/list/show/ack/snooze/cancel)
     ├── now.py                 # gaia now        — local time, UTC offset and zone; opens no database
+    ├── open.py                # gaia open       — resolve one KIND:SCOPE/ID#FIELD reference to anything Gaia stores, read-only
     ├── paths.py               # gaia paths      — report the resolved storage paths and create the ~/.gaia layout
     ├── plan.py                # gaia plan       — manage plans (one per brief, DB-canonical)
     ├── project.py             # gaia project    — move a project, its briefs and its profile into another declared workspace
     ├── query.py               # gaia query      — cross-surface read-only query (memory, episodes, harness_events)
     ├── release.py             # gaia release    — check (Layer 2 local gate) | publish (Layer 3 trigger sequence)
     ├── scan.py                # gaia scan       — project scanner over a declared workspace; writes scan results to gaia.db (DB-canonical)
-    ├── session.py             # gaia session    — preview the SessionStart birth block in-process
+    ├── session.py             # gaia session    — preview the SessionStart birth block, print a session's ledger (snapshot), set its resume point
+    ├── signals.py             # gaia signals    — curated changes other sessions made, each with the command that opens it; never moves the cursor
     ├── status.py              # gaia status     — quick installation snapshot
     ├── task.py                # gaia task       — manage tasks within plans (DB-canonical)
     ├── uninstall.py           # gaia uninstall  — full, one channel (--channel), or preuninstall removal
@@ -110,8 +119,7 @@ bin/
 
 ```python
 def register(subparsers) -> None:
-    """Attach this subcommand's argparse parser. Called once at startup
-    by bin/cli/__init__.py."""
+    """Attach this subcommand's argparse parser. Called by bin/gaia."""
     p = subparsers.add_parser("<name>", help="...")
     p.add_argument(...)
     p.set_defaults(func=cmd_<name>)
@@ -130,7 +138,7 @@ Modules whose name starts with `_` (e.g. `_install_helpers.py`) are private help
 
 **Exit codes:** `0` on success, `1` on warnings, `2` on errors. The release pipeline's sandbox harness relies on these -- do not print a success line and exit non-zero, or vice versa.
 
-**Cleanup footprint:** Full cleanup (the default, used by `gaia uninstall`) reverts `.claude/gaia-manifest.json` -- every file, link and settings key `gaia install` wrote returns to its prior state, and files Gaia did not create are kept -- and removes a `.claude/.plugin-initialized` marker an earlier version left there (the marker now lives in the Gaia data home, `~/.gaia` or `GAIA_DATA_DIR`, beside the logs and session state every channel shares, and uninstall does not touch it). Two files are handled surgically because they are shared with Claude Code: `settings.local.json` has only Gaia-injected keys removed (agent identity, two env vars, Gaia's permission entries; user content is preserved); `plugin-registry.json` has only Gaia's `installed[]` entry removed and is deleted only if it contained nothing else. The user DB at `~/.gaia/gaia.db` is NEVER deleted by `gaia uninstall` -- there is no purge path. By default, uninstall takes a gzip snapshot of the DB before it runs (pass `--no-backup` to skip that snapshot); `SessionStart` independently snapshots the DB at most once per 24 h (`hooks/modules/session/db_backup.py::maybe_backup_db`, throttled on the newest `sessionstart` snapshot). Retention keeps the newest 5 snapshots of each prefix (`uninstall`, `sessionstart`, ...), so one caller's snapshots never prune another's (`enforce_retention` in `gaia/paths/snapshot.py`). The canonical sources for what gets removed are `cli/_manifest.py`, `cli/_leftovers.py` and `cli/cleanup.py` (`_clean_settings_local_json`, `_remove_plugin_registry_entry`). `gaia uninstall --channel npm|plugin|opencode` is the per-channel cleanup (`_manifest.uninstall` -> `_uninstall_channel`): npm and the plugin share `.claude/`, so uninstalling either takes back every Claude Code entry in the manifest, while OpenCode owns `opencode.json` and `.opencode/` and is removed on its own with `--channel opencode`. The remaining channel stays recorded, the package copy stays while it runs from it, and hook state and `gaia dev` caches stay; once the named channel is the last one recorded, the full cleanup runs.
+**Cleanup footprint:** Full cleanup (the default, used by `gaia uninstall`) reverts `.claude/gaia-manifest.json` -- every file, link and settings key `gaia install` wrote returns to its prior state, and files Gaia did not create are kept -- and removes a `.claude/.plugin-initialized` marker an earlier version left there (the marker now lives in the Gaia data home, `~/.gaia` or `GAIA_DATA_DIR`, beside the logs and session state every channel shares, and uninstall does not touch it). Two files are handled surgically because they are shared with Claude Code: `settings.local.json` has only Gaia-injected keys removed (agent identity, two env vars, Gaia's permission entries; user content is preserved); `plugin-registry.json` has only Gaia's `installed[]` entry removed and is deleted only if it contained nothing else. The user DB at `~/.gaia/gaia.db` is NEVER deleted by `gaia uninstall` -- there is no purge path. By default, uninstall takes a gzip snapshot of the DB before it runs (pass `--no-backup` to skip that snapshot); `SessionStart` independently snapshots the DB at most once per 24 h (`hooks/modules/session/db_backup.py::maybe_backup_db`, throttled on the newest `sessionstart` snapshot). The session only decides: a due backup runs in a detached child that verifies the copy before publishing it, and a throttled launch starts nothing and writes no status. Session snapshots keep 7 daily, 4 weekly and 3 monthly (`prune_gfs`), `uninstall` snapshots are exempt, and pre-migration and workspace backups keep the newest 3 of each kind; all of them are verified gzip files written by `gaia/paths/backup.py`. The canonical sources for what gets removed are `cli/_manifest.py`, `cli/_leftovers.py` and `cli/cleanup.py` (`_clean_settings_local_json`, `_remove_plugin_registry_entry`). `gaia uninstall --channel npm|plugin|opencode` is the per-channel cleanup (`_manifest.uninstall` -> `_uninstall_channel`): npm and the plugin share `.claude/`, so uninstalling either takes back every Claude Code entry in the manifest, while OpenCode owns `opencode.json` and `.opencode/` and is removed on its own with `--channel opencode`. The remaining channel stays recorded, the package copy stays while it runs from it, and hook state and `gaia dev` caches stay; once the named channel is the last one recorded, the full cleanup runs.
 
 **`package.json` `bin` field:**
 

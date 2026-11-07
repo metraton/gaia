@@ -2,15 +2,10 @@
 Host Session ID Access for Gaia.
 
 Adapter-owned utility that encapsulates how the host CLI exposes the current
-session identifier via the environment. The host-specific env var name lives
-ONLY here (inside ``hooks/adapters/``); business logic modules call these
-helpers instead of reading the environment directly, so the core stays
-agnostic to the host CLI's session-propagation convention.
-
-Mirrors the ``channel.py`` pattern: a small standalone module under
-``adapters/`` that reads a host env var and is imported by business logic,
-with no dependency on the heavier ``ClaudeCodeAdapter`` (avoids any
-circular-import or instantiation concern in low-level modules).
+session identifier via the environment. Business logic modules call these
+helpers instead of reading the environment directly. It depends on nothing
+from ``ClaudeCodeAdapter``, so low-level modules can import it without a
+circular import.
 """
 
 import hashlib
@@ -20,8 +15,6 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# The environment variable the host CLI (Claude Code) uses to advertise the
-# current session id. Confined to this adapter module by design.
 _HOST_SESSION_ENV_VAR = "CLAUDE_SESSION_ID"
 
 

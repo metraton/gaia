@@ -310,6 +310,8 @@ class TestSubagentStopHygiene:
         """
         import sqlite3
         import gaia.store.writer as swriter
+
+        monkeypatch.setenv("TF_WORKSPACE", "default")
         from modules.security.approval_scopes import (
             SCOPE_SEMANTIC_SIGNATURE,
             build_approval_signature,

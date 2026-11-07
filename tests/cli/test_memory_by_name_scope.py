@@ -50,7 +50,7 @@ def _add(capsys, name, workspace="me"):
         capsys, memory_mod._cmd_add, name=name, type="project", body="stored under me",
         body_file=None, description="desc", workspace=workspace, class_="thread",
         status="carry_forward", project=None, project_ref=None, audience=None,
-        initiative="bildwiz",
+        initiative="bildwiz", kind="pending",
     )
     assert rc == 0, out
 
@@ -114,7 +114,7 @@ def test_reclassify_with_an_explicit_workspace_lacking_the_slug_writes_nothing(
 def test_link_with_an_explicit_workspace_lacking_the_slugs_writes_nothing(
     tmp_db, row_in_me, capsys,
 ):
-    rc, _ = _call(capsys, memory_mod._cmd_link, src_name=OTHER, dst_name=SLUG,
+    rc, _ = _call(capsys, memory_mod._cmd_link, src_name=OTHER, dst_names=[SLUG],
                   kind="derived_from", delete=False, workspace="aaxis")
 
     assert rc == 1

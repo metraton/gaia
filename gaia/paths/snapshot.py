@@ -1,8 +1,9 @@
 """
 gaia.paths.snapshot -- gzip snapshots of gaia.db with per-prefix retention.
 
-Shared by ``gaia uninstall`` (prefix ``uninstall``) and the SessionStart
-auto-backup (prefix ``sessionstart``) so both keep the same guarantees:
+Used by ``gaia uninstall`` (prefix ``uninstall``); the SessionStart backup
+(prefix ``sessionstart``) is written by gaia.paths.backup instead. Unlike that
+one, a snapshot here is not verified. Guarantees:
 
   * The source DB is only ever opened for reading; a snapshot is a new file.
   * Names are ``<prefix>-YYYYmmddTHHMMSSffffff.db.gz``. Within one prefix the
@@ -62,7 +63,7 @@ def create_snapshot(
     prefix: str = "gaia",
 ) -> dict:
     """Write a gzip copy of ``db_path`` as ``<prefix>-<timestamp>.db.gz`` in
-    ``snapshot_dir``, then keep only the newest ``retain`` snapshots of each prefix.
+    ``snapshot_dir``, then keep only the newest ``retain`` snapshots of that prefix.
 
     ``db_path`` is only opened for reading. Returns::
 
@@ -72,6 +73,7 @@ def create_snapshot(
        "created":   True/False,
        "dry_run":   True/False,
        "pruned":    ["<path>", ...],   # snapshots deleted by retention
+       "details":   "<short description>",  # absent when the copy fails
        "error":     "<message>"}       # only present on failure
     """
     result: dict = {
@@ -104,24 +106,25 @@ def create_snapshot(
 
     result["created"] = True
     result["details"] = f"snapshot {snapshot_path.stat().st_size} bytes"
-    result["pruned"] = enforce_retention(snapshot_dir, retain=retain)
+    result["pruned"] = enforce_retention(snapshot_dir, prefix=prefix, retain=retain)
     return result
 
 
-def enforce_retention(snapshot_dir: Path, retain: int = DEFAULT_RETAIN) -> List[str]:
-    """Keep the newest ``retain`` snapshots of each prefix in ``snapshot_dir``,
-    delete the rest, and return the deleted paths."""
+def enforce_retention(snapshot_dir: Path, *, prefix: str, retain: int = DEFAULT_RETAIN) -> List[str]:
+    """Keep the newest ``retain`` ``prefix`` snapshots in ``snapshot_dir``, delete
+    the rest, and return the deleted paths. Other prefixes are never touched:
+    each has its own retention policy."""
     if retain < 0 or not snapshot_dir.exists():
         return []
 
+    snapshots = _snapshots_by_prefix(snapshot_dir).get(prefix, [])
     pruned: List[str] = []
-    for snapshots in _snapshots_by_prefix(snapshot_dir).values():
-        for snapshot in snapshots[: max(0, len(snapshots) - retain)]:
-            try:
-                snapshot.unlink()
-            except OSError:
-                continue
-            pruned.append(str(snapshot))
+    for snapshot in snapshots[: max(0, len(snapshots) - retain)]:
+        try:
+            snapshot.unlink()
+        except OSError:
+            continue
+        pruned.append(str(snapshot))
     return pruned
 
 

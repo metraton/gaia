@@ -31,7 +31,7 @@ from gaia.store import writer  # noqa: E402
 SESSION = "ses-orchestrator"
 AGENT_ID = "a0f1e2d3c4b5a6978"
 AGENT_TYPE = "gaia-system"
-COMMANDS = ["git push origin feat/x", "gh pr create --base main --fill"]
+COMMANDS = ["git push origin feat/x", "gh pr merge 1"]
 
 
 @pytest.fixture

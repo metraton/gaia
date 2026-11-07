@@ -40,7 +40,7 @@ def build_invalid_nonce_message() -> str:
 
 
 def build_deprecated_approval_message() -> str:
-    """Return the canonical deny message for removed legacy approval syntax."""
+    """Return the canonical deny message for unsupported string-based approval syntax."""
     return (
         "[ERROR] Deprecated approval format\n\n"
         "String-based approval tokens are no longer supported.\n"
@@ -91,10 +91,6 @@ def build_t3_approval_instructions(nonce: str | None = None) -> str:
     )
 
 
-# Canonical skill name for subagent approval workflow (D11 — role-prefixed).
-# This constant is the single source of truth referenced by:
-#   - build_t3_blocked_denial_message()  (below)
-#   - tests/hooks/test_denial_messages.py
 _SUBAGENT_APPROVAL_SKILL = "subagent-request-approval"
 
 
@@ -120,9 +116,8 @@ def build_t3_blocked_denial_message(
 ) -> str:
     """Return the canonical T3_BLOCKED denial message for subagent context.
 
-    Per plan D5 + D11, the message must include the literal skill name in the
-    format ``Load Skill('<name>')`` so the subagent knows exactly which skill
-    to load without inference.
+    The message names the skill as ``Load Skill('<name>')`` so the subagent
+    knows which one to load without inference.
 
     Args:
         approval_id: The P-{hex} approval identifier from the DB or filesystem.

@@ -7,7 +7,7 @@ description: Use when creating or drafting a ticket or issue, or standardizing t
 
 The formula for tickets humans can read in ~15 seconds. The what and why go at
 the top; the how and evidence go in a comment. One Story per brief or theme;
-consolidate rather than inflate.
+consolidate rather than inflate. The register is `human-register`'s; this skill owns the ticket's shape.
 
 ## Core principle
 

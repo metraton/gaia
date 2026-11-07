@@ -32,7 +32,9 @@ gaia contract fill --json '{
     "files_checked": ["flux/apps/qxo-api/helmrelease.yaml"],
     "commands_run": ["kubectl get hr -n qxo -> all reconciled"],
     "key_outputs": ["All 12 HelmReleases healthy, no drift detected"],
-    "verbatim_outputs": [],
+    "verbatim_outputs": [
+      {"command": "kubectl get hr -n qxo", "excerpt": "NAME ... READY ... qxo-api ... True"}
+    ],
     "cross_layer_impacts": [],
     "open_gaps": []
   }
@@ -47,7 +49,7 @@ No `--plan-task-id` here, and not by omission: `cmd_finalize` refuses a
 `COMPLETE` whose turn is bound to a plan task (`reason:
 blind_verification_required`), whether the binding arrives as that flag or is
 recovered from the born row. A plan-task-bound turn walks these same calls but
-sets `NEEDS_VERIFICATION` instead of `COMPLETE` (example 9), and passes
+sets `NEEDS_VERIFICATION` instead of `COMPLETE` (example 8), and passes
 `--plan-task-id <id>` to finalize.
 
 Order matters here: `verification` is filled in BEFORE `agent_state` is set to `COMPLETE` (`reference.md`, "Build order for a terminal state"). Reversing those two calls rejects with `VERIFICATION_RESULT` on the `set agent_state COMPLETE` step, because validate-on-write checks the FULL envelope at that point, not just the field being set.
@@ -65,6 +67,8 @@ Standard terminal envelope after a successful increment. `verification` is requi
 
 The two verification fields are not synonyms and both earn their place. `type` is the classifier the validator reads, over an OPEN vocabulary: declaring one is a claim that a check ran, and the claim is priced in a companion field -- `command`/`code` owe `command`, `semantic` owes `requires_human`, `self_review` owes `reviewed`, any other word owes at least one of those three, and `none` (no oracle was required) owes nothing. `method` is free prose naming HOW you checked; nothing reads it as a classifier, so a block carrying only `method` declares no type and is asked for no evidence. See `agent-contract-handoff`.
 
+The `verbatim_outputs` entry is written as a `{"command", "excerpt"}` dict, so finalize compares it: each fragment between `...` elisions must appear, in order and on whole-token boundaries, in the recorded output of a command this turn ran. A plain string quote is kept uncompared and named in `content_checks.skipped`.
+
 ```json
 {
   "agent_status": {
@@ -78,7 +82,9 @@ The two verification fields are not synonyms and both earn their place. `type` i
     "files_checked": ["flux/apps/qxo-api/helmrelease.yaml"],
     "commands_run": ["kubectl get hr -n qxo -> all reconciled"],
     "key_outputs": ["All 12 HelmReleases healthy, no drift detected"],
-    "verbatim_outputs": [],
+    "verbatim_outputs": [
+      {"command": "kubectl get hr -n qxo", "excerpt": "NAME ... READY ... qxo-api ... True"}
+    ],
     "cross_layer_impacts": [],
     "open_gaps": [],
     "verification": {
@@ -184,9 +190,9 @@ Hook produced `approval_id` -- pass it through verbatim. The orchestrator presen
 }
 ```
 
-## 5. COMPLETE with `memorialize_suggestions` (curate gaia memory)
+## 5. COMPLETE with `memory_delta` (propose gaia memory)
 
-The agent uncovered a fact worth persisting (a decision, an anchor) and offers it as a memorialize entry. The orchestrator presents it to the user; the user decides whether it lands in gaia memory. Required fields per entry: `description`, `body`.
+The agent uncovered a fact worth persisting (a decision, an anchor) and proposes it in `memory_delta`, the one memory proposal channel. The orchestrator decides whether it lands in gaia memory. A `create` proposal carries the fields `gaia memory add --help` describes: `slug`, `type`, `description`, `body`.
 
 ```json
 {
@@ -213,14 +219,20 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and offers i
       "details": "Confirmed `.github/workflows/publish.yml` parses suffix to set --tag."
     }
   },
-  "memorialize_suggestions": [
-    {
-      "type": "decision",
-      "class": "anchor",
-      "description": "RC versioning convention for @jaguilar87/gaia",
-      "body": "Versions matching X.Y.Z-rc.N publish to npm tag 'rc'; X.Y.Z publishes to 'latest'. Auto-detected by publish.yml on the GitHub Release event. No manual --tag flag is supported."
-    }
-  ],
+  "memory_delta": {
+    "version": 1,
+    "proposals": [
+      {
+        "operation": "create",
+        "create": {
+          "slug": "decision_gaia_rc_versioning",
+          "type": "decision",
+          "description": "RC versioning convention for @jaguilar87/gaia",
+          "body": "Versions matching X.Y.Z-rc.N publish to npm tag 'rc'; X.Y.Z publishes to 'latest'. Auto-detected by publish.yml on the GitHub Release event. No manual --tag flag is supported."
+        }
+      }
+    ]
+  },
   "consolidation_report": null,
   "approval_request": null
 }
@@ -269,9 +281,9 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
 }
 ```
 
-## 7. COMPLETE with `update_contracts` (index a discovery into project-context)
+## 7. COMPLETE with `update_contracts` (propose a discovery for project-context)
 
-The agent discovered a project fact a section it owns did not yet hold, and writes it back so the next agent does not re-derive it. `update_contracts` is an array of `{contract, payload}`; `contract` must be a name from the INPUT `write_permissions.writable_sections`, and `payload` carries only the keys to add or update (index, not live-state). See `agent-contract-handoff` for merge semantics.
+The agent discovered a project fact a section did not yet hold, and proposes it so the next agent does not re-derive it. `update_contracts` is an array of `{contract, payload}`; nothing is written at close, the orchestrator is told and decides whether to accept it. `payload` carries only the keys to add or update (index, not live-state). See `agent-contract-handoff` for merge semantics.
 
 ```json
 {

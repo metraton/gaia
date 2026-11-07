@@ -38,6 +38,46 @@ CREATE TABLE IF NOT EXISTS project_context_contracts (
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    workspace        TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    role             TEXT,
+    remote_url       TEXT,
+    platform         TEXT,
+    primary_language TEXT,
+    scanner_ts       TEXT,
+    topic_key        TEXT,
+    group_name       TEXT,
+    path             TEXT,
+    status           TEXT NOT NULL DEFAULT 'active',
+    missing_since    TEXT,
+    project_identity TEXT,
+    description      TEXT,
+    superseded_by    TEXT,
+    PRIMARY KEY (workspace, name),
+    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_context (
+    project_identity TEXT NOT NULL,
+    contract_name    TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    metadata         TEXT,
+    updated_at       TEXT,
+    PRIMARY KEY (project_identity, contract_name)
+);
+
+CREATE TABLE IF NOT EXISTS project_context_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_identity    TEXT NOT NULL,
+    contract_name       TEXT NOT NULL,
+    before_payload_json TEXT,
+    after_payload_json  TEXT NOT NULL,
+    changed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    changed_by_agent    TEXT,
+    proposed_by         TEXT
+);
+
 CREATE TABLE IF NOT EXISTS agent_contract_permissions (
     agent_name    TEXT NOT NULL,
     contract_name TEXT NOT NULL,
@@ -94,6 +134,19 @@ def seed_workspace(
     con.commit()
     con.close()
     return name
+
+
+def seed_project(db_path: Path, workspace: str, name: str, identity: str) -> str:
+    """Insert an active project of ``workspace`` (and the workspace); returns ``identity``."""
+    seed_workspace(db_path, workspace)
+    con = sqlite3.connect(str(db_path))
+    con.execute(
+        "INSERT OR IGNORE INTO projects (workspace, name, path, project_identity) VALUES (?, ?, ?, ?)",
+        (workspace, name, f"/repos/{name}", identity),
+    )
+    con.commit()
+    con.close()
+    return identity
 
 
 def seed_workspace_contracts(

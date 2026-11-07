@@ -28,9 +28,10 @@ for _path in (_REPO_ROOT / "scripts", _FIXTURES, _REPO_ROOT / "bin", _REPO_ROOT 
 import bootstrap_database  # noqa: E402
 import migration_guard  # noqa: E402
 from cli import doctor, install  # noqa: E402
+from gaia.paths.backup import restore_gzip  # noqa: E402
 from loader import load_base  # noqa: E402
 
-_BACKUP_LINE = re.compile(r"backup written and verified: (\S+\.db)")
+_BACKUP_LINE = re.compile(r"backup written and verified: (\S+\.db\.gz)")
 
 
 def _expected_version() -> int:
@@ -81,7 +82,8 @@ def test_bare_install_migrates_after_a_verified_backup_and_a_second_run_changes_
 
     assert first.returncode == 0, first.stdout + first.stderr
     assert _ledger(db) == _expected_version()
-    backup = Path(_BACKUP_LINE.search(first.stdout + first.stderr).group(1))
+    backup = tmp_path / "restored.db"
+    restore_gzip(Path(_BACKUP_LINE.search(first.stdout + first.stderr).group(1)), backup)
     con = sqlite3.connect(backup)
     try:
         assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

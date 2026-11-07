@@ -1,8 +1,7 @@
 """
 gaia milestone -- Manage milestones for briefs in the Gaia DB substrate.
 
-Architecture: Opción B (DB canónica). All mutating operations write only to
-``~/.gaia/gaia.db``.
+Every mutating operation writes only to ``~/.gaia/gaia.db``.
 
 Subcommands:
     gaia milestone set-status <brief> <name> <status>  Transition milestone status

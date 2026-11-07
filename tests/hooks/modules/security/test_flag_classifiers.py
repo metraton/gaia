@@ -33,6 +33,7 @@ from modules.security.flag_classifiers import (
     OUTCOME_MUTATIVE,
     OUTCOME_BLOCKED,
 )
+from modules.security.mutative_verbs import LocalWorkCaller
 
 
 # ============================================================================
@@ -462,6 +463,184 @@ class TestFlagClassifierAwk:
         assert result is not None
         assert result.outcome == OUTCOME_READ_ONLY
 
+    @pytest.mark.parametrize("program", [
+        '{ print $1 > "out.txt" }',
+        '{ printf "%s\\n", $1 >> "out.txt" }',
+        '{ system("rm " $1) }',
+        '{ print $1 | "sh" }',
+    ])
+    @pytest.mark.parametrize("spelling", ["-f {}", "--file={}", "--file {}", "-f{}", "-E {}"])
+    def test_awk_progfile_that_writes_or_runs_signs(self, tmp_path, program, spelling):
+        progfile = tmp_path / "prog.awk"
+        progfile.write_text(program + "\n")
+        result = classify_by_flags(f"awk {spelling.format(progfile)} data.txt")
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    @pytest.mark.parametrize("spelling", ["-f {}", "--file={}", "-f{}"])
+    def test_awk_read_only_progfile_stays_free(self, tmp_path, spelling):
+        progfile = tmp_path / "prog.awk"
+        progfile.write_text('{ total += $2 }\nEND { print total }\n')
+        result = classify_by_flags(f"awk {spelling.format(progfile)} data.txt")
+        assert result is not None
+        assert result.outcome == OUTCOME_READ_ONLY
+
+    def test_awk_relative_progfile_resolves_against_the_shell_cwd(self, tmp_path):
+        (tmp_path / "prog.awk").write_text('{ system("touch x") }\n')
+        caller = LocalWorkCaller("agent", str(tmp_path))
+        result = classify_by_flags("awk -f prog.awk data.txt", caller)
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    @pytest.mark.parametrize("command", [
+        "awk -f {missing}/prog.awk data.txt",
+        "awk -f prog.awk data.txt",
+    ])
+    def test_awk_unreadable_progfile_signs(self, tmp_path, command):
+        result = classify_by_flags(command.format(missing=tmp_path / "absent"))
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    @pytest.mark.parametrize("command", [
+        "awk -f - data.txt",
+        "awk -f /dev/stdin data.txt",
+        "awk -f /dev/fd/0 data.txt",
+        "gawk -E /dev/stdin data.txt",
+        "gawk -i /dev/stdin '{print}' data.txt",
+        "awk -f - data.txt < {missing}",
+        'awk -f - data.txt <<< "$PROGRAM"',
+        "awk -f /dev/fd/3 data.txt 3< {missing}",
+        "gawk --fi=- data.txt",
+    ])
+    def test_awk_program_from_an_unprovable_stdin_signs(self, tmp_path, command):
+        result = classify_by_flags(command.replace("{missing}", str(tmp_path / "absent.awk")))
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    @pytest.mark.parametrize("program,outcome", [
+        ('BEGIN { system("touch x") }', OUTCOME_MUTATIVE),
+        ("{ print $1 }", OUTCOME_READ_ONLY),
+    ])
+    @pytest.mark.parametrize("feed", [
+        "awk -f - data.txt <<< '{program}'",
+        "awk -f - data.txt < {progfile}",
+        "piped:echo '{program}'",
+        "piped:printf '%s' '{program}'",
+        "piped:cat {progfile}",
+    ])
+    def test_awk_stdin_program_is_judged_by_the_source_the_line_proves(self, tmp_path, program, outcome, feed):
+        progfile = tmp_path / "prog.awk"
+        progfile.write_text(program + "\n")
+        feed = feed.replace("{program}", program).replace("{progfile}", str(progfile))
+        if feed.startswith("piped:"):
+            result = classify_by_flags("awk -f - data.txt", piped_from=feed[len("piped:"):])
+        else:
+            result = classify_by_flags(feed)
+        assert result is not None
+        assert result.outcome == outcome
+
+    @pytest.mark.parametrize("feed", [
+        "echo -e '{ print $1 }'",
+        "echo -Ee '{ print $1 }'",
+        "echo 'BEGIN{\\x73ystem(1)}'",
+        "printf '%s\\n' '{ print $1 }'",
+        "printf '%b' '{ print $1 }'",
+    ])
+    def test_awk_stdin_program_from_an_escape_interpreting_feeder_signs(self, feed):
+        result = classify_by_flags("awk -f - data.txt", piped_from=feed)
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    @pytest.mark.parametrize("program", [
+        '{ print $1,\n  $2 > "out.txt" }',
+        '@include "inplace"\n{ gsub(/a/, "b") } 1',
+        '@load "inplace"\nBEGIN { }',
+        'BEGIN { f = "sys" "tem"; @f("touch x") }',
+        '$1 > 0',
+    ])
+    def test_awk_program_holding_an_effect_token_anywhere_signs(self, tmp_path, program):
+        progfile = tmp_path / "prog.awk"
+        progfile.write_text(program + "\n")
+        for command in (f"awk -f {progfile} data.txt", f"gawk -e '{program}' data.txt"):
+            result = classify_by_flags(command)
+            assert result is not None and result.outcome == OUTCOME_MUTATIVE, command
+
+    @pytest.mark.parametrize("command", [
+        "awk $'BEGIN{\\x73ystem(1)}' data.txt",
+        "awk \"/'$P'/\" data.txt",
+        "awk \"$PROGRAM\" data.txt",
+        "gawk -l ./ext.so '{ print }' data.txt",
+        "gawk --load=ext '{ print }' data.txt",
+    ])
+    def test_awk_inline_program_not_proven_verbatim_or_loading_code_signs(self, command):
+        result = classify_by_flags(command)
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    def test_awk_stdin_program_does_not_hide_a_mutative_library(self):
+        result = classify_by_flags("gawk -i inplace -f - data.txt")
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    @pytest.mark.parametrize("spelling", ["-i inplace", "-iinplace", "--include=inplace", "--include inplace"])
+    def test_gawk_inplace_outside_a_git_tree_signs(self, tmp_path, spelling):
+        target = tmp_path / "notes.txt"
+        target.write_text("a\n")
+        result = classify_by_flags(f"gawk {spelling} '{{ gsub(/a/, \"b\") }} 1' {target}")
+        assert result is not None
+        assert result.outcome == OUTCOME_MUTATIVE
+
+    @pytest.mark.parametrize("command,outcome", [
+        ("/usr/bin/awk -f - data.txt <<< 'BEGIN { system(\"touch x\") }'", OUTCOME_MUTATIVE),
+        ("/usr/bin/gawk -i inplace '{ print }' TARGET", OUTCOME_MUTATIVE),
+        ("/usr/bin/awk -f PROGFILE data.txt", OUTCOME_MUTATIVE),
+        ("/usr/bin/awk '{ print $1 }' data.txt", OUTCOME_READ_ONLY),
+    ])
+    def test_awk_run_by_path_is_judged_as_awk(self, tmp_path, command, outcome):
+        progfile = tmp_path / "prog.awk"
+        progfile.write_text('BEGIN { system("touch x") }\n')
+        command = command.replace("TARGET", str(tmp_path / "notes.txt")).replace("PROGFILE", str(progfile))
+        result = classify_by_flags(command)
+        assert result is not None
+        assert result.outcome == outcome
+
+    @pytest.mark.parametrize("spelling,outcome", [
+        ("-f ~/prog.awk", OUTCOME_READ_ONLY),
+        ("-f '~/prog.awk'", OUTCOME_MUTATIVE),
+        ("-f ~'/prog.awk'", OUTCOME_MUTATIVE),
+        ("--file=~/prog.awk", OUTCOME_MUTATIVE),
+    ])
+    def test_awk_progfile_tilde_expands_only_where_bash_expands_it(self, tmp_path, monkeypatch, spelling, outcome):
+        home, work = tmp_path / "home", tmp_path / "work"
+        home.mkdir()
+        (home / "prog.awk").write_text("{ print $1 }\n")
+        (work / "~").mkdir(parents=True)
+        (work / "~" / "prog.awk").write_text('{ system("touch x") }\n')
+        monkeypatch.setenv("HOME", str(home))
+        result = classify_by_flags(f"awk {spelling} data.txt", LocalWorkCaller("agent", str(work)))
+        assert result is not None
+        assert result.outcome == outcome
+
+    @pytest.mark.parametrize("command,outcome", [
+        ("gawk -f prog.awk data.txt", OUTCOME_MUTATIVE),
+        ("awk --file=prog.awk data.txt", OUTCOME_MUTATIVE),
+        ("nawk -fprog.awk data.txt", OUTCOME_MUTATIVE),
+        ("gawk -f ./prog.awk data.txt", OUTCOME_READ_ONLY),
+        ("mawk -f prog.awk data.txt", OUTCOME_READ_ONLY),
+        ("awk -f - data.txt # < prog.awk", OUTCOME_MUTATIVE),
+        ("{ awk 'BEGIN { system(\"touch x\") }' data.txt", OUTCOME_MUTATIVE),
+        ("(gawk 'BEGIN { system(\"touch x\") }' data.txt)", OUTCOME_MUTATIVE),
+        ("gawk 'BEGIN { getline l < \"/inet/tcp/0/example.com/80\" }'", OUTCOME_MUTATIVE),
+        ("goawk 'BEGIN { system(\"touch x\") }' data.txt", OUTCOME_MUTATIVE),
+        ("original-awk 'BEGIN { system(\"touch x\") }' data.txt", OUTCOME_MUTATIVE),
+        ("onetrue-awk '{ print $1 }' data.txt", OUTCOME_READ_ONLY),
+    ])
+    def test_awk_program_lookup_comments_groups_and_dialects(self, tmp_path, command, outcome):
+        (tmp_path / "prog.awk").write_text("{ print $1 }\n")
+        result = classify_by_flags(command, LocalWorkCaller("agent", str(tmp_path)))
+        assert result is not None
+        assert result.outcome == outcome
+
 
 # ============================================================================
 # 11. tar
@@ -541,21 +720,17 @@ class TestFlagClassifierFind:
         assert result.outcome == OUTCOME_MUTATIVE
         assert result.matched_pattern == "-delete"
 
-    def test_find_exec_is_mutative(self):
-        result = classify_by_flags("find . -name '*.py' -exec chmod 644 {} +")
-        assert result is not None
-        assert result.outcome == OUTCOME_MUTATIVE
-        assert result.matched_pattern == "-exec"
-
-    def test_find_execdir_is_mutative(self):
-        result = classify_by_flags("find . -name '*.py' -execdir rm {} \\;")
-        assert result is not None
-        assert result.outcome == OUTCOME_MUTATIVE
-
-    def test_find_ok_is_mutative(self):
-        result = classify_by_flags("find . -name '*.tmp' -ok rm {} \\;")
-        assert result is not None
-        assert result.outcome == OUTCOME_MUTATIVE
+    @pytest.mark.parametrize("command,mutative", [
+        ("find . -name '*.py' -exec chmod 644 {} +", True),
+        ("find . -name '*.py' -execdir rm {} \\;", True),
+        ("find . -name '*.tmp' -ok rm {} \\;", True),
+        ("find . -name '*.py' -exec cat {} +", False),
+        ("find . -okdir ls {} \\;", False),
+    ])
+    def test_find_exec_actions_take_the_payload_verdict(self, command, mutative):
+        from modules.security.mutative_verbs import detect_mutative_command
+        assert classify_by_flags(command).outcome == OUTCOME_READ_ONLY
+        assert detect_mutative_command(command).is_mutative is mutative
 
 
 # ============================================================================
@@ -730,6 +905,34 @@ class TestFlagClassifierHttpie:
         result = classify_by_flags("https https://api.example.com/users")
         assert result is not None
         assert result.outcome == OUTCOME_READ_ONLY
+
+
+class TestFlagClassifierProgramByPath:
+    """A program run by path gets the verdict of its bare name, for every family in the table."""
+
+    @pytest.mark.parametrize("prefix", ["/usr/bin/", "/bin/", "./"])
+    @pytest.mark.parametrize("command,outcome", [
+        ("git push --force", OUTCOME_BLOCKED),
+        ("git stash list", OUTCOME_READ_ONLY),
+        ("sed -i 's/a/b/' notes.txt", OUTCOME_MUTATIVE),
+        ("sed 's/a/b/' notes.txt", OUTCOME_READ_ONLY),
+        ("awk '{ print > \"out.txt\" }' notes.txt", OUTCOME_MUTATIVE),
+        ("mawk '{ print $1 }' notes.txt", OUTCOME_READ_ONLY),
+        ("tar -xf archive.tar", OUTCOME_MUTATIVE),
+        ("tar -tf archive.tar", OUTCOME_READ_ONLY),
+        ("find . -name '*.log' -delete", OUTCOME_MUTATIVE),
+        ("find . -name '*.log'", OUTCOME_READ_ONLY),
+        ("curl -X POST https://api.example.com", OUTCOME_MUTATIVE),
+        ("curl https://api.example.com", OUTCOME_READ_ONLY),
+        ("wget --post-data=k=v https://api.example.com", OUTCOME_MUTATIVE),
+        ("http POST https://api.example.com name=x", OUTCOME_MUTATIVE),
+        ("https https://api.example.com", OUTCOME_READ_ONLY),
+    ])
+    def test_path_spelling_matches_bare_name(self, prefix, command, outcome):
+        bare, by_path = classify_by_flags(command), classify_by_flags(prefix + command)
+        assert bare is not None and bare.outcome == outcome
+        assert by_path is not None
+        assert (by_path.outcome, by_path.command_family) == (bare.outcome, bare.command_family)
 
 
 # ============================================================================

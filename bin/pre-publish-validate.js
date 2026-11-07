@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Pre-publish validation script for the gaia package
+ * Pre-publish validation for the gaia package. Never publishes: a pass ends
+ * with a hint to run `npm publish`.
  *
- * Validates that changes work correctly before publishing to npm:
- * 1. Checks for staged changes
- * 2. Bumps package.json version (patch by default)
- * 3. Runs npm install in the consuming project
- * 4. Validates that changes are reflected in node_modules
- * 5. Runs basic validation tests
- * 6. Only then proceeds to publish
+ * Steps, in order: report uncommitted changes, read and bump the version in
+ * package.json, reinstall node_modules and compare the installed version and
+ * key files, check package.json `files`, schema and hooks drift, the plugin
+ * manifest, a Python syntax check and version sync across manifests.
+ * `--validate-only` (forced in
+ * CI) skips the bump and reinstall; `--dry-run` writes nothing.
  *
  * Usage:
  *   node bin/pre-publish-validate.js [major|minor|patch]
@@ -26,15 +26,15 @@ import { findPython } from './python-detect.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Detectar gaia root buscando package.json (lee el nombre dinámicamente)
+// Walks up from startPath to the first package.json named @jaguilar87/*, so the
+// validator does not depend on the exact package name.
 function detectGaiaRoot(startPath) {
   let currentPath = startPath;
 
-  while (currentPath !== path.dirname(currentPath)) { // hasta raíz
+  while (currentPath !== path.dirname(currentPath)) {
     const packageJsonPath = path.join(currentPath, 'package.json');
     if (fs.existsSync(packageJsonPath)) {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-      // Accept any @jaguilar87/* package (decouples validator from exact name)
       if (pkg.name && pkg.name.startsWith('@jaguilar87/')) {
         return { root: currentPath, name: pkg.name };
       }
@@ -45,14 +45,15 @@ function detectGaiaRoot(startPath) {
   throw new Error('Could not find @jaguilar87/* package.json walking up from ' + startPath);
 }
 
-// Buscar node_modules de múltiples maneras
+// First node_modules (repo root, its parent, cwd, its grandparent) holding the package; CI's
+// `npm ci` does not list the package itself there, so the repo root's is the fallback.
 function findNodeModulesPath(gaiaRoot, pkgName) {
   const [scope, name] = pkgName.split('/');
   const candidates = [
-    path.resolve(gaiaRoot, 'node_modules'),                 // ./node_modules (CI: npm ci in repo root)
-    path.resolve(gaiaRoot, '..', 'node_modules'),           // ../node_modules (monorepo consumer)
-    path.resolve(process.cwd(), 'node_modules'),            // cwd/node_modules
-    path.join(gaiaRoot, '..', '..', 'node_modules'),        // ../../node_modules (deep nesting)
+    path.resolve(gaiaRoot, 'node_modules'),
+    path.resolve(gaiaRoot, '..', 'node_modules'),
+    path.resolve(process.cwd(), 'node_modules'),
+    path.join(gaiaRoot, '..', '..', 'node_modules'),
   ];
 
   for (const candidate of candidates) {
@@ -62,15 +63,11 @@ function findNodeModulesPath(gaiaRoot, pkgName) {
     }
   }
 
-  // In CI, node_modules exists inside the repo root (npm ci) but won't contain
-  // the package itself as a nested dependency. Prefer gaiaRoot/node_modules
-  // over going up a level (which breaks in CI checkout structures).
   const localNodeModules = path.resolve(gaiaRoot, 'node_modules');
   if (fs.existsSync(localNodeModules)) {
     return localNodeModules;
   }
 
-  // Fallback: use __dirname-relative path (repo root) instead of process.cwd()
   return path.resolve(gaiaRoot, 'node_modules');
 }
 
@@ -243,8 +240,8 @@ class PrePublishValidator {
       return;
     }
 
-    // In CI, MONOREPO_ROOT may resolve incorrectly (one level above checkout).
-    // Use GAIA_OPS_ROOT if it contains a package.json (i.e., we ARE the root).
+    // In CI MONOREPO_ROOT can resolve one level above the checkout, so a repo
+    // root holding package-lock.json is installed in place.
     const installDir = fs.existsSync(path.join(GAIA_OPS_ROOT, 'package-lock.json'))
       ? GAIA_OPS_ROOT
       : MONOREPO_ROOT;
@@ -282,7 +279,6 @@ class PrePublishValidator {
         return;
       }
 
-      // Compare file hashes
       const sourceContent = fs.readFileSync(sourcePath, 'utf-8');
       const installedContent = fs.readFileSync(installedPath, 'utf-8');
 
@@ -299,18 +295,10 @@ class PrePublishValidator {
   }
 
   /**
-   * Validate that every critical directory the install pipeline expects
-   * is covered by package.json `files` (directly or via a prefix entry).
-   *
-   * Background: a "gaia doctor" failure traced back to scripts/ being
-   * excluded from the published tarball -- the consumer's postinstall
-   * could not locate bootstrap_database.sh. This check enforces a hard
-   * invariant: if a critical directory exists in the repo, it MUST be
-   * declared in `files` so npm pack includes it.
-   *
-   * The list intentionally mirrors install.py's runtime expectations
-   * (scripts/, gaia/, bin/, hooks/, agents/, ...). New critical paths
-   * should be appended here AND added to package.json `files`.
+   * Throws when a directory in `criticalDirs` exists in the repo but no
+   * package.json `files` entry covers it (the exact name, `**`, or `dir/**` /
+   * `dir/*`), or when scripts/bootstrap_database.py is missing. Add a new
+   * critical path to `criticalDirs` and to `files` together.
    */
   validateFilesCoverage() {
     this.log('Step 5b: Validating files array covers critical directories...', 'info');
@@ -319,7 +307,6 @@ class PrePublishValidator {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
     const filesArray = packageJson.files || [];
 
-    // Normalize entries -- strip trailing slash, lowercase for comparison.
     const filesEntries = filesArray.map(entry => entry.replace(/\/$/, ''));
 
     const criticalDirs = [
@@ -337,18 +324,14 @@ class PrePublishValidator {
     for (const dir of criticalDirs) {
       const repoPath = path.join(GAIA_OPS_ROOT, dir);
       if (!fs.existsSync(repoPath)) {
-        // Repo does not have this dir at all -- not a coverage gap, skip.
         this.log(`  - ${dir}/ not in repo (skipped)`, 'info');
         continue;
       }
 
-      // Coverage rules: entry == "dir", entry == "dir/", or entry == "**" (rare).
-      // Wildcard patterns like "dir/**" or "dir/*" also cover.
+      // An entry like "dir/sub" does not cover dir: `files` declares roots.
       const covered = filesEntries.some(entry => {
         if (entry === dir) return true;
         if (entry === '**') return true;
-        // Entry like "dir/sub" doesn't count -- npm files declares roots.
-        // But "dir/**", "dir/*" do cover the directory.
         if (entry.startsWith(dir + '/') && (entry.endsWith('/**') || entry.endsWith('/*'))) {
           return true;
         }
@@ -363,13 +346,8 @@ class PrePublishValidator {
       }
     }
 
-    // Bonus check: the authoritative DB bootstrapper must ship.
-    // The install path (install.py, lazy bootstrap, gaia update) invokes the
-    // cross-platform Python port `scripts/bootstrap_database.py` via
-    // `python3 <path>` -- no `sqlite3` CLI and no `bash` required (Windows).
-    // Presence-only on purpose: the exec bit is NOT load-bearing for a
-    // `python3 <path>` invocation. The relevant invariant is that the file
-    // ships -- which the files-array check above also enforces.
+    // Presence only: install and the lazy bootstrap run it through a Python
+    // interpreter, so no exec bit is needed.
     const bootstrapPath = path.join(GAIA_OPS_ROOT, 'scripts', 'bootstrap_database.py');
     if (!fs.existsSync(bootstrapPath)) {
       this.log('  ✗ scripts/bootstrap_database.py missing from repo', 'error');
@@ -388,16 +366,10 @@ class PrePublishValidator {
   }
 
   /**
-   * Schema-drift guard.
-   *
-   * Fails the publish if gaia/store/schema.sql changed without a corresponding
-   * EXPECTED_SCHEMA_VERSION bump + migration file. Without this guard, schema
-   * drift is only caught at runtime by `gaia doctor` (as a warning) -- here we
-   * make it a hard, non-zero build failure.
-   *
-   * The actual logic lives in scripts/check_schema_drift.py (fingerprint of
-   * schema.sql pinned to the version in scripts/migrations/schema.checksum).
-   * This method just invokes it and surfaces a non-zero exit as a failure.
+   * Runs scripts/check_schema_drift.py, which compares a fingerprint of
+   * gaia/store/schema.sql with the one recorded in
+   * scripts/migrations/schema.checksum for EXPECTED_SCHEMA_VERSION; a non-zero
+   * exit fails the validation.
    */
   validateSchemaDrift() {
     this.log('Step 5c: Schema-drift guard (schema.sql vs EXPECTED_SCHEMA_VERSION)...', 'info');
@@ -410,8 +382,7 @@ class PrePublishValidator {
 
     const pyCmd = findPython();
     if (!pyCmd) {
-      // Python is required for the runtime; a publish that cannot run the
-      // guard cannot prove the schema is consistent, so fail rather than skip.
+      // Fail rather than skip: without the guard the schema cannot be shown consistent.
       this.log('✗ Python not available -- cannot run schema-drift guard', 'error');
       throw new Error('Python interpreter not found; schema-drift guard cannot run');
     }
@@ -421,7 +392,6 @@ class PrePublishValidator {
       out.trim().split('\n').filter(Boolean).forEach(line => this.log(`  ${line}`, 'info'));
       this.log('✓ No schema drift detected', 'success');
     } catch (error) {
-      // execSync throws on non-zero exit; surface the guard's own stderr/stdout.
       const detail = (error.stderr || error.stdout || error.message || '').toString().trim();
       this.log('✗ Schema-drift guard failed:', 'error');
       if (detail) detail.split('\n').forEach(line => console.error(`    ${line}`));
@@ -434,19 +404,11 @@ class PrePublishValidator {
   }
 
   /**
-   * Hooks-drift guard.
-   *
-   * Fails the publish if the committed generated hook artifacts
-   * (hooks/hooks.json and the inline hooks in .claude-plugin/plugin.json)
-   * diverge from what generate_hooks_json(build/gaia.manifest.json) produces.
-   * The manifest is the single source of truth; these artifacts are generated
-   * by `npm run generate:plugin-root`. Drift means a stale/hand-edited
-   * artifact would ship -- e.g. dropping SubagentStart or degrading the
-   * PreToolUse matcher set. This is the root-cause guard behind
-   * tests/hooks/adapters/test_plugin_manifests.
-   *
-   * The logic lives in scripts/check_hooks_drift.py; this method invokes it
-   * and surfaces a non-zero exit as a hard failure.
+   * Runs scripts/check_hooks_drift.py, which compares hooks/hooks.json with
+   * generate_hooks_json(build/gaia.manifest.json) and fails when
+   * .claude-plugin/plugin.json embeds an inline hooks block; a non-zero exit
+   * fails the validation. `npm run generate:plugin-root` regenerates the
+   * artifacts.
    */
   validateHooksDrift() {
     this.log('Step 5d: Hooks-drift guard (hooks.json/plugin.json vs manifest)...', 'info');
@@ -484,7 +446,6 @@ class PrePublishValidator {
 
     const pluginJsonPath = path.join(GAIA_OPS_ROOT, '.claude-plugin', 'plugin.json');
 
-    // 1. File existence
     if (!fs.existsSync(pluginJsonPath)) {
       this.log('✗ .claude-plugin/plugin.json does not exist', 'error');
       throw new Error('Plugin manifest missing: .claude-plugin/plugin.json');
@@ -493,13 +454,10 @@ class PrePublishValidator {
 
     const pluginData = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf-8'));
 
-    // 2. Version sync with package.json
     const packageJsonPath = path.join(GAIA_OPS_ROOT, 'package.json');
     const packageData = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-    // In --dry-run, bumpVersion() computes this.newVersion but never writes it
-    // to package.json on disk (see Step 3) -- so plugin.json (also unwritten
-    // in dry-run) must be compared against the ON-DISK package.json version,
-    // not the hypothetical bumped one, or every dry-run false-fails here.
+    // A dry run never writes the bumped version to package.json, so it compares
+    // against the on-disk version.
     const expectedVersion = this.dryRun ? packageData.version : (this.newVersion || packageData.version);
 
     if (pluginData.version !== expectedVersion) {
@@ -508,7 +466,6 @@ class PrePublishValidator {
     }
     this.log(`✓ plugin.json version matches package.json (${expectedVersion})`, 'success');
 
-    // 3. Engines field
     const claudeCodeEngine = pluginData.engines && pluginData.engines['claude-code'];
     if (!claudeCodeEngine || claudeCodeEngine !== '>=2.1.295') {
       this.log(`✗ plugin.json engines["claude-code"] must be ">=2.1.295", got "${claudeCodeEngine || 'missing'}"`, 'error');
@@ -516,7 +473,6 @@ class PrePublishValidator {
     }
     this.log('✓ plugin.json engines["claude-code"] is ">=2.1.295"', 'success');
 
-    // 4. Categories field
     const requiredCategories = ['devops', 'security', 'orchestration'];
     const categories = pluginData.categories || [];
     const missingCategories = requiredCategories.filter(cat => !categories.includes(cat));
@@ -531,17 +487,11 @@ class PrePublishValidator {
   runTests() {
     this.log('Step 7: Running validation tests...', 'info');
 
-    // In validate-only OR dry-run mode, validate source files directly.
-    // dry-run never actually reinstalls node_modules (Step 3/Step "Reinstalling
-    // node_modules" both no-op under this.dryRun), so NODE_MODULES_INSTALL is
-    // whatever was installed by some PRIOR run -- arbitrarily stale relative to
-    // the source tree under test. Testing against source is what makes the
-    // dry-run representative of what would actually be validated after a real
-    // bump + reinstall.
+    // Neither validate-only nor dry-run reinstalls node_modules, so the
+    // installed copy is whatever an earlier run left; they test the source tree.
     const baseDir = (this.validateOnly || this.dryRun) ? GAIA_OPS_ROOT : NODE_MODULES_INSTALL;
 
     try {
-      // Test 1: Validate JSON files
       this.log('Test 1: Validating JSON configuration files...', 'info');
       const jsonFiles = [];
 
@@ -558,7 +508,6 @@ class PrePublishValidator {
         }
       });
 
-      // Test 2: Validate Python syntax (if Python is available)
       this.log('Test 2: Validating Python files syntax...', 'info');
       try {
         const pythonFiles = [
@@ -581,7 +530,6 @@ class PrePublishValidator {
         this.log(`  ⚠️  Python validation skipped (python3/python not available or syntax error)`, 'warning');
       }
 
-      // Test 3: Check if bin scripts are executable
       this.log('Test 3: Checking bin scripts...', 'info');
       const binDir = path.join(baseDir, 'bin');
       if (fs.existsSync(binDir)) {
@@ -589,18 +537,13 @@ class PrePublishValidator {
         this.log(`  ✓ Found ${scripts.length} bin scripts`, 'success');
       }
 
-      // Test 4: Version sync across all manifest files
       this.log('Test 4: Validating version sync across manifests...', 'info');
       const packageJsonPath = path.join(baseDir, 'package.json');
       const packageJsonData = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-      // Same dry-run rule as validatePluginManifest(): bumpVersion() never
-      // writes package.json in --dry-run, so the on-disk manifests here are
-      // still at the CURRENT (unbumped) version -- compare against that, not
-      // against the hypothetical this.newVersion, or this false-fails.
+      // Same dry-run rule as validatePluginManifest().
       const expectedVersion = this.dryRun ? packageJsonData.version : (this.newVersion || packageJsonData.version);
       const versionMismatches = [];
 
-      // Check .claude-plugin/plugin.json
       const pluginJsonPath = path.join(baseDir, '.claude-plugin', 'plugin.json');
       if (fs.existsSync(pluginJsonPath)) {
         const pluginData = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf-8'));
@@ -611,9 +554,8 @@ class PrePublishValidator {
         }
       }
 
-      // The plugin version lives once, in plugin.json. A marketplace entry
-      // that declares its own version is drift waiting to happen: Claude Code
-      // lets plugin.json win and only warns, so nothing else would fail.
+      // The plugin version lives only in plugin.json; a marketplace entry that
+      // declares one is reported as a mismatch.
       const marketplacePath = path.join(baseDir, '.claude-plugin', 'marketplace.json');
       if (fs.existsSync(marketplacePath)) {
         const marketplaceData = JSON.parse(fs.readFileSync(marketplacePath, 'utf-8'));
@@ -627,12 +569,9 @@ class PrePublishValidator {
         }
       }
 
-      // Check pyproject.toml [project].version
       const pyprojectPath = path.join(baseDir, 'pyproject.toml');
       if (fs.existsSync(pyprojectPath)) {
         const pyprojectText = fs.readFileSync(pyprojectPath, 'utf-8');
-        // Match the first `version = "..."` after [project] section header.
-        // Simple parser: find [project] block, then the version line within it.
         const projectSectionMatch = pyprojectText.match(/\[project\]([\s\S]*?)(?:\n\[|$)/);
         if (projectSectionMatch) {
           const versionMatch = projectSectionMatch[1].match(/^\s*version\s*=\s*["']([^"']+)["']/m);
@@ -651,11 +590,9 @@ class PrePublishValidator {
         }
       }
 
-      // Check CHANGELOG.md top-most version header
       const changelogPath = path.join(baseDir, 'CHANGELOG.md');
       if (fs.existsSync(changelogPath)) {
         const changelogText = fs.readFileSync(changelogPath, 'utf-8');
-        // Find the first `## [x.y.z...]` header, skipping `## [Unreleased]`.
         const headerRegex = /^##\s*\[([^\]]+)\]/gm;
         let match;
         let topVersion = null;
@@ -762,7 +699,6 @@ class PrePublishValidator {
   }
 }
 
-// Parse command line arguments and run
 async function main() {
   const args = process.argv.slice(2);
   const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';

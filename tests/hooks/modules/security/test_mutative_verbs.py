@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for Mutative Verb Detector (mutative_verbs.py)."""
 
+import os
 import sys
 import pytest
 from pathlib import Path
@@ -12,6 +13,7 @@ from modules.security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
     cwd_after_component,
+    UNKNOWN_CWD,
     MutativeResult,
     COMMAND_ALIASES,
     SIMULATION_FLAGS,
@@ -557,9 +559,9 @@ class TestGitMergeBase:
         assert result.is_mutative is False
         assert result.category == "READ_ONLY"
 
-    def test_git_merge_still_mutative(self):
-        """Plain git merge must remain MUTATIVE."""
-        result = detect_mutative_command("git merge main")
+    def test_git_merge_with_a_strategy_still_mutative(self):
+        """A plain local git merge is free (local-merge); one with a strategy option stays MUTATIVE."""
+        result = detect_mutative_command("git merge -X theirs main")
         assert result.is_mutative is True
         assert result.verb == "merge"
 
@@ -605,10 +607,10 @@ class TestInlineCodeDetection:
     def test_subprocess_is_mutative(self):
         """subprocess in python -c is flagged -- the inner command runs in-process,
         bypassing the hook entirely (no separate Bash tool invocation)."""
-        result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"ls\"])"')
+        result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"kubectl\", \"apply\", \"-f\", \"x\"])"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "process-module"
+        assert result.verb == "subprocess-run"
 
     def test_python_variant(self):
         """python (not python3) with -c should also be checked."""
@@ -656,7 +658,7 @@ class TestInlineCodeDetection:
     def test_python_variant_subprocess_still_mutative(self):
         """No hole: a genuinely mutative `python -c` (subprocess) stays T3."""
         result = detect_mutative_command(
-            'python -c "import subprocess; subprocess.run([\'ls\'])"'
+            'python -c "import subprocess; subprocess.run([\'rm\', \'-rf\', \'build\'])"'
         )
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
@@ -860,7 +862,7 @@ class TestUniversalInlineCodeDetection:
         """Very long inline code (>500 chars) -> suspicious via heuristic."""
         long_code = "x" * 510
         result = detect_mutative_command(
-            f'node -e "{long_code}"'
+            f'ruby -e "{long_code}"'
         )
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
@@ -900,7 +902,7 @@ class TestLongInlineReadOnlyExemption:
 
     def _long_readonly(self) -> str:
         body = (
-            "import sqlite3; con=sqlite3.connect('/home/u/.gaia/gaia.db'); "
+            "import sqlite3; con=sqlite3.connect('/home/u/data/app.db'); "
             "cols=[d[0] for d in con.execute('%s').fetchall()]; " % self._PRAGMA +
             "rows=con.execute('%s id,status,verb,subagent_id,created_at,"
             "expires_at,scope,command_hash,nonce,grant_kind,verb_family,"
@@ -939,7 +941,7 @@ class TestLongInlineReadOnlyExemption:
         result = detect_mutative_command(self._long_mutating_ast_clean())
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "heuristic-long-code"
+        assert result.verb == "uncatalogued-effect"
 
     def test_long_open_write_still_t3(self):
         """NO REGRESSION: open(...,'w').write caught by AST before length."""
@@ -965,8 +967,8 @@ class TestLongInlineReadOnlyExemption:
         assert result.category == "MUTATIVE"
 
     def test_long_non_python_interpreter_still_t3(self):
-        """NO REGRESSION: exemption is Python-only; long node code stays T3."""
-        result = detect_mutative_command('node -e "%s"' % ("x" * 510))
+        """NO REGRESSION: the exemption is for Python and JavaScript; long ruby code stays T3."""
+        result = detect_mutative_command('ruby -e "%s"' % ("x" * 510))
         assert result.is_mutative is True
         assert result.verb == "heuristic-long-code"
 
@@ -980,7 +982,7 @@ class TestLongInlineReadOnlyExemption:
         result = detect_mutative_command('python3 -c "%s"' % body.replace('"', '\\"'))
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "heuristic-long-code"
+        assert result.verb == "uncatalogued-effect"
 
 
 class TestBuildT3BlockResponse:
@@ -1057,7 +1059,7 @@ class TestDetectMutativeCommand:
         ("git push origin main", "push"),
         ("git push --force origin main", "push"),
         ("git push --delete origin feature-branch", "push"),
-        ("git push -u origin feature", "push"),
+        ("git push -u origin main", "push"),
     ], ids=[
         "push-plain",
         "push-force",
@@ -1065,18 +1067,18 @@ class TestDetectMutativeCommand:
         "push-upstream",
     ])
     def test_git_push_always_mutative(self, cmd, expected_verb):
-        """git push (all variants) must remain mutative."""
+        """A push to the default branch, a forced push and a deleting push stay mutative."""
         result = detect_mutative_command(cmd)
         assert result.is_mutative is True
         assert result.verb == expected_verb
 
     @pytest.mark.parametrize("cmd,expected_verb", [
-        ("git merge feature-x", "merge"),
+        ("git merge -s ours feature-x", "merge"),
         ("git rebase main", "rebase"),
         ("git tag v1.0.0", "tag"),
         ("git tag -d v1.0.0", "tag"),
     ], ids=[
-        "merge",
+        "merge-strategy",
         "rebase",
         "tag-create",
         "tag-delete",
@@ -1105,6 +1107,7 @@ class TestDetectMutativeCommand:
         ("git switch develop", "switch"),
         ("git reflog", "reflog"),
         ("git show HEAD", "show"),
+        ("git -C /repo show origin/main:skills/README.md", "show"),
         ("git shortlog -s", "shortlog"),
         ("git blame README.md", "blame"),
         ("git bisect start", "bisect"),
@@ -1131,6 +1134,7 @@ class TestDetectMutativeCommand:
         "switch",
         "reflog",
         "show",
+        "show-rev-path",
         "shortlog",
         "blame",
         "bisect",
@@ -2910,6 +2914,26 @@ class TestRelativeScriptCwdResolution:
         assert cwd_after_component("node build.mjs", None) is None
 
 
+class TestCwdFoldNavigationForms:
+    def test_home_spellings_expand_in_a_cd_target(self):
+        home = os.path.expanduser("~")
+        for target in ("$HOME/x", "${HOME}/x", "~/x"):
+            assert cwd_after_component(f"cd {target}", "/repo") == f"{home}/x"
+
+    def test_pushd_moves_the_directory_like_cd(self):
+        assert cwd_after_component("pushd /a/b", "/repo") == "/a/b"
+        assert cwd_after_component("pushd sub", "/repo") == "/repo/sub"
+
+    @pytest.mark.parametrize("command", ["cd -", "popd", "pushd", "pushd -n /a", "cd a b"])
+    def test_a_navigation_the_fold_cannot_follow_makes_the_directory_unknown(self, command):
+        assert cwd_after_component(command, "/repo") == UNKNOWN_CWD
+
+    def test_unknown_stays_unknown_for_relative_moves_and_ends_at_an_absolute_one(self):
+        assert cwd_after_component("cd sub", UNKNOWN_CWD) == UNKNOWN_CWD
+        assert cwd_after_component("cd /a", UNKNOWN_CWD) == "/a"
+        assert cwd_after_component("ls", UNKNOWN_CWD) == UNKNOWN_CWD
+
+
 class TestRelativeScriptNoCdHookPayloadCwd:
     """The single-command dispatch of ``BashValidator.validate()`` must seed
     the directory fold from ``hook_payload["cwd"]`` -- the real invocation
@@ -3394,11 +3418,12 @@ class TestExecSinkStringArgInScriptFile:
         result = detect_mutative_command(f"node {script}")
         assert result.is_mutative is False
 
-    def test_ruby_file_system_echo_stays_safe(self, tmp_path):
+    def test_ruby_file_system_echo_asks_as_unknown_not_mutative(self, tmp_path):
         script = tmp_path / "ok.rb"
         script.write_text('system("echo hello")\n')
         result = detect_mutative_command(f"ruby {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
     def test_node_regex_exec_non_command_stays_safe(self, tmp_path):
         """``/re/.exec("some string")`` extracts a non-command string that does
@@ -3411,11 +3436,12 @@ class TestExecSinkStringArgInScriptFile:
         result = detect_mutative_command(f"node {script}")
         assert result.is_mutative is False
 
-    def test_perl_file_system_read_only_stays_safe(self, tmp_path):
+    def test_perl_file_system_read_only_asks_as_unknown_not_mutative(self, tmp_path):
         script = tmp_path / "r.pl"
         script.write_text('system("cat /etc/hostname");\nprint "done\\n";\n')
         result = detect_mutative_command(f"perl {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
     # ---- Inline path parity preserved (shared helper, no regression) ----
 
@@ -3766,8 +3792,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script.write_text(
             "<?php\n"
             "// update the user cache before returning the record\n"
-            "function getUser($id) { return $repo->find($id); }\n"
-            "echo getUser(1);\n"
+            "echo 'user 1';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3779,7 +3804,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script.write_text(
             "<?php\n"
             "# delete the temp files described below\n"
-            "$total = compute();\n"
+            "echo 'total';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3792,7 +3817,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "/*\n"
             " * This file does NOT deploy, install, or destroy anything.\n"
             " */\n"
-            "$x = render();\n"
+            "echo 'rendered';\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3803,7 +3828,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
         script = tmp_path / "inline.php"
         script.write_text(
             "<?php\n"
-            "$n = 1;  // update the counter and delete the stale key\n"
+            "echo 1;  // update the counter and delete the stale key\n"
         )
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is False
@@ -3815,7 +3840,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=begin\n"
             "delete all the records and push to prod\n"
             "=end\n"
-            "x = 1  # update the counter\n"
+            "puts 1  # update the counter\n"
         )
         result = detect_mutative_command(f"ruby {script}")
         assert result.is_mutative is False
@@ -3823,7 +3848,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
     def test_ruby_inline_hash_comment_is_safe(self, tmp_path):
         """A ruby inline `#` comment must be stripped from the scan."""
         script = tmp_path / "note.rb"
-        script.write_text("y = 2  # deploy and delete later\n")
+        script.write_text("puts 2  # deploy and delete later\n")
         result = detect_mutative_command(f"ruby {script}")
         assert result.is_mutative is False
 
@@ -3834,7 +3859,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=pod\n"
             "This POD mentions delete and update and apply repeatedly.\n"
             "=cut\n"
-            "my $x = 1;  # update the local variable\n"
+            "print 1;  # update the local variable\n"
         )
         result = detect_mutative_command(f"perl {script}")
         assert result.is_mutative is False
@@ -3846,7 +3871,7 @@ class TestRubyPerlPhpSourceCommentStringAware:
             "=head1 NAME\n"
             "tool - deletes and applies things (documentation only)\n"
             "=cut\n"
-            "my $n = 42;\n"
+            "print 42;\n"
         )
         result = detect_mutative_command(f"perl {script}")
         assert result.is_mutative is False
@@ -3923,16 +3948,17 @@ class TestRubyPerlPhpSourceCommentStringAware:
         result = detect_mutative_command(f"php {script}")
         assert result.is_mutative is True
 
-    def test_php_system_ls_stays_safe(self, tmp_path):
-        """Benign inner command is not escalated (false-positive mitigation
-        preserved for the ruby/perl/php lane too)."""
+    def test_php_system_ls_asks_as_unknown_not_mutative(self, tmp_path):
+        """A benign inner command is not escalated to MUTATIVE; code that does
+        more than print literals still asks, as UNKNOWN."""
         script = tmp_path / "read.php"
         script.write_text(
             "<?php\n"
             '$out = system("ls -la");\n'
         )
         result = detect_mutative_command(f"php {script}")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "UNKNOWN"
 
 
 class TestSourceLexer:
@@ -4070,9 +4096,24 @@ class TestGaiaCliDispatcherReDispatch:
     _check_gaia_cli_dispatcher reconstructs `gaia <args>` and re-classifies it,
     so the real effect (owned by the subcommand) drives the tier. Critically,
     the mutative subcommands (dev, install) MUST stay T3.
+
+    The re-dispatch holds only inside the installed Gaia the hook runs from, so
+    these rows run the real dispatcher from a non-git install the hook root
+    points at.
     """
 
-    def _dispatcher(self, tmp_path, name="gaia", body=_FAKE_GAIA_DISPATCHER):
+    @pytest.fixture(autouse=True)
+    def _installed_gaia(self, tmp_path, monkeypatch):
+        from modules.security import mutative_verbs as mv
+
+        self.install = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        (self.install / "bin").mkdir(parents=True)
+        (self.install / "bin" / "gaia").write_text((HOOKS_DIR.parent / "bin" / "gaia").read_text())
+        monkeypatch.setattr(mv, "_HOOK_ROOT", self.install)
+
+    def _dispatcher(self, tmp_path, name="gaia", body=None):
+        if body is None:
+            return self.install / "bin" / "gaia"
         bindir = tmp_path / "bin"
         bindir.mkdir()
         f = bindir / name
@@ -4149,6 +4190,10 @@ class TestGaiaCliDispatcherReDispatch:
         result = detect_mutative_command(f"python3 {gaia} doctor")
         assert result.is_mutative is True
 
+    def test_signature_bearing_bin_gaia_outside_gaia_source_is_judged_by_content(self, tmp_path):
+        gaia = self._dispatcher(tmp_path, body=_FAKE_GAIA_DISPATCHER)
+        assert detect_mutative_command(f"python3 {gaia} doctor").is_mutative is True
+
     def test_dispatcher_named_file_outside_bin_stays_mutative(self, tmp_path):
         """The dispatcher signature alone is not enough -- it must live in a
         bin/ directory. A signature-bearing file elsewhere is still AST-scanned."""
@@ -4184,11 +4229,12 @@ class TestRealGaiaDispatcherStillRecognized:
         for sig in _GAIA_DISPATCHER_SIGNATURE:
             assert sig in content, f"bin/gaia lost dispatcher signature marker: {sig!r}"
 
-    def test_real_dispatcher_doctor_is_read_only(self):
+    @pytest.mark.parametrize("sub", ["doctor", "contract view"])
+    def test_real_dispatcher_in_a_source_checkout_is_judged_by_content(self, sub):
+        """A checkout can import code anyone edited, so its bin/gaia is not re-dispatched; `gaia` is the read path."""
         gaia = self._real_bin_gaia()
-        result = detect_mutative_command(f"python3 {gaia} doctor")
-        assert result.is_mutative is False
-        assert result.category != "MUTATIVE"
+        assert detect_mutative_command(f"python3 {gaia} {sub}").is_mutative is True
+        assert detect_mutative_command(f"gaia {sub}").is_mutative is False
 
     def test_real_dispatcher_dev_stays_t3(self):
         gaia = self._real_bin_gaia()
@@ -4201,8 +4247,14 @@ class TestRealGaiaDispatcherStillRecognized:
         result = detect_mutative_command(f"python3 {gaia} install")
         assert result.is_mutative is True
 
-    def test_real_dispatcher_matches_launcher_form(self):
-        gaia = self._real_bin_gaia()
+    def test_real_dispatcher_installed_matches_launcher_form(self, tmp_path, monkeypatch):
+        from modules.security import mutative_verbs as mv
+
+        gaia = tmp_path / "bin" / "gaia"
+        gaia.parent.mkdir()
+        gaia.write_text(self._real_bin_gaia().read_text(encoding="utf-8"))
+        monkeypatch.setattr(mv, "_HOOK_ROOT", tmp_path)
+        monkeypatch.setattr(mv, "_hook_root_is_install", lambda: True)
         for sub in ("doctor", "history -n 5", "contract view", "dev", "install"):
             via_path = detect_mutative_command(f"python3 {gaia} {sub}")
             via_launcher = detect_mutative_command(f"gaia {sub}")
@@ -4377,10 +4429,16 @@ class TestGaiaContextPruneWorkspacesIsMutative:
             for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
             if anchor.path[0] == "context"
         }
-        assert context_paths == {("context", "prune-workspaces")}, (
-            "the `gaia context` upgrade must be scoped to the destructive "
-            "subcommand only, never the whole group"
+        assert context_paths == {("context", "prune-workspaces"), ("context", "relocate")}, (
+            "the `gaia context` upgrade must be scoped to the writing "
+            "subcommands only, never the whole group"
         )
+
+    def test_relocate_writes_and_its_dry_run_does_not(self):
+        applied = detect_mutative_command("gaia context relocate --manifest /tmp/m.json")
+        assert applied.is_mutative is True and applied.category == "MUTATIVE"
+        preview = detect_mutative_command("gaia context relocate --manifest /tmp/m.json --dry-run")
+        assert preview.is_mutative is False
 
     def test_other_gaia_context_subcommands_not_upgraded(self):
         # A read/inspect context subcommand must NOT be dragged into T3 by the
@@ -4389,60 +4447,30 @@ class TestGaiaContextPruneWorkspacesIsMutative:
         assert "anchored MUTATIVE (T3) by config" not in result.reason
 
 
-class TestGaiaScanWriteModeIsMutative:
-    """`gaia scan --workspace <name>` (write mode) UPSERTs (workspace, project)
-    rows into gaia.db and promotes the resolved workspace -- a persistent DB
-    mutation. `scan` carries no verb in MUTATIVE_VERBS, so the flat command
-    would classify READ_ONLY "by elimination" -- the T3-gating gap this suite
-    pins closed via the ('gaia','scan') anchor (whole group, None).
+class TestGaiaScanIsFree:
+    """`gaia scan` refreshes Gaia's own workspace and project rows, which a
+    rescan restores, and touches no repository; both spellings run free."""
 
-    The `--dry-run` classify-only mode stays READ_ONLY because --dry-run is a
-    SIMULATION_FLAG handled by Step 3, which returns non-mutative BEFORE the
-    Step 3d.5 upgrade runs -- the exemption is inherited, not re-implemented.
-    """
+    @pytest.mark.parametrize("command", [
+        "gaia scan",
+        "gaia scan --workspace me",
+        "gaia scan --workspace me /home/user/ws",
+        "gaia scan --workspace me --dry-run",
+        "gaia scan --help",
+        "gaia context scan",
+    ])
+    def test_gaia_scan_is_not_mutative(self, command):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is False, f"{result.category}: {result.reason}"
 
-    def test_gaia_scan_write_mode_is_mutative(self):
-        result = detect_mutative_command("gaia scan --workspace me")
-        assert result.is_mutative is True, (
-            f"gaia scan --workspace writes (workspace, project) rows and "
-            f"promotes the workspace -- it must be T3. "
-            f"Got {result.category}: {result.reason}"
-        )
-        assert result.category == "MUTATIVE"
-
-    def test_gaia_scan_write_mode_with_root_is_mutative(self):
-        result = detect_mutative_command("gaia scan --workspace me /home/user/ws")
-        assert result.is_mutative is True
-        assert result.category == "MUTATIVE"
-
-    def test_gaia_scan_dry_run_stays_read_only(self):
-        # --dry-run is a SIMULATION_FLAG resolved by Step 3, above the upgrade;
-        # the classify-only exemption is inherited, not duplicated.
-        result = detect_mutative_command("gaia scan --workspace me --dry-run")
-        assert result.is_mutative is False, (
-            f"gaia scan --dry-run only classifies (no DB write) and must stay "
-            f"READ_ONLY via the SIMULATION_FLAG override. "
-            f"Got {result.category}: {result.reason}"
-        )
-
-    def test_gaia_scan_anchor_is_whole_group(self):
+    def test_no_anchor_names_scan(self):
         from modules.security.mutative_verbs import (
             COMMAND_PATH_MUTATIVE_UPGRADES,
         )
-        scan_paths = {
-            anchor.path
+        assert not any(
+            anchor.path[0] == "scan"
             for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
-            if anchor.path[0] == "scan"
-        }
-        assert scan_paths == {("scan",)}, (
-            "the `gaia scan` upgrade must cover the whole group (a one-token "
-            "path): scan is a flat command with no read-only subcommands"
         )
-
-    def test_gaia_scan_help_stays_read_only(self):
-        # The --help exemption (Step 3.5) runs before the upgrade.
-        result = detect_mutative_command("gaia scan --help")
-        assert result.is_mutative is False
 
 
 class TestReadOnlyVerbEscalatedByAlwaysFlag:
@@ -4631,6 +4659,101 @@ class TestGaiaMemoryTierGroup:
         its own gate."""
         result = detect_mutative_command("gaia approvals approve P-abc123")
         assert result.is_mutative is True
+
+
+def _registered_migrate_actions():
+    """The `gaia migrate` actions as bin/cli/migrate.py registers them."""
+    import argparse
+    import importlib
+
+    bin_dir = HOOKS_DIR.parent / "bin"
+    if str(bin_dir) not in sys.path:
+        sys.path.insert(0, str(bin_dir))
+    migrate_cli = importlib.import_module("cli.migrate")
+    parser = argparse.ArgumentParser()
+    migrate_parser = migrate_cli.register(parser.add_subparsers())
+    actions = next(
+        a for a in migrate_parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    return set(actions.choices)
+
+
+class TestNounFirstGroupVerbExceptions:
+    """Issue #45: a group word that is itself a mutative verb (`migrate`,
+    `label`) must not gate the read-only action under it, while every action
+    that writes keeps its gate."""
+
+    MIGRATE_ACTION_WRITES = {"plan": False, "apply": True}
+
+    def test_every_migrate_action_is_classified_by_whether_it_writes(self):
+        from modules.security.tiers import classify_command_tier
+
+        assert set(self.MIGRATE_ACTION_WRITES) == _registered_migrate_actions()
+        for action, writes in self.MIGRATE_ACTION_WRITES.items():
+            command = f"gaia migrate {action}"
+            result = detect_mutative_command(command)
+            tier = classify_command_tier(command)
+            assert result.is_mutative is writes, f"{command}: {result.reason}"
+            assert (tier == SecurityTier.T3_BLOCKED) is writes, f"{command}: {tier}"
+
+    def test_dispatcher_path_form_from_the_issue(self, tmp_path, monkeypatch):
+        gaia_bin = self._installed_gaia_bin(tmp_path, monkeypatch)
+        assert detect_mutative_command(f"{gaia_bin} migrate plan").is_mutative is False
+        assert detect_mutative_command(f"{gaia_bin} migrate apply").is_mutative is True
+        checkout_bin = HOOKS_DIR.parent / "bin" / "gaia"
+        assert detect_mutative_command(f"{checkout_bin} migrate plan").is_mutative is True
+
+    def test_tiers(self):
+        from modules.security.tiers import classify_command_tier
+
+        assert classify_command_tier("gaia migrate plan") == SecurityTier.T2_DRY_RUN
+        assert classify_command_tier("gh label list") == SecurityTier.T0_READ_ONLY
+        assert classify_command_tier("gh label create bug") == SecurityTier.T3_BLOCKED
+
+    @pytest.mark.parametrize("command,mutative", [
+        ("gaia migrate plan --db /tmp/scratch.db", False),
+        ("gaia migrate apply --db /tmp/scratch.db", True),
+        ("gaia migrate apply --consent-chain v40..v41", True),
+        ("gaia migrate plan --force", True),
+        ("gh label list --repo metraton/gaia", False),
+        ("gh label create bug --repo metraton/gaia", True),
+        ("gh label edit bug --color ff0000", True),
+        ("gh label delete bug --yes", True),
+        ("gh label clone metraton/other", True),
+    ])
+    def test_action_word_decides_under_the_group(self, command, mutative):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is mutative, f"{command}: {result.reason}"
+
+    @pytest.mark.parametrize("key,command", [
+        (("gaia", "migrate"), "gaia migrate plan"),
+        (("gaia", "migrate"), "{installed} migrate plan"),
+        (("gh", "label"), "gh label list"),
+    ])
+    def test_the_table_entry_is_what_produces_the_verdict(self, key, command, monkeypatch, tmp_path):
+        from modules.security import mutative_verbs
+
+        with pytest.MonkeyPatch.context() as hook:
+            command = command.format(installed=self._installed_gaia_bin(tmp_path, hook))
+            monkeypatch.delitem(mutative_verbs.SUBCOMMAND_VERB_TIER_EXCEPTIONS, key)
+            detect_mutative_command.cache_clear()
+            try:
+                assert detect_mutative_command(command).is_mutative is True
+            finally:
+                monkeypatch.undo()
+                detect_mutative_command.cache_clear()
+            assert detect_mutative_command(command).is_mutative is False
+
+    @staticmethod
+    def _installed_gaia_bin(tmp_path, hook):
+        from modules.security import mutative_verbs
+
+        install = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        (install / "bin").mkdir(parents=True)
+        (install / "bin" / "gaia").write_text((HOOKS_DIR.parent / "bin" / "gaia").read_text())
+        hook.setattr(mutative_verbs, "_HOOK_ROOT", install)
+        return install / "bin" / "gaia"
 
 
 class TestScriptRecursionCycleGuard:

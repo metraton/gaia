@@ -1,7 +1,5 @@
 #!/bin/bash
-# QuickTriage script for DevOps Developer
-# Description: Quick health check for application services and development environment
-
+# Lists the config files, git state, Node scripts and Docker availability of one repository.
 # Usage: quicktriage_devops_developer.sh [repo_path]
 
 set -euo pipefail
@@ -15,10 +13,8 @@ echo "Repository: $REPO_PATH"
 echo "=========================================="
 echo ""
 
-# Change to repo directory
 cd "$REPO_PATH"
 
-# Check for common configuration files
 echo "### Configuration Files ###"
 for file in package.json docker-compose.yml Dockerfile .env.example Makefile; do
     if [ -f "$file" ]; then
@@ -29,7 +25,6 @@ for file in package.json docker-compose.yml Dockerfile .env.example Makefile; do
 done
 echo ""
 
-# Check git status
 echo "### Git Status ###"
 if [ -d ".git" ]; then
     git status --short 2>/dev/null || echo "Git status failed"
@@ -40,7 +35,6 @@ else
 fi
 echo ""
 
-# Check for node modules (if package.json exists)
 if [ -f "package.json" ]; then
     echo "### Node.js Project ###"
     if [ -d "node_modules" ]; then
@@ -48,8 +42,7 @@ if [ -f "package.json" ]; then
     else
         echo "[WARN] node_modules missing - run npm install"
     fi
-    
-    # Check for common scripts
+
     echo ""
     echo "Available scripts:"
     if command -v jq &> /dev/null; then
@@ -60,7 +53,6 @@ if [ -f "package.json" ]; then
     echo ""
 fi
 
-# Check Docker
 echo "### Docker Status ###"
 if command -v docker &> /dev/null; then
     echo "[OK] Docker available"

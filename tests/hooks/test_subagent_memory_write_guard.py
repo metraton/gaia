@@ -4,8 +4,8 @@
 Closes the runtime enforcement gap documented in skills/memory/SKILL.md
 ("Who writes"): only the orchestrator and `gaia-operator` mutate memory
 directly via the CLI; a subagent dispatched into a task must NOT run
-`gaia memory add|edit|append|reclassify|delete|link` -- it proposes via a
-`memorialize_suggestions` block instead.
+`gaia memory add|edit|append|reclassify|delete|link` -- it proposes in its
+contract's `memory_delta` instead.
 
 Two layers are covered:
   1. The guard module directly (detection + agent scoping).
@@ -124,7 +124,7 @@ def test_subagent_write_blocked():
     )
     assert allowed is False
     assert reason is not None
-    assert "memorialize_suggestions" in reason
+    assert "memory_delta" in reason
     assert "developer" in reason  # names the offending agent
 
 
@@ -174,7 +174,7 @@ def test_e2e_subagent_write_blocked(validator, cmd):
     r = validator.validate(cmd, is_subagent=True, agent_type="developer")
     assert r.allowed is False
     assert r.tier == SecurityTier.T3_BLOCKED
-    assert "memorialize_suggestions" in r.reason
+    assert "memory_delta" in r.reason
 
 
 @pytest.mark.parametrize(
@@ -187,8 +187,11 @@ def test_e2e_subagent_write_blocked(validator, cmd):
     ],
 )
 def test_e2e_orchestrator_write_allowed(validator, cmd):
-    """Legitimate orchestrator path is unaffected (stays T0/allowed)."""
-    r = validator.validate(cmd, is_subagent=False, agent_type="")
+    """The orchestrator's write passes this guard once the memory skill is loaded."""
+    from modules.security.memory_skill_guard import record_skill_loaded
+
+    record_skill_loaded("ses-orchestrator")
+    r = validator.validate(cmd, is_subagent=False, agent_type="", session_id="ses-orchestrator")
     assert r.allowed is True
 
 

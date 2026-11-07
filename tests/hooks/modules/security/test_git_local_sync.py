@@ -1,0 +1,234 @@
+"""Bringing a checkout up to date is free; this relief adds no signature anywhere."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "hooks")):
+    if entry not in sys.path:
+        sys.path.insert(0, entry)
+
+from modules.security import tiers as tiers_module  # noqa: E402
+from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
+from modules.security.tiers import SecurityTier  # noqa: E402
+from modules.tools.bash_validator import BashValidator  # noqa: E402
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+@pytest.fixture(autouse=True)
+def isolated(monkeypatch, tmp_path):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+    for key, value in (("NAME", "t"), ("EMAIL", "t@example.invalid")):
+        monkeypatch.setenv(f"GIT_AUTHOR_{key}", value)
+        monkeypatch.setenv(f"GIT_COMMITTER_{key}", value)
+    detect_mutative_command.cache_clear()
+    tiers_module._classify_command_tier_cached.cache_clear()
+    yield
+    detect_mutative_command.cache_clear()
+    tiers_module._classify_command_tier_cached.cache_clear()
+
+
+@pytest.fixture
+def base(tmp_path) -> str:
+    """A clone on main: feat tracks origin/feat, side tracks origin/main, tag v1."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    clone = tmp_path / "base"
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, capture_output=True)
+    _git(clone, "checkout", "-q", "-b", "main")
+    (clone / "f.txt").write_text("one\n")
+    _git(clone, "add", "f.txt")
+    _git(clone, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init")
+    _git(clone, "push", "-q", "-u", "origin", "main")
+    _git(clone, "branch", "feat")
+    _git(clone, "push", "-q", "-u", "origin", "feat")
+    _git(clone, "branch", "side", "origin/main")
+    _git(clone, "tag", "v1")
+    return str(clone)
+
+
+def _on(base: str, branch: str) -> None:
+    _git(Path(base), "checkout", "-q", branch)
+
+
+def _dirty(base: str) -> None:
+    (Path(base) / "f.txt").write_text("changed\n")
+
+
+def _asks(command: str, cwd: str | None = None) -> bool:
+    return detect_mutative_command(command, cwd=cwd).is_mutative
+
+
+def _boundary_tier(command: str) -> str:
+    result = BashValidator().validate(
+        command, is_subagent=True, session_id="s-sync", agent_type="gitops-operator",
+    )
+    return "T0" if result.allowed and result.tier == SecurityTier.T0_READ_ONLY else "T3"
+
+
+def test_trigger_ff_only_merge_is_free_with_the_checkout_on_main(base):
+    command = f"git -C {base} merge --ff-only origin/main"
+    assert not _asks(command)
+    assert _boundary_tier(command) == "T0"
+
+
+def test_ff_only_merge_of_the_current_branch_is_free_on_a_feature_branch(base):
+    _on(base, "feat")
+    assert not _asks(f"git -C {base} merge --ff-only origin/feat")
+
+
+def test_ff_only_merge_in_the_callers_directory_is_free(base):
+    assert not _asks("git merge --ff-only origin/main", cwd=base)
+
+
+@pytest.mark.parametrize("command", [
+    "fetch",
+    "fetch origin",
+    "fetch --prune origin",
+    "pull --ff-only",
+    "pull --ff-only origin main",
+    "switch feat",
+    "checkout feat",
+    "checkout v1",
+    "switch -c fresh",
+    "checkout -b fresh",
+    "restore --staged f.txt",
+])
+def test_syncs_and_clean_branch_switches_are_free(base, command):
+    assert not _asks(f"git -C {base} {command}")
+
+
+@pytest.mark.parametrize("command", ["switch feat", "checkout feat"])
+def test_a_switch_to_a_branch_is_free_in_the_callers_directory(base, command):
+    assert not _asks(f"git {command}", cwd=base)
+
+
+@pytest.mark.parametrize("setup, merge", [
+    (None, "merge --ff-only origin/feat"),
+    ("feat", "merge --ff-only main"),
+    ("feat", "merge --ff-only origin/main"),
+    ("--detach", "merge --ff-only origin/main"),
+    (None, "merge origin/main"),
+    (None, "merge --no-ff origin/main"),
+    (None, "merge --squash origin/main"),
+    (None, "merge --ff origin/main"),
+    (None, "merge --ff-only origin/main origin/feat"),
+    (None, "merge --ff-only nowhere/main"),
+])
+def test_a_local_merge_with_listed_flags_is_free_d198_point_1(base, setup, merge):
+    if setup == "--detach":
+        _git(Path(base), "checkout", "-q", "--detach")
+    elif setup:
+        _on(base, setup)
+    assert not _asks(f"git -C {base} {merge}")
+
+
+def test_a_merge_strategy_option_still_asks(base):
+    assert _asks(f"git -C {base} merge --ff-only -X theirs origin/main")
+
+
+@pytest.mark.parametrize("command", [
+    "checkout -f feat",
+    "checkout -B feat",
+    "switch -C feat",
+    "switch -f feat",
+    "switch --force feat",
+    "switch --discard-changes feat",
+    "switch --disc feat",
+    "checkout --forc feat",
+    "rebase origin/main",
+    "reset --hard",
+    "reset --hard origin/main",
+])
+def test_rewriting_or_forcing_commands_ask(base, command):
+    assert _asks(f"git -C {base} {command}")
+
+
+@pytest.mark.parametrize("command", [
+    "GIT_DIR=/elsewhere git -C {base} merge --ff-only origin/main",
+    "env GIT_WORK_TREE=/elsewhere git -C {base} merge --ff-only origin/main",
+    "git -C {base} -c merge.ff=false merge --ff-only origin/main",
+    "git --git-dir=/elsewhere merge --ff-only origin/main",
+])
+def test_a_prefix_or_extra_global_option_keeps_the_merge_signed(base, command):
+    assert _asks(command.format(base=base))
+
+
+@pytest.mark.parametrize("command", [
+    "pull",
+    "pull --rebase",
+    "pull origin feat",
+    "checkout -- f.txt",
+    "checkout .",
+    "restore f.txt",
+    "switch nowhere",
+])
+def test_commands_outside_the_relief_keep_their_verdict(base, command):
+    assert not _asks(f"git -C {base} {command}")
+
+
+@pytest.mark.parametrize("verb", ["switch", "checkout"])
+def test_a_dirty_tree_switch_keeps_its_verdict(base, verb):
+    _dirty(base)
+    assert not _asks(f"git -C {base} {verb} feat")
+
+
+def _commit_on_new_branch(repo: Path, branch: str) -> None:
+    _git(repo, "checkout", "-q", "-b", branch, "origin/main")
+    (repo / "g.txt").write_text(branch)
+    _git(repo, "add", "g.txt")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", branch)
+
+
+@pytest.fixture
+def managed(base, tmp_path) -> Path:
+    """A clone inside the managed worktrees root, on the unpushed branch `work`."""
+    from gaia.paths import ensure_layout, worktrees_dir
+
+    ensure_layout()
+    clone = Path(worktrees_dir()).resolve() / "wt-rebase"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(clone)],
+                   check=True, capture_output=True)
+    _commit_on_new_branch(clone, "work")
+    return clone
+
+
+def test_rebase_of_an_unpushed_branch_in_a_managed_worktree_is_free(managed):
+    command = f"git -C {managed} rebase origin/main"
+    assert not _asks(command)
+    assert _boundary_tier(command) == "T0"
+
+
+@pytest.mark.parametrize("refspec", ["work", "work:elsewhere"])
+def test_rebase_asks_once_the_branch_has_been_pushed(managed, refspec):
+    _git(managed, "push", "-q", "origin", refspec)
+    assert _asks(f"git -C {managed} rebase origin/main")
+
+
+def test_rebase_of_an_unpushed_branch_outside_a_managed_worktree_asks(base):
+    _commit_on_new_branch(Path(base), "work")
+    assert _asks(f"git -C {base} rebase origin/main")
+
+
+@pytest.mark.parametrize("command", [
+    "git -C {wt} rebase -i origin/main",
+    "git -C {wt} rebase --onto origin/main main",
+    "git -C {wt} rebase origin/main work",
+    "git -C {wt} -c rebase.updateRefs=true rebase origin/main",
+    "GIT_DIR=/elsewhere git -C {wt} rebase origin/main",
+])
+def test_rebase_outside_the_exact_shape_asks(managed, command):
+    assert _asks(command.format(wt=managed))
+
+
+def test_rebase_that_would_also_move_other_branches_asks(managed):
+    _git(managed, "config", "rebase.updateRefs", "true")
+    assert _asks(f"git -C {managed} rebase origin/main")

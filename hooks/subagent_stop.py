@@ -2,23 +2,10 @@
 """
 Subagent stop hook for Claude Code Agent System.
 
-Thin gate: parse stdin -> delegate to adapter -> format response -> exit.
-
-Architecture:
-- Uses adapter layer to parse and process the full SubagentStop lifecycle
-- All business logic lives in ClaudeCodeAdapter.adapt_subagent_stop()
-- This file is stdin/stdout glue only
-
-Business logic modules (called by the adapter):
-- modules.agents.contract_validator        : Contract validation + evidence parsing
-- modules.agents.transcript_reader         : Transcript I/O
-- modules.agents.task_info_builder         : Hook payload -> task_info mapping
-- modules.audit.workflow_recorder          : Workflow metrics capture
-- modules.audit.workflow_auditor           : Anomaly detection + Gaia signaling
-- modules.memory.episode_writer            : Episodic memory storage + session events
-- modules.context.context_writer           : Progressive context enrichment
-- modules.security.approval_cleanup        : Approval file consumption
-- modules.agents.response_contract         : Response contract validation
+Thin gate: parse stdin -> delegate to ClaudeCodeAdapter.adapt_subagent_stop()
+-> format response -> exit. All business logic lives in the adapter; this file
+is stdin/stdout glue, plus the direct-call chain ``subagent_stop_hook`` that
+tests drive.
 """
 
 import json
@@ -33,21 +20,15 @@ _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
-# Adapter layer
 from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 from modules.core.logging_setup import configure_hook_logging
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("subagent_stop")
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Backward-compatible aliases (tests and e2e import these names)
-# ============================================================================
-
+# Names the tests and e2e suites import from this module.
 from modules.agents.contract_validator import (
     extract_commands_from_evidence,
     extract_exit_code_from_output,
@@ -73,28 +54,17 @@ from modules.session.session_manager import get_or_create_session_id
 _extract_commands_from_evidence = extract_commands_from_evidence
 
 
-# ============================================================================
-# M4 (T4.2): handoff persistence helper
-# ============================================================================
-
-# Delegate to the shared module so both the adapter (production path) and this
-# legacy entry point share the same implementation without circular imports.
 from modules.agents.handoff_persister import persist_handoff as _persist_handoff
 _extract_exit_code_from_output = extract_exit_code_from_output
 _read_transcript = read_transcript
 _process_update_contracts = process_update_contracts
 
 
-# ============================================================================
-# Backward-compatible main processing chain (used by tests directly)
-# ============================================================================
-
 def subagent_stop_hook(task_info, agent_output):
     """
-    Main subagent stop hook - validates contracts, captures metrics, detects anomalies, stores episodes.
+    Validate the contract, capture metrics, detect anomalies and store the episode.
 
-    This is the backward-compatible entry point. The adapter calls the same
-    modules internally.
+    The direct-call entry point tests use; the adapter runs the same modules.
 
     Args:
         task_info: Task information including ID, description, agent, etc.
@@ -110,10 +80,6 @@ def subagent_stop_hook(task_info, agent_output):
 
         parsed_contract = parse_contract(agent_output)
 
-        # Transcript-based anomaly checks (investigation_skip, duration_outlier,
-        # pipe_retroactive) need a TranscriptAnalysis; degrade
-        # cleanly, with a recorded reason, when no usable transcript exists
-        # instead of silently skipping them (see transcript_checks_skipped below).
         transcript_analysis = None
         transcript_checks_skipped_reason = None
         transcript_path = task_info.get("agent_transcript_path", "")
@@ -141,22 +107,13 @@ def subagent_stop_hook(task_info, agent_output):
 
         cleanup_approval(agent_type)
 
-        # NOTE (approvals redesign, M1): grants are consumed AT THE MATCH by
-        # bash_validator, not swept at SubagentStop. A grant never presented to a
-        # matching retry stays PENDING and expires on its own short (5m) TTL, so
-        # an unmatched grant must survive the subagent ending. The former
-        # consume_session_grants() sweep has been removed.
-
         commands_executed = extract_commands_from_evidence(agent_output)
 
-        # T9: CONDITIONAL BACKSTOP finalize of the agent_contract_handoffs row.
-        # The agent's own `gaia contract finalize` is the PRIMARY writer; this
-        # only finalizes a row when none exists yet for the contract id
-        # (marking it degraded/auto_captured), and no-ops otherwise. Exactly-
-        # once under a race is guaranteed by the idempotent UPSERT keyed on the
-        # contract id inside persist_handoff -> finalize_agent_contract_handoff.
-        # Internally suppresses errors so a DB write failure never blocks the
-        # SubagentStop hook from returning.
+        # The agent's own `gaia contract finalize` is the primary writer;
+        # persist_handoff captures a degraded, auto_captured row only when none
+        # exists for the contract id, and its UPSERT keyed on that id keeps a
+        # race with the agent's finalize to one row. It suppresses its own
+        # errors, so a DB write failure never blocks this hook.
         _persist_handoff(
             parsed_contract=parsed_contract,
             agent_output=agent_output,
@@ -164,18 +121,40 @@ def subagent_stop_hook(task_info, agent_output):
             session_id=session_id,
         )
 
-        # Process update_contracts array from the agent_contract_handoff envelope.
         context_update_result = None
         if parsed_contract is not None:
+            born = None
+            if isinstance(parsed_contract, dict):
+                try:
+                    from gaia.store.writer import dispatch_row_for_identity
+
+                    born = dispatch_row_for_identity(
+                        session_id, (parsed_contract.get("agent_status") or {}).get("agent_id"),
+                        db_path=task_info.get("db_path"),
+                    )
+                except Exception:
+                    logger.warning("dispatch row lookup failed", exc_info=True)
+            dispatch_project = task_info.get("dispatch_project") or (born or {}).get("dispatch_project")
             update_contracts_task_info = {
                 "agent": agent_type,
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
                 "workspace": task_info.get("workspace"),
+                "project": dispatch_project,
             }
             update_contracts_result = process_update_contracts(
                 parsed_contract, update_contracts_task_info
             )
+            if update_contracts_result.get("errors") and born and born.get("contract_id"):
+                try:
+                    from gaia.store.writer import record_update_contracts_outcome
+
+                    record_update_contracts_outcome(
+                        born["contract_id"], refused=update_contracts_result["errors"],
+                        db_path=task_info.get("db_path"),
+                    )
+                except Exception:
+                    logger.warning("update_contracts refusal not stamped", exc_info=True)
             if update_contracts_result.get("updated"):
                 context_update_result = {
                     "updated": True,
@@ -199,9 +178,6 @@ def subagent_stop_hook(task_info, agent_output):
             context_update_result=context_update_result,
         )
 
-        # consolidation_required mirrors the adapter path: unconditionally
-        # False since the injected-context payload that signalled
-        # multi-surface work retired with the dispatch-kernel migration.
         response_contract = validate_response_contract(
             agent_output,
             task_agent_id=resolve_agent_id(task_info),
@@ -210,11 +186,8 @@ def subagent_stop_hook(task_info, agent_output):
         )
         save_validation_result(task_info, response_contract)
 
-        # This backward-compatible entry point resolves no dispatch row -- it is
-        # handed (task_info, agent_output) and nothing else -- so the envelope it
-        # can offer the auditor is the one it already parsed from the text. The
-        # production path is the adapter, which passes the persisted row's
-        # envelope (`_authoritative_envelope`) instead.
+        # The auditor gets the envelope parsed from the text; the adapter passes
+        # the persisted row's envelope instead.
         anomalies = audit_workflow(
             workflow_metrics,
             task_info,
@@ -243,9 +216,6 @@ def subagent_stop_hook(task_info, agent_output):
                 ),
             })
 
-        # Contract-reported defect -> raw defect floor. Same unrequested,
-        # non-blocking capture the adapter performs; kept in lockstep here so
-        # this backward-compatible entry point does not lose the defect.
         try:
             defect_anomaly = build_defect_anomaly(parsed_contract, agent=agent_type)
             if defect_anomaly:
@@ -266,14 +236,10 @@ def subagent_stop_hook(task_info, agent_output):
             commands_executed=commands_executed,
         )
 
-        # Rejections recorded for this turn by the circuit breaker. This entry
-        # point does not run the contract gate, so it READS the count and never
-        # increments it -- the gate in the adapter is the only writer. It used
-        # to read a `repair_attempts` key off ResponseContractValidation, an
-        # eleven-field dataclass with no such field, and so was always 0.
-        # The key must be the breaker's own: rejected_turn_relay's preservation
-        # key coincides with it only when the payload carries a harness
-        # agent_id, so it reports 0 for exactly the unidentified turns.
+        # Reads the circuit breaker's rejection count without incrementing it:
+        # this entry point runs no contract gate. The key must be the breaker's
+        # own (counter_key); rejected_turn_relay's preservation key coincides
+        # with it only when the payload carries a harness agent_id.
         try:
             from modules.agents.rejection_circuit import (
                 count as _rejection_count,
@@ -308,10 +274,6 @@ def subagent_stop_hook(task_info, agent_output):
         }
 
 
-# ============================================================================
-# Thin gate handler (stdin mode)
-# ============================================================================
-
 def _handle_subagent_stop(event) -> None:
     """Process a SubagentStop event.
 
@@ -330,11 +292,8 @@ def _handle_subagent_stop(event) -> None:
             file=sys.stderr,
         )
     elif isinstance(response.output, dict) and response.output.get("contract_circuit_open"):
-        # A degraded close exits 0 -- the turn ends rather than being sent back
-        # for repair -- so it would otherwise be the ONE outcome that reaches
-        # stderr with nothing at all, precisely the outcome that most needs
-        # saying. The anomaly and the event are the durable record; this is the
-        # immediate one, on the same channel a rejection already uses.
+        # A degraded close exits 0, so it would reach stderr with nothing; the
+        # anomaly and the event are the durable record, this is the immediate one.
         print(
             "HOOK ERROR: Contract rejection circuit OPEN -- turn closed "
             "DEGRADED, contract NOT complete: "
@@ -345,10 +304,6 @@ def _handle_subagent_stop(event) -> None:
     print(json.dumps(response.output))
     sys.exit(response.exit_code)
 
-
-# ============================================================================
-# CLI interface
-# ============================================================================
 
 def main():
     """CLI interface for testing metrics capture."""
@@ -383,10 +338,6 @@ def main():
     else:
         print("Unknown command. Use --test to run test.")
 
-
-# ============================================================================
-# STDIN HANDLER (Claude Code integration)
-# ============================================================================
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

@@ -1,9 +1,7 @@
 """
 gaia plan -- Manage plans (one per brief) in the Gaia DB substrate.
 
-Architecture: Opción B (DB canónica). All mutating operations write only to
-``~/.gaia/gaia.db``; nothing under ``.claude/project-context/briefs/`` is
-touched.
+Every mutating operation writes only to ``~/.gaia/gaia.db``.
 
 Subcommands:
     gaia plan save --brief=<name> (--content="..." | --content-file=<path>)
@@ -33,10 +31,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-# ---------------------------------------------------------------------------
-# Workspace resolution (mirrors brief.py / memory.py)
-# ---------------------------------------------------------------------------
-
 def _resolve_workspace(explicit: str | None) -> str:
     from gaia.project import cli_workspace
     return cli_workspace(explicit)
@@ -55,18 +49,12 @@ def _read_content_file(path_str: str) -> str:
 
     Pass ``"-"`` to read from ``sys.stdin`` until EOF (utf-8). Pass any other
     path string to read that file (utf-8). Raises ``FileNotFoundError`` for
-    missing paths (caller converts to _err). Mirrors the helper of the same
-    name in bin/cli/brief.py and bin/cli/ac.py -- the established convention
-    for long text that must not be inlined as a shell argument.
+    missing paths (caller converts to _err).
     """
     if path_str == "-":
         return sys.stdin.read()
     return Path(path_str).read_text(encoding="utf-8")
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 def _cmd_save(args) -> int:
     """Canonical path to UPSERT a plan into gaia.db.
@@ -95,28 +83,11 @@ def _cmd_save(args) -> int:
     Calling ``gaia plan save`` does NOT delete or reorder tasks -- it is safe
     to call repeatedly without losing structured sub-rows.
 
-    Anti-pattern: DO NOT use ``gaia brief edit`` to persist plan content
-    --------------------------------------------------------------------
-    ``gaia brief edit <slug>`` writes to the ``briefs`` table (brief body
-    field), not the ``plans`` table. Plans and briefs are separate rows in
-    separate tables. Any content written via ``gaia brief edit`` will NOT
-    appear in ``gaia plan show``.
-
-    Specifically, the pattern ``EDITOR=cp /tmp/plan.md gaia brief edit <slug>``
-    is a confirmed anti-pattern (observed 2026-05-22). It side-loads content
-    into the wrong table, overwrites the brief body, and produces a stale
-    brief that does not reflect the plan. Never repeat this. For a body too
-    large to pass inline, use ``--content-file``:
+    Do not use ``gaia brief edit`` to persist plan content: it writes the
+    ``briefs`` table (brief body), so the content never appears in
+    ``gaia plan show``. For a body too large to pass inline, use
+    ``--content-file``:
     ``gaia plan save --brief=<slug> --content-file=~/.gaia/scratch/plan.md``
-
-    That flag replaced a recommendation to write
-    ``--content="$(cat <path>)"``, which no agent caller could follow: a
-    command substitution is a shell composition that command-execution
-    forbids, so the only documented route for a large body was one its
-    intended callers were barred from taking. Five separate turns declined to
-    re-emit a ~30 KB plan body through a shell-quoted --content rather than
-    risk corrupting the plan of record, and the plan narrative fell behind its
-    own rows as a result.
 
     Verify after saving with ``gaia plan show <slug>``.
     """
@@ -158,11 +129,8 @@ def _cmd_save(args) -> int:
         )
 
     if not status:
-        # 'draft' is the default for a NEW plan only. On an update, the live
-        # status is preserved: applying the insert default to both paths made
-        # every content save silently demote an 'active' plan back to 'draft',
-        # and the repair verb (`gaia plan set-status`) is curator-only -- the
-        # planner broke a state it had no permission to restore.
+        # 'draft' is the default for a new plan only; an update keeps the live
+        # status, so saving content never demotes an 'active' plan.
         status = (existing or {}).get("status") or "draft"
 
     try:
@@ -325,7 +293,6 @@ def _cmd_set_status(args) -> int:
         else:
             print(f"Plan for '{brief_name}': "
                   f"{res['old_status']} -> {res['new_status']}")
-        # D11 advisory: surface unsatisfied ACs on plan close.
         for w in res.get("warnings", []):
             print(f"Warning: {w}", file=sys.stderr)
     return 0
@@ -461,10 +428,6 @@ def _cmd_change(args) -> int:
                      f" ({derived.get('action') or 'no transition'})")
     return _emit(args, res, line)
 
-
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
 
 def register(subparsers) -> None:
     """Register the `plan` (singular) subcommand with the root parser."""

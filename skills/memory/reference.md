@@ -69,11 +69,11 @@ explicit, resolvable scope.
 
 - `--project-ref=<identity>` anchors directly to a known identity string
   (scripting across workspaces); mutually exclusive with `--project`.
-- `--workspace=<ws>` alone (no project flag) is the **explicit degraded
-  lane**: a legitimate workspace-scoped note with `project_ref` NULL and
-  exit 0. A `project_*` note about the workspace as a whole lives here. The
-  write still lands but warns `no_owner` when no `--initiative` names a
-  project either: a container is not one of the three owners.
+- `--workspace=<ws>` alone (no project flag, no `--initiative`) places the
+  row on owner workspace, with `project_ref` NULL and exit 0: a fact,
+  preference or decision true of everything in that workspace. The write
+  warns `workspace_owner`, naming the flags that place it on one project or
+  group instead, since every group and project in the workspace receives it.
 
 **Errors are structured and machine-parseable** so the orchestrator can run
 the command, read the failure, and *manage* it deterministically instead of
@@ -98,22 +98,50 @@ project's durable identity.
 
 The shape `SKILL.md` asks of a row is taught by the CLI at write time;
 every number and list here is read from the symbol named, so one edit moves
-both.
+both. `gaia map memory` renders the whole model from
+`gaia/store/memory_placement.py::model_page`, and `gaia memory add --help`
+renders the kind list and the owner matrix from
+`gaia/store/memory_placement.py::kinds_text` and
+`gaia/store/memory_placement.py::owner_matrix_text`.
 
-- **Claim vocabulary** -- `gaia/store/memory_claims.py::MEMORY_CLAIM_KINDS`,
-  rendered into `gaia memory add --help`. The first word of a description
-  names the kind; `gaia/store/memory_claims.py::memory_claim_kind` reads it
-  without case, accents or a trailing colon. The kinds are English (`Fact`,
-  `Preference`, `Decision`, `Lesson`, `Pending`, `Bug`); a row written with the
-  earlier Spanish word (`Hecho`, `Preferencia`, `Decisión`, `Aprendizaje`,
-  `Pendiente`) is still read as the matching kind, so new rows use English and
-  old ones need no rewrite. The vocabulary is open: another first word is
-  allowed and simply has no kind.
+- **Kind** -- `--kind` is required and closed to
+  `gaia/store/memory_placement.py::MEMORY_KINDS`; `_cmd_add` refuses a
+  missing one with `kind_required` and an unknown one with `kind_unknown`,
+  both printing the list.
+- **Owner** -- derived from the scope flags by
+  `gaia/store/memory_placement.py::derive_owner_level`: `--type=user` is the
+  user, a host-scoped initiative is gaia, a project anchor or a registered
+  project's key is the project, another `--initiative` is a group, and
+  `--workspace` alone is the workspace. A kind the owner may not hold
+  (`gaia/store/memory_placement.py::KINDS_BY_OWNER`) is refused with the
+  right home by `gaia/store/memory_placement.py::placement_refusal`, the same
+  rule the `trg_memory_placement_*` triggers in `gaia/store/schema.sql`
+  enforce.
+- **`until`** -- a preference only, parsed by
+  `gaia/store/memory_placement.py::parse_until`: an ISO date, or
+  `memory:<ws>/<slug>` (`user` and `gaia` name the user and host scopes).
+  `gaia/store/memory_placement.py::until_holds` drops the row from injection
+  once the date passes or the named row is closed, graduated, superseded or
+  deleted.
+- **Tool columns** -- `--binary` and `--replaces` belong to `kind=tool`
+  alone; `gaia/store/memory_placement.py::tool_refusal` requires the binary
+  on PATH at write, a `--replaces` CLI the classifier models, and a title of
+  at most `gaia/store/memory_placement.py::TOOL_TITLE_MAX` characters. The
+  Environment line comes from `hooks/modules/context/user_sections.py::tool_lines`,
+  at birth and in the kernel, and the hooks read `replaces` through
+  `hooks/modules/security/cli_aliases.py::declared_aliases`.
+- **Supersedes** -- `gaia memory link <new> <old> --kind=supersedes` is
+  refused between rows of different owner or kind, and on a cycle
+  (`gaia/store/writer.py::_supersedes_refusal`).
 - **Birth class** -- `gaia/store/writer.py::upsert_memory`: a new `type=user`
-  row with no `--class` is born `anchor`, so it reaches the birth block and
-  every dispatch kernel through `gaia/store/reader.py::user_anchor_rows`;
-  every other type is born `log`. An explicit `--class` wins, and a later
-  `add` over the same row never changes its class.
+  row with no `--class` is born `anchor`; every other type is born `log`. An
+  explicit `--class` wins, and a later `add` over the same row never changes
+  its class.
+- **Delivery** -- the user's live facts and preferences reach the birth block
+  through `gaia/store/reader.py::user_memory_rows`, the user's tools through
+  `gaia/store/reader.py::user_tool_rows`, and a kernel's scope chain through
+  `gaia/store/reader.py::scope_memory_rows`; no user row reaches a kernel
+  except as a tool line.
 - **Warnings** -- `bin/cli/memory.py::_add_warnings` and the supersedes check
   in `bin/cli/memory.py::_cmd_link`. Each prints `warning: ...` to stderr (with
   `--json`, a `warnings: [{code, message}]` list) and the row is still
@@ -123,9 +151,10 @@ both.
 |--------|------|--------------------|
 | `description_long` | description over `bin/cli/memory.py::_DESCRIPTION_WARN_CHARS` | listings and the birth block show only the description |
 | `body_long` | body over `bin/cli/memory.py::_BODY_WARN_CHARS` | a body is injected whole or dropped |
-| `no_owner` | a non-user row with neither a project nor an initiative | a workspace is a container, not an owner |
+| `workspace_owner` | a non-user row with neither a project nor an initiative | the workspace owns the row and every group and project in it receives it; names `--project` and `--initiative` for a narrower owner |
 | `rewrite_in_place` | `add --replace` with another body | a change is a new row plus `link <new> <old> --kind=supersedes` |
-| `preference_or_bug` | a `type=user` row whose description's kind is `Preference` (or the Spanish-era `Preferencia`) | asks whether it would hold if Gaia worked perfectly |
+| `preference_or_bug` | a `type=user` row written with `--kind=preference` | asks whether it is his difference or a rule any user would want, which belongs to the harness |
+| `tool_without_kind` | a `type=user` row of another kind whose description names an executable the user authored | a program built for him is `--kind=tool --binary=<name>` |
 | `measurement_unstamped` | a description whose first word is `Measured` (or `Medido`; `gaia/store/memory_claims.py::claims_measurement`) written without both `--measured-at` and `--method` | a measured fact says when and how it was measured; the two columns are shown by `show` and `get-relevant --initiative` |
 | `supersedes_reversed` | `link --kind=supersedes` whose dst was born after its src | the arrow goes from the new row to the old |
 
@@ -133,6 +162,47 @@ Every text-mode write (`add`, `append`, `reclassify`, `link`) closes
 with `bin/cli/memory.py::_WRITE_POINTER`, the write-side twin of the read
 pointer. Whether a preference is really a harness rule is left to the
 writer's judgment: no check reads the body for it.
+
+## Moving a row to its owner
+
+`gaia memory move` (`bin/cli/memory.py::_cmd_move`, writer
+`gaia/store/writer.py::move_memory`) re-homes a live row in one transaction.
+The target is an owner spec -- `user`, `gaia`, `workspace:<ws>`,
+`group:<ws>/<key>`, `project:<ws>/<name>` -- or `add`'s scope flags; `--from`
+names the workspace the row sits in now (default: found as `show` finds it).
+The writer derives the owner with `memory_placement.py::derive_owner_level`, so
+a spec that names `group` for a registered project is refused as
+`owner_mismatch`. One UPDATE re-keys `workspace`, `type`, `initiative`,
+`project_ref`, `owner_level` and `kind`; `trg_memory_history` records the old
+coordinates, and `_rekey_memory_neighbours` points the row's earlier history
+rows and both ends of its links at the new workspace first. A type=user row
+leaving the user names its new `--type`; a curated slug prefix (`atom_`,
+`decision_`, `negative_`) binds its type, so such a row never becomes the
+user's. Refusal codes, one per row in a batch: `not_found`, `kind_refused`,
+`name_collision`, `slug_type_mismatch`, `type_required`, `owner_mismatch`,
+`kind_change_alone`, `bad_owner_spec`, `bad_line`, `target_unresolved`,
+`ambiguous_slug`, `write_forbidden`. A batch exits 1 when any line was refused.
+`memory_history` has no kind column, so a kind changed by a move is not in the
+history; the old owner is. `move` sits on the orchestrator's lane beside
+`reclassify`, is refused to every specialist but `gaia-operator`, and is T0.
+
+## Batch reclassify and link
+
+`reclassify --from-file` (`bin/cli/memory.py::_reclassify_batch`) and
+`link --from-file` (`_link_batch`) share move's batch reader and report
+(`_read_batch`, `_batch_rows`, `_emit_batch`): blank and `#` lines skipped,
+`-` reads stdin, JSON `{status: applied|partial|failed, counts, results}` with
+the line number on each result. A reclassify line is
+`slug<TAB>class=<c>[,status=<s>][<TAB>note]`; `status=null` clears, and
+`writer.py::reclassify_memory(note=...)` appends the note to the body before
+the commit that sets class and status, so both land or neither does.
+`--from` is an alias of reclassify's `--workspace`. A link line is
+`from<TAB>to<TAB>kind`, each end found as the single form finds it, written by
+`insert_memory_link`, which applies `_supersedes_refusal` (owner and kind, no
+self-link, no loop). Refusal codes: `bad_line`, `bad_spec`, `invalid` (the
+writer's message), `ambiguous_slug`, `write_forbidden`. `--from-file` refuses a
+positional slug, `--class`/`--status`, `--kind` and `--delete` beside it. Both
+verbs keep their single form's lane, memory-skill guard and specialist refusal.
 
 Anchoring is **forward-only, by design**. Rows written before this
 mechanism existed stay `project_ref IS NULL` -- the memory-row-to-project

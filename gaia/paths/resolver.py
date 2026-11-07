@@ -217,15 +217,14 @@ def cache_dir() -> Path:
 def scratch_dir() -> Path:
     """Return the path to the Gaia scratch directory.
 
-    Ephemeral working space for Gaia agents. This is the ONLY location where
-    ``rm`` (including ``rm -rf``) is classified T0 (no approval required):
-    the security layer grants that exception only when every target path
-    resolves strictly inside this directory (see
-    ``hooks/modules/security/mutative_verbs.py`` -- ``_rm_targets_only_scratch``).
-    Anything outside remains T3, and the catastrophic floor is untouched.
+    Ephemeral working space for Gaia agents. ``rm`` (including ``rm -rf``) runs
+    without approval only when every target resolves inside a scratch entry the
+    calling agent owns (see ``hooks/modules/security/mutative_verbs.py`` --
+    ``_rm_scratch_confined_targets``). Anything else is judged by the ordinary
+    rules, and the catastrophic floor is untouched.
 
     Lives under ``data_dir()`` so a ``GAIA_DATA_DIR`` override relocates the
-    scratch directory too, keeping the T0 exception aligned with the active
+    scratch directory too, keeping that exception aligned with the active
     data root.
 
     Returns:
@@ -242,11 +241,8 @@ def evidence_dir() -> Path:
     ``gaia/evidence/fs.py::blob_path_for``).
 
     Lives under ``data_dir()`` so a ``GAIA_DATA_DIR`` override relocates the
-    evidence store too. Before this function existed, ``gaia/evidence/fs.py``
-    computed this root as ``Path.home() / ".gaia" / "evidence"`` directly,
-    ignoring ``GAIA_DATA_DIR`` entirely -- a test that isolates itself by
-    overriding the data directory would still write blobs into the real
-    per-user store instead of its own sandbox.
+    evidence store too, which keeps a test that isolates itself by overriding
+    the data directory from writing blobs into the real per-user store.
 
     Returns:
         ``data_dir() / "evidence"``

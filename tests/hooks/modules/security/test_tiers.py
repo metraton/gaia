@@ -78,7 +78,7 @@ class TestClassifyCommandTier:
     # T1 - Local validation operations
     @pytest.mark.parametrize("command", [
         "terraform validate",
-        "terraform fmt",
+        "terraform fmt -check",
         "helm lint",
     ])
     def test_classifies_validation_as_t1(self, command):

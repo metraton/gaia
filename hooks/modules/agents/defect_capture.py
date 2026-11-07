@@ -6,30 +6,17 @@ This module turns that statement into one ``episode_anomalies`` row so the
 defect survives the turn and shows up in the existing anomaly aggregation
 (``gaia metrics``) alongside every other anomaly type.
 
-Two properties are load-bearing and are why this lives in the hook rather
-than in an agent's own tooling:
+The capture is unrequested (SubagentStop reads the contract it already
+parsed) and non-blocking: every failure mode here resolves to ``None`` (no
+anomaly appended), ``EpisodicMemory.store_episode`` logs and continues past a
+rejected ``insert_episode_anomaly``, and ``episode_writer.write`` swallows the
+whole episode write.
 
-- **Unrequested.** No agent opts in and none can. SubagentStop reads the
-  contract it already parsed; emitting a well-formed ``failure_report`` is
-  the whole of the agent's participation.
-- **Non-blocking.** The capture is advisory telemetry. A malformed report,
-  a parse failure, or a rejected DB write must leave the subagent's turn
-  byte-identical to a turn with no report at all. Every failure mode here
-  resolves to ``None`` (no anomaly appended); the persistence layer below
-  -- ``EpisodicMemory.store_episode`` -- already logs and continues past a
-  rejected ``insert_episode_anomaly``, and ``episode_writer.write`` swallows
-  the whole episode write. A telemetry channel that can fell the work it
-  observes is worse than no channel.
+``parse_failure_report`` is the single read seam for the block: it applies the
+same FAILURE_REPORT_SHAPE check the validator and the SubagentStop gate apply.
 
-Normalization is NOT redone here. ``parse_failure_report`` is the single
-read seam for the block: it applies the same FAILURE_REPORT_SHAPE check the
-validator and the SubagentStop gate apply, so a block malformed enough to be
-rejected at write time can never be read here as clean.
-
-The anomaly's ``severity`` passes through from the report verbatim. The
-report's enum (``info``/``warning``/``error``, ``VALID_FAILURE_SEVERITIES``)
-is already a subset of the ranks ``gaia metrics`` sorts by, so no
-translation is needed -- and translating would let the two drift.
+The anomaly's ``severity`` passes through from the report verbatim
+(``VALID_FAILURE_SEVERITIES``: ``info``/``warning``/``error``).
 """
 
 import logging
@@ -38,20 +25,14 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-# The anomaly type is free-form at the storage layer (``episode_anomalies.type``
-# is a plain TEXT column with no enum or CHECK), so a new type costs nothing and
-# is aggregated by ``gaia metrics`` on arrival. Naming it distinctly is what
-# keeps an agent-STATED defect separable from the anomalies the runtime infers
-# on its own.
+# A type distinct from the runtime-inferred anomalies keeps an agent-stated
+# defect separable; ``episode_anomalies.type`` is plain TEXT with no CHECK.
 DEFECT_ANOMALY_TYPE = "agent_reported_defect"
 
-# Used when the agent omits the optional ``severity``. The report is a defect
-# the agent chose to state, so the floor is a warning, not info -- but it is not
-# an error either, since the agent declined to grade it.
+# Used when the agent omits the optional ``severity``.
 DEFAULT_DEFECT_SEVERITY = "warning"
 
-# Evidence is copied into the anomaly payload, which is JSON-serialized into a
-# single column. Cap it so one runaway report cannot bloat the row.
+# Evidence is serialized into the single ``payload`` column; the cap bounds the row.
 MAX_EVIDENCE_ITEMS = 20
 
 
@@ -103,8 +84,5 @@ def build_defect_anomaly(
             "evidence": evidence,
         }
     except Exception as exc:
-        # Advisory channel: a defect in the defect capture never costs the
-        # turn. Debug level, matching the other non-fatal SubagentStop
-        # enrichment steps.
         logger.debug("Defect capture failed (non-fatal): %s", exc)
         return None

@@ -46,6 +46,8 @@ from modules.security.tiers import SecurityTier  # noqa: E402
 
 BARE_COMMAND = "terraform apply"
 REDIRECTED_COMMAND = "terraform apply > /tmp/tf-out.txt"
+SESSION = "ses-sanitizer-redirect"
+PRIMARY = "claude-code-primary"
 
 
 def test_sanitizer_redirect_baseline_is_blocked_t3():
@@ -56,13 +58,14 @@ def test_sanitizer_redirect_baseline_is_blocked_t3():
     T3_BLOCKED, with an "ask" block_response. This is the block the
     redirected form is checked against below.
     """
-    result = validate_bash_command(BARE_COMMAND)
+    result = validate_bash_command(BARE_COMMAND, session_id=SESSION, agent_type=PRIMARY)
     assert result.allowed is False
     assert result.tier == SecurityTier.T3_BLOCKED
     assert result.block_response is not None
     assert (
-        result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
     )
+    assert result.approval_id
 
 
 def test_sanitizer_redirect_no_longer_evades_t3_block():
@@ -78,13 +81,14 @@ def test_sanitizer_redirect_no_longer_evades_t3_block():
     under the name ``test_sanitizer_redirect_evades_t3_block`` -- see the
     module docstring above for the vulnerability that assertion documented.
     """
-    result = validate_bash_command(REDIRECTED_COMMAND)
+    result = validate_bash_command(REDIRECTED_COMMAND, session_id=SESSION, agent_type=PRIMARY)
     assert result.allowed is False
     assert result.tier == SecurityTier.T3_BLOCKED
     assert result.block_response is not None
     assert (
-        result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
     )
+    assert result.approval_id
     # The classified command inside the block carries the CLEANED form --
     # confirming the redirect was stripped and re-classified, not ignored.
     assert result.modified_input == {"command": BARE_COMMAND}

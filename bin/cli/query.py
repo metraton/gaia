@@ -64,7 +64,6 @@ def _render_table(rows: list[dict]) -> None:
     if not rows:
         print("(no results)")
         return
-    # column widths
     surf_w = max(len("SURFACE"), max(len(r.get("surface", "")) for r in rows))
     ts_w = max(len("TIMESTAMP"), max(len((r.get("timestamp") or "")[:19])
                                      for r in rows))
@@ -98,7 +97,6 @@ def _render_grouped_count(rows: list[dict], group_by: str | None) -> None:
         print("(no results)")
         return
     if not group_by:
-        # Single total
         print(rows[0]["count"])
         return
     key_w = max(len(group_by.upper()),
@@ -186,10 +184,8 @@ def cmd_query(args) -> int:
     do_metrics = bool(getattr(args, "metrics", False))
 
     if last is None:
-        # The row cap protects a LISTING from scrolling forever; an aggregate
-        # is a different question. `gaia query --count` capped at 20 answered
-        # "how many of the last 20", which reads as a total and is not one.
-        # An explicit --last still caps every output shape, including counts.
+        # The default cap is for listings: a count capped at 20 would read as
+        # a total. An explicit --last still caps every output shape.
         aggregating = do_count or bool(group_by) or fmt == "count"
         last = UNCAPPED_ROWS if aggregating else DEFAULT_ROW_CAP
 
@@ -214,7 +210,6 @@ def cmd_query(args) -> int:
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
 
-    # --metrics: project + optionally aggregate the per-turn telemetry.
     if do_metrics:
         if do_count or group_by:
             try:
@@ -250,7 +245,6 @@ def cmd_query(args) -> int:
                 if snippet:
                     r["summary"] = snippet
 
-    # --count or --group-by: aggregate before rendering.
     if do_count or group_by:
         try:
             grouped = group_and_count(rows, group_by=group_by)

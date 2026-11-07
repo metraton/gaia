@@ -33,16 +33,21 @@ def _replay_data_home(work_dir: Path) -> Path:
 
 @dataclass(frozen=True)
 class ReplayResult:
-    """Result of replaying a single event against the current hooks."""
+    """Result of replaying a single event against the current hooks.
+
+    actual_decision is ALLOW, BLOCK, DENY, PASS or ERROR. matched is True when
+    _classify_regression finds no difference, and regression_type names the one
+    it found.
+    """
 
     event: ReplayEvent
     actual_exit_code: int
     actual_stdout: str
     actual_stderr: str
-    actual_decision: str  # "ALLOW", "BLOCK", "DENY", "ERROR"
-    actual_tier: str  # parsed from stdout if available
-    matched: bool  # expected_decision == actual_decision
-    regression_type: Optional[str]  # None, "allow_to_block", "block_to_allow", "tier_change", "exit_code_change"
+    actual_decision: str
+    actual_tier: str
+    matched: bool
+    regression_type: Optional[str]
     actual_metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -52,10 +57,9 @@ _RE_TIER = re.compile(r"\bT[0-3]\b")
 def _parse_decision_from_output(
     exit_code: int, stdout: str
 ) -> tuple[str, str]:
-    """Parse the hook decision and tier from stdout/exit_code.
+    """Map the exit code and the last JSON line of stdout to a decision.
 
-    Returns:
-        (decision, tier) tuple.
+    The returned tier is always "": callers read it from hook state or text.
     """
     decision = "ALLOW"
     tier = ""
@@ -65,17 +69,14 @@ def _parse_decision_from_output(
     elif exit_code != 0:
         decision = "ERROR"
 
-    # Try to parse structured JSON from stdout
     stdout_stripped = stdout.strip()
     if stdout_stripped:
-        # Hook output may have multiple lines; find the last JSON line
         for line in reversed(stdout_stripped.splitlines()):
             line = line.strip()
             if not line.startswith("{"):
                 continue
             try:
                 data = json.loads(line)
-                # Check for deny via hookSpecificOutput
                 hook_output = data.get("hookSpecificOutput", {})
                 perm_decision = hook_output.get("permissionDecision", "")
                 if perm_decision == "deny":
@@ -311,21 +312,11 @@ class HookRunner:
         claude_dir = base_dir / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
 
-        # Logs and session state go to the replay's data home, which the hooks
-        # create on demand (see _replay_data_home).
-
-        # NOTE: project-context/ and project-context.json are intentionally NOT
-        # created. That artifact was retired (agent-contract-handoff M1 /
-        # episodic-workflow-to-db T1.3, T6): project context now lives
-        # exclusively in gaia.db (project_context_contracts), and the replayed
-        # hooks read from the DB, not from a JSON file or signals/ flag dir.
-
-        # Config, memory, metrics directories
+        # No project-context files are created: project context is read from gaia.db.
         (claude_dir / "config").mkdir(exist_ok=True)
         (claude_dir / "memory").mkdir(exist_ok=True)
         (claude_dir / "metrics").mkdir(exist_ok=True)
 
-        # Settings.json
         settings = {
             "permissions": {"allow": ["Bash(*)"], "deny": []},
         }
@@ -333,14 +324,13 @@ class HookRunner:
 
         return base_dir
 
-    # Tools that the orchestrator is allowed to use directly.
-    # Payloads for these tools should NOT get agent_id injected, because
-    # they are orchestrator-level operations (dispatch, communication).
+    # Lower-cased tool names whose payloads are replayed without an injected
+    # agent_id: orchestrator-side dispatch and communication tools, and Stop.
     _ORCHESTRATOR_TOOLS = frozenset({
         "agent", "task", "sendmessage", "skill",
         "taskcreate", "taskupdate", "tasklist", "taskget",
         "toolsearch", "websearch", "webfetch", "askuserquestion",
-        "stop",  # stop_hook payloads are not subject to delegate mode
+        "stop",
     })
 
     def _prepare_payload(self, event: ReplayEvent) -> str:
@@ -414,8 +404,7 @@ class HookRunner:
             )
 
         # The replay gets its own data home so its logs and session state never
-        # land in the user's; GAIA_DB is pinned first so the database the
-        # hooks read does not move with it.
+        # land in the user's; GAIA_DB keeps the hooks on the current database.
         env = os.environ.copy()
         env.pop("CLAUDE_PLUGIN_ROOT", None)
         env["GAIA_DB"] = str(db_path())
@@ -510,7 +499,6 @@ class HookRunner:
         """
         results: list[ReplayResult] = []
 
-        # Create a shared project directory for the batch
         if self.project_root:
             work_dir = self.project_root
         else:

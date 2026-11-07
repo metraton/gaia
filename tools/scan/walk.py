@@ -1,15 +1,14 @@
 """
 Filtered os.walk utility for scan performance.
 
-Replaces pathlib.rglob with a single filtered os.walk pass that prunes
-expensive directories (node_modules, .git, .terraform, etc.) before descending.
+One filtered os.walk pass that prunes expensive directories (node_modules,
+.git, .terraform, etc.) before descending, which pathlib.rglob cannot do.
 """
 
 import os
 from pathlib import Path
 from typing import FrozenSet, Iterator, Sequence
 
-# Directories to skip during scanning -- shared across all scanners
 SKIP_DIRS: FrozenSet[str] = frozenset({
     "node_modules",
     ".git",
@@ -39,9 +38,6 @@ def walk_project(root: Path, extensions: Sequence[str]) -> Iterator[Path]:
     Prunes SKIP_DIRS and hidden directories (starting with '.') to avoid
     descending into expensive subtrees like node_modules or .terraform.
 
-    Much faster than pathlib.rglob on large monorepos because rglob
-    traverses every directory before filtering.
-
     Args:
         root: Absolute path to start walking from.
         extensions: Sequence of file extensions to match (e.g., [".tf", ".hcl"]).
@@ -60,7 +56,6 @@ def walk_project(root: Path, extensions: Sequence[str]) -> Iterator[Path]:
         ]
 
         for f in filenames:
-            # Check extension by finding the last dot
             dot_idx = f.rfind(".")
             if dot_idx >= 0 and f[dot_idx:] in ext_set:
                 yield Path(dirpath) / f

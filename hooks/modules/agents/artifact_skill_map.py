@@ -2,28 +2,16 @@
 Declarative artifact -> governing-skill map.
 
 An agent can write a file whose class of artifact is governed by a skill it
-never declared in frontmatter and never loaded -- the failure
-skill_injection_verifier exists to catch, but only if something first says
-WHICH skill a given file *should* have triggered. That "which skill governs
-this artifact" knowledge did not exist anywhere in the codebase before this
-module: skill_injection_verifier only ever checked declared skills against
-what the transcript shows, so an undeclared gap was invisible by
-construction.
+never declared in frontmatter and never loaded. This module says WHICH skill
+governs a given file, so skill_injection_verifier can check for it whether or
+not the frontmatter names it.
 
-This lives as its OWN module, separate from skill_injection_verifier.py,
-because the two are different concerns that happen to feed the same check:
-skill_injection_verifier answers "was this skill's fingerprint present in the
-transcript?", a question about transcript content. This module answers "which
-skill SHOULD have been present, given what the agent wrote?", a question
-about artifact classification that has nothing to do with transcripts and
-may be reused by other consumers (compliance scoring, an audit report) that
-never touch transcript text at all.
+It is separate from skill_injection_verifier.py because classifying an
+artifact by its path does not depend on transcript content.
 
-The map is a plain list of rules so that adding a future artifact class --
-Terraform files, Kubernetes manifests, shell scripts -- is adding one
-``ArtifactSkillRule`` entry, never touching ``expected_skill_for_path`` or
-any caller. Today's rule set covers exactly one class per the initial scope:
-source-code files, governed by ``code-standards``.
+The map is a plain list of ``ArtifactSkillRule`` entries: a new artifact class
+is one more entry, with no change to ``expected_skill_for_path`` or any
+caller. The one rule today maps source-code extensions to ``code-standards``.
 """
 
 from pathlib import PurePosixPath
@@ -43,8 +31,6 @@ class ArtifactSkillRule(NamedTuple):
     reason: str
 
 
-# Add a future artifact class by appending one rule here -- no other code
-# in this module (or its callers) needs to change.
 ARTIFACT_SKILL_RULES: List[ArtifactSkillRule] = [
     ArtifactSkillRule(
         skill="code-standards",

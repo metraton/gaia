@@ -1,11 +1,8 @@
 """
 Shared utility functions for Gaia hooks.
 
-Centralizes common patterns that were previously copy-pasted across all hook
-entry points (has_stdin_data, dual-channel warnings, etc.).
-
-``has_stdin_data`` is now defined in ``modules.core.stdin`` and re-exported
-here for backward compatibility with existing imports.
+The dual-channel warning, and ``has_stdin_data``, defined in
+``modules.core.stdin`` and re-exported here.
 """
 
 import logging

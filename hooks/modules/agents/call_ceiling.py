@@ -1,19 +1,18 @@
 """Tell a dispatched turn, once, that it is nearing its tool-call ceiling.
 
-A dispatch prompt may carry ``ceiling=<N>`` (``extract_dispatch_binding``), the
-tool calls the orchestrator budgets for the turn. Each host counts the
-subagent's calls that are allowed to run -- Claude Code at PreToolUse, whose
-matchers reach Read, Edit, Write, Glob and Grep; OpenCode at
-``tool.execute.after``, which fires for every tool that ran -- keyed by the
-harness id its contract row was stamped with at SubagentStart. On the call that
-reaches :data:`NOTICE_PERCENT` of the ceiling it returns a notice the model
-reads with that call's result. The orchestrator's own session has no harness id
-and is never counted.
+The ceiling is ``ceiling=<N>`` from the dispatch prompt, else the dispatched
+agent's frontmatter ``maxTurns``, else none (:func:`effective_ceiling`, also
+read by the kernel's ``ceiling:`` line). Each host counts the subagent's calls
+that are allowed to run -- Claude Code at PreToolUse, for the tools in the
+adapter's ``_POLICY_TOOLS``; OpenCode at ``tool.execute.after``, which
+fires for every tool that ran -- keyed by the harness id its contract row was
+stamped with at SubagentStart. On the call that reaches :data:`NOTICE_PERCENT`
+of the ceiling it returns a notice the model reads with that call's result.
+The orchestrator's own session has no harness id and is never counted.
 
-Context use is not a fallback: no Claude Code hook input carries it, and
-OpenCode's ``tool.execute.after`` bridge payload does not either, so a dispatch
-without the token gets no notice. Evidence lost anyway is recovered at close by
-the SubagentStop path; this module only warns during the turn.
+Context use is not a fallback: no hook input on either host carries it.
+Evidence lost anyway is recovered at close by the SubagentStop path; this
+module only warns during the turn.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ import os
 import re
 import secrets
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +59,37 @@ def _write(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
-def _dispatch_ceiling(harness_agent_id: str) -> Tuple[bool, Optional[int]]:
-    """``(row_found, ceiling)`` read from the dispatch prompt of the turn's row."""
-    from gaia.store.writer import find_dispatch_row_by_harness_agent_id
+def _birth_agent_name(row: Mapping[str, Any]) -> str:
+    from gaia.store.writer import BIRTH_AGENT_NAME_KEY
+
+    try:
+        envelope = json.loads(row.get("raw_handoff_json") or "{}")
+    except (TypeError, ValueError):
+        return ""
+    return str(envelope.get(BIRTH_AGENT_NAME_KEY) or "") if isinstance(envelope, dict) else ""
+
+
+def effective_ceiling(row: Mapping[str, Any], agent_name: str = "") -> Optional[int]:
+    """``ceiling=<N>`` from the row's prompt, else ``maxTurns`` of ``agent_name`` or the birth-envelope agent, else None."""
     from modules.agents.dispatch_binding import extract_dispatch_binding
+    from modules.context.kernel_builder import agent_frontmatter
+
+    token = extract_dispatch_binding({"prompt": row.get("dispatch_prompt")})["ceiling"]
+    if token:
+        return token
+    frontmatter = agent_frontmatter(agent_name or _birth_agent_name(row), None)
+    max_turns = str(frontmatter.get("maxTurns") or "").strip()
+    return int(max_turns) if max_turns.isdigit() and int(max_turns) > 0 else None
+
+
+def _dispatch_ceiling(harness_agent_id: str) -> Tuple[bool, Optional[int]]:
+    """``(row_found, ceiling)`` for the turn's row, resolved by :func:`effective_ceiling`."""
+    from gaia.store.writer import find_dispatch_row_by_harness_agent_id
 
     row = find_dispatch_row_by_harness_agent_id(harness_agent_id)
     if row is None:
         return False, None
-    return True, extract_dispatch_binding({"prompt": row.get("dispatch_prompt")})["ceiling"]
+    return True, effective_ceiling(row)
 
 
 def _notice(calls: int, ceiling: int) -> str:

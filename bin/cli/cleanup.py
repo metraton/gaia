@@ -12,7 +12,7 @@ The full-cleanup footprint mirrors what `gaia install` writes, in reverse:
   - .claude/plugin-registry.json (surgical: only Gaia's installed[] entry is
     removed; the file is shared with Claude Code's plugin system)
   - .claude/settings.local.json (surgical: only Gaia-injected keys are removed
-    -- agent, two env vars, Gaia's permission entries, and Gaia's hook commands
+    -- agent, its env var, Gaia's permission entries, and Gaia's hook commands
     -- the mirror of merge_local_hooks; user config preserved)
 The user DB at ~/.gaia/gaia.db is never touched here.
 
@@ -38,12 +38,8 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 
-# ---------------------------------------------------------------------------
-# Project root detection (mirrors JS findProjectRoot)
-# ---------------------------------------------------------------------------
-
 def _find_project_root() -> Path:
-    """Walk upward from cwd until .claude/ is found."""
+    """INIT_CWD when it holds .claude/, else the first ancestor of cwd that does; INIT_CWD or cwd when none."""
     start = Path(os.environ.get("INIT_CWD", "")) if os.environ.get("INIT_CWD") else None
     if start and (start / ".claude").exists():
         return start
@@ -60,15 +56,8 @@ def _find_project_root() -> Path:
     return Path(os.environ.get("INIT_CWD", str(Path.cwd())))
 
 
-# ---------------------------------------------------------------------------
-# Lazy resolvers for Gaia's own data-substrate directories (scratch/tmp/cache/
-# rejected-turns), used by the turn-scoped retention rules below. Defined
-# ahead of RETENTION_POLICY because the table below references them directly
-# as callables. Each degrades to None (never raises) when gaia.paths cannot
-# be imported, mirroring the accessor posture used throughout this module.
-# ---------------------------------------------------------------------------
-
-
+# Resolvers for the directories the turn-scoped rules sweep; RETENTION_POLICY
+# below holds them as callables. Each returns None when gaia.paths cannot be imported.
 def _lazy_scratch_dir():
     try:
         from gaia.paths import scratch_dir
@@ -100,10 +89,6 @@ def _lazy_rejected_turns_dir():
     except ImportError:
         return None
 
-
-# ---------------------------------------------------------------------------
-# Retention policy -- per-target rules for what gets pruned and when.
-# ---------------------------------------------------------------------------
 
 RETENTION_POLICY = [
     {
@@ -151,30 +136,16 @@ RETENTION_POLICY = [
         "max_hours": 1,
         "label": "Anomaly signal flag",
     },
-    # Contract drafts differ from every rule above twice over. They live under
-    # Gaia's own data substrate (~/.gaia/contract_drafts), NOT under the
-    # workspace .claude/ tree, so the "abs-drafts" handler resolves an ABSOLUTE
-    # path instead of root/dir_rel. And their criterion is not age: it is owned
-    # by gaia.contract.drafts.collectable_drafts, the same function the
-    # SessionStart GC hook calls. No "max_days" key here on purpose -- a
-    # threshold in this table would be a second policy, which is exactly the
-    # drift that made this command's dry-run lie about the sweep.
+    # Drafts live under ~/.gaia/contract_drafts, not .claude/, and collectable_drafts
+    # owns the criterion (no max_days here: a threshold in this table would be a second policy).
     {
         "key": "contractDrafts",
         "type": "abs-drafts",
         "pattern": "*.json",
         "label": "Contract drafts",
     },
-    # The four rules below cover what Gaia creates during a turn and never
-    # revisits on its own (AC-4 of the brief this task implements): scratch,
-    # tmp, and cache entries a turn left behind, plus preserved rejected-turn
-    # text. All four copy the contract-drafts model -- caducity by STATE
-    # (owning turn closed) plus a grace window, not by age -- via
-    # gaia.retention.fs_rules, which is also the single place their threshold
-    # lives. Unlike contract drafts, none of the four has an age-only
-    # fallback: see gaia.retention.fs_rules's module docstring for why an
-    # unreadable DB must degrade to "select nothing" here rather than to
-    # pure age.
+    # The four rules below select by state (owning turn closed) plus a grace window via
+    # gaia.retention.fs_rules; with an unreadable DB they select nothing, not by age.
     {
         "key": "scratch",
         "type": "turn-scoped",
@@ -199,17 +170,8 @@ RETENTION_POLICY = [
         "dir_fn": _lazy_rejected_turns_dir,
         "label": "Rejected-turn text",
     },
-    # Task 17's wiring (AC-12): the first real caller of
-    # gaia.retention.worktree_collector.collect_worktrees, task 15's
-    # decision logic, which until this amendment had no caller outside
-    # its own test file. A single call per project root covers BOTH the
-    # Gaia central worktrees root and the harness-native .claude/worktrees
-    # folder inside the repo -- git's own worktree registry is
-    # per-repository, not per-directory, so `git worktree list` run
-    # against `root` already returns every worktree registered to it
-    # regardless of where each one physically lives. See
-    # _prune_worktrees's own docstring for the fail-safe posture when
-    # `root` is not a git repo.
+    # Runs once per project root: git's worktree registry is per repository, so it
+    # covers the central root and the in-repo .claude/worktrees wherever each lives.
     {
         "key": "worktrees",
         "type": "worktrees",
@@ -218,13 +180,9 @@ RETENTION_POLICY = [
 ]
 
 
-# Contract-drafts retention thresholds are NOT defined here. They belong to the
-# policy (gaia.contract.drafts), which both this CLI and the SessionStart GC
-# hook consume; a local copy of the number is a second policy waiting to drift.
-# These accessors exist only to render the retention header, and they degrade to
-# "unknown" (None) rather than guess when the policy module cannot be imported
-# -- printing a threshold this command would not actually apply is the failure
-# mode being removed, in miniature.
+# The contract-drafts thresholds belong to gaia.contract.drafts, which this CLI and the
+# SessionStart GC hook both consume; these accessors only render the header, as None
+# when the policy cannot be imported.
 
 
 def _contract_drafts_max_days():
@@ -245,14 +203,11 @@ def _contract_drafts_grace_hours():
     return resolve_grace_hours()
 
 
-# Same posture as the contract-drafts accessors above: the threshold lives in
-# gaia.retention.fs_rules (the policy shared by every one of the four rules
-# below), never as a local constant here. Degrades to None -- rather than a
-# guessed number -- when the policy module cannot be imported.
+# Same as above: the threshold lives in gaia.retention.fs_rules, shared by the four rules.
 
 
 def _fs_retention_grace_hours():
-    """The closed-owner grace window the four new fs rules apply, or None."""
+    """The closed-owner grace window the scratch, tmp, cache and rejected-turn rules apply, or None."""
     try:
         from gaia.retention.fs_rules import resolve_grace_hours
     except ImportError:
@@ -307,15 +262,9 @@ def _prune_contract_drafts(pattern: str, label: str, dry_run: bool) -> list:
     The selection is NOT made here. ``gaia.contract.drafts.collectable_drafts``
     is the single criterion, shared with the SessionStart GC hook
     (``hooks/modules/session/contract_drafts_gc.py``), which is what makes
-    ``--dry-run`` a true preview of the automatic sweep. This function used to
-    implement its own age-only cutoff, and the two disagreed by construction:
-    the CLI could never select a draft that was spent-but-not-aged, which is the
-    only lane that ever fires in practice. Measured on a 383-file corpus, the
-    policy selected 100 drafts (every one of them ``spent``, none ``aged``)
-    while this age-only rule selected 0 -- so ``gaia cleanup --dry-run`` showed
-    an empty preview hours before session start removed ~100 files.
+    ``--dry-run`` a true preview of the automatic sweep.
 
-    ``pattern`` is retained for RETENTION_POLICY symmetry but is no longer a
+    ``pattern`` is kept for RETENTION_POLICY symmetry but is not a
     filter: the policy enumerates ``*.json`` drafts itself, and re-filtering
     here would be a second criterion. Best-effort: a per-file OSError is
     swallowed, matching the hook's posture -- one locked file must not abort the
@@ -394,8 +343,8 @@ def _prune_rejected_turns(root: Optional[Path], label: str, dry_run: bool) -> li
     """Prune preserved rejected-turn text whose owning session already closed.
 
     Delegates selection to
-    ``gaia.retention.fs_rules.collectable_rejected_turns`` -- the single
-    criterion shared by this CLI and any future automatic sweep.
+    ``gaia.retention.fs_rules.collectable_rejected_turns``. ``root=None``
+    yields no actions.
     """
     if root is None:
         return []
@@ -432,10 +381,9 @@ def _prune_worktrees(root: Path, label: str, dry_run: bool) -> list:
     ``gaia.retention.worktree_collector.sweep_repo_worktrees`` -- the same
     function the SessionStart hook's automatic sweep calls -- this function
     only reshapes the result into this module's action-dict format. An
-    import failure yields no actions rather than raising,
-    matching ``_prune_turn_scoped``'s posture for its own missing-directory
-    case; ``sweep_repo_worktrees`` itself already fails closed on a
-    non-git ``root`` or any walking error.
+    import failure yields no actions rather than raising, as in
+    ``_prune_turn_scoped``; ``sweep_repo_worktrees`` itself already fails
+    closed on a non-git ``root`` or any walking error.
     """
     try:
         from gaia.retention.worktree_collector import sweep_repo_worktrees
@@ -602,11 +550,9 @@ def _prune_flag_by_ttl(root: Path, file_rel: str, max_hours: int, label: str, dr
 def _action_note(action: dict) -> str:
     """Label for a retention action, carrying the policy's reason when it has one.
 
-    The state-based rules (contract drafts, plus scratch/tmp/cache/rejected
-    turns) report a reason naming the specific state each one consulted --
-    contract drafts distinguishes its "spent" and "aged" lanes, the other
-    four each name the closed owner they found. The pure age-based rules
-    above have no comparable ambiguity to disambiguate and report none.
+    The state-based rules (contract drafts, scratch/tmp/cache/rejected turns
+    and worktrees) report a reason naming the state each one consulted. The
+    pure age-based rules report none.
     """
     reason = action.get("reason")
     return f"{action['label']}: {reason}" if reason else str(action["label"])
@@ -657,10 +603,6 @@ def _apply_retention_policy(root: Path, dry_run: bool) -> list:
 
     return all_actions
 
-
-# ---------------------------------------------------------------------------
-# Symlink / file removal helpers
-# ---------------------------------------------------------------------------
 
 SYMLINKS_TO_REMOVE = [
     ".claude/agents",
@@ -723,18 +665,7 @@ def _remove_settings_json(root: Path, dry_run: bool) -> dict:
     return _remove_if_gaia_authored(root, ".claude/settings.json", dry_run)
 
 
-# ---------------------------------------------------------------------------
-# Gaia-owned data-dir markers (.plugin-initialized, plugin-registry.json)
-#
-# The registry lives in get_plugin_data_dir(), which falls back to .claude/
-# when CLAUDE_PLUGIN_DATA is unset (the common npm-install case); it is shared
-# with Claude Code's plugin system, so only Gaia's own entry is removed
-# surgically. A marker in .claude/ is one an earlier version left there (it now
-# lives in the Gaia data home) -- a pure Gaia artifact, removed outright.
-# ---------------------------------------------------------------------------
-
-# Plugin names Gaia registers in plugin-registry.json. "gaia" is the sole
-# canonical identity written by _read_plugin_name in _install_helpers.py.
+# The plugin name Gaia registers in plugin-registry.json (_read_plugin_name in _install_helpers.py).
 _GAIA_PLUGIN_NAMES = {"gaia"}
 
 
@@ -817,21 +748,6 @@ def _remove_plugin_registry_entry(root: Path, dry_run: bool) -> dict:
         result["error"] = str(exc)
     return result
 
-
-# ---------------------------------------------------------------------------
-# settings.local.json -- surgical removal of Gaia-injected config
-#
-# Install (merge_local_permissions) MERGES into a user-owned file: it sets
-# agent=gaia-orchestrator, adds two env vars, and authoritative-merges its
-# permission entries. Uninstall must mirror that injection key-for-key and
-# leave everything the user added intact -- never delete the whole file.
-#
-# Note on permissions: install's authoritative merge already overwrote any
-# user-scoped variants of tool names Gaia manages (e.g. a prior Edit(/tmp/*)
-# became Edit). That loss is not recoverable at uninstall time; the symmetric
-# action is to drop the tool names Gaia manages and its deny rules, leaving
-# only entries for tools Gaia never touched.
-# ---------------------------------------------------------------------------
 
 _GAIA_ENV_KEYS = {
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
@@ -924,9 +840,11 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
 
     Mirrors merge_local_permissions and the hook writers:
       - agent: removed only if it equals "gaia-orchestrator".
-      - env: removes the two Gaia keys only when their value matches what
-        install set (a user override of the value is preserved).
-      - permissions.allow: drops entries whose tool name Gaia manages.
+      - env: removes the Gaia key (``_GAIA_ENV_KEYS``) only when its value
+        matches what install set (a user override of the value is preserved).
+      - permissions.allow: drops entries whose tool name Gaia manages
+        (install's merge had already replaced user variants such as
+        ``Edit(/tmp/*)`` with ``Edit``; those are not restored).
       - permissions.deny: drops Gaia's deny rules.
       - hooks: drops hook commands Gaia injected, as the single ownership
         predicate of ``plugin_setup`` decides; the ``hooks`` key is removed when Gaia was its
@@ -1141,10 +1059,6 @@ def _remove_symlinks(root: Path, dry_run: bool) -> dict:
     return {"removed": removed, "skipped": skipped, "dry_run": dry_run}
 
 
-# ---------------------------------------------------------------------------
-# Plugin interface
-# ---------------------------------------------------------------------------
-
 def register(subparsers):
     """Register the 'cleanup' subcommand."""
     p = subparsers.add_parser(
@@ -1202,7 +1116,7 @@ def cmd_cleanup(args) -> int:
         "prune_only": prune_only,
     }
 
-    # Retention policy display header (mirrors JS)
+    # Retention policy display header
     retention_policy_info = {
         "audit_logs_days": 30,
         "hook_logs_days": 14,
@@ -1225,26 +1139,14 @@ def cmd_cleanup(args) -> int:
             print("  Episodic episodes:   90 days")
             print("  Legacy logs:         all removed")
             print("  Anomaly flag:         1 hour TTL")
-            # Both rules are printed because both select: age alone never
-            # collects anything in practice, so a header naming only the day
-            # threshold describes a sweep that does not happen.
             print(f"  Contract drafts:     {_contract_drafts_max_days()} days,"
                   f" or spent + quiet {_contract_drafts_grace_hours()}h")
-            # No day count here on purpose, mirroring the contract-drafts
-            # line above: these four rules have no age-only lane at all --
-            # an entry is only ever collected once its owner (a contract, or
-            # a session) reaches a TERMINAL verdict and has stayed quiet for
-            # the grace window. A paused turn (an approval, an input, a
-            # verification still pending) is not enough -- see
-            # gaia.retention.fs_rules's module docstring for why.
+            # These rules have no day count: an entry goes once its owner is terminal and quiet for the grace window.
             print(f"  Scratch/tmp/cache:   owning contract terminal,"
                   f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
             print(f"  Rejected turns:      owning session terminal,"
                   f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
-            # Same state-based posture as the four rules above -- no
-            # age-only fallback -- but the owner is the worktree's own
-            # contract/session pair, judged by
-            # gaia.retention.worktree_collector.worktree_collect_reason.
+            # Worktrees: owner is the worktree's own contract/session, judged by worktree_collect_reason.
             print("  Worktrees:           owning contract/session dead"
                   " (explicit reap, or terminal/dead + grace); central"
                   " and harness-native roots both covered")

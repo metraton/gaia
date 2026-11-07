@@ -9,7 +9,7 @@ every ``agent_contract_handoff`` envelope already persisted in
 Why this exists
 ---------------
 The form validator is the single source of truth for contract shape, and
-thousands of terminal rows were written against earlier revisions of it. Any
+stored rows were written against earlier revisions of it. Any
 change to that shape is only safe if it is additive AND conditional: a stored
 envelope that predates the change must keep the verdict it had. A unit test
 built from a hand-written fixture cannot show that -- it can only show that the
@@ -20,7 +20,7 @@ a sha256 over one ``<id>:<ok>:<codes>`` line per row, sorted by id. Run it
 before touching the validator, keep the digest, run it again after and pass it
 as ``--expect-digest``. An identical digest means not one stored envelope
 changed verdict; a differing digest means history moved, and ``--json`` names
-the rows that reject and with which codes.
+the first 20 rows that reject (``rejected_rows``) and with which codes.
 
 Two paths, one core
 -------------------

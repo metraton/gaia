@@ -10,14 +10,11 @@ which shape a payload is:
   * ``hooks/modules/session/session_manifest.py`` -- decides how to READ the
     payload back into the SessionStart Projects block.
 
-Both used to carry their own inline predicate, and they drifted: the reader
-already treated the scanner ``workspace_repos`` form as distinct from a flat
-single-project contract, while promotion collapsed both into one ``flat``
-bucket. That collapse is the latent bug this module closes -- a scanner-shape
-contract classified as ``flat`` would be fed to the flat single-project refresh
-path, which writes scan-owned keys (local_path, remote_url, ...) at the TOP
-level of a payload that legitimately holds ``name`` + ``workspace_repos`` +
-``monorepo``, corrupting it.
+A scanner-shape contract classified as ``flat`` would be fed to the flat
+single-project refresh path, which writes scan-owned keys (local_path,
+remote_url, ...) at the TOP level of a payload that legitimately holds
+``name`` + ``workspace_repos`` + ``monorepo``, corrupting it; the shared
+classifier keeps ``scanner`` and ``flat`` apart for both consumers.
 
 The four shapes:
 

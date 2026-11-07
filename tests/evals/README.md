@@ -604,6 +604,7 @@ better understanding of the problem than the one that closed it:
 ## Out of scope
 
 - LLM-as-judge / model-based graders -- separate brief.
+  The AC-32 set in `ac32/` is judged by a blind gaia-verifier dispatch, not in CI; see `ac32/rubric.md`.
 - Latency / performance benchmarking.
 - External framework adoption (DeepEval, promptfoo).
 - Auto-promotion of baselines. A candidate is written for you on an

@@ -238,10 +238,42 @@ def test_show_names_what_a_new_request_sealed_and_an_old_one_did_not(rows_db):
     assert "Requester   : not sealed" in text
 
 
+def test_show_names_a_folder_only_where_the_signature_dialog_does_and_once(rows_db):
+    """No Directory for commands that name their own paths; each folder that matters, once."""
+    from bin.cli.approvals import cmd_show_v2
+
+    def payload(*commands):
+        sealed = _new_payload(commands[0], LIVE_SESSION)
+        sealed["requested_from"] = CWD
+        sealed["items"] = [{**sealed["items"][0], "command": c, "position": n} for n, c in enumerate(commands)]
+        return sealed
+
+    absolute = payload("git -C /srv/repo push origin feat/a", "git -C /srv/repo push origin v1")
+    relative = payload("mv nota.txt otra.txt", "mv otra.txt final.txt", "git -C /srv/repo push origin feat/a")
+    con = sqlite3.connect(rows_db)
+    for approval_id, sealed in ((_pid(90), absolute), (_pid(91), relative)):
+        _row(con, approval_id, status="pending", session=LIVE_SESSION, agent=AGENT, payload=sealed,
+             created=_iso(timedelta(minutes=1)))
+    con.commit()
+    con.close()
+
+    shown = [_run(cmd_show_v2, approval_id=_pid(n), json=False, consent_surface=False) for n in (90, 91)]
+
+    assert "Directory" not in shown[0]
+    assert [line.strip() for line in shown[1].splitlines() if "Directory" in line] == [f"Directory   : {CWD}"]
+
+
 def test_list_and_pending_name_orphaned_and_expired_requests(rows_db):
     from bin.cli.approvals import cmd_list, cmd_pending
 
-    listed = json.loads(_run(cmd_list, json=True, session=None, orphans_only=False))
+    default = json.loads(_run(cmd_list, json=True, session=LIVE_SESSION, orphans_only=False))
+    assert {item["approval_id"]: item["state"] for item in default["pending"]} == {NEW_PENDING: "pending"}
+    assert {item["approval_id"] for item in default["grants"]} == {NEW_NO_RESULT, NEW_EXECUTED}
+
+    listed = json.loads(_run(
+        cmd_list, json=True, session=LIVE_SESSION, orphans_only=False,
+        all_sessions=True, include_stale=True,
+    ))
     states = {item["approval_id"]: item["state"] for item in listed["pending"]}
     assert states == {
         OLD_ORPHAN: "orphaned", OLD_PAST_TTL: "expired",
@@ -250,11 +282,23 @@ def test_list_and_pending_name_orphaned_and_expired_requests(rows_db):
     outcomes = {item["approval_id"]: item["outcome"] for item in listed["grants"]}
     assert outcomes[NEW_NO_RESULT] == "no_result"
     assert outcomes[OLD_STOP_FAILED] == "legacy_failed"
-    assert "orphaned" in _run(cmd_list, json=False, session=None, orphans_only=False)
+    assert "orphaned" in _run(
+        cmd_list, json=False, session=LIVE_SESSION, orphans_only=False,
+        all_sessions=True, include_stale=True,
+    )
 
-    pending = json.loads(_run(cmd_pending, json=True, all_sessions=True, session=None))
+    live_only = json.loads(_run(cmd_pending, json=True, session=LIVE_SESSION))
+    assert {row["id"]: row["state"] for row in live_only} == {NEW_PENDING: "pending"}
+    assert "1 live here; 0 in other sessions, 3 stale/orphaned" in _run(
+        cmd_pending, json=False, session=LIVE_SESSION)
+
+    pending = json.loads(_run(
+        cmd_pending, json=True, session=LIVE_SESSION, all_sessions=True, include_stale=True,
+    ))
     assert {row["id"]: row["state"] for row in pending}[OLD_ORPHAN] == "orphaned"
-    assert "orphaned" in _run(cmd_pending, json=False, all_sessions=True, session=None)
+    assert "orphaned" in _run(
+        cmd_pending, json=False, session=LIVE_SESSION, all_sessions=True, include_stale=True,
+    )
 
 
 def test_list_orphans_only_keeps_exactly_the_rows_read_orphaned(rows_db):

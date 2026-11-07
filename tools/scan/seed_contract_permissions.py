@@ -4,9 +4,9 @@ seed_contract_permissions.py -- Populate agent_contract_permissions from agent f
 Reads the `project_context_contracts` field declared in each agent's YAML
 frontmatter and inserts rows into the `agent_contract_permissions` table.
 
-Called during `gaia install` after bootstrap_database.sh has applied migrations
-and created the table.  Idempotent: uses INSERT OR REPLACE so repeated runs
-converge to the same state without duplicates.
+Called during `gaia install` after bootstrap_database.py has applied migrations
+and created the table.  Idempotent: each agent's cloud_scope=NULL rows are
+deleted and re-inserted, so repeated runs converge to the same state.
 
 Contract schema
 ---------------
@@ -15,7 +15,7 @@ agent frontmatter:
     read: [contract_a, contract_b]
     write: [contract_a]          # may overlap with read
 
-Resulting rows (cloud_scope=NULL for this initial seed):
+Resulting rows (cloud_scope=NULL):
   agent_name     | contract_name | can_read | can_write
   ---------------+---------------+----------+-----------
   <agent>        | contract_a    |    1     |     1      <- in both read+write
@@ -36,10 +36,6 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_AGENTS_DIR = _REPO_ROOT / "agents"
 
-
-# ---------------------------------------------------------------------------
-# Frontmatter parser
-# ---------------------------------------------------------------------------
 
 def _parse_frontmatter(text: str) -> dict[str, Any]:
     """Extract the YAML frontmatter block from a Markdown agent file.
@@ -165,10 +161,6 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Core seeder
-# ---------------------------------------------------------------------------
-
 def _extract_contract_grants(frontmatter: dict[str, Any]) -> list[tuple[str, int, int]]:
     """Return (contract_name, can_read, can_write) tuples from a frontmatter dict.
 
@@ -239,14 +231,10 @@ def grant_contract_permissions(db_path: Path, agents_dir: Path | None = None) ->
                 rows_skipped += 1
                 continue
 
-            # Idempotency guard: INSERT OR REPLACE does NOT dedupe NULL-scope
-            # rows, because SQLite treats NULL as distinct in the composite
-            # PRIMARY KEY (agent_name, contract_name, cloud_scope) -- NULL never
-            # equals NULL, so no ON CONFLICT fires and every re-run APPENDS a
-            # fresh duplicate. Left unchecked this accumulated ~1977 duplicate
-            # rows per (agent, contract) in the field. Clear this agent's
-            # NULL-scope rows first so a re-seed fully replaces them; any
-            # provider-scoped overlays (cloud_scope IS NOT NULL) are untouched.
+            # INSERT OR REPLACE does not dedupe NULL-scope rows: NULL is distinct
+            # in the composite PRIMARY KEY (agent_name, contract_name,
+            # cloud_scope), so a re-run would append duplicates. Clear this
+            # agent's NULL-scope rows first; provider-scoped overlays stay.
             con.execute(
                 "DELETE FROM agent_contract_permissions "
                 "WHERE agent_name = ? AND cloud_scope IS NULL",
@@ -275,10 +263,6 @@ def grant_contract_permissions(db_path: Path, agents_dir: Path | None = None) ->
         "rows_skipped": rows_skipped,
     }
 
-
-# ---------------------------------------------------------------------------
-# CLI entry point (for `gaia install` invocation and manual use)
-# ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(

@@ -1,7 +1,7 @@
 """
 Stage Decomposer - Shell command stage tracking with operator preservation.
 
-Wraps ShellCommandParser to add operator tracking between stages.
+Splits a command into stages and keeps the operator between them.
 ShellCommandParser.parse() discards operators; StageDecomposer preserves them
 so downstream classifiers know how stages are connected (pipe vs AND vs OR).
 
@@ -14,7 +14,7 @@ Handles:
 - Backtick substitution `...`
 - Nested command substitution
 
-Dependencies: Python stdlib only.
+Dependencies: Python stdlib, ``shell_parser`` and ``security.shell_substitution``.
 """
 
 from __future__ import annotations
@@ -33,11 +33,8 @@ _DOUBLE_QUOTE_ESCAPABLE = frozenset('$`"\\\n')
 class Stage:
     """A single command stage in a pipeline or chain."""
 
-    # The raw command token (e.g., "grep -r foo")
     command: str
-    # Arguments as a list parsed from the command token
     args: List[str] = field(default_factory=list)
-    # Operator connecting THIS stage to the NEXT stage (None for the last stage)
     operator: Optional[str] = None
 
     def __str__(self) -> str:
@@ -54,11 +51,9 @@ class Stage:
 class DecomposedCommand:
     """Result of decomposing a raw command string into stages."""
 
-    # Original command string (before decomposition)
+    # The command as decomposed: its comments stripped
     raw: str
-    # Ordered list of stages
     stages: List[Stage] = field(default_factory=list)
-    # Command substitutions extracted from the command ($(...) or `...`)
     substitutions: List[str] = field(default_factory=list)
 
     @property
@@ -71,11 +66,8 @@ class StageDecomposer:
     """
     Decomposes a raw shell command string into ordered Stage objects.
 
-    Wraps ShellCommandParser for quote-aware splitting, then re-walks the
-    original string to recover the operators that ShellCommandParser.parse()
-    discards.
-
-    Zero external dependencies -- Python stdlib only.
+    Walks the string itself, quote-aware, to recover the operators that
+    ShellCommandParser.parse() discards.
 
     Usage::
 
@@ -91,10 +83,6 @@ class StageDecomposer:
 
     def __init__(self) -> None:
         self._parser = ShellCommandParser()
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def decompose(self, command: str) -> DecomposedCommand:
         """
@@ -113,11 +101,7 @@ class StageDecomposer:
         if not command:
             return DecomposedCommand(raw="", stages=[], substitutions=[])
 
-        # Extract command substitutions before splitting so they don't
-        # interfere with operator detection.
         substitutions = self._extract_substitutions(command)
-
-        # Walk the command string once to collect (command_text, operator) pairs.
         pairs = self._split_with_operators(command)
 
         stages: List[Stage] = []
@@ -130,9 +114,17 @@ class StageDecomposer:
 
         return DecomposedCommand(raw=command, stages=stages, substitutions=substitutions)
 
-    # ------------------------------------------------------------------
-    # Internal: operator-aware splitting
-    # ------------------------------------------------------------------
+    def pipe_feeders(self, command: str, components: List[str]) -> List[Optional[str]]:
+        """Per component, the stage that alone starts the pipe into it; all None when *command*'s stages differ from *components*."""
+        stages = self.decompose(command).stages
+        feeders: List[Optional[str]] = [None] * len(components)
+        if [stage.command for stage in stages] != [component.strip() for component in components]:
+            return feeders
+        for index in range(1, len(stages)):
+            starts_pipe = index == 1 or stages[index - 2].operator != "|"
+            if stages[index - 1].operator == "|" and starts_pipe:
+                feeders[index] = stages[index - 1].command
+        return feeders
 
     def _split_with_operators(self, command: str) -> List[tuple]:
         """
@@ -149,40 +141,35 @@ class StageDecomposer:
 
         in_single_quote = False
         in_double_quote = False
-        paren_depth = 0       # tracks $( ... ) nesting
-        backtick_depth = 0    # tracks ` ... ` nesting
+        paren_depth = 0
+        backtick_depth = 0
 
         while i < n:
             ch = command[i]
 
-            # ---- escape sequence (outside single-quotes) ----
             if ch == "\\" and not in_single_quote and i + 1 < n:
                 current.append(ch)
                 current.append(command[i + 1])
                 i += 2
                 continue
 
-            # ---- single quote toggle ----
             if ch == "'" and not in_double_quote:
                 in_single_quote = not in_single_quote
                 current.append(ch)
                 i += 1
                 continue
 
-            # ---- double quote toggle ----
             if ch == '"' and not in_single_quote:
                 in_double_quote = not in_double_quote
                 current.append(ch)
                 i += 1
                 continue
 
-            # ---- inside quotes: pass through ----
             if in_single_quote or in_double_quote:
                 current.append(ch)
                 i += 1
                 continue
 
-            # ---- $( ... ) command substitution ----
             if ch == "$" and i + 1 < n and command[i + 1] == "(":
                 paren_depth += 1
                 current.append(ch)
@@ -202,7 +189,6 @@ class StageDecomposer:
                 i += 1
                 continue
 
-            # ---- backtick command substitution ----
             if ch == "`":
                 if backtick_depth > 0:
                     backtick_depth -= 1
@@ -212,13 +198,11 @@ class StageDecomposer:
                 i += 1
                 continue
 
-            # ---- if inside a substitution, pass through ----
             if paren_depth > 0 or backtick_depth > 0:
                 current.append(ch)
                 i += 1
                 continue
 
-            # ---- two-character operators: &&, || ----
             if i + 1 < n:
                 two = command[i : i + 2]
                 if two in ("&&", "||"):
@@ -227,7 +211,6 @@ class StageDecomposer:
                     i += 2
                     continue
 
-            # ---- single-character operators: |, ;, \n, a lone & ----
             if ch in ("|", ";", "\n") or (ch == "&" and is_lone_ampersand(command, i)):
                 segments.append(("".join(current), ch))
                 current = []
@@ -237,15 +220,10 @@ class StageDecomposer:
             current.append(ch)
             i += 1
 
-        # Final segment has no following operator.
         if current:
             segments.append(("".join(current), None))
 
         return segments
-
-    # ------------------------------------------------------------------
-    # Internal: argument tokenisation
-    # ------------------------------------------------------------------
 
     def _tokenize_args(self, command_text: str) -> List[str]:
         """
@@ -303,14 +281,8 @@ class StageDecomposer:
 
         return tokens
 
-    # ------------------------------------------------------------------
-    # Internal: command substitution extraction
-    # ------------------------------------------------------------------
-
-    # Match $(...) -- does not handle arbitrarily deep nesting but covers
-    # the common single-level case.
+    # $(...) holding at most one level of nested parentheses, and `...` with no nesting.
     _SUBST_PAREN_RE = re.compile(r"\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
-    # Match `...` (non-greedy, no nesting)
     _SUBST_BACKTICK_RE = re.compile(r"`([^`]*)`")
 
     def _extract_substitutions(self, command: str) -> List[str]:

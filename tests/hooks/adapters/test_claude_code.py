@@ -1713,12 +1713,12 @@ class TestIsProtected:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_ask(response: HookResponse) -> bool:
-        """True when the adapter returned permissionDecision == 'ask'."""
-        return (
-            response.output.get("hookSpecificOutput", {}).get("permissionDecision")
-            == "ask"
-        )
+    def _is_protected(response: HookResponse) -> bool:
+        """True when the adapter refused the main-session write as protected and sent it to a specialist."""
+        output = response.output.get("hookSpecificOutput", {})
+        return output.get("permissionDecision") == "deny" and output.get(
+            "permissionDecisionReason", ""
+        ).startswith("[PROTECTED_PATH]")
 
     @staticmethod
     def _is_passthrough(response: HookResponse) -> bool:
@@ -1757,7 +1757,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": str(synthetic)}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "When resolve() raises, the raw path fallback must still detect "
             ".claude and protect the settings file — kills ExceptionReplacer|952"
         )
@@ -1777,7 +1777,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": _protected_py()}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "Writing a .py file inside the hooks directory must be blocked — "
             "kills ReplaceTrueWithFalse|958:23-958:27|7"
         )
@@ -1792,7 +1792,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": _protected_json()}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "A .json file inside hooks/ must be protected — kills the "
             "< and <= comparison operator mutants on L956"
         )
@@ -1810,7 +1810,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Edit", {"file_path": toml_path}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "A .toml file inside hooks/ must be protected — kills Eq_Gt, "
             "Eq_GtE, Eq_NotEq mutants on L956"
         )
@@ -1849,7 +1849,7 @@ class TestIsProtected:
         md_resp = adapter._adapt_write_edit(
             "Write", {"file_path": _exempt_md()}, is_subagent=False
         )
-        assert self._is_ask(py_resp), ".py in hooks/ must be protected"
+        assert self._is_protected(py_resp), ".py in hooks/ must be protected"
         assert self._is_passthrough(md_resp), ".md in hooks/ must be exempt"
 
     # ------------------------------------------------------------------
@@ -1873,7 +1873,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": str(external_settings)}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "ValueError from relative_to() must be caught so the settings "
             "check on L961 can run — kills ExceptionReplacer|959:19-959:29|6"
         )
@@ -1899,7 +1899,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": str(settings)}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "settings.json inside .claude must be protected — kills "
             "AddNot|961|46, ZeroIterationForLoop|962|0, "
             "ReplaceTrueWithFalse|964|8"
@@ -1918,7 +1918,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": str(settings_local)}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "settings.local.json inside .claude must be protected"
         )
 
@@ -1966,7 +1966,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": str(deep)}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "settings.json deeply nested under .claude/ must be protected — "
             "kills ZeroIterationForLoop|962|0 and comparison mutants on L963"
         )
@@ -1989,7 +1989,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": path_str}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "Protection must not depend on string interning — "
             "kills Eq_Is|963:28-963:30|7"
         )
@@ -2068,7 +2068,7 @@ class TestIsProtected:
         resp = adapter._adapt_write_edit(
             "Write", {"file_path": str(settings)}, is_subagent=False
         )
-        assert self._is_ask(resp), (
+        assert self._is_protected(resp), (
             "Workspace .claude/settings.json must be protected — "
             "kills ReplaceTrueWithFalse|964:31-964:35|8"
         )

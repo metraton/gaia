@@ -16,6 +16,9 @@ description: Use when committing, squashing, merging, rebasing, or preparing cha
 | Body | Optional, blank line after subject, 72 char line wrap |
 | Footers | `BREAKING CHANGE:`, `Refs:`, `Closes:`, `Fixes:`, `Implements:`, `See:` |
 
+Commit messages, PR titles and branch names follow the language rule of
+`code-standards` Rule 10.
+
 ## Examples
 
 ```
@@ -30,7 +33,7 @@ chore(deps): update terraform to v1.6.0
 Repeat `-m` once per paragraph -- `git -C /abs commit -m "type: subject" -m
 "First paragraph." -m "Second paragraph."` -- no heredoc, no temp file. For
 exact wraps, use `git commit -m "$(cat <<'EOF' ... EOF)"` instead
-(`command-execution` Rule 7). Never attach a bare, unquoted heredoc
+(the bare-`cat` heredoc receiver `security-tiers` names). Never attach a bare, unquoted heredoc
 directly to git (`git commit -F - <<EOF ... EOF`) -- measured, the
 classifier misreads a prose line as a command and blocks with a spurious
 T3 (`Verb: 'rm' (MUTATIVE)` on text that only *mentions* `rm -rf`).
@@ -39,11 +42,11 @@ T3 (`Verb: 'rm' (MUTATIVE)` on text that only *mentions* `rm -rf`).
 
 Target the repo with `git -C /absolute/path <verb>` -- this is the canonical
 form in a subagent. The T3 consent gate parses `-C` as a flag and classifies
-the command identically to the bare verb (`git -C /repo push` is T3 `push`,
-same as `git push`); there is NO bypass of Gaia's gate. The full discipline --
+the command identically to the bare verb (`git -C /repo push origin main` is
+T3 `push`, same as `git push origin main`); there is NO bypass of Gaia's gate. The full discipline --
 why one byte-identical form prevents the approval loop, and why a separate `cd`
 call cannot work (the cwd resets between Bash calls) -- lives in
-`command-execution` Rule 7; follow it there.
+`command-execution` ("Before the call" rule 2 and "After the call"); follow it there.
 
 Two narrow caveats:
 - Prefer `-C /abs` (short flag) or `--git-dir=/abs` (equals form); both are
@@ -65,6 +68,36 @@ Push to the feature branch. Only push directly to `main` when explicitly
 instructed or when the work is already on main. Force-push (`--force`)
 requires explicit user instruction.
 
+Which of these ask for a signature (`security-tiers` owns the rule; the
+shapes are the entries of `verb_lexicon.py::EFFECT_OVER_VERB_EXCEPTIONS`):
+
+- **Free:** `commit`, `add` and the other local subcommands;
+  `git -C /abs push [-u|--set-upstream] <remote> <branch>` when the branch is
+  named, is not main, master or the remote's HEAD branch, and the repository's
+  push configuration sends it to itself, with nothing before `git`
+  (`mutative_verbs.py::_git_push_targets_feature_branch`).
+- **Free in any repository:** a local `merge` whose flags are all in
+  `mutative_verbs.py::_GIT_LOCAL_MERGE_FLAGS` (`--no-ff`, `--ff-only`,
+  `--squash`, ...), plus `-m <msg>`, with literal ref operands, and a bare
+  `merge --abort|--continue|--quit` (`mutative_verbs.py::_git_merge_is_local`);
+  opening a change request (`pr create`, any forge binary, any `--repo`;
+  `forge_shapes.py::change_request_action`) and editing one on this
+  checkout's origin without a retarget, ready, draft or status flag;
+  `git fetch`, `pull --ff-only` and `switch`/`checkout <branch>` by
+  elimination.
+- **T3:** bare `git push`, a push to the default branch or `HEAD`, any push
+  with another flag (`--force`, `--force-with-lease`, `--delete`, `--mirror`,
+  `--all`, `--tags`), a `+`/`:` refspec or a `src:dst` onto another branch
+  (a force push signs as `sign.destroys`, never refused); `pr merge`; a
+  change-request edit with `--base` (`_CHANGE_REQUEST_EDIT_FLAGS`) or on
+  another origin (`mutative_verbs.py::_change_request_elsewhere`); a merge
+  with a strategy option (`-s`, `-X`) or a computed operand; a `rebase`
+  outside the unpushed, managed-worktree shape
+  (`mutative_verbs.py::_git_rebase_rewrites_only_unpushed`); `reset --hard`.
+
+Do not request the free forms in advance: run them, and request only what is
+still T3.
+
 ## Hook Enforcement
 
 The `commit_validator.py` hook validates against standards inlined as
@@ -76,24 +109,9 @@ Body line length triggers warnings only.
 
 ## Pull Request Body
 
-A PR is written retrospectively, after the commits already exist -- it
-explains the change to a reviewer who was not present while it was made, in
-English, self-contained, with no reference to the process that produced it
-(no task IDs, no plan/sprint labels, no "as requested"). The title reuses the
-same `type(scope): outcome` rule as the commit subject above -- no plan
-jargon there either.
-
-| Section | Content |
-|---------|---------|
-| Context / Situation | The state that existed before this change and why it needed one |
-| What changed | The concrete change made, stated plainly |
-| Impact / what it solves | The outcome the change produces for the system or the user |
-| Plan impact | For IaC changes: the plan summary -- resources to add, change, destroy |
-| Verification | How the change was verified -- tests run, dry-run/plan output, manual check |
-| Risk / rollback (optional) | What could go wrong and how to revert, when the change carries real risk |
-| Links (optional) | Related PRs, issues, or docs -- only when they add context a reviewer needs |
-
-This structure is advisory, not enforced: `commit_validator.py` validates
-only the commit message format above -- it does not parse or gate the PR
-body. Writing a body without this structure will not block anything; the
-structure exists so a reviewer gets the same shape every time.
+The PR title reuses the commit subject's `type(scope): outcome` rule above.
+The body is a document a reviewer reads without having been there, so it is
+written with `technical-writing` (door: PR body), which owns its sections and
+the rule that no task id, plan label, approval, signature or tier appears in
+it. `commit_validator.py` validates only the commit message format; nothing
+parses or gates the body.

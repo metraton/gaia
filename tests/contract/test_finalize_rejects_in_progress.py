@@ -82,6 +82,8 @@ def test_finalize_accepts_closing_state_after_fix(cli_env):
         ["set", "agent_status.agent_state", "BLOCKED"], cli_env
     )
     assert set_state.returncode == 0, set_state.stderr
+    summary = _run(["set", "user_facing_summary", "Blocked on input."], cli_env)
+    assert summary.returncode == 0, summary.stderr
 
     fin = _run(["finalize", "--draft-id", draft_id, "--json"], cli_env)
     assert fin.returncode == 0, f"finalize failed: {fin.stderr!r}"

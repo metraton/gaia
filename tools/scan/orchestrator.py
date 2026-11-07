@@ -1,23 +1,23 @@
 """
 Scan Orchestrator
 
-Runs all registered scanners in parallel, collects results, and returns
-aggregated ScanOutput. gaia.db is the sole persistence layer -- this
-module never reads or writes project-context.json.
+Runs the registered scanners (in a ThreadPoolExecutor when config.parallel is
+set), collects results, and returns aggregated ScanOutput. This module reads
+and writes no files; persistence is the caller's.
 
 Pipeline:
-  1. Detect workspace type
-  2. Run all scanners in parallel (ThreadPoolExecutor)
-  3. Collect and combine scanner sections (handling environment sub-keys)
+  1. Run the selected scanners
+  2. Collect and combine scanner sections (handling environment sub-keys)
+  3. Merge them with _merge_sections
   4. Cross-populate derived fields
   5. Return ScanOutput
 
-Section ownership rules (inlined from the retired tools/scan/merge.py):
-  Rule 1: Scanner-owned sections -> full replace
-  Rule 2: Agent-enriched sections -> never touch
-  Rule 3: Mixed sections -> selective update at sub-key level
-  Rule 4: Unknown/user-custom sections -> preserve
-  Rule 5: Metadata -> always update
+Section ownership rules applied by _merge_sections:
+  Scanner-owned sections -> full replace
+  `environment` -> each sub-key replaced by its owning scanner
+  Agent-enriched sections -> never touched
+  Mixed sections -> only the scanner-owned fields replaced
+  Unknown/user-custom sections -> preserved
 """
 
 import copy
@@ -37,23 +37,17 @@ from tools.scan.scanners.base import BaseScanner, ScanResult
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Section ownership constants (Rule 1 / Rule 2 / Rule 3)
-# ---------------------------------------------------------------------------
-
-# Sections fully owned by scanners -- replaced entirely on each scan (Rule 1)
-# Top-level sections only; sub-key ownership handled separately
+# Top-level sections fully owned by scanners, replaced entirely on each scan.
+# "environment" is absent because its ownership is per sub-key.
 SCANNER_OWNED_TOP_LEVEL: Dict[str, str] = {
     "project_identity": "stack",
     "stack": "stack",
     "git": "git",
     "infrastructure": "infrastructure",
     "orchestration": "orchestration",
-    # "environment" is NOT listed here because it has sub-key ownership
 }
 
-# Sub-key ownership within the `environment` section (Rule 4 / sub-section)
-# Maps environment sub-key -> owning scanner name
+# Maps each `environment` sub-key to its owning scanner name
 ENVIRONMENT_SUBKEY_OWNERS: Dict[str, str] = {
     "tools": "tools",
     "tool_preferences": "tools",
@@ -62,7 +56,7 @@ ENVIRONMENT_SUBKEY_OWNERS: Dict[str, str] = {
     "env_files": "environment",
 }
 
-# Agent-enriched sections -- never modified by scanners (Rule 2)
+# Agent-enriched sections -- never modified by scanners
 AGENT_ENRICHED_SECTIONS: frozenset = frozenset([
     "operational_guidelines",
     "cluster_details",
@@ -73,18 +67,13 @@ AGENT_ENRICHED_SECTIONS: frozenset = frozenset([
     "workload_identity",
 ])
 
-# Mixed sections with partial scanner ownership (Rule 3)
-# Maps section_name -> set of scanner-owned field names
+# Maps each mixed section to the field names the scanners own in it
 MIXED_SECTION_SCANNER_FIELDS: Dict[str, Set[str]] = {
     "terraform_infrastructure": {"layout"},
     "gitops_configuration": {"repository"},
     "application_services": {"base_path", "services"},
 }
 
-
-# ---------------------------------------------------------------------------
-# Section collection and merge helpers
-# ---------------------------------------------------------------------------
 
 def collect_scanner_sections(
     scanner_results: Dict[str, Any],
@@ -110,17 +99,14 @@ def collect_scanner_sections(
 
         for section_name, section_data in sections.items():
             if section_name == "environment":
-                # Merge environment sub-keys from both scanners
                 if isinstance(section_data, dict):
                     for key, value in section_data.items():
                         if key != "_source":
                             environment_parts[key] = value
             else:
-                # Non-environment sections: direct assignment (last scanner wins,
-                # but each section should have exactly one owner)
+                # Last scanner wins; each section should have exactly one owner
                 combined[section_name] = section_data
 
-    # Reassemble environment section if we got any parts
     if environment_parts:
         combined["environment"] = {
             "_source": "scanner:environment+tools",
@@ -157,12 +143,10 @@ def _merge_environment_section(
 
     env = result["environment"]
 
-    # Replace each sub-key based on ownership
     for subkey in ENVIRONMENT_SUBKEY_OWNERS:
         if subkey in scan_env:
             env[subkey] = copy.deepcopy(scan_env[subkey])
 
-    # Set combined _source tag
     env["_source"] = "scanner:environment+tools"
 
 
@@ -173,7 +157,7 @@ def _merge_sections(
     """Merge scanner results with existing project-context sections.
 
     Applies the ownership rules to produce the final merged sections dict.
-    Called with existing={} in normal scan runs (display-only path).
+    ScanOrchestrator.run always passes existing={}.
 
     Args:
         existing: Current sections (may be empty when called from scan).
@@ -185,51 +169,37 @@ def _merge_sections(
     """
     result = copy.deepcopy(existing)
 
-    # --- Rule 1: Scanner-owned top-level sections -> full replace ---
+    # Agent-enriched and unknown sections are preserved by the deepcopy of
+    # `existing`; a scanned section that no ownership table lists is dropped.
     for section_name in SCANNER_OWNED_TOP_LEVEL:
         if section_name in scan_sections:
             result[section_name] = copy.deepcopy(scan_sections[section_name])
 
-    # --- Sub-section level ownership for `environment` ---
     _merge_environment_section(result, scan_sections)
 
-    # --- Rule 2: Agent-enriched sections -> never touch ---
-    # These are already in `result` from the deepcopy of `existing`.
-    # (No action needed -- they are preserved by the deepcopy.)
-
-    # --- Rule 3: Mixed sections -> selective update ---
     for section_name, scanner_fields in MIXED_SECTION_SCANNER_FIELDS.items():
         if section_name in scan_sections:
             scan_data = scan_sections[section_name]
             if section_name not in result:
                 result[section_name] = {}
-            # Only update scanner-owned fields; preserve agent fields
             for field_name in scanner_fields:
                 if field_name in scan_data:
                     result[section_name][field_name] = copy.deepcopy(
                         scan_data[field_name]
                     )
 
-    # --- Rule 5: Unknown/user-custom sections -> preserve ---
-    # Any section in `existing` not covered above is preserved by the deepcopy.
-    # We do NOT add new unknown sections from scan_sections.
-
     return result
 
-
-# ---------------------------------------------------------------------------
-# ScanOutput dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ScanOutput:
     """Aggregated output from all scanners.
 
     Attributes:
-        context: Full merged project-context data (top-level with metadata,
-                 paths, and sections).
+        context: Merged scan data: ``{"metadata": ..., "sections": ...}``.
         sections_updated: Section names that were updated by scanners.
-        sections_preserved: Agent-enriched sections left untouched.
+        sections_preserved: Always empty; ``run`` merges into an empty
+                 ``existing``, so nothing is carried over.
         warnings: Aggregated warnings from all scanners.
         errors: Aggregated errors from all scanners.
         duration_ms: Total scan time in milliseconds.
@@ -246,10 +216,11 @@ class ScanOutput:
 
 
 class ScanOrchestrator:
-    """Orchestrates parallel scanner execution with fault isolation.
+    """Orchestrates scanner execution with fault isolation.
 
-    Runs all scanners from a ScannerRegistry, collects their results,
-    merges sections, and returns a ScanOutput. Individual scanner failures
+    Runs the scanners of a ScannerRegistry (all, or those named in
+    config.scanners), collects their results, merges sections, and returns a
+    ScanOutput. Individual scanner failures
     are caught and reported without aborting the scan.
 
     Args:
@@ -329,7 +300,7 @@ class ScanOrchestrator:
           3. Merge sections using ownership rules
           4. Return ScanOutput
 
-        Workspace/project classification is NO LONGER done here. Scanners run in
+        Workspace/project classification is not done here. Scanners run in
         single-repo mode over ``root`` and produce section data only; the
         deterministic (workspace, project) classification is owned by
         :mod:`tools.scan.classify` (driven by the required ``--workspace``).
@@ -343,7 +314,6 @@ class ScanOrchestrator:
         root = project_root or self.config.project_root
         start_ms = time.monotonic() * 1000
 
-        # Select scanners
         scanners = self.registry.get_all()
         if self.config.scanners:
             requested = set(self.config.scanners)
@@ -367,31 +337,25 @@ class ScanOrchestrator:
                 scanners, root
             )
 
-        # Collect and combine scanner sections
         scan_sections = collect_scanner_sections(scanner_results)
 
-        # Merge with empty existing context (no JSON persistence)
         merged_sections = _merge_sections(
             existing={},
             scan_sections=scan_sections,
         )
 
-        # Determine which sections were updated vs preserved
         sections_updated = sorted(set(scan_sections.keys()))
         sections_preserved: List[str] = []
 
-        # Ensure architecture_overview exists as empty dict so contract
-        # references are satisfied (it appears in ALL agent contracts).
+        # architecture_overview is the one agent-enriched section kept as an
+        # empty dict (see remove_if_empty below).
         if "architecture_overview" not in merged_sections:
             merged_sections["architecture_overview"] = {}
 
-        # Derive infrastructure.paths from scanner data
         self._derive_infrastructure_paths(merged_sections)
 
-        # Cross-populate git.monorepo.workspace_config
         self._cross_populate_monorepo(merged_sections)
 
-        # Remove empty {} placeholders for agent-enriched and mixed sections
         remove_if_empty = (
             AGENT_ENRICHED_SECTIONS
             | frozenset(MIXED_SECTION_SCANNER_FIELDS.keys())
@@ -492,9 +456,9 @@ class ScanOrchestrator:
     ) -> None:
         """Cross-populate git.monorepo.workspace_config from project_identity.
 
-        When the stack scanner detects a monorepo (project_identity.type ==
-        'monorepo' and project_identity.monorepo has data), propagate the
-        workspace_config to git.monorepo so both sections are consistent.
+        When project_identity.monorepo.detected is set, git.monorepo's
+        workspace_config takes project_identity.monorepo.tool unless it
+        already has a value.
 
         Args:
             merged_sections: Merged sections dict (mutated in place).

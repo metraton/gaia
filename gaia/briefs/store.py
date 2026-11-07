@@ -1,9 +1,9 @@
 """
 gaia.briefs.store -- DB operations for briefs / plans / dependencies.
 
-Layered atop gaia.store.writer._connect (B1). Reuses the `~/.gaia/gaia.db`
-substrate; tables `briefs`, `acceptance_criteria`, `milestones`,
-`brief_dependencies`, `plans`, `tasks`, plus `briefs_fts` (FTS5 mirror).
+Connections come from gaia.store.writer._connect. Tables: `briefs`,
+`acceptance_criteria`, `milestones`, `brief_dependencies`, `plans`, `tasks`,
+plus `briefs_fts` (FTS5 mirror).
 
 This module does NOT consult the ``agent_permissions`` DB table (which gates
 *scanner-owned* tables like apps/projects and has no human-CLI escape hatch).
@@ -12,18 +12,7 @@ orchestrator-authored, so ``upsert_brief`` instead consults the env-var
 dispatch-identity content guard (``_assert_dispatch_can_write_content`` in
 ``gaia.state.permissions``): a human/orchestrator-main-session call (no
 ``GAIA_DISPATCH_AGENT``) is always allowed, while a dispatched subagent that is
-not an authorized author is blocked. This mirrors the memory/evidence/state
-guards -- same fail-open-on-unset contract -- rather than the table-based model.
-
-Public API::
-
-    upsert_brief(workspace, name, fields, *, db_path=None) -> dict
-    list_briefs(workspace, *, status=None, db_path=None) -> list[dict]
-    get_brief(workspace, name, *, db_path=None) -> dict | None
-    close_brief(workspace, name, *, db_path=None) -> bool
-    get_dependencies(workspace, name, *, db_path=None) -> list[dict]
-    search_briefs(workspace, query, *, limit=10, db_path=None) -> list[dict]
-    delete_brief(workspace, name, *, db_path=None) -> bool
+not an authorized author is blocked.
 """
 
 from __future__ import annotations
@@ -117,13 +106,13 @@ def upsert_brief(
     remain the only way to change it.
 
     Returns:
-        ``{"status": "applied", "brief_id": int, "acs": int, "milestones": int}``.
+        ``{"status": "applied", "brief_id": int, "acs": int, "milestones": int}``,
+        plus ``stale_tasks`` when an AC description changed.
 
     Raises:
         ContentWriteForbidden: when GAIA_DISPATCH_AGENT names a dispatched agent
-            that is not authorized to author brief content (brief content is
-            authored by the orchestrator). A human CLI call / orchestrator main
-            session (no dispatch identity) is always allowed.
+            that is not authorized to author brief content. A human CLI call or
+            orchestrator main session (no dispatch identity) is always allowed.
     """
     from gaia.state.permissions import _assert_dispatch_can_write_content
     _assert_dispatch_can_write_content("briefs")
@@ -453,8 +442,7 @@ def brief_home(
     ``workspace`` itself when it holds the brief or when no workspace does (the
     caller then reports its own not-found or creates there); otherwise the one
     workspace that holds it. Raises :class:`AmbiguousBriefName` when several
-    do, never picking one silently (decision D-d of brief
-    ``una-gaia-cualquier-instalacion``).
+    do, never picking one silently.
     """
     holders = find_brief_workspaces(name, db_path=db_path)
     if not holders or workspace in holders:
@@ -604,14 +592,7 @@ def close_brief_verified(
     return {"closed": True, "synced": verdict["synced"], "inconsistencies": []}
 
 
-# ---------------------------------------------------------------------------
-# set_status_brief (validated transitions for the state machine)
-# ---------------------------------------------------------------------------
-
-# Legal transitions for the brief state machine (Opción A — DB canónica).
-# The full enum is draft|open|in-progress|closed|archived. ``deprecated`` is
-# intentionally NOT yet a valid status; it is reserved for the upcoming
-# state-machines-cli brief.
+# Legal brief status transitions; the statuses are gaia.state.VALID_BRIEF_STATUSES.
 _LEGAL_TRANSITIONS: dict[str, set[str]] = {
     # draft -> closed/archived: real-world shortcut for briefs implemented
     # directly without an explicit planning intermediate (i.e. the work
@@ -623,10 +604,7 @@ _LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "archived": set(),
 }
 
-# Statuses recognized by the enum. set_status_brief rejects anything else.
-# Single source of truth: ``gaia.state.VALID_BRIEF_STATUSES``. Re-exported here
-# for backward compatibility; callers that import ``VALID_STATUSES`` from this
-# module continue to work without changes.
+# set_status_brief rejects any status outside this set; gaia.briefs re-exports it.
 from gaia.state import VALID_BRIEF_STATUSES as VALID_STATUSES  # noqa: E402
 
 
@@ -800,7 +778,7 @@ def delete_brief(
     ``gaia.evidence.store.delete_evidence`` (which removes the FS blob before
     its row) BEFORE the brief row itself is deleted. Inline evidence (no
     ``artifact_path``) has no filesystem footprint and is left to the
-    CASCADE as before.
+    CASCADE.
     """
     con = _connect(db_path)
     try:
@@ -942,15 +920,9 @@ def search_briefs(
         con.close()
 
 
-# ---------------------------------------------------------------------------
-# Granular AC mutation (v5 -- T5.1)
-# ---------------------------------------------------------------------------
-#
-# These functions provide individual add/remove/edit semantics for
-# acceptance_criteria rows, bypassing the full-sync `upsert_brief` path.
-# Permission matrix D1: acceptance_criteria is `curator_only=False` --
-# subagents are allowed to mutate. The guard is still invoked so that the
-# enforcement layer can evolve without touching callers.
+# Single-row AC mutation, bypassing the full sync of `upsert_brief`.
+# acceptance_criteria is `curator_only=False` in DISPATCH_PERMISSIONS, so a
+# dispatched subagent may mutate it.
 
 
 def _resolve_brief_id_local(con, workspace: str, brief_name: str) -> int:
@@ -1131,12 +1103,8 @@ def update_ac(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Granular milestone mutation (v5 -- T5.2)
-# ---------------------------------------------------------------------------
-#
-# Milestones are `curator_only=True` per D1 -- only orchestrator/operator may
-# add/remove/edit them. The guard rejects non-curator dispatches.
+# Single-row milestone mutation. milestones is `curator_only=True` in
+# DISPATCH_PERMISSIONS, so the guard rejects non-curator dispatches.
 
 
 def add_milestone(
@@ -1302,10 +1270,6 @@ def update_milestone(
         con.close()
 
 
-# ---------------------------------------------------------------------------
-# Brief invariant verification (v5 -- T5.6)
-# ---------------------------------------------------------------------------
-
 
 def _read_decisions(con: sqlite3.Connection, brief_id: int) -> dict[str, list[dict]]:
     """Split a brief's decisions into current and superseded, oldest first."""
@@ -1391,9 +1355,7 @@ def derive_brief_state(
     Nothing here is stored; every value follows from the rows:
 
     * task ``done``: closed (``tasks.status = 'done'``) AND either every gate
-      passes with none stale, or the closure carries a current override. The
-      closure itself is gate-derived and withheld from the task's producer, so
-      a producer-recorded pass does not make its task done.
+      passes with none stale, or the closure carries a current override.
     * task ``blocked``: open and waiting on a task that is neither done nor
       skipped (a skipped task was deliberately set aside and does not hold
       others back).
@@ -1524,6 +1486,7 @@ def verify_brief(
       * brief_name (str)
       * inconsistencies (list[dict]): each dict has {kind, detail}
       * pass (bool): True if inconsistencies is empty
+      * synced (list[str]): ac_ids a closing run would mark done (else empty)
     """
     con = _connect(db_path)
     try:
@@ -1575,12 +1538,8 @@ def verify_brief(
                     ),
                 })
 
-        # The TERMINAL set for an AC: an AC is "resolved" when it is either
-        # satisfied ('done') or deliberately dropped ('descoped', v21). Any other
-        # status ('pending', 'blocked') is non-terminal -- the AC is still live.
-        # Adding 'descoped' to this set is what lets a brief close honestly
-        # without leaving "false done" ACs (an AC that was dropped but had no
-        # terminal status to record the drop).
+        # An AC is terminal when satisfied ('done') or deliberately dropped
+        # ('descoped'); 'pending' and 'blocked' are still live.
         _AC_TERMINAL_STATUSES = ("done", "descoped")
 
         # Invariant 1: plans with zero tasks
@@ -1627,11 +1586,8 @@ def verify_brief(
                             ),
                         })
 
-        # Invariant 3: a done AC that promised evidence must have either a
-        # legacy/canonical artifact_path reference OR at least one structured
-        # evidence row. Inline evidence deliberately has no artifact_path, so
-        # requiring that column alone incorrectly rejects valid canonical
-        # evidence and encourages repository-relative placeholder files.
+        # Invariant 3: a done AC that promised evidence needs an artifact_path
+        # or at least one evidence row; inline evidence has no artifact_path.
         bad_acs = con.execute(
             "SELECT ac.ac_id, ac.evidence_type, ac.artifact_path "
             "FROM acceptance_criteria ac "
@@ -1728,10 +1684,8 @@ def verify_brief(
                 ),
             })
 
-        # Invariant 7: a CLOSED brief with any AC in a NON-terminal status
-        # (pending / blocked). Closing the brief while an AC is still live is the
-        # "false done" gap: the AC was neither satisfied ('done') nor explicitly
-        # dropped ('descoped'). Advisory only -- never blocks the close.
+        # Invariant 7: a closed brief with an AC that is neither done nor
+        # descoped. Makes `pass` False, so close_brief_verified refuses it.
         if brief_status == "closed":
             nonterminal_acs = con.execute(
                 "SELECT ac_id, status FROM acceptance_criteria "
@@ -1753,9 +1707,8 @@ def verify_brief(
                     ),
                 })
 
-        # Invariant 8: a CLOSED brief whose plan is NOT closed. Advisory-only and
-        # NO automatic cascade -- consistent with the existing advisory philosophy
-        # (close never mutates plan/AC/milestone status; it only surfaces drift).
+        # Invariant 8: a closed brief whose plan is not closed. Reported, not
+        # repaired: outside the closing simulation nothing here changes a status.
         if brief_status == "closed" and plan_id is not None:
             plan_state = con.execute(
                 "SELECT status FROM plans WHERE id = ?", (plan_id,)
@@ -1771,17 +1724,9 @@ def verify_brief(
                     ),
                 })
 
-        # Invariant 9: gate well-formedness (harness R1-B-1). For each task of
-        # the plan, load its persisted task_gates (R1-A) and run validate_gate
-        # (gaia.state.gate_validation -- pure, no DB/IO) over each. A task with
-        # zero gates yields a task_missing_gate inconsistency; a gate that
-        # validate_gate rejects yields a task_malformed_gate (with the validator
-        # errors embedded in the detail). This connects validate_gate -- today
-        # wired to nothing -- into the plan verification flow, inheriting the
-        # EXISTING dual surface of verify_brief (advisory under `gaia brief
-        # close`, exit-2-capable under `gaia brief verify`) with NO new
-        # enforcement mechanism. Guarded by `plan_id is not None`, reusing the
-        # plan_id resolution and task iteration of Invariants 1/2.
+        # Invariant 9: gate well-formedness. A task with no task_gates row yields
+        # task_missing_gate; a gate that validate_gate (gaia.state.gate_validation)
+        # rejects yields task_malformed_gate carrying the validator errors.
         if plan_id is not None:
             gate_task_rows = con.execute(
                 "SELECT id, order_num FROM tasks WHERE plan_id = ?",
@@ -1822,7 +1767,7 @@ def verify_brief(
                             ),
                         })
 
-        # Invariant 10: coverage from the structured task->AC links (v56). Once
+        # Invariant 10: coverage from the structured task->AC links. Once
         # a plan has tasks, every live AC needs at least one covering task, and
         # a link must name an AC the brief still has (AC rows are rewritten by
         # brief edits, so a link can outlive its AC).
@@ -1858,7 +1803,7 @@ def verify_brief(
                     })
 
         # Invariant 11: a gate verdict recorded before its gate, task goal or
-        # covered AC changed (v56). The verdict is kept but proves nothing
+        # covered AC changed. The verdict is kept but proves nothing
         # until the gate is verified again.
         if plan_id is not None:
             for stale in con.execute(

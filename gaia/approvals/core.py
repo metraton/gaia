@@ -40,14 +40,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from gaia.redaction import has_clear_secret, redact_text
+from gaia.redaction import carries_clear_secret, has_clear_secret, mask_clear_secrets, redact_text
 from gaia.store.writer import APPROVAL_WINDOW_MINUTES as WINDOW_MINUTES
 
-# A sealed request stores its command verbatim, because the grant is bound to
-# those bytes; a credential written into the command would be stored in clear.
 CLEAR_SECRET_REFUSAL = (
-    "the command carries a credential in clear, which the approval record would store; "
-    "pass it through an environment variable or a file and request that command instead"
+    "the request carries a credential in clear, which the approval record would store and show; "
+    "reference it instead of writing its value -- a leading assignment before the program, "
+    "GH_TOKEN=$GH_TOKEN or GH_TOKEN=$(gh auth token) -- and request that command"
 )
 
 DECISION_OPTIONS = frozenset({"approve", "reject", "details"})
@@ -58,7 +57,7 @@ _MAX_EXIT_CODE = 255
 #: The withdrawal reason of a phraseless request its requester's phrased one
 #: replaced; readers tell it from a user's rejection and from an expiry by it.
 REPLACED_REASON = "reemplazada"
-#: The flag a requester owes on every request: how to undo it, or that it cannot be undone (D38).
+#: The flag a requester owes on every request: how to undo it, or that it cannot be undone.
 ROLLBACK_FLAG = "--rollback"
 #: The flags a COMMAND_SET owes besides the rollback: how its result is checked,
 #: and whether it rewrites state other people rely on.
@@ -222,7 +221,7 @@ def seal_request(
     may carry ``does`` and ``impact``. All four are checked against the
     signature surface limits here, when the request is made
     (``surface.SurfaceLimitError``). ``requested_from`` is the requester's shell
-    folder: the surface names an item's folder only when it differs (D3).
+    folder: the surface names an item's folder only when it differs.
 
     ``operation`` is required for ``command`` (the reactive Bash block): it is
     the ``<CATEGORY> command intercepted: <verb>`` line activation reads to
@@ -293,11 +292,13 @@ def seal_request(
             scope=SCOPE_FILE_PATH,
             scope_signature=signature.to_dict(),
         )
+    if carries_clear_secret(payload):
+        raise SealError(CLEAR_SECRET_REFUSAL)
     return payload
 
 
 # --------------------------------------------------------------------------- #
-# Phrases (PD10)
+# Phrases
 # --------------------------------------------------------------------------- #
 
 def _payload_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -339,8 +340,12 @@ def check_presentable(payload: Mapping[str, Any]) -> None:
         raise NotPresentableError(missing)
 
 
-def request_line(payload: Mapping[str, Any]) -> str:
-    """The request that replaces phraseless ``payload`` with a phrased one; each ``<...>`` is the requester's."""
+def request_line(payload: Mapping[str, Any], agent_id: str = "") -> str:
+    """The request that replaces phraseless ``payload`` with a phrased one; each ``<...>`` is the requester's.
+
+    A given *agent_id* is spelled as ``--agent-id``, for a requester whose
+    shell has no ``GAIA_DISPATCH_AGENT`` to seal the request under.
+    """
     items = _payload_items(payload)
     if payload.get("operation") == _FILE_OPERATION:
         words = ["gaia approvals request-file-write", "--path", shlex.quote(_targets(payload)[0])]
@@ -367,6 +372,8 @@ def request_line(payload: Mapping[str, Any]) -> str:
             "--verification", shlex.quote("<how the result will be checked>"),
             "--shared-state", shlex.quote("<whether it rewrites shared state, and which>"),
         ]
+    if agent_id:
+        words += ["--agent-id", shlex.quote(agent_id)]
     return " ".join(words)
 
 
@@ -374,7 +381,7 @@ def _require_phrases(
     what: object, question: object, items: list[Mapping[str, Any]], rollback: object,
     owed: Optional[Mapping[str, object]] = None,
 ) -> None:
-    """Refuse a new request lacking a phrase, its rollback sentence included (D38).
+    """Refuse a new request lacking a phrase, its rollback sentence included.
 
     ``owed`` maps each further flag the request kind owes to its value. The
     rollback and these are owed only when a request is made, not when one is
@@ -600,8 +607,7 @@ def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -
     session and agent; otherwise the requester's pending request is named
     (minted on first sight). A block on a request without phrases carries the
     ``request_line`` that replaces it; a phrased one carries ``None``. Raises
-    when the request cannot be persisted, so the host can fall back to its own
-    consent dialog.
+    when the request cannot be persisted; the caller then denies the write.
     """
     _ensure_hooks_importable()
     from modules.security.protected_paths import is_protected_hook_path, resolved_write_target
@@ -666,11 +672,15 @@ def _row_payload(row: Mapping[str, Any]) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def question_batch(approval_ids: list[str], *, one_per_session: bool = False) -> list:
+def question_batch(
+    approval_ids: list[str], *, one_per_session: bool = False, per_command: bool = False,
+) -> list:
     """Render the pending requests one host question call asks, in order: at most 4 questions in all.
 
-    Each must be pending and presentable (:func:`check_presentable`); the
-    renderer rejects a batch whose question texts repeat. ``one_per_session``
+    Claude Code's layout asks one question per signature; ``per_command`` asks
+    OpenCode's, one per command. Each must be pending and presentable
+    (:func:`check_presentable`); the renderer rejects a batch whose question
+    texts repeat. ``one_per_session``
     refuses two signatures requested by the same session, the refusal the
     OpenCode plugin applies in ``presentForOrchestrator``: there a session
     holds one bound retry at a time, so the second approval would not activate.
@@ -697,11 +707,11 @@ def question_batch(approval_ids: list[str], *, one_per_session: bool = False) ->
         payload = _row_payload(row)
         check_presentable(payload)
         requests.append((payload, approval_id))
-    return surface.render_batch(requests)
+    return surface.render_batch(requests) if per_command else surface.render_signatures(requests)
 
 
 #: ``metadata_json.kind`` of the NOOP event recording that ``gaia approvals
-#: question`` handed a signature out at a slot (D31). NOOP because a hand-out
+#: question`` handed a signature out at a slot. NOOP because a hand-out
 #: changes no status and the ``approval_events`` CHECK stays closed.
 HANDOUT_KIND = "question_handed_out"
 
@@ -762,16 +772,14 @@ def _asks(pairs: list[tuple[dict, dict]], asked: list[dict]) -> bool:
 
 
 def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
-    """Return the signatures whose questions are exactly ``questions``, in order.
+    """Return the signatures whose Claude Code questions are exactly ``questions``, in order.
 
-    Every command of a signature is one question (D33), so a signature spans
-    consecutive slots. The newest hand-out of ``gaia approvals question``
-    (:func:`hand_out_question`) whose signatures render exactly these objects,
-    as questions or as Details re-asks, decides which signature each slot asks
-    (D31). Without such a hand-out the slots are walked in order, matching at
-    each one the pending request whose questions render there; a question no
-    pending request renders, or one two render alike, raises
-    :class:`SealError` naming the position.
+    Each signature is one question. The newest hand-out of ``gaia approvals
+    question`` (:func:`hand_out_question`) whose signatures render exactly
+    these objects, as questions or as Details re-asks, decides which signature
+    each slot asks. Without such a hand-out each slot is matched to the
+    pending request that renders there; a question no pending request renders,
+    or one two render alike, raises :class:`SealError` naming the position.
     """
     from gaia.approvals import store, surface
 
@@ -791,39 +799,25 @@ def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
             return surfaces
     pending = [(row["id"], _row_payload(row)) for row in store.list_pending(all_sessions=True)]
     approval_ids: list[str] = []
-    position = 0
-    while position < total:
+    for position, asked in enumerate(asked_all):
         matches = []
         for approval_id, payload in pending:
             if approval_id in approval_ids:
                 continue
-            # The call may ask this signature alone (positions count the call)
-            # or mixed with others (positions count the signature, D38).
             try:
-                renderings = [
-                    surface.render_at(payload, approval_id, position + 1, total),
-                    surface.render_at(
-                        payload, approval_id, 1, surface.question_count(payload),
-                        signature=surface.signature_letter(len(approval_ids)),
-                    ),
-                ]
+                rendered = surface.render_signature(payload, approval_id, position + 1, total)
             except (SealError, TypeError, ValueError, AttributeError):
                 continue
-            for rendered in renderings:
-                pairs = list(zip(rendered.questions, rendered.details_questions))
-                if _asks(pairs, asked_all[position:position + len(pairs)]):
-                    matches.append((approval_id, len(pairs)))
-                    break
+            if _asks([(rendered.questions[0], rendered.details_questions[0])], [asked]):
+                matches.append(approval_id)
         if not matches:
             raise SealError(f"question {position + 1} is not the one Gaia rendered for a pending approval")
         if len(matches) > 1:
             raise SealError(
-                f"question {position + 1} is rendered alike by "
-                f"{', '.join(approval_id for approval_id, _ in matches)}; "
+                f"question {position + 1} is rendered alike by {', '.join(matches)}; "
                 "withdraw the stale one before asking"
             )
-        approval_ids.append(matches[0][0])
-        position += matches[0][1]
+        approval_ids.append(matches[0])
     return question_batch(approval_ids)
 
 
@@ -910,7 +904,7 @@ def decide(
 
 
 def signature_decision(option_keys: list[Optional[str]]) -> Optional[str]:
-    """The one decision a signature takes from the answers to its questions (D33).
+    """The one decision a signature takes from the answers to its questions.
 
     A Reject on any question rejects the whole signature; it is approved only
     when every question got Approve; otherwise a Details asks again, and
@@ -972,7 +966,7 @@ def match_command(
 
 
 def sealed_invocation(cwd: str, command: str) -> str:
-    """The only compound accepted (D24): the one that runs an item sealed in another directory."""
+    """The only compound accepted: the one that runs an item sealed in another directory."""
     return f"cd {shlex.quote(cwd)} && {command}"
 
 
@@ -1146,7 +1140,7 @@ def release_call(
     store.record_execution_denial(
         approval_id, HOST_DENIED_REASON, host=host, session_id=session_id or None,
         call_id=tool_use_id or None, command_fingerprint=command_fingerprint(command),
-        detail=detail or None,
+        detail=mask_clear_secrets(detail) or None,
     )
     return released
 
@@ -1198,6 +1192,7 @@ def withdraw(
     if row is not None and row.get("status") == "pending":
         if action == "expire":
             reason = EXPIRED_REASON
+        reason = mask_clear_secrets(reason)
         metadata = {key: value for key, value in (("reason", reason), ("source", source)) if value}
         transition = {"reject": store.reject, "revoke": store.revoke, "expire": store.expire}[action]
         transition(

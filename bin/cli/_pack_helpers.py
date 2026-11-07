@@ -1,6 +1,6 @@
 """
-_pack_helpers.py -- shared packaging primitive for `gaia dev` and (Phase 2)
-`gaia release check`.
+_pack_helpers.py -- shared packaging primitive for `gaia dev` and
+`gaia release`.
 
 ``pack_tarball()`` wraps ``npm pack --json`` so any subcommand that needs a
 freshly-packed tarball of the current source tree gets identical behaviour:
@@ -10,8 +10,8 @@ the CURRENT source tree -- including a freshly regenerated
 ``.claude-plugin/plugin.json`` + ``hooks/hooks.json`` -- never a stale
 checked-in artifact.
 
-This module holds ONLY the pack step. Consumers (``gaia dev`` today,
-``gaia release check`` in Phase 2) own their own install/wire/verify
+This module holds ONLY the pack step. Consumers (``gaia dev``,
+``gaia release``) own their own install/wire/verify
 orchestration on top of the tarball path this returns -- keeping this
 module's surface small and reusable rather than growing it into a second
 copy of `_install_helpers.py`.
@@ -34,15 +34,14 @@ from typing import Any
 def _is_source_checkout(path: Path) -> bool:
     """True when *path* is a Gaia SOURCE checkout, not a slim install copy.
 
-    Anchored on the exact dev-only artifacts the npm pack excludes: the
-    plugin manifest, the test suite, and a package.json. The slim installed
-    copy lacks the first two, so it correctly fails this predicate.
+    Anchored on the build manifest and the test suite, which package.json
+    ``files`` leaves out of the npm pack, plus package.json itself. The slim
+    installed copy lacks the first two, so it fails this predicate.
 
-    Shared by `gaia release check`/`publish` (which must validate the SOURCE
-    tree, never the slim installed copy) and `gaia dev` (which must refuse to
-    run at all from a slim installed copy -- see `dev.py`'s entrypoint guard).
-    Hoisted here rather than imported from `cli.release` so `dev.py` does not
-    take on that module's heavier release-gate surface for one predicate.
+    Shared by `gaia release` (which must validate the SOURCE tree, never the
+    slim installed copy) and `gaia dev` (which refuses to run from a slim
+    installed copy). Lives here rather than in `cli.release` so `dev.py` does
+    not import that module's heavier release-gate surface for one predicate.
     """
     return (
         (path / "build" / "gaia.manifest.json").is_file()

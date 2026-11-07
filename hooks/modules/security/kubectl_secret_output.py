@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from dataclasses import dataclass
 
 
 _READ_VERBS = frozenset({"get", "list"})
 _SECRET_RESOURCES = frozenset({"secret", "secrets"})
 _VALUE_OUTPUTS = frozenset(
-    {"json", "yaml", "jsonpath", "jsonpath-as-json", "go-template", "template"}
+    {
+        "json", "yaml", "jsonpath", "jsonpath-as-json", "go-template", "template",
+        "jsonpath-file", "go-template-file", "templatefile", "custom-columns-file",
+    }
 )
 _FLAGS_WITH_VALUES = frozenset(
     {
@@ -52,17 +54,25 @@ class KubectlSecretOutputViolation:
 
 
 def check_kubectl_secret_output(command: str) -> KubectlSecretOutputViolation | None:
-    """Return a violation when a kubectl Secret read selects value-bearing output."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return None
+    """Return a violation when a kubectl Secret read, however wrapped, selects value-bearing output."""
+    from gaia.secret_reads import simple_commands
+
+    for tokens in simple_commands(command):
+        violation = _check_tokens(tokens)
+        if violation is not None:
+            return violation
+    return None
+
+
+def _check_tokens(tokens: list[str]) -> KubectlSecretOutputViolation | None:
     if not tokens or os.path.basename(tokens[0]).lower() != "kubectl":
         return None
 
     verb_index = _first_read_verb(tokens)
     if verb_index is None:
         return None
+    if _reads_raw_secret_path(tokens):
+        return _violation("--raw")
     resource = _first_positional(tokens, verb_index + 1)
     if resource is None or not _is_secret_resource(resource):
         return None
@@ -77,6 +87,16 @@ def check_kubectl_secret_output(command: str) -> KubectlSecretOutputViolation | 
     if normalized == "custom-columns" and _SENSITIVE_COLUMN.search(expression):
         return _violation(normalized)
     return None
+
+
+def _reads_raw_secret_path(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        path = token.split("=", 1)[1] if token.startswith("--raw=") else (
+            tokens[index + 1] if token == "--raw" and index + 1 < len(tokens) else ""
+        )
+        if "/secrets" in path.lower():
+            return True
+    return False
 
 
 def _first_read_verb(tokens: list[str]) -> int | None:

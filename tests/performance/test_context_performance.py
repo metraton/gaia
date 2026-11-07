@@ -26,8 +26,8 @@ sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
 # DB helpers
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
+    seed_project,
     seed_workspace,
-    seed_agent_perms,
 )
 
 
@@ -37,8 +37,6 @@ from tests.fixtures.db_helpers import (
 
 def _import_process_update_contracts():
     # Full package path so the module's ..agents relative import resolves.
-    from hooks.modules.context import context_writer as _cw
-    _cw._permissions_cache.clear()
     from hooks.modules.context.context_writer import process_update_contracts
     return process_update_contracts
 
@@ -490,7 +488,12 @@ def _build_task_info(agent_type: str, db_path: Path, workspace: str = "global") 
         "agent_type": agent_type,
         "db_path": db_path,
         "workspace": workspace,
+        "project": PERF_PROJECT,
     }
+
+
+PERF_PROJECT = "platform"
+PERF_PROJECT_ID = "github.com/acme/platform"
 
 
 def _median_time_ms(fn, iterations: int = TIMING_ITERATIONS) -> float:
@@ -515,20 +518,13 @@ def setup_perf(tmp_path):
 
     Returns (db_path, large_payload_dict).
 
-    The fixture does NOT depend on context-contracts.json. Permissions are
-    seeded directly in the DB via db_helpers, so tests run in isolation.
+    The fixture does NOT depend on context-contracts.json: the schema and the
+    workspace are seeded directly in the DB via db_helpers.
     """
     db_path = tmp_path / "gaia_perf.db"
     bootstrap_gaia_schema(db_path)
     seed_workspace(db_path, "global")
-    seed_agent_perms(
-        db_path,
-        "cloud-troubleshooter",
-        reads=["cluster_details", "infrastructure_topology", "application_services",
-               "monitoring_observability", "architecture_overview"],
-        writes=["cluster_details", "infrastructure_topology", "application_services",
-                "monitoring_observability", "architecture_overview"],
-    )
+    seed_project(db_path, "global", PERF_PROJECT, PERF_PROJECT_ID)
 
     large_payload = _generate_large_context(TARGET_CONTEXT_SIZE_KB)
     return db_path, large_payload
@@ -626,11 +622,30 @@ class TestNFR001ProcessAgentOutputLatency:
 # ============================================================================
 
 class TestCorrectnessUnderLoad:
-    """Ensure that process_update_contracts produces correct DB writes, not just fast ones."""
+    """Ensure that a large proposal is recorded unwritten and an accepted one is stored exactly."""
+
+    def test_large_payload_accept_is_within_budget(self, setup_perf):
+        """apply_proposal, the write behind `gaia context accept`, stays under the NFR-001 budget."""
+        from hooks.modules.context.context_writer import apply_proposal
+        db_path, large_payload = setup_perf
+
+        clause = _make_contract(
+            "cluster_details", large_payload["sections"]["cluster_details"],
+        )["update_contracts"]
+
+        elapsed_ms = _median_time_ms(
+            lambda: apply_proposal(clause, "global", db_path=db_path, project=PERF_PROJECT)
+        )
+
+        assert elapsed_ms < NFR_001_MAX_MS, (
+            f"NFR-001 FAILED: apply_proposal took {elapsed_ms:.1f} ms "
+            f"(budget: {NFR_001_MAX_MS} ms)"
+        )
 
     def test_large_payload_written_correctly(self, setup_perf):
-        """Writing a large cluster_details payload stores it exactly in the DB."""
+        """A large cluster_details proposal writes nothing at stop and is stored exactly once accepted."""
         import sqlite3
+        from hooks.modules.context.context_writer import apply_proposal
         process_update_contracts = _import_process_update_contracts()
         db_path, large_payload = setup_perf
 
@@ -643,13 +658,25 @@ class TestCorrectnessUnderLoad:
 
         result = process_update_contracts(contract, task_info)
 
-        assert result["updated"] is True
-        assert _first_contract(result) == "cluster_details"
+        assert result["updated"] is False
         assert result["rejected"] == []
+        assert [p["contract"] for p in result["proposed"]] == ["cluster_details"]
+
+        con = sqlite3.connect(str(db_path))
+        assert con.execute(
+            "SELECT COUNT(*) FROM project_context WHERE contract_name='cluster_details'"
+        ).fetchone()[0] == 0
+        con.close()
+
+        outcome = apply_proposal(
+            contract["update_contracts"], "global", db_path=db_path, project=PERF_PROJECT,
+        )
+        assert outcome["errors"] == []
 
         con = sqlite3.connect(str(db_path))
         row = con.execute(
-            "SELECT payload FROM project_context_contracts WHERE workspace='global' AND contract_name='cluster_details'"
+            "SELECT payload FROM project_context WHERE project_identity = ? "
+            "AND contract_name = 'cluster_details'", (PERF_PROJECT_ID,),
         ).fetchone()
         con.close()
 
@@ -662,21 +689,5 @@ class TestCorrectnessUnderLoad:
         )
         assert prod_cluster is not None
         assert prod_cluster["node_count"] == 99
-
-    def test_permission_rejection_on_large_payload(self, setup_perf):
-        """cloud-troubleshooter cannot write gitops_configuration."""
-        process_update_contracts = _import_process_update_contracts()
-        db_path, large_payload = setup_perf
-
-        gitops_payload = large_payload["sections"]["gitops_configuration"].copy()
-        gitops_payload["repo_url"] = "https://evil.example.com/gitops"
-
-        contract = _make_contract("gitops_configuration", gitops_payload)
-        task_info = _build_task_info("cloud-troubleshooter", db_path)
-
-        result = process_update_contracts(contract, task_info)
-
-        assert result["updated"] is False
-        assert "gitops_configuration" in result["rejected"]
 
 

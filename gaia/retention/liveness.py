@@ -11,14 +11,10 @@ package with the function -- a classic ``from pkg.mod import name_matching_
 mod`` foot-gun where any later ``import gaia.retention.<module-name>``
 resolves to the function instead of the module.
 
-This is the verb ``fs_rules.py`` did not need and this brief's later tasks
-do: a contract's owning turn closing (TERMINAL or not) tells you nothing
-about whether the *session* it ran inside is still around right now.
-``fs_rules.py`` never had to ask -- it only ever collects an entry once its
-owning contract already reached a terminal verdict, at which point the
-session question is moot. A worktree or a widened retention window (this
-brief's tasks 10 and 14) has no such shortcut: it needs to know, for a
-contract that has NOT necessarily closed, whether the turn running it is
+A contract's owning turn closing (TERMINAL or not) tells you nothing about
+whether the *session* it ran inside is still around right now. A caller that
+collects entries of a contract that has NOT necessarily closed (a worktree,
+a paused turn's scratch) needs to know whether the turn running it is
 still breathing.
 
 Three-valued, not two: ``ALIVE``, ``DEAD``, ``UNKNOWN``. The governing rule,
@@ -47,8 +43,6 @@ Public surface:
                                                    the contract row first
     session_dead_past_grace(contract_id, mtime) -- the composite criterion
                                                    (DEAD + grace exceeded)
-                                                   this brief's tasks 10 and
-                                                   14 both act on
 """
 
 from __future__ import annotations
@@ -108,12 +102,9 @@ def session_liveness(
 ) -> SessionLiveness:
     """Cross *session_id* against the session registry's heartbeat.
 
-    Reads ``hooks.modules.session.session_registry`` directly (the same
-    guarded cross-import ``bin/cli/cleanup.py`` already uses for
-    ``hooks.modules.core.plugin_setup``) rather than re-implementing the
-    heartbeat/TTL model here -- there must be exactly one place that decides
-    what a fresh heartbeat looks like, not a second copy that could drift
-    from it.
+    Reads ``hooks.modules.session.session_registry`` directly rather than
+    re-implementing the heartbeat/TTL model here -- there must be exactly one
+    place that decides what a fresh heartbeat looks like.
 
     Every failure mode -- the hooks package unimportable (partial install),
     a corrupt or absent registry file (``_load_registry`` already degrades
@@ -161,10 +152,9 @@ def session_liveness_for_contract(
 ) -> SessionLiveness:
     """``session_liveness()`` starting from a contract id instead of a session id.
 
-    The entry point tasks 10 (widened scratch retention) and 14 (the
-    worktree collector) are expected to call: both own entries named by
-    contract id (mirroring ``fs_rules.collectable_turn_scoped``'s naming
-    convention), not by session id directly.
+    The entry point for callers that own entries named by contract id
+    (``fs_rules.collectable_turn_scoped``'s naming convention, the worktree
+    collector), not by session id directly.
     """
     session_id = _session_id_for_contract(contract_id)
     if session_id is None:
@@ -184,8 +174,8 @@ def session_dead_past_grace(
 
     The one importable site for "is this collectible on liveness grounds
     alone" -- ``fs_rules.collectable_turn_scoped`` (a PAUSED turn whose
-    scratch/tmp/cache entry outlived a dead session, task 10) and the
-    worktree collector (task 15) both call this rather than each composing
+    scratch/tmp/cache entry outlived a dead session) and the
+    worktree collector both call this rather than each composing
     ``session_liveness_for_contract`` with its own grace arithmetic, which
     would leave two independent guesses at "dead enough" free to drift apart.
 

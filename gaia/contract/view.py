@@ -1,31 +1,26 @@
 """
 gaia.contract.view -- the minimal, cache-safe injected VIEW of a contract
 draft, plus the token-cost measurement that proves the by-value flow is
-cheaper than re-emitting the full block (T14, AC-15 / AC-16).
-
-Brief: contract-as-managed-data-agent-contract-handoff-agnostico-por-cli (M6).
+cheaper than re-emitting the full block.
 
 WHY THIS MODULE EXISTS
 ----------------------
-The by-value contract flow (M2) keeps the agent's contract state OUT of the
+The by-value contract flow keeps the agent's contract state OUT of the
 prompt: it lives on disk as a draft (``gaia.contract.drafts``) and the agent
 mutates it with small ``gaia contract set/add`` calls. The only thing that
 needs to travel back INTO the prompt on a resume is a *pointer* to that draft
 plus a minimal status summary -- NOT the whole envelope. This module owns the
-one renderer for that injected view, so the hook adapter (T6,
-``ClaudeCodeAdapter._build_resume_draft_context``) and the measurement here
-render from a SINGLE source of truth instead of diverging (mirroring the T6
-test philosophy: the orchestrator read and the resume-injection read are two
-callers of the same source, never two copies).
+one renderer for that injected view, so the hook adapter
+(``ClaudeCodeAdapter._build_resume_draft_context``) and the measurement here
+render from a SINGLE source of truth instead of diverging.
 
-Harness-agnostic by construction (decisions #1 / #3): stdlib only; imports
-nothing under ``hooks/`` and no third party. The hook adapter (harness-specific)
-imports THIS module, never the reverse. NOT re-exported by
+Stdlib only; imports nothing under ``hooks/`` and no third party. The hook
+adapter imports THIS module, never the reverse. NOT re-exported by
 ``gaia.contract.__init__`` -- keeping it off that surface preserves the layer-1
-portability boundary (AC-2), since importing ``gaia.contract.validator`` must
-never transitively pull anything else in.
+portability boundary, since importing ``gaia.contract.validator`` must never
+transitively pull anything else in.
 
-THE TWO REGIONS OF A RESUMED SUBAGENT PROMPT (AC-16, cache-safety)
+THE TWO REGIONS OF A RESUMED SUBAGENT PROMPT (cache-safety)
 ------------------------------------------------------------------
 A resumed subagent's prompt has two distinct regions from two distinct paths:
 
@@ -34,12 +29,11 @@ A resumed subagent's prompt has two distinct regions from two distinct paths:
      path than this hook), from STATIC on-disk artifacts. It does NOT read the
      draft, so it is BYTE-STABLE across resumes -- this is the large,
      KV-cache-worthy prefix, and the byte-stability the cache actually depends
-     on. (T14 carry-forward from T6: do NOT claim the volatile hint below is
-     the byte-stable part; the identity/skill prompt is.)
+     on. The volatile hint below is not the byte-stable part.
 
   2. RESUME HINT -- what THIS module renders and the hook injects as
-     ``additionalContext``, BELOW the identity prompt. It is VOLATILE BY DESIGN
-     (T6): it reflects the draft's current ``agent_state`` / ``next_action`` /
+     ``additionalContext``, BELOW the identity prompt. It is VOLATILE BY DESIGN:
+     it reflects the draft's current ``agent_state`` / ``next_action`` /
      ``pending_steps``, which change between messages. Its whole job is to be
      MINIMAL -- a pointer + a status line -- so the full variable contract is
      NEVER re-injected atop the prompt.
@@ -51,7 +45,7 @@ message-to-message). Ordering the invariant content FIRST and the volatile line
 LAST maximizes the byte-stable prefix a KV cache can reuse; the volatile tail
 is deliberately last and is NOT claimed stable.
 
-TOKEN MEASUREMENT (AC-15)
+TOKEN MEASUREMENT
 -------------------------
 ``estimate_tokens`` is a deterministic, tokenizer-agnostic proxy
 (``ceil(len/4)`` -- the standard chars-per-token rule of thumb). No third-party
@@ -83,7 +77,7 @@ def estimate_tokens(text: str) -> int:
 
     Uses the standard ~4-chars-per-token heuristic (``ceil(len/4)``). Chosen so
     the measurement needs no third-party tokenizer and yields the SAME number
-    in every environment -- which is what lets AC-15 pin a fixed threshold. The
+    in every environment -- which lets a fixed threshold be pinned. The
     metric is only ever used for a RELATIVE comparison, and it is monotone in
     text length, so the reduction verdict is robust to the exact tokenizer.
     """
@@ -98,7 +92,7 @@ def estimate_tokens(text: str) -> int:
 
 def render_full_reemit(envelope: dict) -> str:
     """Render the FULL fenced ``agent_contract_handoff`` block an agent would
-    re-emit every turn in the pre-by-value model (the AC-15 baseline).
+    re-emit every turn in the pre-by-value model (the measurement baseline).
 
     Matches the canonical fence the legacy parser recognizes
     (``hooks.modules.agents.contract_validator._RE_HANDOFF``:
@@ -138,7 +132,7 @@ def render_resume_hint_invariant(draft_id: str) -> str:
 
 
 def render_resume_hint_volatile(envelope: dict) -> str:
-    """The VOLATILE tail of the resume hint (T6: volatile by design).
+    """The VOLATILE tail of the resume hint (volatile by design).
 
     A single status line summarizing the draft's current state. It reads ONLY
     the three summary fields (``agent_state``, ``next_action``, and the COUNT of
@@ -193,7 +187,7 @@ def split_resume_hint(hint: str) -> Tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Token-savings measurement (AC-15)
+# Token-savings measurement
 # ---------------------------------------------------------------------------
 
 def measure_token_savings(draft_id: str, envelope: dict, turns: int = 1) -> dict:

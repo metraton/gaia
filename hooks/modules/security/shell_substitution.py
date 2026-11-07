@@ -2,17 +2,16 @@ r"""
 shell_substitution.py -- extract the commands a shell will EXECUTE from inside
 a command substitution, wherever in the string they sit.
 
-``shell_grouping`` closed the case where a grouping character is glued to the
-command at POSITION 0. One token to the right, the same boundary was still
-open: a command substitution is evaluated by the shell BEFORE the outer command
-ever runs, so it executes regardless of where it appears.
+``shell_grouping`` handles a grouping character glued to the command at
+POSITION 0. A command substitution is evaluated by the shell BEFORE the outer
+command ever runs, so it executes regardless of where it appears.
 
     echo $(rm -rf /)                          -- the delete runs; echo prints its output
     echo $(cp payload.py .claude/hooks/x.py)  -- the hook file is overwritten
     ls $(dd if=/dev/zero of=/dev/sda)         -- the device is written
 
-Every one of those classified T0 by elimination, because each layer keys on the
-first token of the string and the first token is ``echo`` or ``ls``.
+Each layer keys on the first token of the string, which here is ``echo`` or
+``ls``, so the bodies have to be extracted and classified on their own.
 
 WHY THIS IS NOT THE MENTION/USE TRADEOFF ``shell_grouping`` REFUSED TO MAKE.
 That module declined to reach into the middle of a command because a dangerous
@@ -55,7 +54,7 @@ add it here:
   ``$'...'``     ANSI-C quoting. Suspends expansion but HONOURS the backslash,
                  so it is resolved after the escape handling. The two single
                  quote forms differ on exactly this one rule, and collapsing
-                 them was a measured false negative: ``$'it\'s'`` read as a
+                 them is a false negative: ``$'it\'s'`` read as a
                  plain quote appears to close at the escaped quote, desyncs the
                  state, and hides every substitution to its right.
   ``"..."``      double quote. Does NOT suspend ``$()`` or backticks; does
@@ -95,19 +94,12 @@ WHAT IS DELIBERATELY OUT OF SCOPE:
   ``<<<word``    a here-STRING, not a heredoc. It expands and has no body, so
                  it is deliberately NOT treated as an opener.
 
-HEREDOCS WERE THE ONE CONSTRUCT LEFT UNMODELLED, on a stated argument that the
-error could only cost a false positive and never a missed execution. That
-argument was FALSE, and the way it failed is worth keeping: leaving the body as
-ordinary text does not merely misread the body, it desynchronises the QUOTING
-STATE for everything after it. One ordinary apostrophe in a heredoc body -- an
-English contraction, the most mundane content there is -- opened a single-quote
-state that never closed, and every character to the right of it, on every later
-line, was then treated as quoted. A real substitution on a line AFTER the
-heredoc became invisible, and a write into the protected hooks directory
-classified as a read. The false positive was real too, in the other direction:
-a QUOTED heredoc whose body merely names a substitution was permanently denied.
-So one missing model cost an execution AND a spurious denial, and modelling it
-is what closes both.
+HEREDOCS ARE MODELLED because leaving a body as ordinary text does not merely
+misread the body, it desynchronises the QUOTING STATE for everything after it:
+one apostrophe in a body (an English contraction) would open a single-quote
+state that never closes, and a real substitution on any later line would be
+invisible. In the other direction, a QUOTED heredoc whose body merely names a
+substitution would be denied. Modelling it closes both.
 
 The result is an ANALYSIS form only. Nothing here executes, rewrites, or
 returns a command to run; callers feed the extracted bodies back through their
@@ -129,10 +121,8 @@ from typing import List, Optional, Tuple
 # It must not sit BELOW the descent bound its consumers apply. A consumer that
 # re-enters per level (the mutative lane) reaches bodies deeper than a consumer
 # reading this flat list (the permanent-deny floor, the protected-path guard),
-# and when the two disagree the deeper reader is the one with the SOFTER verdict
-# -- a floor body nested between the two numbers was reported approvable rather
-# than categorical, because only the lane that could still see it was the lane
-# that cannot answer categorically. Measured at 8 against a bound of 12.
+# and the deeper reader has the SOFTER verdict: a floor body nested between the
+# two numbers would be reported approvable rather than categorical.
 _MAX_NESTING_DEPTH = 12
 
 # Upper bound on how many bodies one command may yield. A command long enough
@@ -141,9 +131,7 @@ _MAX_NESTING_DEPTH = 12
 #
 # Reaching it TRUNCATES the scan, so the bodies past it were never looked at --
 # which is why ``extract_substitutions_truncated`` reports that fact instead of
-# letting a short list pass for a complete one. Sixty-four read substitutions
-# followed by a mutation returned the sixty-four reads and no mutation, and the
-# command classified free.
+# letting a short list pass for a complete one.
 _MAX_SUBSTITUTIONS = 64
 
 _PROCESS_SUBSTITUTION_OPENERS = ("<(", ">(")
@@ -442,13 +430,14 @@ def _collect(
     if depth > _MAX_NESTING_DEPTH:
         return False
     truncated = False
+    if not heredoc_body:
+        from ..tools.shell_parser import strip_comment
+
+        command = strip_comment(command)
 
     i = 0
     length = len(command)
     quote = _Q_NONE
-    # A ``#`` starts a comment only at the beginning of a word. ``foo#bar`` and
-    # ``http://x/#frag`` are not comments, and treating them as such would blind
-    # the scan to whatever followed on the line.
     at_word_start = True
     # Heredocs declared on the current line, in declaration order. Their bodies
     # do not start where the ``<<`` appears -- they start after the newline, and
@@ -539,13 +528,6 @@ def _collect(
                 quote = _Q_DOUBLE
                 i += 1
                 at_word_start = False
-                continue
-            if ch == "#" and at_word_start:
-                newline = command.find("\n", i)
-                if newline == -1:
-                    return
-                i = newline + 1
-                at_word_start = True
                 continue
             if command.startswith("<<<", i):
                 # A here-string, not a heredoc: its word EXPANDS and there is no

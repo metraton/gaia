@@ -114,6 +114,7 @@ def _adopt_and_finalize(identity: dict, session_id: str, state: str = "COMPLETE"
                 "pending_steps": [],
                 "next_action": "done",
             },
+            "user_facing_summary": "Work recorded for the test.",
             "evidence_report": dict(
                 {k: [] for k in _EVIDENCE_KEYS}, verification=_VERIFICATION,
             ),
@@ -241,6 +242,7 @@ def test_reconstruction_recovers_a_fenceless_turns_update_contracts(db_path, cap
                 "pending_steps": [],
                 "next_action": "done",
             },
+            "user_facing_summary": "Work recorded for the test.",
             "evidence_report": dict(
                 {k: [] for k in _EVIDENCE_KEYS}, verification=_VERIFICATION,
             ),

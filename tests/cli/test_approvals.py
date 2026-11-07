@@ -1211,6 +1211,78 @@ class TestCmdRequestFileWrite:
         assert payload["impact"] == "other.py starts validating input"
 
 
+class TestSessionScope:
+    """Approvals are consent bound to a session: pending and list show this session's live ones by default."""
+
+    HERE, OTHER, GONE = "ses-here", "ses-other", "ses-gone"
+    HERE_LIVE = "P-11111111111111111111111111111111"
+    HERE_EXPIRED = "P-22222222222222222222222222222222"
+    OTHER_LIVE = "P-33333333333333333333333333333333"
+    GONE_ORPHANED = "P-44444444444444444444444444444444"
+
+    @pytest.fixture()
+    def seeded(self, db_store, monkeypatch):
+        from datetime import timedelta
+
+        store, insert_pending = db_store
+        insert_pending("git push origin here", session_id=self.HERE, approval_id=self.HERE_LIVE)
+        insert_pending("git push origin old", session_id=self.HERE, approval_id=self.HERE_EXPIRED)
+        insert_pending("git push origin other", session_id=self.OTHER, approval_id=self.OTHER_LIVE)
+        insert_pending("git push origin gone", session_id=self.GONE, approval_id=self.GONE_ORPHANED)
+        con = store._open_db()
+        con.execute("UPDATE approvals SET created_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+                    (self.HERE_EXPIRED,))
+        con.commit()
+        con.close()
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", self.HERE)
+        with patch("modules.session.session_registry.get_live_sessions",
+                   return_value={self.HERE, self.OTHER}), \
+                patch("gaia.approvals.reading.sign_of_life", return_value=timedelta(0)):
+            yield
+
+    def _pending_ids(self, capsys, **flags):
+        args = _make_args(**{"json": True, "all_sessions": False, "include_stale": False, **flags})
+        assert approvals_mod.cmd_pending(args) == 0
+        return {row["id"] for row in json.loads(capsys.readouterr().out)}
+
+    def _listed_ids(self, capsys, **flags):
+        args = _make_args(**{"json": True, "all_sessions": False, "include_stale": False, **flags})
+        assert approvals_mod.cmd_list(args) == 0
+        return {row["approval_id"] for row in json.loads(capsys.readouterr().out)["pending"]}
+
+    def test_pending_default_is_this_sessions_live_requests(self, capsys, seeded):
+        assert self._pending_ids(capsys) == {self.HERE_LIVE}
+
+    def test_pending_widens_to_other_sessions_and_to_stale(self, capsys, seeded):
+        assert self._pending_ids(capsys, all_sessions=True) == {self.HERE_LIVE, self.OTHER_LIVE}
+        assert self._pending_ids(capsys, include_stale=True) == {self.HERE_LIVE, self.HERE_EXPIRED}
+        assert self._pending_ids(capsys, all_sessions=True, include_stale=True) == {
+            self.HERE_LIVE, self.HERE_EXPIRED, self.OTHER_LIVE, self.GONE_ORPHANED}
+
+    def test_pending_table_names_what_the_scope_hides(self, capsys, seeded):
+        args = _make_args(all_sessions=False, include_stale=False)
+        assert approvals_mod.cmd_pending(args) == 0
+        out = capsys.readouterr().out
+        assert "1 live here; 1 in other sessions, 2 stale/orphaned" in out
+        assert "--all-sessions" in out and "--include-stale" in out
+        assert "git push origin other" not in out
+
+    def test_list_default_is_this_sessions_live_requests(self, capsys, seeded):
+        assert self._listed_ids(capsys) == {self.HERE_LIVE}
+        assert self._listed_ids(capsys, all_sessions=True, include_stale=True) == {
+            self.HERE_LIVE, self.HERE_EXPIRED, self.OTHER_LIVE, self.GONE_ORPHANED}
+
+    def test_map_now_counts_only_this_sessions_live_requests(self, seeded):
+        import cli.map as map_mod
+
+        lines = map_mod._approval_lines(self.HERE)
+        assert len(lines) == 1
+        what, verb = lines[0]
+        assert what.startswith("1 signature(s) waiting") and self.HERE_LIVE in what
+        assert verb.startswith("gaia approvals pending")
+        assert map_mod._approval_lines("") == []
+
+
 # ---------------------------------------------------------------------------
 # Tests: _format_age helper
 # ---------------------------------------------------------------------------

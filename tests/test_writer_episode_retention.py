@@ -143,3 +143,11 @@ class TestPruneEpisodes:
         monkeypatch.setenv("GAIA_EPISODE_PRUNE_SAMPLE_RATE", "1")
         _insert(db, "fresh", days_ago=1)
         assert _episode_ids(db) == {"fresh"}
+
+    def test_never_keeps_the_automatic_prune_off(self, bootstrapped_db, monkeypatch):
+        """The suite default: no insert prunes, so a test that seeds old rows keeps them."""
+        db = bootstrapped_db
+        monkeypatch.setenv("GAIA_EPISODE_PRUNE_SAMPLE_RATE", "never")
+        _insert(db, "stale", days_ago=300)
+        _insert(db, "fresh", days_ago=1)
+        assert _episode_ids(db) == {"stale", "fresh"}

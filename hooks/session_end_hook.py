@@ -26,8 +26,6 @@ from modules.core.hook_entry import run_hook
 from modules.core.logging_setup import configure_hook_logging
 from modules.session.session_lifecycle import end_session
 
-# Configure logging -- file handler only when GAIA_DEBUG is set; no
-# hooks-*.log is written by default (see modules.core.logging_setup).
 configure_hook_logging("session_end")
 logger = logging.getLogger(__name__)
 
@@ -43,17 +41,8 @@ def _handle_session_end(event) -> None:
     sys.exit(0)
 
 
-# ============================================================================
-# STDIN HANDLER (Claude Code integration)
-# ============================================================================
-
 def main() -> None:
-    """Module-level entrypoint used by tests and by the ``__main__`` block.
-
-    Delegates to ``run_hook()`` exactly like the inline ``__main__`` body
-    would, but via a named function so tests can import this module and
-    invoke the handler without spawning a subprocess.
-    """
+    """Run the SessionEnd handler under ``run_hook``; a named function so tests can call it without a subprocess."""
     run_hook(_handle_session_end, hook_name="session_end_hook")
 
 

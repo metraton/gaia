@@ -13,9 +13,10 @@ WHY THIS KEYS ON THE DESTINATION AND NOT ON A COMMAND LIST. The permitted cases
 have to fall out of the rule rather than be enumerated, or the guard becomes an
 allow-list somebody maintains and every gap in it is a block an agent has to
 work around. Two conditions must BOTH hold to refuse: the author is the shell,
-and the resolved destination is inside a git working tree. ``/dev/null``,
-``/tmp`` and ``~/.gaia/scratch`` are permitted because they are not under a
-working tree -- not because they appear on a list. A tool that writes as its own
+and the resolved destination is inside a git working tree. ``/tmp`` is
+permitted because it is not under a working tree -- not because it appears on
+a list; the only listed exemptions are the ones ``_classify_target`` names:
+``/dev/``, ``/proc/``, Gaia's data directory and ``_EPHEMERAL_SEGMENTS``. A tool that writes as its own
 effect (``pytest --junitxml``, a compiler, ``git``) is never reached, because
 the shell did not author its output.
 
@@ -71,8 +72,7 @@ def _split_components(text: str) -> List[str]:
     cannot precede the quote scan: a newline inside a multi-line quoted argument
     would end a component mid-string, and the fragment left behind carries no
     opening quote -- making a redirect that was only ever QUOTED read as one
-    being used. Measured: this refused a `gaia contract add` whose evidence text
-    mentioned a redirect, and a memory write quoting one in prose.
+    being used.
     """
     components: List[str] = []
     current: List[str] = []
@@ -181,8 +181,102 @@ def _tokenize(component: str) -> List[str]:
         return component.split()
 
 
+_DOWNLOADERS = frozenset({"curl", "wget", "http", "https"})
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def _attached_paths(option: str) -> List[str]:
+    """Every tail of a short-option bundle that could be an attached path (-sSLo/x, -osettings.json)."""
+    tails = [option[i:] for i in range(2, len(option))]
+    return [t for t in tails if not t.startswith("-") and ("/" in t or "." in t or t[0] in "~$")]
+
+
+def _writes_default_name(base: str, tokens: List[str]) -> bool:
+    """Whether the downloader saves under the URL's own file name (curl -O, httpie --download, wget without -O)."""
+    bundles = [t for t in tokens[1:] if t.startswith("-") and not t.startswith("--")]
+    longs = [t.split("=", 1)[0] for t in tokens[1:] if t.startswith("--")]
+    if base == "curl":
+        return any("O" in b for b in bundles) or any(o.startswith("--remote-name") for o in longs)
+    if base == "wget":
+        return not any("O" in b for b in bundles) and not any(o.startswith("--output-d") for o in longs)
+    return any("d" in b for b in bundles) or "--download" in longs
+
+
+_URL_GLOB = re.compile(r"\{([^{}]*)\}|\[([^\[\]]*)\]")
+_GLOB_REFERENCE = re.compile(r"#(\d)")
+
+
+def _unwrapped(tokens: List[str]) -> Tuple[List[str], List[str]]:
+    """The command the line's run wrappers start, read as the verb classifier reads them, and every directory env -C moves it to."""
+    from .mutative_verbs import _peel_wrapper_readings
+
+    remainder = _tokenize(_peel_wrapper_readings(shlex.join(tokens))[0][0])
+    prefix = tokens[:max(len(tokens) - len(remainder), 0)]
+    chdirs: List[str] = []
+    if any(command_name(t) == "env" for t in prefix):
+        for option, value in zip(prefix, prefix[1:] + [""]):
+            if option in ("-C", "--chdir"):
+                chdirs.append(value)
+            elif option.startswith("--chdir="):
+                chdirs.append(option.split("=", 1)[1])
+            elif re.fullmatch(r"-[a-zA-Z]*C.+", option):
+                chdirs.append(option[option.index("C") + 1:])
+    return remainder, chdirs
+
+
+def _glob_names(words: List[str], urls: List[str]) -> List[str]:
+    """Each output name curl makes by putting a URL glob's values in place of #N."""
+    values = [
+        (braces.split(",") if braces is not None else [ranged.split("-", 1)[0]])
+        for url in urls for braces, ranged in _URL_GLOB.findall(url)
+    ]
+    names = []
+    for word in words:
+        for n in {int(m) for m in _GLOB_REFERENCE.findall(word)}:
+            for value in values[n - 1] if 0 < n <= len(values) else []:
+                names.append(word.replace(f"#{n}", value))
+    return names
+
+
+def downloader_paths(tokens: List[str]) -> List[str]:
+    """Every path a downloader line names, each joined under every named directory: the line, not its options, says where it can write."""
+    tokens, chdirs = _unwrapped(tokens)
+    base = command_name(tokens[0]) if tokens else ""
+    if base not in _DOWNLOADERS:
+        return []
+    words: List[str] = list(chdirs)
+    urls: List[str] = []
+    for token in tokens[1:]:
+        if _URL.match(token):
+            urls.append(token)
+        elif not token.startswith("-"):
+            words.append(token)
+        elif "=" in token:
+            words.append(token.split("=", 1)[1])
+        elif not token.startswith("--"):
+            words += _attached_paths(token)
+    words = [w for w in words if w and w != "-"]
+    words += _glob_names(words, urls)
+    names = []
+    if _writes_default_name(base, tokens):
+        locations = [u.split("://", 1)[1].split("?", 1)[0].split("#", 1)[0] for u in urls]
+        names = [loc.rsplit("/", 1)[1] for loc in locations if "/" in loc and loc.rsplit("/", 1)[1]]
+    relative = [n for n in words + names if not n.startswith(("/", "~", "$"))]
+    return words + names + [os.path.join(d, n) for d in words for n in relative if d != n]
+
+
+def _without_process_substitutions(component: str) -> str:
+    """The component with each ``<(...)``/``>(...)`` removed: bash passes a pipe, never a file, and the body is judged as its own command."""
+    from ..tools.shell_parser import process_substitutions
+
+    for opener, body in process_substitutions(component):
+        component = component.replace(f"{opener}{body})", " ", 1)
+    return component
+
+
 def _writer_targets(component: str) -> List[str]:
     """Return every destination this component writes, shell-authored only."""
+    component = _without_process_substitutions(component)
     targets = _redirect_targets(component)
 
     tokens = _tokenize(strip_grouping_wrappers(component))
@@ -284,6 +378,28 @@ def targets_working_tree(command: str, cwd: Optional[str] = None) -> Optional[st
             hit = _classify_target(token, cwd)
             if hit is not None:
                 return hit
+    return None
+
+
+_SYSTEM_DIRS = ("/etc", "/usr", "/boot")
+
+
+def system_path_target(command: str, cwd: Optional[str] = None) -> Optional[str]:
+    """The first destination a shell writer in *command* resolves to under /etc, /usr or /boot, which signs (D198 point 5), else None."""
+    if not command:
+        return None
+    components = _split_components(command)
+    for inner in extract_substitutions(command):
+        components.extend(_split_components(inner))
+    for component in components:
+        for token in _writer_targets(component.strip()):
+            cleaned = token.strip("'\"")
+            if not cleaned or cleaned.startswith("-") or cleaned.startswith("$"):
+                continue
+            expanded = os.path.expanduser(native_path(cleaned))
+            resolved = os.path.realpath(os.path.join(cwd or os.getcwd(), expanded))
+            if any(resolved == d or resolved.startswith(d + os.sep) for d in _SYSTEM_DIRS):
+                return resolved
     return None
 
 

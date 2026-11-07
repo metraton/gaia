@@ -15,7 +15,7 @@ Pure Function Contract:
 - No file writes
 - No state modification
 - No network calls
-- NEVER reads .env file contents (FR-043) -- only Path.exists() and Path.name
+- NEVER reads .env file contents -- only Path.exists() and Path.name
 - Only reads: /proc/version (for WSL detection), runtime --version output
 """
 
@@ -65,7 +65,7 @@ _RUNTIME_DEFINITIONS: List[Tuple[str, str]] = [
 ]
 
 # On Windows, python3 may not exist -- fall back to "python" if it reports 3.x.
-# Maps (fallback_binary, version_flag) -> canonical_name
+# Maps a canonical binary name -> [(fallback_binary, version_flag), ...]
 _RUNTIME_FALLBACKS: Dict[str, List[Tuple[str, str]]] = {
     "python3": [("python", "--version")],
 }
@@ -196,15 +196,11 @@ class EnvironmentScanner(BaseScanner):
             if "microsoft" not in content_lower and "wsl" not in content_lower:
                 return False, None
 
-            # WSL2 uses a real Linux kernel and identifies as "microsoft-standard-WSL2"
-            # WSL1 uses "Microsoft" in the version string but not "WSL2"
+            # WSL2 kernels report "microsoft-standard-WSL2"; "microsoft" alone is read as WSL1.
             wsl_version: Optional[str] = None
             if "wsl2" in content_lower:
                 wsl_version = "2"
             elif "microsoft" in content_lower:
-                # Could be WSL1 or WSL2 without explicit marker
-                # WSL2 kernels typically contain "microsoft-standard-WSL2"
-                # WSL1 kernels contain "Microsoft" but not "WSL2"
                 wsl_version = "1"
 
             return True, wsl_version
@@ -228,7 +224,6 @@ class EnvironmentScanner(BaseScanner):
             try:
                 binary_path = shutil.which(binary_name)
                 if binary_path is None:
-                    # Try fallbacks (e.g. python -> python3 on Windows)
                     fallbacks = _RUNTIME_FALLBACKS.get(binary_name, [])
                     for fb_binary, fb_flag in fallbacks:
                         fb_path = shutil.which(fb_binary)
@@ -237,7 +232,7 @@ class EnvironmentScanner(BaseScanner):
                         version = self._cached_version(fb_binary, fb_flag, warnings)
                         if version is not None and version.startswith("3."):
                             runtimes.append({
-                                "name": binary_name,  # canonical name
+                                "name": binary_name,
                                 "version": version,
                                 "path": fb_path,
                             })
@@ -257,12 +252,7 @@ class EnvironmentScanner(BaseScanner):
             except Exception as exc:
                 warnings.append(f"Runtime detection failed for {binary_name}: {exc}")
 
-        # Deterministic emission order -- `detected_canonical` is a set and
-        # its iteration order is not guaranteed across Python invocations
-        # (PYTHONHASHSEED). `runtimes` is already appended in a fixed order
-        # (driven by the `_RUNTIME_DEFINITIONS` list), but sort explicitly so
-        # the emitted section is stable regardless of how it is constructed
-        # upstream or downstream (e.g. re-ordering during a merge).
+        # Sorted by name so the section does not depend on the order of _RUNTIME_DEFINITIONS.
         return sorted(runtimes, key=lambda r: r["name"])
 
     def _cached_version(
@@ -318,16 +308,14 @@ class EnvironmentScanner(BaseScanner):
                 warnings.append(f"{binary} {flag} failed: {exc}")
                 return "unknown"
 
-            # Some tools output version to stderr (e.g., java --version)
+            # Some tools print the version to stderr
             output = result.stdout.strip() or result.stderr.strip()
 
             if not output:
                 return "unknown"
 
-            # Extract the first line and clean it
             first_line = output.splitlines()[0].strip()
 
-            # Try to extract version number from common patterns
             version = self._parse_version(first_line)
             return version if version else first_line
 
@@ -393,10 +381,7 @@ class EnvironmentScanner(BaseScanner):
 
 
 def scan(root: Path) -> Dict[str, Any]:
-    """Module-level convenience function for environment scanning.
-
-    This function provides backward compatibility with the module-level scan()
-    pattern used by the scanner registry auto-discovery.
+    """Return the sections dict of ``EnvironmentScanner().scan(root)``.
 
     Args:
         root: Absolute path to the project root directory.

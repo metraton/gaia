@@ -102,14 +102,34 @@ describe("per-message prompt context on OpenCode", () => {
     expect(unseen.parts).toHaveLength(1)
   })
 
-  test("injected and synthetic messages of the main session are passed over", async () => {
+  test("a main-session message that names no agent carries the prompt context", async () => {
     const { sent, plugin } = await host()
     await created(plugin, "ses-main")
-    const agentless = await message(plugin, "ses-main", { agent: null })
+    await message(plugin, "ses-main", { agent: null })
+    const later = await message(plugin, "ses-main", { agent: null })
+
+    expect(prompts(sent, "ses-main")).toHaveLength(2)
+    expect(later.parts[1]).toMatchObject({ text: NOTICE, synthetic: true })
+  })
+
+  test("a child message that names no agent never asks for the prompt context", async () => {
+    const { sent, plugin } = await host()
+    await created(plugin, "ses-main")
+    await created(plugin, "ses-child", "ses-main")
+    const child = await message(plugin, "ses-child", { agent: null })
+
+    expect(prompts(sent, "ses-child")).toHaveLength(0)
+    expect(child.parts).toHaveLength(1)
+  })
+
+  test("synthetic-only messages of the main session are passed over", async () => {
+    const { sent, plugin } = await host()
+    await created(plugin, "ses-main")
+    const injected = await message(plugin, "ses-main", { agent: null, synthetic: true })
     const synthetic = await message(plugin, "ses-main", { synthetic: true })
 
     expect(prompts(sent, "ses-main")).toHaveLength(0)
-    expect(agentless.parts).toHaveLength(1)
+    expect(injected.parts).toHaveLength(1)
     expect(synthetic.parts).toHaveLength(1)
   })
 

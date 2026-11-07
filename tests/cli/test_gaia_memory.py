@@ -346,7 +346,8 @@ class TestCmdStats:
         data = json.loads(capsys.readouterr().out)
         assert "total_episodes" in data
         assert "indexed" in data
-        assert "conflicts" in data
+        assert "memory" in data
+        assert "conflicts" not in data
         assert "warnings" in data
         # Healthy path: no warnings emitted
         assert data["warnings"] == []
@@ -576,7 +577,7 @@ class TestCmdConflicts:
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data == {"candidates": []}
+        assert data == {"candidates": [], "duplicates": []}
 
     def test_conflicts_passes_the_candidates_through_unjudged(self, monkeypatch, capsys):
         """The CLI adds no verdict of its own to what the detector found."""
@@ -590,7 +591,8 @@ class TestCmdConflicts:
         rc = memory_mod.cmd_memory(args)
 
         assert rc == 0
-        assert json.loads(capsys.readouterr().out) == {"candidates": candidates}
+        assert json.loads(capsys.readouterr().out) == {
+            "candidates": candidates, "duplicates": []}
 
     def test_conflicts_without_detector_module_returns_error(self, monkeypatch, capsys):
         """When conflict_detector is unavailable, exit 1 with error."""

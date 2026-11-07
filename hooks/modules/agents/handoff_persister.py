@@ -1,16 +1,11 @@
 """
-Handoff persistence helper -- CONDITIONAL BACKSTOP finalizer (T9).
+Handoff persistence helper -- CONDITIONAL BACKSTOP finalizer.
 
-Shared module used by both the production adapter path
-(adapters/claude_code.py -> adapt_subagent_stop) and the legacy test-entry
-path (subagent_stop.py -> subagent_stop_hook).
+Shared module used by both the production stop path
+(adapters/subagent_stop_core.py) and the legacy test-entry path
+(subagent_stop.py -> subagent_stop_hook).
 
-Moved here from subagent_stop.py to break the circular-import risk that would
-arise if the adapter imported _persist_handoff directly from subagent_stop
-(which itself imports from the adapter's dependency tree).
-
-Role (brief contract-as-managed-data, task T9 -- SUPERSEDES the original
-"persist_handoff inserts the row" role):
+Role:
     The PRIMARY writer of the terminal ``agent_contract_handoffs`` row is the
     agent itself, via ``gaia contract finalize`` ->
     ``gaia.store.writer.finalize_agent_contract_handoff`` (an idempotent
@@ -26,10 +21,10 @@ Role (brief contract-as-managed-data, task T9 -- SUPERSEDES the original
                         exists) -- exactly one row, never zero.
       * exactly-once -- under a race between the agent finalize and this hook
                         backstop, both key on the SAME ``contract_id`` and the
-                        writer's ``ON CONFLICT(contract_id) DO NOTHING`` leaves
+                        writer's ``ON CONFLICT(contract_id)`` upsert leaves
                         exactly one row. The existence check here is the
                         fast-path that lets the backstop stay fully passive
-                        when the agent already finalized; the UPSERT is the
+                        when the agent already finalized; the upsert is the
                         hard guarantee under true concurrency.
 
 SECOND, INDEPENDENT RESPONSIBILITY -- closing the born-at-dispatch row:
@@ -50,21 +45,15 @@ SECOND, INDEPENDENT RESPONSIBILITY -- closing the born-at-dispatch row:
     The closure below is for the turn that did NOT adopt: no kernel reached it
     (the claim failed or was refused), or it minted a rival id anyway, so its
     verdict landed on a DIFFERENT row and the born one is left behind -- with a
-    corrected fence or without one, crash or no crash. A turn that adopted but
-    never finalized no longer reaches that closure at all: the CAPTURE keys on
-    the born row and converges it first, and the closure then finds nothing left
-    to close. THIS MODULE IS THE ONLY LAYER THAT HOLDS BOTH
-    IDENTITIES, which is why that exit belongs here and nowhere else. (Earlier
-    revisions of this docstring claimed the backstop "is also the REAPER" that
-    converges the nascent row on a crash. It never could: it looked the orphan up
-    by the MINTED id, which a born row did not carry back when birth used a
-    synthetic dispatch key. Zero rows were ever reaped. Both halves of that -- the
-    wrong key space, and the assumption that only a crash leaves an orphan -- are
-    what the two closure modes below fix.)
+    parsed contract or without one, crash or no crash. A turn that adopted but
+    never finalized does not reach that closure: the CAPTURE keys on the born
+    row and converges it first, and the closure then finds nothing left to
+    close. THIS MODULE IS THE ONLY LAYER THAT HOLDS BOTH
+    IDENTITIES, which is why that exit belongs here and nowhere else.
 
     Two closure modes, distinguished so the row never lies about the turn:
       * SUPERSEDED -- the turn DID record its own terminal contract row (its own
-        finalize, a T11 salvage, or this module's capture on a prior fire). The
+        finalize, a truncation salvage, or this module's capture on a prior fire). The
         born row is closed to a NON-COMPLETE state carrying
         ``superseded_by_contract_id``, the pointer to the row that holds the real
         verdict. It is deliberately NOT marked degraded (nothing degraded -- the
@@ -77,8 +66,7 @@ SECOND, INDEPENDENT RESPONSIBILITY -- closing the born-at-dispatch row:
         briefs "plan closed => a COMPLETE handoff row exists" invariant.
 
     Either way the row leaves 'DISPATCHED', so a row still in that state means
-    this hook never ran for its turn -- a genuine signal rather than the routine
-    residue it used to be.
+    this hook never ran for its turn.
 
 Agnosticism: the finalize logic lives in the harness-free core
 (``gaia.store.writer`` + ``gaia.contract.drafts``). This module is the
@@ -93,15 +81,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Mirrors the agent_contract_handoffs.agent_state CHECK enum (schema.sql) --
-# the canonical agent_state values. A backstop row whose source envelope
-# carries none of these (a crash / partial / missing agent_state) is recorded
-# as IN_PROGRESS: honest ("this turn did not reach a verified terminal state")
-# and -- crucially -- NOT 'COMPLETE', so it never falsely satisfies the
-# briefs "plan closed => a COMPLETE handoff row exists" invariant
-# (gaia/briefs/store.py, invariant 5). Only a genuine, valid COMPLETE envelope
-# yields agent_state='COMPLETE'; the degraded flag then distinguishes it from
-# an agent-finalized COMPLETE for any reader that checks finalize-verification.
+# The agent_state values of the agent_contract_handoffs.agent_state CHECK enum
+# (schema.sql) a backstop row may take, DISPATCHED excluded. A source envelope
+# carrying none of them (a crash / partial / missing agent_state) is recorded
+# as IN_PROGRESS, never 'COMPLETE': only a valid COMPLETE envelope yields
+# agent_state='COMPLETE', and the degraded flag then distinguishes it from an
+# agent-finalized COMPLETE.
 _VALID_TASK_STATUSES = frozenset(
     {
         "IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
@@ -109,29 +94,21 @@ _VALID_TASK_STATUSES = frozenset(
     }
 )
 
-# NOTE on this module's relationship to gaia.state.TERMINAL_PLAN_STATUSES:
-# the writer's own guard (finalize_agent_contract_handoff) is the AUTHORITATIVE
-# convergence gate -- it now blocks a write ONLY when the row is already
-# COMPLETE, and CONVERGES from every other (non-terminal) state, including a
-# resumed draft's later, truer verdict. This module's pre-check below is
-# DELIBERATELY more conservative than that: it stays passive whenever ANY row
-# already exists (not only a COMPLETE one), because its job here is dedup
-# between TWO hook-side capture mechanisms racing for the SAME turn (T11
-# salvage vs. this T9 backstop -- see adapters/claude_code.py
-# ``_salvage_truncated_draft``, "salvage wins, backstop stays passive"), not
-# resuming a draft across separate turns. Broadening this pre-check to mirror
-# the writer's guard 1:1 would let the backstop clobber a salvage-marked row
-# with an equivalent, less-informative capture of the identical crashed turn --
-# a provenance regression, not a correctness fix.
+# The writer's own guard (finalize_agent_contract_handoff) is the authoritative
+# convergence gate: it blocks a write only when the row is already COMPLETE and
+# converges from every other state. This module's pre-check is deliberately
+# more conservative: it stays passive whenever ANY row already exists, because
+# it dedups two hook-side captures racing for the SAME turn (the salvage in
+# adapters/subagent_stop_core.py ``salvage_truncated_draft`` and this backstop;
+# "salvage wins, backstop stays passive"). Mirroring the writer's guard would
+# let the backstop overwrite a salvage-marked row with a less informative
+# capture of the same crashed turn.
 #
-# WHERE A RESUMED TURN'S OWN CLOSE GOES, and why this module is unaffected: an
-# agent that already declared a close and writes again lands in a CONTINUATION
-# (gaia.store.writer.open_contract_continuation), so its later
-# ``gaia contract finalize`` converges the LINK -- a fresh DISPATCHED row -- and
-# never the record it closed. This module reaches that same link because
-# ``dispatch_row_by_harness_id`` collapses the chain to its live tip before
-# judging ambiguity; the passive-when-a-row-exists posture above is unchanged by
-# any of it.
+# A resumed turn's own close lands in a CONTINUATION
+# (gaia.store.writer.open_contract_continuation), so its ``gaia contract
+# finalize`` converges the link, a fresh DISPATCHED row. This module reaches
+# that link because ``dispatch_row_by_harness_id`` collapses the chain to its
+# live tip before judging ambiguity.
 
 
 def _minted_agent_id_from_transcript(task_info: dict):
@@ -194,8 +171,8 @@ def dispatch_row_by_harness_id(task_info: dict, session_id=None, db_path=None):
     (``gaia.store.writer.collapse_continuation_chains``, a pure reduction that
     drops only rows another row in the SAME result set continues). Two unrelated
     rows still collapse to two, so a genuine ambiguity is still declined; the
-    fetch limit rises from 2 to a small bound so a multi-link chain is seen
-    whole rather than truncated into a false ambiguity.
+    fetch limit (``_HARNESS_ID_ROW_FETCH_LIMIT``) is large enough that a
+    multi-link chain is seen whole rather than truncated into a false ambiguity.
 
     Returns the full row dict, or None. Fully guarded: this runs inside a stop
     hook, so an unavailable store degrades to None, never to a raise.
@@ -297,26 +274,21 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None
     """Best available minted agent id (``gaia.contract.validator.
     AGENT_ID_PATTERN_TEXT``) used to key drafts.
 
-    TWO IDENTIFIER SPACES, and only one of them keys drafts. The CLI mints its
-    OWN agent id in ``gaia contract init`` and keys the on-disk draft by
+    TWO IDENTIFIER SPACES, and only one of them keys drafts. The dispatch (or
+    ``gaia contract init``) mints an agent id and the on-disk draft is keyed by
     ``{minted-agent-id}.{token}``; the harness independently stamps
     ``hook_data['agent_id']`` (``task_info['agent_id']``). Both match
     ``^a[0-9a-f]{16,}$``, so they are indistinguishable by shape and nothing
     fails loudly when they are confused -- ``resolve_draft_id`` just globs
-    ``{harness-id}.*``, matches no file, and returns None. That silent miss is
-    what disabled BOTH draft rescues at once (the M4 reconstruction and the T9
-    backstop's step 1a). The harness id is therefore NOT the draft key space,
-    and this resolver never treats it as one.
+    ``{harness-id}.*``, matches no file, and returns None. The harness id is
+    therefore NOT the draft key space, and this resolver never treats it as one.
 
     EVERY lane is shape-checked (:func:`is_minted_handle`) before it is
     returned, including the fence. The fence is the one lane whose value is
-    written by the agent rather than read back from Gaia's own substrate, so it
-    is also the only one that arrives with no guarantee at all -- the measured
-    population includes ``execution-approved``, ``a_placeholder`` and a run of
-    zeroes. Taking such a value verbatim did not fail: it globbed a draft
-    directory that could not contain a match, returned no draft, and sent the
-    capture to a synthetic id -- the loud symptom of a wrong key is
-    indistinguishable from the quiet one of no draft, which is why it survived.
+    written by the agent rather than read back from Gaia's own substrate, and
+    values such as ``execution-approved``, ``a_placeholder`` or a run of zeroes
+    occur there; taken verbatim, one would glob a draft directory that cannot
+    contain a match and send the capture to a synthetic id.
 
     Resolution order, most authoritative first:
       1. ``agent_status.agent_id`` from the parsed envelope -- the exact value
@@ -337,22 +309,17 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None
          identities; this crosses between them instead of guessing.
 
     Returns None -- and says so in the log -- when nothing usable is present.
-    THE ABSENT LAST RESORT IS THE POINT. This used to fall back to the harness
-    ``agent_id``/agent name as a "label", which is not merely useless as a draft
-    key: being non-empty, it SATISFIES every ``if not minted_agent_id`` guard
-    downstream and carries the wrong value forward. Measured cost (handoff row
-    11304): the M4 reconstruction globbed a draft under the harness id, found
-    nothing, and returned None without a single log line, so a complete
-    ``update_contracts`` proposal in that turn's envelope was never processed
-    and nothing reported it. A last resort that returns something incorrect
-    converts a detectable failure into a silent one; returning None keeps the
-    failure visible, and the callers that genuinely need a non-empty label for a
-    degraded row (``persist_handoff``'s ``agent_id`` column,
-    :func:`dispatch_identity_candidates`) already supply their own fallback.
+    There is deliberately no last-resort fallback to the harness ``agent_id`` or
+    the agent name as a "label": being non-empty, it would SATISFY every
+    ``if not minted_agent_id`` guard downstream and carry the wrong value
+    forward, turning a detectable failure into a silent one. The callers that
+    need a non-empty label for a degraded row (``persist_handoff``'s
+    ``agent_id`` column, :func:`dispatch_identity_candidates`) supply their own
+    fallback.
 
-    SHARED helper: the SINGLE resolver reused by the T9 backstop
+    SHARED helper: the SINGLE resolver reused by the backstop
     (``persist_handoff`` below), the truncation salvage
-    (``subagent_stop_core.salvage_truncated_draft``), and the M4 missing-fence
+    (``subagent_stop_core.salvage_truncated_draft``), and the missing-fence
     reconstruction (``subagent_stop_core.reconstruct_contract_from_finalized_draft``),
     so all three resolve the SAME draft (hence the SAME ``contract_id``) rather
     than each inlining the logic.
@@ -390,8 +357,6 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None
     return None
 
 
-# Backward-compatible private alias (pre-factorization name). Kept so any
-# existing importer/reference continues to resolve to the shared helper.
 _resolve_minted_agent_id = resolve_minted_agent_id
 
 
@@ -406,18 +371,14 @@ _CLOSED_DISPATCH_STATE = "IN_PROGRESS"
 def dispatch_identity_candidates(minted_agent_id, task_info: dict) -> list:
     """Every identity a born-at-dispatch row could have been stamped with.
 
-    Ordered most-likely-first and de-duplicated. The FIRST candidate is the
-    harness agent NAME (``task_info['agent']`` -- ``gaia-verifier``,
-    ``platform-architect``), because that is what production births under: the
-    row is stamped in PreToolUse:Agent, before the agent has minted any id of
-    its own, so the dispatch's only available identity is the target agent's
-    name. The minted id and the harness ``agent_id`` follow as fallbacks, for
-    tests and for any caller that births under the minted space.
+    De-duplicated, in this order: the harness agent NAME
+    (``task_info['agent']`` -- ``gaia-verifier``, ``platform-architect``), which
+    a legacy row born before identity minting carries in ``agent_id``; then the
+    minted id, which a current birth stamps (``ToolPolicy._maybe_birth_dispatched_row``);
+    then the harness ``agent_id``.
 
-    Passing this whole list (rather than one identity) to
-    ``find_orphaned_dispatched_handoff`` is what makes orphan discovery
-    key-space-agnostic: looking only under the minted id -- the previous
-    behaviour -- matched nothing, ever.
+    Passing this whole list to ``find_orphaned_dispatched_handoff`` makes orphan
+    discovery agnostic to which of those spaces the row was born under.
     """
     ordered = [
         task_info.get("agent"),
@@ -440,13 +401,11 @@ def dispatch_identity_candidates(minted_agent_id, task_info: dict) -> list:
 def clean_rescue_envelope(envelope, *, log: Optional[list] = None):
     """Sanitize and canonicalize an envelope a RESCUE lane is about to persist.
 
-    The two rescue lanes -- this module's T9 backstop and the adapter's T11
-    truncation salvage -- serialized whatever they found (an on-disk draft, or
-    the parsed fence) straight to ``raw_handoff_json``. Only the CLI write path
-    cleaned before persisting, so a fifth of the rows landed carrying undeclared
-    keys and uncanonical enum spellings that every downstream reader then had to
-    reconcile. This is the shared cleaning both lanes apply, so the rescue route
-    persists what the CLI route persists.
+    The two rescue lanes -- this module's backstop and the truncation salvage in
+    ``subagent_stop_core`` -- persist whatever they found (an on-disk draft, or
+    the parsed fence) to ``raw_handoff_json``. This is the shared cleaning both
+    apply, so the rescue route persists what the CLI write path persists:
+    declared keys only, canonical enum spellings.
 
     Two properties make it safe to run on the rescue path specifically, and both
     are load-bearing rather than defensive habit:
@@ -704,13 +663,12 @@ def close_born_dispatch_row(
         }
         if contract_pointer:
             envelope["superseded_by_contract_id"] = contract_pointer
-        # v39: the structural twin of the degraded/reaped envelope flags below.
-        # Same split, same reasoning: a REAPED row is a turn that never recorded
-        # a contract of its own, so it keeps a cut mark; a SUPERSEDED scaffold is
-        # a healthy turn whose verdict lives on the row `contract_pointer` names,
-        # so it clears -- marking it would stamp every healthy bound dispatch and
-        # drown the population the mark exists to identify, exactly as marking it
-        # `degraded` would.
+        # The structural twin of the degraded/reaped envelope flags below, with
+        # the same split: a REAPED row is a turn that never recorded a contract
+        # of its own, so it keeps a cut mark; a SUPERSEDED scaffold is a healthy
+        # turn whose verdict lives on the row `contract_pointer` names, so it
+        # clears -- marking it would stamp every healthy bound dispatch and drown
+        # the population the mark exists to identify.
         cut_reason = None if turn_recorded_own_contract else CUT_REASON_REAPED
         if not turn_recorded_own_contract:
             envelope["degraded"] = True
@@ -721,10 +679,10 @@ def close_born_dispatch_row(
         outcome = _writer.finalize_agent_contract_handoff(
             contract_id=born_contract_id,
             # The row's OWN identity, read back from the row -- never the
-            # candidate this closure happened to search by. The birth now stamps
-            # a minted handle, so restamping with a candidate would overwrite it
-            # with an agent NAME that no contract validator accepts, and the row
-            # would stop being joinable to the draft it was adopted under.
+            # candidate this closure searched by. The birth stamps a minted
+            # handle; restamping with a candidate would overwrite it with an
+            # agent NAME no contract validator accepts, and the row would stop
+            # being joinable to the draft it was adopted under.
             agent_id=orphan.get("agent_id") or identity_candidates[0],
             workspace=workspace,
             agent_state=_CLOSED_DISPATCH_STATE,
@@ -766,7 +724,7 @@ def persist_handoff(
     the two collapse onto ONE row and ``skip_contract_id`` makes the close a
     no-op, and when they resolve different rows the close links them with a
     pointer. Either way the turn's row count is what the dispatch already
-    created -- the capture no longer ADDS a row to a turn that has one.
+    created -- the capture adds no row to a turn that has one.
 
     Logic (see module docstring for the never-lost / exactly-once rationale):
     1. Resolve the ``contract_id`` (idempotency key) and a source envelope:
@@ -786,7 +744,8 @@ def persist_handoff(
        without fabricating fields the hook lacks. A reaped orphan is never
        recorded COMPLETE -- an unfinalized turn never truly completed.
     4. If the backstop actually wrote the row AND the envelope carried an
-       approval_request, record the linked approvals audit row.
+       approval_request whose decision is known, record the linked approvals
+       audit row.
     5. ALWAYS: close the born-at-dispatch row (``close_born_dispatch_row``),
        superseded when the turn recorded its own terminal contract row, reaped
        when it never finalized at all.
@@ -806,8 +765,8 @@ def persist_handoff(
     import sys as _sys
 
     try:
-        # Prefer a sibling gaia package if installed; fall back to the repo
-        # layout where gaia/ lives two levels above hooks/.
+        # Prefer an installed gaia package; fall back to the repo layout, where
+        # gaia/ sits beside hooks/ at the repo root.
         try:
             from gaia.store import writer as _writer
         except ImportError:
@@ -823,11 +782,10 @@ def persist_handoff(
         minted_agent_id = resolve_minted_agent_id(
             parsed_contract, task_info, session_id=session_id,
         )
-        # agent_id stored in the NOT NULL row column. The resolver no longer
-        # substitutes the harness id when it cannot resolve a minted one, so
-        # this fallback -- the agent NAME -- is what a genuinely unresolved turn
-        # stamps a degraded row with, and it can never be mistaken for a draft
-        # key the way an a+hex harness id silently was.
+        # agent_id stored in the NOT NULL row column. When the resolver cannot
+        # resolve a minted id, this fallback -- the agent NAME -- stamps the
+        # degraded row, and it cannot be mistaken for a draft key the way an
+        # a+hex harness id could.
         agent_id = minted_agent_id or task_info.get("agent") or "unknown"
 
         workspace = (
@@ -838,16 +796,11 @@ def persist_handoff(
         db_path_str = task_info.get("db_path")
         db_path = _pl.Path(db_path_str) if db_path_str else None
 
-        # --- 1. Resolve contract_id (idempotency key) + source envelope ------
         contract_id = None
         source_envelope = None
         # WHERE the capture landed and WHAT it captured, recorded on the row in
-        # step 3. The contract_id alone no longer answers either question: a
-        # fence-only turn used to be recognizable by its synthetic
-        # `hook-backstop.*` id, and now that the born row is a key this capture
-        # adopts, that distinction has to be carried by a mark of its own rather
-        # than inferred from the shape of an identifier. Same distinction, moved
-        # to where it can survive the key changing.
+        # step 3: the contract_id alone does not say, since the capture may key
+        # on the born row.
         capture_key_space = "synthetic"
         capture_notes: dict = {}
 
@@ -863,18 +816,12 @@ def persist_handoff(
                         explicit=None, agent_id=str(minted_agent_id)
                     )
                 except _drafts.AmbiguousDraftError as _ambiguous:
-                    # NOT swallowed. This is a REAL, reachable condition, not an
-                    # unexpected fault: an agent id is minted once per dispatch
+                    # NOT swallowed: an agent id is minted once per dispatch
                     # while a CONTINUATION opens a new contract under the SAME
                     # handle, so every resumption adds a live draft and any turn
-                    # past the first resolves 2+ (five were measured under one
-                    # handle). The glob cannot tell which draft is this turn's --
-                    # but the born row can, and 1b keys on it below. What must
-                    # not happen again is the previous behaviour: a bare `except`
-                    # discarded this exception with no log at all, so the capture
-                    # silently fell to a synthetic id and wrote a second row for
-                    # a turn that already had one, with nothing anywhere saying
-                    # why.
+                    # past the first resolves 2+. The glob cannot tell which
+                    # draft is this turn's, but the born row can, and 1b keys on
+                    # it below.
                     draft_id = None
                     capture_notes["draft_ambiguity"] = {
                         "agent_id": str(minted_agent_id),
@@ -912,15 +859,10 @@ def persist_handoff(
         #     bridge step 5 and the gate already cross on -- names THIS turn's
         #     contract exactly, with no glob and no guess.
         #
-        #     This replaces a deliberate refusal to adopt that row. The refusal's
-        #     stated reason was that the capture's own key space is what tells a
-        #     FENCE-ONLY turn apart from a normal one; that distinction is real
-        #     and is preserved, by `capture_source` / `capture_key_space` on the
-        #     row rather than by the shape of the id. What the refusal cost was
-        #     larger: a turn whose row already existed got a SECOND, synthetic
-        #     row that by construction never pre-existed, so step 2 always read
-        #     "no row" and always wrote a degraded one -- while step 5 went on to
-        #     find the born row and point it at the synthetic twin.
+        #     A FENCE-ONLY turn is told apart from a normal one by
+        #     `capture_source` / `capture_key_space` on the row, not by the
+        #     shape of the id. Keying on the born row rather than a synthetic
+        #     twin lets step 2 see the row that exists.
         if not contract_id:
             born_row = dispatch_row_by_harness_id(
                 task_info, session_id, db_path=db_path
@@ -966,31 +908,31 @@ def persist_handoff(
         else:
             capture_source = "none"
 
-        # --- 2-4. The CAPTURE, as a closure ---------------------------------
-        # Scoped as a nested function for one structural reason: the capture has
-        # several legitimate early exits (already-terminal row, nothing created,
-        # no handoff id), and step 5 must run on EVERY path anyway. Returning out
-        # of a closure ends the capture, not the whole function, so "the born row
-        # is always closed" is guaranteed by the shape of the code rather than by
-        # remembering to duplicate a call before each return.
+        # Steps 2-4 are the CAPTURE, scoped as a nested function for one
+        # structural reason: it has several legitimate early exits
+        # (already-terminal row, nothing created, no handoff id), and step 5
+        # must run on EVERY path anyway. Returning out of a closure ends the
+        # capture, not the whole function, so "the born row is always closed" is
+        # guaranteed by the shape of the code rather than by remembering to
+        # duplicate a call before each return.
         #
         # Returns True when a TERMINAL row for this turn ALREADY existed before
         # the capture ran -- i.e. the turn recorded its own contract (its own
-        # finalize, or a T11 salvage) and this backstop had nothing to add. Step 5
+        # finalize, or a salvage) and this backstop had nothing to add. Step 5
         # uses that to decide superseded-vs-reaped.
         def _capture() -> bool:
-            # A row for this contract_id may already exist in one of two ways --
+            # A row for this contract_id may already exist in one of two ways,
+            # or not at all:
             #   * TERMINAL (agent_state != 'DISPATCHED') -> some capture already
-            #     ran for this turn (the agent's own finalize, T11 salvage, or a
-            #     prior backstop) -> stay PASSIVE. See the module-level NOTE above
-            #     for why this pre-check deliberately does not narrow to "only
-            #     COMPLETE blocks" the way the writer's own guard does.
-            #   * NASCENT 'DISPATCHED' -> the ORDINARY shape of a turn that never
-            #     finalized, now that step 1 keys on the born row: this capture
+            #     ran for this turn (the agent's own finalize, a salvage, or a
+            #     prior backstop) -> stay PASSIVE. The comment above
+            #     ``_minted_agent_id_from_transcript`` says why this pre-check
+            #     does not narrow to "only COMPLETE blocks" like the writer's
+            #     own guard.
+            #   * NASCENT 'DISPATCHED' -> the ordinary shape of a turn that never
+            #     finalized, since step 1 keys on the born row: this capture
             #     converges THAT row to a degraded NON-COMPLETE verdict, never a
             #     false COMPLETE, through the same idempotent convergent writer.
-            #     It used to be all but unreachable, because the capture wrote in
-            #     a key space the born row was never in.
             #   * None -> no row at all -> write a degraded row.
             existing_state = _writer.agent_contract_handoff_state(
                 contract_id, db_path=db_path
@@ -1004,7 +946,6 @@ def persist_handoff(
                 return True
             reaping = existing_state == "DISPATCHED"
 
-            # --- 3. Build the degraded / auto-captured row -------------------
             # Cleaned BEFORE the provenance flags are added, not after: the
             # flags below are themselves declared envelope keys, and cleaning
             # on top of them would only re-inspect what this function just
@@ -1015,16 +956,11 @@ def persist_handoff(
                 envelope = dict(
                     clean_rescue_envelope(source_envelope, log=cleaning_log)
                 )
-                # The VERDICT is read from the RAW envelope, deliberately, and
-                # alone among everything this lane persists. Reading it from the
-                # cleaned copy would let a fence that spelled its state
-                # uncanonically ("complete") canonicalize into COMPLETE instead
-                # of falling to IN_PROGRESS -- which is not envelope hygiene but
-                # a change to what a rescued turn is RECORDED AS, and it widens
-                # the intake of the COMPLETE-carrying-a-cut-reason population
-                # that is currently under case-by-case review. Cleaning the
-                # envelope and re-deciding a verdict are two different changes;
-                # this one is only the first.
+                # The VERDICT is read from the RAW envelope, alone among
+                # everything this lane persists: the cleaned copy would
+                # canonicalize a fence that spelled its state uncanonically
+                # ("complete") into COMPLETE instead of IN_PROGRESS, changing
+                # what a rescued turn is RECORDED AS.
                 agent_status = source_envelope.get("agent_status")
                 agent_state = (
                     agent_status.get("agent_state")
@@ -1054,10 +990,9 @@ def persist_handoff(
             if reaping and agent_state == "COMPLETE":
                 agent_state = "IN_PROGRESS"
 
-            # Backstop PROVENANCE -- unchanged in meaning by this revision. It
-            # records WHERE the row came from (captured by the hook, not written
-            # by the agent's own verified `gaia contract finalize`), NOT how much
-            # its contents can be trusted: a degraded row routinely carries the
+            # Backstop PROVENANCE. It records WHERE the row came from (captured
+            # by the hook, not written by the agent's own verified `gaia contract
+            # finalize`), NOT how much its contents can be trusted: a degraded row routinely carries the
             # agent's complete verbatim fence. We add flags only -- never
             # synthetic evidence -- and nothing here is set on a turn that
             # recorded its own contract row.
@@ -1128,9 +1063,8 @@ def persist_handoff(
                 db_path=db_path,
             )
 
-            # --- 4. Approvals audit row (only when the backstop wrote the row) -
-            # If the row already existed (another writer won the race), the
-            # backstop stays passive -- consistent with the conditional contract.
+            # The approvals audit row is written only when the backstop wrote
+            # the row; if another writer won the race the backstop stays passive.
             if not outcome.get("created"):
                 return False
             handoff_id = outcome.get("handoff_id")
@@ -1162,8 +1096,7 @@ def persist_handoff(
 
         turn_recorded_own_contract = _capture()
 
-        # --- 5. ALWAYS: close the born-at-dispatch row -----------------------
-        # Runs on every turn, healthy or not, because a turn whose contract row
+        # Step 5 closes the born-at-dispatch row on every turn, healthy or not, because a turn whose contract row
         # is NOT its born row (it minted a rival id, or it was captured under a
         # synthetic one) still leaves that born row behind. When the capture
         # keyed on the born row itself, `skip_contract_id` collapses this to a

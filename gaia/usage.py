@@ -134,7 +134,7 @@ def ingest(con: sqlite3.Connection, transcripts: Iterable[Transcript]) -> dict:
 
 
 # A handoff row is bound to the plan when it executes one of the plan's tasks,
-# names the plan, or is a verifier whose parent row is bound that way.
+# names the plan, or is any row whose parent row is bound that way (a verifier).
 _BOUND_AGENTS_SQL = """
 WITH producer AS (
     SELECT h.id, h.harness_agent_id FROM agent_contract_handoffs h

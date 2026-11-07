@@ -76,7 +76,7 @@ def _add_args(**overrides):
         name=None, type="user", body="body text", body_file=None,
         description=None, workspace=None, class_=None, status=None,
         project=None, project_ref=None, audience=None, initiative=None,
-        json=True,
+        kind="fact", json=True,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -357,7 +357,7 @@ def _seed_user_and_host_rows(monkeypatch, capsys):
     )) == 0
     assert memory_mod._cmd_add(_add_args(
         name="atom_host_note", type="atom", body="host note",
-        description="host", initiative="gaia_system", workspace="alpha",
+        description="host", initiative="gaia_system", workspace="alpha", kind="lesson",
     )) == 0
     capsys.readouterr()
     _in_workspace(monkeypatch, "beta")
@@ -409,7 +409,7 @@ def test_append_reclassify_link_story_resolve_sentinel_rows_without_workspace(
         workspace=None, json=True,
     )) == 0
     assert memory_mod._cmd_link(argparse.Namespace(
-        src_name="user_second_note", dst_name="user_prefers_plain_reports",
+        src_name="user_second_note", dst_names=["user_prefers_plain_reports"],
         kind="derived_from", delete=False, workspace=None, json=True,
     )) == 0
     capsys.readouterr()

@@ -230,6 +230,7 @@ def _run_cycle(
     barrier.wait(timeout=30)
     patch = json.dumps({
         "agent_status": {"next_action": "done"},
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": {
             "verification": {
                 "method": "pytest",

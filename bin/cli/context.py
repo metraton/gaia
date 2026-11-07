@@ -18,7 +18,8 @@ them is the single most common mistake made with this command group:
   in the project-context contract of the same name, reachable through
   `get-contract`, never through `get`/`show`.
 
-Subcommands:
+Subcommands (the registered accept, move-contracts, move-memory and move-project are
+not listed; `gaia context --help` is complete):
   gaia context show [--section SECTION] [--json]   Display context from SQLite substrate (tabular)
                                                      -- resolves --section against the WORKSPACE SHAPE
   gaia context scan [--dry-run] [--json]            Run project scanner (legacy)
@@ -27,17 +28,21 @@ Subcommands:
                     [--include-missing]              -- resolves --section against the WORKSPACE SHAPE,
                                                         NOT project-context contract names
   gaia context get-contract [--workspace W]         Read ONE project-context contract by name (read-only) --
-                    --section S [--json] [--text]     resolves --section against project_context_contracts.
+                    [--project P] --section S         resolves --section against project_context_contracts.
+                    [--json] [--text]
                                                         contract_name, the SAME names as an agent's
                                                         can_read/can_write kernel menu
   gaia context dump [--workspace W]                 (deprecated) alias for `gaia context get`
   gaia context project NAME [--workspace W]         Read-only ficha for ONE project: row, facets,
                     [--json]                          project_identity contract entry, curated-memory
                                                         index -- resolves by exact name or basename of path
-  gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
-  gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
+  gaia context query "<SQL>"                        Run a SELECT/WITH/EXPLAIN/PRAGMA statement
+  gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete a workspace's scannable rows (CASCADE);
+                    [--purge-memory]                  curated memory is kept unless --purge-memory
   gaia context prune-workspaces [--dry-run] [--yes] Delete PHANTOM workspaces (0 projects, 0 curated
                     [--json]                        collateral); backs up the DB before any delete
+  gaia context relocate --manifest FILE             Copy workspace contract rows under their owning
+                    [--dry-run] [--json]              projects as FILE says; backs up the DB, only inserts
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -54,10 +60,6 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-
-# ---------------------------------------------------------------------------
-# Root detection
-# ---------------------------------------------------------------------------
 
 def _find_project_root(start: Path) -> Path | None:
     """Locate the project root that owns a .claude/ directory.
@@ -70,10 +72,9 @@ def _find_project_root(start: Path) -> Path | None:
        that have the directory even if project-context.json is retired).
     3. Walk up from ``start`` for any .claude/ directory (canonical fallback).
 
-    Note (T1.3): the legacy Pass 1 that looked for project-context.json by
-    file existence has been removed. Project context now lives exclusively in
-    gaia.db (project_context_contracts table). The .claude/ directory itself
-    is the authoritative marker.
+    No lookup of project-context.json by file existence: project context
+    lives exclusively in gaia.db (project_context_contracts table). The
+    .claude/ directory itself is the authoritative marker.
     """
     import os
     plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
@@ -98,10 +99,6 @@ def _find_project_root(start: Path) -> Path | None:
 
     return None
 
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 def _render_context_tabular(ctx: dict, section: str | None = None) -> None:
     """Render the canonical context shape as human-readable text (tabular)."""
@@ -131,6 +128,11 @@ def _render_context_tabular(ctx: dict, section: str | None = None) -> None:
     for key, rows in workspace.items():
         count = len(rows) if isinstance(rows, list) else "?"
         print(f"  {key:<28}  {count} row(s)")
+    if workspace.get("projects"):
+        print()
+        print("projects:")
+        for project in workspace["projects"]:
+            print(f"  {project.get('name'):<28}  group: {project.get('group') or '(none)'}")
 
 
 def _cmd_show(args) -> int:
@@ -201,9 +203,8 @@ def _cmd_show(args) -> int:
 def _cmd_scan(args) -> int:
     """Handle `gaia context scan [--dry-run] [--json]`.
 
-    Delegates to `bin/cli/scan.py:cmd_scan` in-process. The legacy
-    standalone scanner subprocess shell-out has been removed in favour of
-    a direct module call -- one process, shared sys.path, no fork overhead.
+    With --dry-run it reports the project root and last scan and runs nothing;
+    otherwise it delegates to `bin/cli/scan.py:cmd_scan` in-process.
     """
     project_root = _find_project_root(Path.cwd())
     if project_root is None:
@@ -217,7 +218,7 @@ def _cmd_scan(args) -> int:
     dry_run = getattr(args, "dry_run", False)
 
     if dry_run:
-        # Report what would be scanned. Reads last_scan_at from DB (T1.3).
+        # Report what would be scanned. Reads last_scan_at from DB.
         last_scan = None
         try:
             from gaia.project import current as _project_current
@@ -270,10 +271,6 @@ def _cmd_scan(args) -> int:
     return _cmd_scan_impl(scan_args)
 
 
-# ---------------------------------------------------------------------------
-# B1+ SQLite substrate subcommands: dump / query / wipe
-# ---------------------------------------------------------------------------
-
 _SELECT_VERBS = {"select", "with", "explain", "pragma"}
 
 
@@ -282,14 +279,13 @@ def _cmd_get(args) -> int:
     [--include-missing]`.
 
     Emits the canonical workspace shape from the SQLite substrate.
-    Defaults to JSON output. Use --text for the same tabular renderer as `show`.
-    Fix #5: exits 1 with message when workspace does not exist in the DB.
+    Defaults to JSON output. Use --text for the same tabular renderer as `show`
+    (a --section prints JSON either way). Exits 1 when the workspace does not
+    exist in the DB.
 
     --include-missing surfaces the soft-deleted rows (status='missing') that the
-    default active view hides. The soft-delete itself is intentional: `gaia scan`
-    demotes a project that vanished from disk instead of dropping it, so the
-    "existed but no longer on disk" record stays consultable. Without the flag
-    that record was written but unreadable through the CLI.
+    default active view hides: `gaia scan` demotes a project that vanished from
+    disk instead of dropping it.
 
     --section here resolves against the WORKSPACE SHAPE (apps/services/stack/
     git/environment/...), NOT a project-context contract name. To read a
@@ -311,7 +307,7 @@ def _cmd_get(args) -> int:
         print(f"gaia context get: error reading store: {exc}", file=sys.stderr)
         return 1
 
-    # Fix #5: workspace not found
+    # Workspace not found
     if ctx is None:
         print(f"workspace '{workspace}' not found", file=sys.stderr)
         return 1
@@ -374,11 +370,11 @@ def _cmd_get_contract(args) -> int:
     which resolves against the fixed workspace shape (apps/services/stack/
     git/environment/...); see the module docstring for the distinction that
     trips this up in practice. Never mutates project_context_contracts --
-    the only write path for that table is `move-contracts` (re-keying).
+    `accept`, `move-contracts` and `relocate` write it.
 
-    Workspace defaults to `gaia.project.current()` (the caller's cwd); pass
-    --workspace explicitly to name it, so it is always clear which
-    workspace/project the returned contract belongs to.
+    Workspace defaults to `gaia.project.current()` (the caller's cwd). With
+    --project it reads that project's section (`project_sections`), which
+    falls back to the workspace's row when the project holds none.
     """
     section = getattr(args, "section", None)
     if not section:
@@ -392,26 +388,35 @@ def _cmd_get_contract(args) -> int:
         print(f"gaia context get-contract: failed to import store: {exc}", file=sys.stderr)
         return 1
 
+    from gaia.store.project_context import project_sections, resolve_project, workspace_sections
+
     workspace = getattr(args, "workspace", None) or _project_current()
+    project_ref = getattr(args, "project", None)
     use_text = getattr(args, "text", False)
 
     con = _store_connect()
     try:
-        row = con.execute(
-            "SELECT contract_name, payload, metadata, updated_at "
-            "FROM project_context_contracts WHERE workspace = ? AND contract_name = ?",
-            (workspace, section),
-        ).fetchone()
-        available = [
-            r[0]
-            for r in con.execute(
-                "SELECT DISTINCT contract_name FROM project_context_contracts "
-                "WHERE workspace = ? ORDER BY contract_name",
-                (workspace,),
-            ).fetchall()
-        ]
+        project = resolve_project(con, project_ref, workspace) if project_ref else None
+        if project_ref and project is None:
+            from gaia.store.project_context import resolve_group
+
+            members = [m["name"] for m in resolve_group(con, project_ref, workspace)]
+            what = (f"'{project_ref}' is a group ({', '.join(members)}); pass --project <member>"
+                    if members else f"no active project '{project_ref}'")
+            print(f"gaia context get-contract: {what} "
+                  f"(see `gaia context project {project_ref}`)", file=sys.stderr)
+            return 1
+        sections = project_sections(con, project) if project else workspace_sections(con, workspace)
     finally:
         con.close()
+    if project:
+        workspace = project["workspace"]
+    available = sorted(sections)
+    found = sections.get(section)
+    row = None if found is None else (
+        section, json.dumps(found["payload"]) if found["payload"] is not None else None,
+        found["metadata"], found["updated_at"],
+    )
 
     if row is None:
         avail_txt = ", ".join(available) if available else "(none for this workspace)"
@@ -451,21 +456,17 @@ def _cmd_get_contract(args) -> int:
         "payload": payload,
         "updated_at": updated_at,
     }
+    if project:
+        result["project"] = project["identity"]
+        result["source"] = found["source"]
     if metadata is not None:
         result["metadata"] = metadata
     print(json.dumps(result, indent=2, default=str))
     return 0
 
 
-_PROJECT_PENDING_FOOTER_MAX = 200
-
-# The memory-index section ANNOUNCES the corpus; it does not dump it. A
-# project whose curated memory runs into the hundreds (measured: 419 rows for
-# `gaia` itself, in the workspace where this ficha is most needed) produced an
-# unusable, context-heavy ficha for its own primary reader -- the orchestrator,
-# reading in conversation. Capped to the N most-recently-updated rows; the rest
-# are named by count with the exact sweep command, never silently dropped.
-_PROJECT_MEMORY_INDEX_TOP_N = 10
+_PROJECT_INDEX_KINDS = ("preference", "fact", "decision")
+_PROJECT_SCOPES = ("project", "group", "workspace")
 
 
 def _project_derive_initiative(project_identity: str | None) -> str | None:
@@ -529,40 +530,82 @@ def _project_match_identity_entry(
     return None, None
 
 
-def _project_pending_footer(initiative: str | None) -> str | None:
-    """The P2-style computed footer line (decision_gaia_el_cli_ensena_en_el_
+def _project_memory(con, workspace: str, group_name: str | None, name: str, project_key: str | None) -> dict:
+    """The scope chain's preferences, facts and decisions as titles and refs, plus the project's lesson and pending counts with the read that opens each."""
+    from gaia.store.memory_placement import coordinate_word, strip_kind_word, until_holds
+    from gaia.store.reader import not_superseded, pending_threads_by_project
+    from gaia.store.writer import canonical_project_key, normalize_initiative
 
-    instante_del_verbo): fires ONLY when the resolved project's initiative
-    has other live-pending threads, naming the count and the exact sweep
-    command -- mirroring `bin/cli/memory.py`'s `_show_pointer_line2` for
-    `memory show`. Counts `gaia.store.reader.pending_threads_by_project`, the
-    rows `gaia memory get-relevant --initiative` returns, so the count printed
-    here is the SAME count that command would return, from every workspace. A
-    project with no initiative, or an initiative with zero live-pending rows,
-    returns None -- a condition that always fires is not a condition. Never
-    raises: a DB error reads as zero rows, so "nothing to say".
-    """
-    if not initiative:
-        return None
-    from gaia.store.reader import pending_threads_by_project
+    group_key = normalize_initiative(group_name) if group_name else None
+    keys = {"group": group_key, "project": project_key}
+    rows = con.execute(
+        "SELECT m.workspace, m.name, m.description, m.kind, m.until, m.owner_level, "
+        "       m.initiative, m.project_ref "
+        "FROM memory m "
+        "WHERE m.owner_level IN ('workspace', 'group', 'project') "
+        "  AND m.kind IN ('preference', 'fact', 'decision', 'lesson') "
+        "  AND m.class = 'anchor' AND m.deleted_at IS NULL "
+        f"  AND {not_superseded('m')} "
+        "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+    ).fetchall()
 
-    n = len(pending_threads_by_project([initiative]))
-    if not n:
-        return None
-    line = (
-        f"> initiative '{initiative}': {n} more live-pending -- sweep with "
-        f"`gaia memory get-relevant --initiative {initiative}` before writing."
+    index = []
+    lessons = 0
+    for r in rows:
+        level = r["owner_level"]
+        if level == "workspace":
+            mine = r["workspace"] == workspace
+        else:
+            key = canonical_project_key(r["project_ref"], r["initiative"])
+            mine = key is not None and key == keys[level]
+        if not mine or not until_holds(r["until"], con):
+            continue
+        if r["kind"] == "lesson":
+            if level == "project":
+                lessons += 1
+            continue
+        entry = {
+            "kind": r["kind"],
+            "scope": level,
+            "title": " ".join((strip_kind_word(r["description"]) or r["name"]).split()),
+            "ref": f"memory:{coordinate_word(r['workspace'])}/{r['name']}",
+        }
+        if r["until"]:
+            entry["until"] = r["until"]
+        index.append(entry)
+
+    index.sort(key=lambda e: (
+        _PROJECT_INDEX_KINDS.index(e["kind"]), _PROJECT_SCOPES.index(e["scope"]),
+    ))
+    pending = len(pending_threads_by_project([project_key])) if project_key else 0
+    reads = (
+        {"lessons": f"gaia memory get-relevant --initiative {project_key} --sections anchor",
+         "pending": f"gaia memory get-relevant --initiative {project_key}"}
+        if project_key else {"lessons": None, "pending": None}
     )
-    if len(line) <= _PROJECT_PENDING_FOOTER_MAX:
-        return line
-    # Hard cap: drop the descriptive prefix but keep the sweep command whole
-    # and runnable -- a truncated command cannot be run, and the line exists
-    # so there is one to run.
-    short = (
-        f"> {n} pendientes vivos -- "
-        f"`gaia memory get-relevant --initiative {initiative}`"
-    )
-    return short if len(short) <= _PROJECT_PENDING_FOOTER_MAX else None
+    return {
+        "chain": " > ".join(p for p in (workspace, group_name, name) if p),
+        "index": index,
+        "lessons": {"count": lessons, "read": reads["lessons"]},
+        "pending": {"count": pending, "read": reads["pending"]},
+    }
+
+
+def _print_project_memory(memory: dict) -> None:
+    """The kind-grouped index lines, then each non-zero count with its read; nothing at all when all are empty."""
+    counts = [(label, memory[label]) for label in ("lessons", "pending") if memory[label]["count"]]
+    if not memory["index"] and not counts:
+        return
+    print(f"memory: {memory['chain']}")
+    kind = None
+    for e in memory["index"]:
+        if e["kind"] != kind:
+            kind = e["kind"]
+            print(f"kind={kind}")
+        until = f"until={e['until']}  " if "until" in e else ""
+        print(f'  "{e["title"]}"  {until}scope={e["scope"]}  ref={e["ref"]}')
+    for label, c in counts:
+        print(f"{label}={c['count']}  read={c['read']}")
 
 
 def _project_close_candidates(con, name: str, workspace: str | None) -> list:
@@ -607,46 +650,34 @@ def _project_close_candidates(con, name: str, workspace: str | None) -> list:
     return candidates
 
 
-def _project_memory_sweep_command(initiative: str | None, name: str) -> str:
-    """The exact command that shows the FULL memory index, for the overflow
-    line below the capped top-N. Prefers the initiative sweep (the same
-    corpus this section drew from); falls back to a name search only in the
-    edge case where the index matched by `project_ref` alone with no
-    derivable initiative -- in practice this cannot happen for a non-empty
-    index (a `project_ref` match requires a resolvable `project_identity`,
-    which always derives a non-None initiative), but the fallback keeps the
-    function total rather than assuming that invariant here too.
-    """
-    if initiative:
-        return f"gaia memory get-relevant --initiative {initiative}"
-    return f"gaia memory search {name}"
-
-
-def _resolve_project(con, name: str, workspace: str | None) -> dict:
+def _resolve_project(
+    con, name: str, workspace: str | None, try_spellings: bool = True,
+) -> dict:
     """Resolve NAME (and optional --workspace) to exactly one `projects` row.
 
-    Two match passes, in order -- exact `projects.name` first, basename of
+    Two match passes, in order, each exact before ignoring case (two rows
+    equal ignoring case are ambiguous) -- `projects.name` first, basename of
     `projects.path` second (the fix for the legacy opaque-slot rows: a
     project scanned as `bildwiz-5` whose real repo is `control-tower-livekit`
-    is found when the user names the repo they actually know).
+    is found when the user names the repo they actually know). When both miss,
+    the underscore and hyphen spellings of NAME are tried the same way, since
+    `project_identity` keys are underscore slugs of hyphenated names.
 
     Returns one of:
       {"status": "resolved", "row": {...}, "resolved_via": str}
       {"status": "ambiguous", "candidates": [{"workspace", "name", "path"}, ...]}
       {"status": "not_found", "candidates": [...], "hint": str | None}
     """
-    if workspace:
+    scope, params = ("workspace = ? AND ", (workspace,)) if workspace else ("", ())
+    for collate, via in (("", "exact name match"), (" COLLATE NOCASE", "name match ignoring case")):
         exact = con.execute(
-            "SELECT * FROM projects WHERE workspace = ? AND name = ?",
-            (workspace, name),
+            f"SELECT * FROM projects WHERE {scope}name = ?{collate}", params + (name,),
         ).fetchall()
-    else:
-        exact = con.execute(
-            "SELECT * FROM projects WHERE name = ?", (name,),
-        ).fetchall()
+        if exact:
+            break
 
     if len(exact) == 1:
-        return {"status": "resolved", "row": dict(exact[0]), "resolved_via": "exact name match"}
+        return {"status": "resolved", "row": dict(exact[0]), "resolved_via": via}
     if len(exact) > 1:
         return {
             "status": "ambiguous",
@@ -666,7 +697,9 @@ def _resolve_project(con, name: str, workspace: str | None) -> dict:
             "SELECT * FROM projects WHERE path IS NOT NULL",
         ).fetchall()
 
-    basename_matches = [r for r in rows if Path(r["path"]).name == name]
+    basename_matches = [r for r in rows if Path(r["path"]).name == name] or [
+        r for r in rows if Path(r["path"]).name.lower() == name.lower()
+    ]
     if len(basename_matches) == 1:
         r = basename_matches[0]
         via = (
@@ -684,6 +717,16 @@ def _resolve_project(con, name: str, workspace: str | None) -> dict:
             ],
         }
 
+    if try_spellings:
+        from tools.context.context_provider import name_variants
+
+        for variant in name_variants(name)[1:]:
+            found = _resolve_project(con, variant, workspace, try_spellings=False)
+            if found["status"] == "resolved":
+                found["resolved_via"] += f" (spelling of {name!r})"
+            if found["status"] != "not_found":
+                return found
+
     hint = None
     if workspace:
         other = con.execute(
@@ -699,6 +742,38 @@ def _resolve_project(con, name: str, workspace: str | None) -> dict:
     }
 
 
+def _print_group(con, group: str, members: list, as_json: bool) -> int:
+    """Print a group as its members, each with the sections it holds and the verb that reads one; exit 0."""
+    from gaia.store.project_context import held_sections, project_sections
+
+    listed, fallback = [], set()
+    for member in members:
+        held = held_sections(con, member)
+        fallback |= set(project_sections(con, member)) - set(held)
+        listed.append({
+            "name": member["name"],
+            "identity": member["identity"],
+            "sections": [{"name": s, "updated_at": held[s]["updated_at"]} for s in sorted(held)],
+            "read_command": f"gaia context get-contract --project {member['identity']} --section <s>",
+        })
+    workspace = members[0]["workspace"]
+    if as_json:
+        print(json.dumps({"group": group, "workspace": workspace, "members": listed,
+                          "workspace_fallback_sections": sorted(fallback)}, indent=2, default=str))
+        return 0
+    print(f"{group}: group of {len(listed)} projects in workspace {workspace}")
+    for member in listed:
+        print(f"\n{member['name']}")
+        for s in member["sections"]:
+            print(f"  {s['name']:<28}  {s['updated_at']}")
+        if not member["sections"]:
+            print("  (no sections of its own)")
+        print(f"  read one: {member['read_command']}")
+    if fallback:
+        print(f"\nworkspace {workspace} sections a member without its own reads: {', '.join(sorted(fallback))}")
+    return 0
+
+
 def _cmd_project(args) -> int:
     """Handle `gaia context project NAME [--workspace W] [--json]`.
 
@@ -706,28 +781,22 @@ def _cmd_project(args) -> int:
     `project_context_contracts`, not `memory` (no telemetry bump either) --
     so it is safe to point at any name, resolved or not. Reads the one-project
     ficha end to end: the `projects` row, its `project_facets`, its
-    `project_identity` project-context contract entry (if any), and an INDEX
-    (slug + description only, never a body) of the curated `memory` rows
-    anchored to it by `project_ref` or `initiative`. The index ANNOUNCES the
-    corpus rather than dumping it: capped to `_PROJECT_MEMORY_INDEX_TOP_N`
-    (10) most-recently-updated rows -- a NULL `updated_at` sorts last, never
-    as freshest -- with a counted overflow line naming the total and the
-    exact sweep command when there are more. `--json` applies the identical
-    cap and never claims completeness by omission: `memory_index_total` and
-    `memory_index_truncated` are always present, and
-    `memory_index_sweep_command` is added when truncated.
+    `project_identity` project-context contract entry (if any), and its memory
+    by kind: the live preferences, facts and decisions of the workspace, group
+    and project chain as title + `scope=` + `ref=` (never a body, never the
+    user's rows), then the count of the project's lessons and live pendings
+    with the `gaia memory get-relevant` read that opens each.
 
-    Resolution tries an EXACT `projects.name` match first, then the basename
-    of `projects.path` -- the fix for a legacy row scanned under an opaque
-    slot name (e.g. `bildwiz-5`) whose real repo is the basename the user
-    actually names (e.g. `control-tower-livekit`); the response says so
-    explicitly rather than resolving silently. Failure semantics: an EMPTY
-    field and an ABSENT one are never the same response --
-      * resolved (exactly one row, by either pass): exit 0, full ficha.
+    Resolution tries `projects.name` first (exact, then ignoring case), then
+    the basename of `projects.path` (a legacy row scanned under an opaque slot
+    name such as `bildwiz-5` is found by its repo name, and the response says
+    so), then the underscore and hyphen spellings of NAME. Failure semantics:
+      * resolved (exactly one row, by any pass): exit 0, full ficha.
       * ambiguous (the SAME name/basename matches rows in more than one
         workspace, or more than one row in the scope given): exit 1, listing
-        every candidate with its workspace -- the error enumerates rather
-        than guessing.
+        every candidate with its workspace.
+      * not found, but NAME is a group: exit 0, the group's members with the
+        sections each holds.
       * not found: exit 1, with the closest names/basenames found in scope
         (and, when --workspace narrowed the search, whether the exact name
         exists in another workspace instead).
@@ -779,6 +848,11 @@ def _cmd_project(args) -> int:
             return 1
 
         if resolution["status"] == "not_found":
+            from gaia.store.project_context import resolve_group
+
+            members = resolve_group(con, name, workspace)
+            if members:
+                return _print_group(con, name, members, as_json)
             candidates = resolution["candidates"]
             hint = resolution.get("hint")
             if as_json:
@@ -816,6 +890,13 @@ def _cmd_project(args) -> int:
         r_workspace = row["workspace"]
         r_name = row["name"]
 
+        from gaia.store.project_context import resolve_group
+
+        same_name_group = [
+            m["name"] for m in resolve_group(con, name, r_workspace)
+            if m["workspace"] == r_workspace
+        ]
+
         from gaia.store.workspace_curation import is_dangling_facet
 
         facets = [
@@ -829,44 +910,19 @@ def _cmd_project(args) -> int:
 
         contract_slug = None
         contract_entry = None
-        contract_row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = 'project_identity'",
-            (r_workspace,),
-        ).fetchone()
+        from gaia.store.project_context import workspace_sections
+
+        contract_row = workspace_sections(con, r_workspace).get("project_identity")
         if contract_row is not None:
-            try:
-                payload = json.loads(contract_row["payload"]) if contract_row["payload"] else {}
-            except (json.JSONDecodeError, TypeError):
-                payload = {}
+            payload = contract_row["payload"] if isinstance(contract_row["payload"], dict) else {}
             contract_slug, contract_entry = _project_match_identity_entry(
                 payload, row.get("path"), row.get("remote_url"),
             )
 
-        # The project's memory is every row whose canonical project key is the
-        # project's, in any workspace (AC-12): the workspace that registered
-        # the project does not own the notes written about it elsewhere.
-        from gaia.store.writer import canonical_project_key
-
-        initiative = _project_derive_initiative(row.get("project_identity"))
-        memory_rows = [
-            {"name": m["name"], "type": m["type"], "description": m["description"]}
-            for m in con.execute(
-                "SELECT name, type, description, initiative, project_ref "
-                "FROM memory WHERE deleted_at IS NULL "
-                "  AND (COALESCE(initiative, '') != '' "
-                "       OR COALESCE(project_ref, '') != '') "
-                "ORDER BY COALESCE(updated_at, '') DESC"
-            ).fetchall()
-            if initiative
-            and canonical_project_key(m["project_ref"], m["initiative"]) == initiative
-        ]
-
-        footer = _project_pending_footer(initiative)
-
-        memory_total = len(memory_rows)
-        memory_shown = memory_rows[:_PROJECT_MEMORY_INDEX_TOP_N]
-        memory_truncated = memory_total > len(memory_shown)
+        memory = _project_memory(
+            con, r_workspace, row.get("group_name"), r_name,
+            _project_derive_initiative(row.get("project_identity")),
+        )
 
         if as_json:
             out = {
@@ -877,24 +933,24 @@ def _cmd_project(args) -> int:
                     {"slug": contract_slug, "entry": contract_entry}
                     if contract_slug is not None else None
                 ),
-                # Capped identically to the human view -- the SAME context
-                # cost applies to a JSON payload read in conversation. Never
-                # silent about it: `memory_index_truncated` is always present
-                # (never inferred from array length alone), and `_total` is
-                # the real count regardless of how many are shown.
-                "memory_index": memory_shown,
-                "memory_index_total": memory_total,
-                "memory_index_truncated": memory_truncated,
+                "memory_index": memory["index"],
+                "lessons": memory["lessons"],
+                "pending": memory["pending"],
             }
-            if memory_truncated:
-                out["memory_index_sweep_command"] = _project_memory_sweep_command(
-                    initiative, r_name,
-                )
-            if footer:
-                out["pending_footer"] = footer
+            if same_name_group:
+                out["group_of_same_name"] = {
+                    "group": name, "workspace": r_workspace, "members": same_name_group,
+                }
             print(json.dumps(out, indent=2, default=str))
             return 0
 
+        if same_name_group:
+            print(
+                f"{name} is both a group and a project. The group {name} holds "
+                f"{len(same_name_group)} project{'' if len(same_name_group) == 1 else 's'} "
+                f"in workspace {r_workspace}: "
+                f"{', '.join(same_name_group)}. Below is the project {r_name}.\n"
+            )
         print(f"workspace        : {r_workspace}")
         print(f"name             : {r_name}")
         print(f"resolved_via     : {resolved_via}")
@@ -926,30 +982,7 @@ def _cmd_project(args) -> int:
             print("project_identity contract : (no entry found)")
 
         print()
-        if memory_rows:
-            label = (
-                f"curated memory ({memory_total}, showing {len(memory_shown)} "
-                f"most recent)" if memory_truncated
-                else f"curated memory ({memory_total})"
-            )
-            print(f"{label} -- index only, use `gaia memory show <slug>` "
-                  f"for the full body:")
-            if initiative:
-                print(f"  (its anchors whole: `gaia memory get-relevant "
-                      f"--initiative {initiative} --sections anchor`)")
-            for m in memory_shown:
-                desc = m.get("description") or ""
-                print(f"  - {m['name']}: {desc}" if desc else f"  - {m['name']}")
-            if memory_truncated:
-                sweep = _project_memory_sweep_command(initiative, r_name)
-                print(f"  ... and {memory_total - len(memory_shown)} more -- "
-                      f"full index: `{sweep}`")
-        else:
-            print("curated memory    : (none)")
-
-        if footer:
-            print()
-            print(footer)
+        _print_project_memory(memory)
 
         return 0
     finally:
@@ -959,8 +992,9 @@ def _cmd_project(args) -> int:
 def _cmd_query(args) -> int:
     """Handle `gaia context query "<SQL>"`.
 
-    Executes a read-only SELECT (or EXPLAIN/PRAGMA/WITH) against the substrate.
-    Other verbs are rejected with a non-zero exit code.
+    Runs the statement when its first word is select, with, explain or pragma
+    (`_SELECT_VERBS`); any other first word exits 2. The connection is read-only,
+    so a write past that word (``WITH ... DELETE``) exits 1 and changes nothing.
     """
     sql = (getattr(args, "sql", "") or "").strip()
     if not sql:
@@ -976,12 +1010,18 @@ def _cmd_query(args) -> int:
         return 2
 
     try:
-        from gaia.store.writer import _connect as _store_connect
+        from gaia.store.writer import _db_path
     except Exception as exc:
         print(f"gaia context query: failed to import store: {exc}", file=sys.stderr)
         return 1
 
-    con = _store_connect()
+    db = _db_path()
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        print(f"gaia context query: cannot open {db} read-only: {exc}", file=sys.stderr)
+        return 1
+    con.row_factory = sqlite3.Row
     try:
         try:
             cur = con.execute(sql)
@@ -989,7 +1029,6 @@ def _cmd_query(args) -> int:
             print(f"gaia context query: SQL error: {exc}", file=sys.stderr)
             return 1
         rows = cur.fetchall()
-        # Print as JSON list of dicts for machine-readability
         out = [dict(r) for r in rows]
         print(json.dumps(out, indent=2, default=str))
     finally:
@@ -1001,9 +1040,9 @@ def _cmd_wipe(args) -> int:
     """Handle `gaia context wipe --workspace W [--yes] [--purge-memory]`.
 
     Deletes the scannable rows for the workspace (CASCADE removes children).
-    scan-v2 SV3: curated memory is PRESERVED across the wipe by default; pass
-    --purge-memory to also destroy it (explicit human curation). Requires
-    interactive confirmation unless --yes is passed.
+    Curated memory is PRESERVED across the wipe by default; pass
+    --purge-memory to also destroy it. Requires interactive confirmation
+    unless --yes is passed.
     """
     workspace = getattr(args, "workspace", None)
     if not workspace:
@@ -1037,9 +1076,8 @@ def _cmd_wipe(args) -> int:
 
     purge_memory = getattr(args, "purge_memory", False)
     try:
-        # scan-v2 SV3 (Vector 4): preserve curated memory across the wipe by
-        # default. --purge-memory is the explicit-human-curation escape hatch
-        # that restores the original full CASCADE (memory destroyed).
+        # Curated memory survives the wipe by default; --purge-memory restores
+        # the full CASCADE (memory destroyed).
         wipe_workspace(workspace, preserve_memory=not purge_memory)
     except Exception as exc:
         print(f"gaia context wipe: error: {exc}", file=sys.stderr)
@@ -1145,6 +1183,44 @@ def _cmd_prune_workspaces(args) -> int:
         _render_prune(result)
         print(f"DB backup written to: {backup}")
     return 0
+
+
+def _cmd_relocate(args) -> int:
+    """Handle ``gaia context relocate --manifest FILE [--dry-run] [--json]``."""
+    from gaia.paths import db_path as _db_path
+    from gaia.store.context_relocation import (
+        RelocationError, apply_relocation, load_manifest, plan_relocation,
+    )
+    from gaia.store.writer import _connect
+
+    manifest = load_manifest(args.manifest)
+    try:
+        if args.dry_run:
+            con = _connect(_db_path())
+            try:
+                report = plan_relocation(con, manifest)
+            finally:
+                con.close()
+        else:
+            report = apply_relocation(manifest, proposed_by=str(args.manifest))
+    except RelocationError as exc:
+        print(f"gaia context relocate: refused, nothing written: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        verb = "would insert" if args.dry_run else "inserted"
+        for item in report["inserts"]:
+            print(f"{verb} {item['project']} / {item['section']}  <- {item['from']}")
+        for item in report["already_present"]:
+            print(f"already present {item['project']} / {item['section']}")
+        for item in report["unowned"]:
+            print(f"unowned {item['workspace']}/{item['section']} {item.get('keys') or ''}")
+        for error in report["errors"]:
+            print(f"error: {error}")
+        if report.get("backup"):
+            print(f"DB backup written to: {report['backup']}")
+    return 1 if report["errors"] else 0
 
 
 def _cmd_move_project(args) -> int:
@@ -1281,6 +1357,76 @@ def _cmd_move_project(args) -> int:
             else:
                 print("Children migrated: none (row had no child rows).")
     return 0
+
+
+def _cmd_accept(args) -> int:
+    """Handle ``gaia context accept CONTRACT_ID [--workspace W] [--dry-run] [--json]``.
+
+    Accepts the ``update_contracts`` proposal a specialist's turn recorded into
+    project context. Each part lands under the project it names, else the
+    proposing turn's dispatch project, and history records that contract id
+    and agent; a part no project owns is refused. Exit 1 when
+    anything was refused. The verb is named ``accept`` rather than ``apply`` so
+    the orchestrator, which alone writes project context, runs it unsigned.
+    """
+    contract_id = getattr(args, "contract_id", None)
+    as_json = getattr(args, "json", False)
+    hooks_dir = str(Path(__file__).resolve().parents[2] / "hooks")
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+    try:
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.store.writer import agent_contract_handoff_envelope
+        from modules.context.context_writer import apply_proposal
+    except Exception as exc:
+        print(f"gaia context accept: failed to import writer: {exc}", file=sys.stderr)
+        return 1
+
+    envelope = agent_contract_handoff_envelope(contract_id)
+    if envelope is None:
+        print(f"gaia context accept: no recorded contract '{contract_id}'", file=sys.stderr)
+        return 1
+    if not envelope.get("update_contracts"):
+        print(f"gaia context accept: contract '{contract_id}' proposes no update_contracts",
+              file=sys.stderr)
+        return 1
+
+    con = _store_connect()
+    try:
+        born = con.execute(
+            "SELECT dispatch_project, agent_id FROM agent_contract_handoffs "
+            "WHERE contract_id = ? ORDER BY id LIMIT 1", (contract_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    dispatch_project, proposer = born if born else (None, None)
+
+    outcome = apply_proposal(
+        envelope["update_contracts"],
+        getattr(args, "workspace", None) or _project_current(),
+        dry_run=getattr(args, "dry_run", False),
+        project=dispatch_project,
+        proposed_by=contract_id,
+        proposer_agent=proposer,
+    )
+    if outcome["errors"] and not getattr(args, "dry_run", False):
+        from gaia.store.writer import record_update_contracts_outcome
+
+        earlier = envelope.get("update_contracts_refused") or []
+        record_update_contracts_outcome(
+            contract_id, refused=list(dict.fromkeys([*earlier, *outcome["errors"]])),
+        )
+    if as_json:
+        print(json.dumps(outcome, indent=2))
+    else:
+        verb = "would apply" if getattr(args, "dry_run", False) else "applied"
+        for item in outcome["applied"]:
+            print(f"{verb}: {item['contract']} -> project {item['project']} "
+                  f"(workspace {item['workspace']})")
+        for message in outcome["errors"]:
+            print(f"refused: {message}", file=sys.stderr)
+    return 1 if outcome["errors"] else 0
 
 
 def _cmd_move_contracts(args) -> int:
@@ -1433,10 +1579,6 @@ def _cmd_move_memory(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
-
 def register(subparsers) -> None:
     """Register the `context` subcommand with the root parser."""
     ctx_parser = subparsers.add_parser(
@@ -1532,11 +1674,6 @@ def register(subparsers) -> None:
     )
     _add_get_args(dump_parser)
 
-    # gaia context get-contract  (read ONE project-context contract by name)
-    # Read-only counterpart to `move-contracts`: resolves --section against
-    # project_context_contracts.contract_name, the same names an agent's
-    # can_read/can_write kernel menu lists. `get`/`show` never reach this
-    # table -- see the module docstring for the two-namespaces trap.
     gc_parser = ctx_subparsers.add_parser(
         "get-contract",
         help="Read ONE project-context contract by name (project_identity, "
@@ -1549,6 +1686,13 @@ def register(subparsers) -> None:
         default=None,
         help="Workspace identity owning the contract (default: "
              "gaia.project.current())",
+    )
+    gc_parser.add_argument(
+        "--project",
+        metavar="P",
+        default=None,
+        help="Project identity or name: read the section stored for that "
+             "project, falling back to its workspace's pre-v69 row",
     )
     gc_parser.add_argument(
         "--section",
@@ -1698,6 +1842,36 @@ def register(subparsers) -> None:
         help="Emit the plan/result as JSON",
     )
 
+    relocate_parser = ctx_subparsers.add_parser(
+        "relocate",
+        help="Copy workspace-keyed context rows under their projects from a reviewed "
+             "manifest; backs up the DB, inserts only",
+    )
+    relocate_parser.add_argument("--manifest", required=True, metavar="FILE")
+    relocate_parser.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Validate the manifest and print the inserts without writing",
+    )
+    relocate_parser.add_argument("--json", action="store_true", default=False)
+
+    # gaia context accept CONTRACT_ID
+    # ('accept' is not in MUTATIVE_VERBS, so it classifies T0 and the orchestrator
+    # lane admits it in gaia_cli_only_guard.ALLOWED_WRITE_PHRASES.)
+    ac_parser = ctx_subparsers.add_parser(
+        "accept",
+        help="Accept the update_contracts proposal a specialist's turn recorded, "
+             "each key in the workspace that owns its project",
+    )
+    ac_parser.add_argument("contract_id", metavar="CONTRACT_ID",
+                           help="Contract id the proposal notice named")
+    ac_parser.add_argument("--workspace", metavar="W", default=None,
+                           help="Workspace for sections that are not keyed by project "
+                                "(default: gaia.project.current())")
+    ac_parser.add_argument("--dry-run", action="store_true", default=False,
+                           help="Show the target workspaces without writing")
+    ac_parser.add_argument("--json", action="store_true", default=False,
+                           help="Emit JSON")
+
     # gaia context move-contracts --from W1 --to W2 --contract C ...
     # (T3: the verb token 'move-contracts' hyphen-splits to 'move', which is in
     # MUTATIVE_VERBS -- gated as T3 without touching the security layer.)
@@ -1744,11 +1918,8 @@ def register(subparsers) -> None:
     mm_parser.add_argument("--yes", action="store_true", default=False,
                            help="Skip interactive confirmation")
 
-    # gaia context move-project --decision D --from-workspace/--from-name
-    #                           --to-workspace/--to-name
-    # (T3: the verb token 'move-project' hyphen-splits to 'move', which is in
-    # MUTATIVE_VERBS -- gated as T3 without touching the security layer. This is
-    # the write path that EXECUTES a scan-v2 move_candidate a human adjudicated.)
+    # gaia context move-project (T3: the verb token 'move-project' hyphen-splits to
+    # 'move', which is in MUTATIVE_VERBS -- gated as T3 without touching the security layer.)
     mp_parser = ctx_subparsers.add_parser(
         "move-project",
         help="Resolve an adjudicated scan-v2 move_candidate (re-key a projects "
@@ -1794,12 +1965,16 @@ def cmd_context(args) -> int:
         return _cmd_wipe(args)
     if context_cmd == "prune-workspaces":
         return _cmd_prune_workspaces(args)
+    if context_cmd == "accept":
+        return _cmd_accept(args)
     if context_cmd == "move-contracts":
         return _cmd_move_contracts(args)
     if context_cmd == "move-memory":
         return _cmd_move_memory(args)
     if context_cmd == "move-project":
         return _cmd_move_project(args)
+    if context_cmd == "relocate":
+        return _cmd_relocate(args)
 
     # No sub-action: print help for the context subcommand
     import argparse

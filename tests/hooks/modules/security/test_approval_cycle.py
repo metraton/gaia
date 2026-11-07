@@ -86,6 +86,8 @@ def clean_grants_dir(tmp_path, monkeypatch):
     """Use a temporary directory for grants and clean up after each test."""
     import modules.security.approval_grants as ag
 
+    monkeypatch.setenv("TF_WORKSPACE", "default")
+
     grants_dir = tmp_path / ".claude" / "cache" / "approvals"
     grants_dir.mkdir(parents=True, exist_ok=True)
 
@@ -174,30 +176,23 @@ class TestSubagentMutativeDeny:
         )
 
 
-class TestOrchestratorMutativeAsk:
-    """Test 2: Orchestrator mutative command gets "ask" (no approval_id)."""
+class TestOrchestratorMutativeDeny:
+    """Test 2: an orchestrator mutative command is denied with the approval_id it is signed through."""
 
-    def test_orchestrator_mutative_gets_ask_no_approval_id(self):
-        """Orchestrator context (is_subagent=False) returns ask without approval_id."""
+    def test_orchestrator_mutative_gets_deny_with_approval_id(self):
         result = validate_bash_command(
             "terraform apply",
             is_subagent=False,
             session_id="test-cycle-session",
+            agent_type="claude-code-primary",
         )
 
         assert not result.allowed, "T3 command should be blocked"
         assert result.block_response is not None, "Should have structured response"
 
         hook_output = result.block_response.get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "ask", (
-            f"Expected ask, got: {hook_output.get('permissionDecision')}"
-        )
-
-        # Verify NO approval_id is present (orchestrator uses native dialog)
-        reason = hook_output.get("permissionDecisionReason", "")
-        assert "approval_id:" not in reason, (
-            f"Orchestrator context should not have approval_id, got: {reason}"
-        )
+        assert hook_output.get("permissionDecision") == "deny"
+        assert f"approval_id: {result.approval_id}" in hook_output.get("permissionDecisionReason", "")
 
 
 def _isolate_writer_db(monkeypatch, tmp_path):
@@ -427,10 +422,10 @@ class TestSubagentRetryReusesPendingNonce:
         This test now uses git push which is still mutative.
         """
         command_with_footer = (
-            'git push origin feat/api\n\n'
+            'git push origin main\n\n'
             'Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>'
         )
-        command_without_footer = 'git push origin feat/api'
+        command_without_footer = 'git push origin main'
         session_id = "test-cycle-session"
 
         # First attempt: command includes a Co-Authored-By footer

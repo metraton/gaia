@@ -1,4 +1,4 @@
-"""OpenCode's session start returns Claude Code's birth block and counts the user rows it carried.
+"""OpenCode's session start returns Claude Code's birth block and counts the user rows it indexed.
 
 Runs the bridge in process against a temporary HOME, GAIA_DATA_DIR and GAIA_DB,
 and collects the Bun driver that asserts which sessions the plugin asks for it.
@@ -22,7 +22,7 @@ for _path in (str(_ROOT), str(_ROOT / "hooks"), str(_ROOT / "opencode")):
 
 USER_SCOPE = "_gaia_user"
 USER_ROW = "user_jorge"
-USER_BODY = "Hecho: Jorge runs DevOps for a consultancy."
+USER_TITLE = "Jorge runs DevOps for a consultancy."
 
 
 @pytest.fixture
@@ -40,9 +40,9 @@ def seeded_db(tmp_path, monkeypatch, bootstrapped_db_template):
         con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
                     (USER_SCOPE, USER_SCOPE))
         con.execute(
-            "INSERT INTO memory (workspace, name, type, description, body, class, audience, "
-            "updated_at) VALUES (?, ?, 'user', ?, ?, 'anchor', 'any', '2026-09-01T00:00:00Z')",
-            (USER_SCOPE, USER_ROW, USER_BODY, USER_BODY),
+            "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
+            "updated_at) VALUES (?, ?, 'user', ?, 'why', 'anchor', 'fact', 'user', '2026-09-01T00:00:00Z')",
+            (USER_SCOPE, USER_ROW, USER_TITLE),
         )
         con.commit()
     finally:
@@ -72,13 +72,13 @@ def test_session_birth_bridge_returns_the_claude_code_block_and_marks_user_rows(
     response = bridge.handle({"event": "chat.message", "sessionID": session_id})
 
     assert response["action"] == "allow"
-    assert USER_BODY in response["additional_context"]
+    assert f'"{USER_TITLE}"  ref=memory:user/{USER_ROW}' in response["additional_context"]
     assert response["additional_context"] == build_session_context(session_id=session_id)
-    assert f"- Session id: {session_id}" in response["additional_context"]
+    assert f"session={session_id}" in response["additional_context"].splitlines()
     assert _injection_count(seeded_db) == 1
 
 
-def test_session_birth_carries_the_local_zone_and_gaia_now(seeded_db, monkeypatch):
+def test_session_birth_carries_the_local_zone(seeded_db, monkeypatch):
     import bridge
 
     monkeypatch.setenv("TZ", "America/Santiago")
@@ -87,8 +87,7 @@ def test_session_birth_carries_the_local_zone_and_gaia_now(seeded_db, monkeypatc
 
     zone_lines = [line for line in response["additional_context"].splitlines()
                   if "America/Santiago" in line]
-    assert len(zone_lines) == 1, response["additional_context"]
-    assert "gaia now" in zone_lines[0]
+    assert zone_lines == ["zone=America/Santiago"], response["additional_context"]
 
 
 def test_session_birth_plugin_delivers_once_to_the_main_session_and_never_to_a_child():

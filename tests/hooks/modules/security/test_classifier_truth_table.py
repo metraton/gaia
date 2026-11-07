@@ -71,7 +71,8 @@ CLASSIFIER_TRUTH_TABLE = [
     ("gaia-deep-mutative-path", GATED, "gaia task gate remove 12", True, T3),
     ("git-push-help", FREE, "git push --help", False, T0),
     ("kubectl-delete-help", FREE, "kubectl delete --help", False, T0),
-    ("git-push-branch", GATED, "git push origin x", True, T3),
+    ("git-push-branch", GATED, "git push --force origin x", True, T3),
+    ("git-push-default-branch", GATED, "git push origin main", True, T3),
     ("kubectl-delete-namespace", GATED, "kubectl delete ns x", True, T3),
     # ---- CLOSED: granting capability is now gated exactly like removing it --
     # These four were recorded OPEN (False, T0): granting was gated on no
@@ -182,12 +183,7 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gcloud-config-list", FREE, "gcloud config list", False, T0),
     ("read-git-config-list", FREE, "git config --list", False, T0),
     ("read-git-config-get", FREE, "git config --get user.email", False, T0),
-    # ---- OPEN: redirection the read-only noun does NOT shadow ----
-    # Recorded rather than closed: `activate` and `use` are absent from the verb
-    # taxonomy, so the short-circuit is not what holds these at T0 and removing
-    # it would not move them. Both redirect as hard as the three forms above --
-    # one switches project and account together, the other switches the cluster
-    # every later kubectl reaches -- and each needs a decision of its own.
+    # ---- OPEN: `activate` is absent from the effect lexicon, so this stays T0 ----
     (
         "configurations-activate",
         OPEN,
@@ -195,7 +191,7 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
-    ("context-switch", OPEN, "kubectl config use-context prod", False, T0),
+    ("context-switch", GATED, "kubectl config use-context prod", True, T3),
     # ---- CLOSED: indirect trigger and live workload ----
     # These four were recorded OPEN (False, T0). None carries a verb in
     # MUTATIVE_VERBS -- `run` is deliberately excluded ("safe by elimination"),
@@ -222,7 +218,7 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gh-workflow-view", FREE, "gh workflow view deploy.yml", False, T0),
     ("read-gh-run-view", FREE, "gh run view 123456", False, T0),
     # ---- Remote triggers and setting changes classify by SHAPE, any binary ----
-    # `wrapbin` is declared nowhere (no GAIA_CLI_ALIASES), so these rows prove
+    # `wrapbin` is declared nowhere (no tool row), so these rows prove
     # the verdict does not depend on the binary being named `gh`.
     ("shape-workflow-run-wrapper", GATED, "wrapbin workflow run deploy.yml", True, T3),
     ("shape-workflows-run-wrapper", GATED, "wrapbin workflows run deploy.yml", True, T3),
@@ -1556,9 +1552,9 @@ def test_classifier_truth_table_carries_both_directions():
         ("mywrap pr view 1", False),
     ],
 )
-def test_declared_wrapper_costs_what_the_cli_it_wraps_costs(monkeypatch, command, gated):
-    """A wrapper the user declares in GAIA_CLI_ALIASES is read as its target."""
-    monkeypatch.setenv("GAIA_CLI_ALIASES", "mywrap=gh")
+def test_declared_wrapper_costs_what_the_cli_it_wraps_costs(declare_alias, command, gated):
+    """A wrapper the user declares as a tool row with replaces=gh is read as its target."""
+    declare_alias("mywrap=gh")
     detect_mutative_command.cache_clear()
     assert detect_mutative_command(command).is_mutative is gated, command
     assert (classify_command_tier(command) == T3) is gated, command

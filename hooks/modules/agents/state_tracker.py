@@ -6,7 +6,7 @@ follow the state machine defined in agent-protocol. Uses a JSON file
 in Gaia's tmp dir (``gaia.paths.tmp_dir()``) keyed by agent_id.
 
 Legal transitions (from agent-protocol):
-    IN_PROGRESS -> COMPLETE                (T0/T1/T2 only)
+    IN_PROGRESS -> COMPLETE                (warns when has_review_phase and no APPROVAL_REQUEST came first)
     IN_PROGRESS -> APPROVAL_REQUEST        (hook blocks a mutative command)
     APPROVAL_REQUEST -> IN_PROGRESS        (after approval granted)
     IN_PROGRESS -> BLOCKED                 (any point)
@@ -15,6 +15,7 @@ Legal transitions (from agent-protocol):
     IN_PROGRESS -> NEEDS_VERIFICATION      (producer proposes; verifier-gated COMPLETE)
     NEEDS_VERIFICATION -> COMPLETE         (verifier confirms)
     NEEDS_VERIFICATION -> IN_PROGRESS      (verifier rejects; back to work)
+    COMPLETE | BLOCKED | NEEDS_INPUT -> IN_PROGRESS   (a new cycle)
 
 Provides:
     - track_transition(): Record a state and validate the transition
@@ -31,10 +32,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from gaia.paths import tmp_dir
 
-# Canonical valid statuses imported from the SSOT (gaia.state). The
-# transition table below references these by literal name; the import is
-# defensive (legacy hook environments without gaia on sys.path keep
-# working via the local literals).
+# The transition table below spells its statuses as literals; nothing
+# compares them with this tuple from gaia.state.
 try:
     from gaia.state import VALID_PLAN_STATUSES as _CANONICAL_PLAN_STATUSES  # noqa: F401
 except ImportError:
@@ -47,14 +46,10 @@ logger = logging.getLogger(__name__)
 
 _STATE_FILE = tmp_dir() / "gaia-agent-states.json"
 
-# Maximum consecutive IN_PROGRESS transitions (retry cap)
 _MAX_IN_PROGRESS_RETRIES = 2
 
-# Legal transitions: from_status -> set of allowed to_statuses
-# Note: COMPLETE, BLOCKED, NEEDS_INPUT are terminal for a given task cycle.
-# The keys + values are constrained to ``_CANONICAL_PLAN_STATUSES``; the diff
-# tool ``tools/state/diff_source_of_truth.py`` flags any drift between this
-# table's domain and the SSOT tuple.
+# from_status -> allowed to_statuses. COMPLETE, BLOCKED and NEEDS_INPUT end a
+# task cycle; a new one starts at IN_PROGRESS.
 _LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
     "IN_PROGRESS": {
         "COMPLETE", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT", "IN_PROGRESS",
@@ -64,15 +59,13 @@ _LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
     # NEEDS_VERIFICATION is a non-terminal waiting-on-verifier state: a
     # verifier-role agent confirms (-> COMPLETE) or rejects (-> IN_PROGRESS).
     "NEEDS_VERIFICATION": {"COMPLETE", "IN_PROGRESS"},
-    # Terminal states -- new task cycles can start from scratch
     "COMPLETE": {"IN_PROGRESS"},
     "BLOCKED": {"IN_PROGRESS"},
     "NEEDS_INPUT": {"IN_PROGRESS"},
 }
 
-# Transitions that require T3 context (IN_PROGRESS -> COMPLETE skipping REVIEW)
-# is only legal for T0/T1/T2. We can't enforce this without tier info,
-# so we flag it as a warning rather than a hard rejection.
+# IN_PROGRESS -> COMPLETE without an APPROVAL_REQUEST is only right for
+# T0/T1/T2, and the tier is unknown here, so it warns instead of rejecting.
 _REVIEW_REQUIRED_TRANSITION = ("IN_PROGRESS", "COMPLETE")
 
 
@@ -166,14 +159,14 @@ def track_transition(
         agent_id: The agent's unique identifier.
         new_state: The new agent_state being reported.
         has_review_phase: Hint that this task involves T3 / plan-first flow.
-            When True, IN_PROGRESS -> COMPLETE without an intervening REVIEW
-            is flagged as a warning.
+            When True, IN_PROGRESS -> COMPLETE without an intervening
+            APPROVAL_REQUEST is flagged as a warning.
         is_resume: True when this IN_PROGRESS is a legitimate mid-conversation
             RESUME (the same session resuming the same agent to continue work),
             NOT a within-turn verify-fail RETRY. A resume does NOT accumulate
             toward ``_MAX_IN_PROGRESS_RETRIES``: an agent may stay IN_PROGRESS
-            across N resumes (AC-19). Default False preserves the anti-parking
-            retry cap exactly for the ordinary retry path.
+            across N resumes. Default False keeps the retry cap for the
+            ordinary retry path.
 
     Returns:
         TransitionResult with validation outcome.
@@ -193,7 +186,6 @@ def track_transition(
     data = _read_state_file()
     agent_record = data.get(agent_id)
 
-    # First state for this agent -- always valid
     if agent_record is None:
         data[agent_id] = {
             "state": new_state,
@@ -215,7 +207,6 @@ def track_transition(
     in_progress_count = agent_record.get("in_progress_count", 0)
     saw_review = agent_record.get("saw_review", False)
 
-    # Check if transition is legal
     allowed = _LEGAL_TRANSITIONS.get(previous_state, set())
     if new_state not in allowed:
         return TransitionResult(
@@ -232,14 +223,9 @@ def track_transition(
 
     warning = ""
 
-    # Track IN_PROGRESS retry count
     if new_state == "IN_PROGRESS" and previous_state == "IN_PROGRESS" and is_resume:
-        # AC-19: a legitimate mid-conversation RESUME is not a within-turn
-        # verify-fail retry. The same session resuming the same agent may stay
-        # IN_PROGRESS across N messages, so a resume must NOT accumulate toward
-        # the retry cap -- it is held at the fresh-turn baseline of 1. The
-        # anti-parking cap still governs the ordinary retry path (is_resume
-        # False), leaving TestRetryLimits unchanged.
+        # A resume is not a verify-fail retry, so it does not count toward the
+        # cap; the count stays at the fresh-turn baseline of 1.
         in_progress_count = 1
     elif new_state == "IN_PROGRESS" and previous_state == "IN_PROGRESS":
         in_progress_count += 1
@@ -257,16 +243,13 @@ def track_transition(
                 in_progress_count=in_progress_count,
             )
     elif new_state == "IN_PROGRESS":
-        # Reset count when coming from a non-IN_PROGRESS state (e.g., REVIEW -> IN_PROGRESS)
         in_progress_count = 1
     else:
         in_progress_count = 0
 
-    # Track APPROVAL_REQUEST visibility
     if new_state == "APPROVAL_REQUEST":
         saw_review = True
 
-    # Check: IN_PROGRESS -> COMPLETE without REVIEW when review was expected
     if (previous_state, new_state) == _REVIEW_REQUIRED_TRANSITION:
         if has_review_phase and not saw_review:
             warning = (
@@ -274,7 +257,6 @@ def track_transition(
                 "If this task involves T3 operations, an APPROVAL_REQUEST step is expected."
             )
 
-    # Approaching retry limit
     if new_state == "IN_PROGRESS" and in_progress_count == _MAX_IN_PROGRESS_RETRIES:
         retry_warning = (
             f"IN_PROGRESS retry count at {in_progress_count}/{_MAX_IN_PROGRESS_RETRIES}. "
@@ -282,7 +264,6 @@ def track_transition(
         )
         warning = f"{warning} {retry_warning}".strip() if warning else retry_warning
 
-    # Update record
     data[agent_id] = {
         "state": new_state,
         "in_progress_count": in_progress_count,

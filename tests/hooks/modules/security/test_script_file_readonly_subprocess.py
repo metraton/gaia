@@ -7,6 +7,7 @@ that does mutate or cannot be read statically, and the ``cp`` into scratch the
 same session paid for.
 """
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -127,7 +128,7 @@ def scratch(monkeypatch, tmp_path):
 
 @pytest.fixture
 def validator():
-    return BashValidator()
+    return BashValidator(agent_names_scratch=True)
 
 
 def _write(directory: Path, name: str, body: str) -> Path:
@@ -165,11 +166,117 @@ def test_twin_that_mutates_or_hides_its_argv_still_asks(validator, scratch, twin
     assert verdict.tier == SecurityTier.T3_BLOCKED
 
 
+BOUND_ONCE = '''\
+import subprocess
+import sys
+
+WT = "/repo/worktree"
+BASE = "origin/main"
+print(subprocess.run(["git", "-C", WT, "diff", BASE + ".." + "HEAD"], capture_output=True, text=True).stdout)
+'''
+DIFF_ARGV = '["git", "-C", WT, "diff", BASE + ".." + "HEAD"]'
+
+BOUND_ONCE_FREE = {
+    "concatenated": BOUND_ONCE,
+    "f-string": BOUND_ONCE.replace('BASE + ".." + "HEAD"', 'f"{BASE}..HEAD"'),
+}
+BASE_LINE = 'BASE = "origin/main"'
+
+
+def _rebind(extra):
+    return BOUND_ONCE.replace(BASE_LINE, BASE_LINE + "\n" + extra)
+
+BOUND_NAME_TWINS = {
+    "reassigned": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nBASE = "origin/dev"'),
+    "augmented": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nBASE += "~1"'),
+    "input-built": BOUND_ONCE.replace('BASE = "origin/main"', "BASE = input()"),
+    "argv-built": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/" + sys.argv[1]'),
+    "loop-target": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nfor BASE in sys.argv:\n    pass'),
+    "imported-over": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nfrom settings import BASE'),
+    "global-in-function": BOUND_ONCE.replace(
+        'BASE = "origin/main"', 'def setup():\n    global BASE\n    BASE = "origin/main"\n\n\nsetup()',
+    ),
+    "globals-write": BOUND_ONCE.replace('BASE = "origin/main"', 'BASE = "origin/main"\nglobals()["BASE"] = "x"'),
+    "builtins-fallback": BOUND_ONCE.replace(
+        'BASE = "origin/main"', 'import builtins\nbuiltins.BASE = "x"\n\n\ndef unused():\n    BASE = "origin/main"',
+    ),
+    "resolves-to-kubectl-delete": BOUND_ONCE.replace(
+        DIFF_ARGV, '["kubectl", VERB, "pod", WT]',
+    ).replace('BASE = "origin/main"', 'VERB = "delete"'),
+    "cprofile-run": _rebind('import cProfile\ncProfile.run("BASE = input()")'),
+    "profile-run": _rebind('import profile\nprofile.run("BASE = input()")'),
+    "pdb-run": _rebind('import pdb\npdb.run("BASE = input()")'),
+    "trace-run": _rebind('import trace\ntrace.Trace().run("BASE = input()")'),
+    "sys-modules-get": _rebind('sys.modules.get("__main__").BASE = input()'),
+    "import-module-computed": _rebind(
+        'import importlib\nm = importlib.import_module("__ma" + "in__")\nsetattr(m, "BASE", input())',
+    ),
+    "globals-alias": _rebind('g = globals\ng()["BASE"] = input()'),
+    "exec-alias": _rebind('e = exec\ne("BASE = input()")'),
+    "builtins-computed": BOUND_ONCE.replace(
+        BASE_LINE, 'm = __import__("built" + "ins")\nsetattr(m, "BASE", input())\n\n\ndef unused():\n    ' + BASE_LINE,
+    ),
+    "walrus-only": BOUND_ONCE.replace(BASE_LINE, "(BASE := input())"),
+    "module-doc-pushes": '"""push"""\n' + BOUND_ONCE.replace(
+        BASE_LINE, 'def unused():\n    __doc__ = "status"\n',
+    ).replace(DIFF_ARGV, '["git", "-C", WT, __doc__, "origin", "HEAD"]'),
+    "class-qualname-pushes": BOUND_ONCE.replace(
+        BASE_LINE, 'def unused():\n    __qualname__ = "status"\n',
+    ).replace("print(subprocess.run(", "class push:\n    print(subprocess.run(").replace(
+        DIFF_ARGV, '["git", "-C", WT, __qualname__, "origin", "HEAD"]',
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(BOUND_ONCE_FREE))
+def test_argv_names_bound_once_to_literals_run_free(validator, scratch, shape):
+    script = _write(scratch, f"{shape}.py", BOUND_ONCE_FREE[shape])
+
+    verdict = _validate(validator, f"python3 {script}")
+
+    assert verdict.allowed, verdict.reason
+    assert verdict.tier == SecurityTier.T0_READ_ONLY
+
+
+@pytest.mark.parametrize("twin", sorted(BOUND_NAME_TWINS))
+def test_argv_name_not_provably_bound_to_a_literal_still_asks(validator, scratch, twin):
+    script = _write(scratch, f"{twin}.py", BOUND_NAME_TWINS[twin])
+
+    assert detect_mutative_command(f"python3 {script}").is_mutative
+    assert _validate(validator, f"python3 {script}").tier == SecurityTier.T3_BLOCKED
+
+
+def test_name_rewritten_by_an_imported_local_module_still_asks(validator, scratch):
+    _write(scratch, "retarget.py", 'import __main__\n__main__.BASE = "x"\n')
+    script = _write(scratch, "main.py", BOUND_ONCE.replace("print(", "import retarget\nprint("))
+
+    assert _validate(validator, f"python3 {script}").tier == SecurityTier.T3_BLOCKED
+
+
+def test_inline_argv_names_bound_once_run_free(validator, scratch):
+    verdict = _validate(validator, "python3 -c " + shlex.quote(BOUND_ONCE))
+
+    assert verdict.allowed, verdict.reason
+    assert verdict.tier == SecurityTier.T0_READ_ONLY
+
+
+@pytest.mark.parametrize("twin", sorted(BOUND_NAME_TWINS) + ["exec-literal"])
+def test_inline_argv_name_not_provably_bound_still_asks(validator, scratch, twin):
+    body = BOUND_NAME_TWINS.get(twin) or _rebind('exec("BASE = 1")')
+
+    assert _validate(validator, "python3 -c " + shlex.quote(body)).tier == SecurityTier.T3_BLOCKED
+
+
 def test_cp_into_scratch_runs_free(validator, scratch, tmp_path):
     source = _write(tmp_path, "helper.py", HELPER_SHAPE)
+    entry = scratch / "aentryowner01.token"
+    entry.mkdir()
 
-    for destination in (scratch / "helper.py", scratch):
-        verdict = _validate(validator, f"cp {source} {destination}")
+    for destination in (entry / "helper.py", entry):
+        detect_mutative_command.cache_clear()
+        verdict = validator.validate(
+            f"cp {source} {destination}", hook_payload={"agent_id": "aentryowner01", "cwd": str(tmp_path)},
+        )
         assert verdict.allowed, verdict.reason
         assert verdict.tier == SecurityTier.T0_READ_ONLY
 

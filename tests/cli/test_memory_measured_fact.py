@@ -20,7 +20,7 @@ import pytest
 _REPO = Path(__file__).resolve().parents[2]
 _GAIA = _REPO / "bin" / "gaia"
 
-_BASE = ("--type", "feedback", "--initiative", "demo", "--workspace", "demo")
+_BASE = ("--type", "feedback", "--kind", "fact", "--initiative", "demo", "--workspace", "demo")
 
 
 @pytest.fixture

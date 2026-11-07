@@ -9,10 +9,10 @@ The kernel is the data-only context a claimed turn starts with. Pinned here:
     ``acceptance:`` block read from ``task_gates``;
   * ``# Your CLI`` carries the base lines plus per-role frontmatter extras
     (``cli:`` key) when the agent declares them;
-  * ``# How the user works`` inlines the BODY of the user's standing rows,
-    complete and never truncated, from any workspace the dispatch was born
-    in (the selection itself is pinned against the birth block by
-    test_user_selection_parity.py); omitted entirely when there are none;
+  * ``# Scope memory`` indexes the scope chain's live preferences, facts and
+    lessons as a title and a ref, never a body and never a user row (the
+    user's rows are the birth block's ``## User memory``); omitted entirely
+    when there are none;
   * ``build_kernel_context`` joins the blocks and returns None without an
     identity (the CLI/memory blocks never ship without the contract).
 """
@@ -254,85 +254,86 @@ def test_cli_block_workspace_line_points_at_get_contract_not_get():
     assert f"gaia context get --section <s> --workspace {WORKSPACE}" not in block
 
 
-def _seed_memory_row(con, *, name, type_="user", audience="executor",
-                      body="b", class_="anchor", updated_at="2026-01-01T00:00:00Z",
-                      workspace=WORKSPACE):
+def _seed_memory_row(con, *, name, type_="decision", kind="preference", owner_level="workspace",
+                     title="a standing rule", body="the why", class_="anchor",
+                     updated_at="2026-01-01T00:00:00Z", workspace=WORKSPACE):
+    claim = "Fact" if kind == "fact" else "Preference"
     con.execute(
         "INSERT INTO workspaces (name, identity) VALUES (?, ?) "
         "ON CONFLICT(name) DO NOTHING",
         (workspace, workspace),
     )
     con.execute(
-        "INSERT INTO memory (workspace, name, type, body, class, "
-        "updated_at, audience) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (workspace, name, type_, body, class_, updated_at, audience),
+        "INSERT INTO memory (workspace, name, type, description, body, class, "
+        "updated_at, kind, owner_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (workspace, name, type_, f"{claim}: {title}", body, class_, updated_at, kind, owner_level),
     )
 
 
-def test_memory_block_inlines_the_users_live_anchors_whole_and_only_those(tmp_path):
+def test_memory_block_indexes_the_scope_chains_live_rows_by_title_and_ref_and_only_those(tmp_path):
+    """Replaces "inlines the users live anchors whole": the kernel indexes its scope's rows, none of the user's."""
     db = tmp_path / "gaia.db"
     from gaia.store.writer import _connect
 
     con = _connect(db)
     try:
         _seed_memory_row(
-            con, name="user_prefers_live_verification",
-            body="Live state and code outrank memory when they disagree.",
+            con, name="decision_me_live_verification",
+            title="Live state and code outrank memory when they disagree.",
+        )
+        _seed_memory_row(con, name="decision_me_team", kind="fact", title="The team works in UTC.")
+        _seed_memory_row(
+            con, name="user_pref_for_the_orchestrator_alone", type_="user", owner_level="user",
+            title="A user preference that never reaches a kernel.",
         )
         _seed_memory_row(
-            con, name="user_orchestrator_audience_anchor", audience="orchestrator",
-            body="Anchor addressed to the orchestrator alone.",
+            con, name="decision_me_a_decision", kind="decision",
+            title="A decision is looked up, not injected.",
         )
         _seed_memory_row(
-            con, name="atom_not_a_user_row", type_="atom", class_="log",
-            body="An atom, not a user row.",
+            con, name="decision_me_a_log_entry", class_="log",
+            title="A log entry, not a standing rule.",
         )
         _seed_memory_row(
-            con, name="user_a_log_entry", class_="log",
-            body="A user log entry, not a standing rule.",
-        )
-        _seed_memory_row(
-            con, name="user_prefers_plain_reports",
-            body="Prefers plain-language reports over structured blocks.",
+            con, name="decision_me_plain_reports",
+            title="Prefers plain-language reports over structured blocks.",
         )
         con.execute(
             "UPDATE memory SET deleted_at = '2026-01-02T00:00:00Z' "
-            "WHERE workspace = ? AND name = 'user_prefers_plain_reports'",
+            "WHERE workspace = ? AND name = 'decision_me_plain_reports'",
             (WORKSPACE,),
         )
         con.commit()
     finally:
         con.close()
 
-    block = build_memory_block(db_path=db)
-    assert block.splitlines()[0] == "# How the user works"
-    assert "Live state and code outrank memory when they disagree." in block
-    assert "Anchor addressed to the orchestrator alone." not in block
-    assert "An atom, not a user row." not in block
-    assert "A user log entry, not a standing rule." not in block
-    assert "Prefers plain-language reports" not in block  # soft-deleted
-    # No slug is injected -- only the body.
-    assert "user_prefers_live_verification" not in block
+    block = build_memory_block(_base_row(), db_path=db)
+    assert block.splitlines() == [
+        "# Scope memory: me",
+        "kind=preference",
+        '  "Live state and code outrank memory when they disagree."  scope=workspace'
+        "  ref=memory:me/decision_me_live_verification",
+        "kind=fact",
+        '  "The team works in UTC."  scope=workspace  ref=memory:me/decision_me_team',
+    ]
 
 
-def test_memory_block_injects_a_long_body_complete_never_truncated(tmp_path):
-    """No ceiling cuts or drops a body: the whole payload arrives, even far
-    past what the block is sized for."""
+def test_memory_block_never_carries_a_body_only_its_title_and_ref(tmp_path):
+    """Replaces "injects a long body complete": a body stays behind its ref, so no length can swell the block."""
     db = tmp_path / "gaia.db"
     from gaia.store.writer import _connect
 
     con = _connect(db)
     try:
-        _seed_memory_row(
-            con, name="user_overlong_preference", body="x" * 25_000,
-        )
+        _seed_memory_row(con, name="decision_me_overlong", body="x" * 25_000)
         con.commit()
     finally:
         con.close()
 
-    block = build_memory_block(db_path=db)
-    assert "[truncated]" not in block
-    assert "x" * 25_000 in block
+    block = build_memory_block(_base_row(), db_path=db)
+    assert "ref=memory:me/decision_me_overlong" in block
+    assert "xxxxxxxxxx" not in block
+    assert len(block) < 300
 
 
 def test_memory_block_empty_without_rows_and_never_an_empty_heading(tmp_path):
@@ -348,56 +349,47 @@ def test_memory_block_empty_without_rows_and_never_an_empty_heading(tmp_path):
 USER_SENTINEL = "_gaia_user"
 
 
-def test_memory_block_reaches_a_dispatch_born_in_any_workspace(tmp_path):
+def test_a_dispatch_born_in_any_workspace_carries_that_workspaces_rows_and_never_the_users(tmp_path):
+    """Replaces "reaches a dispatch born in any workspace": the user's rows reach no kernel; each workspace brings its own."""
     db = tmp_path / "gaia.db"
     from gaia.store.writer import _connect
 
     con = _connect(db)
     try:
         _seed_memory_row(
-            con, name="user_sentinel_pref", workspace=USER_SENTINEL,
-            body="Sentinel preference for every executor.",
+            con, name="user_sentinel_pref", workspace=USER_SENTINEL, type_="user", owner_level="user",
+            title="Sentinel preference for the orchestrator.",
         )
-        _seed_memory_row(
-            con, name="user_legacy_me_pref", workspace="me",
-            body="Legacy row still under me.",
-        )
+        _seed_memory_row(con, name="decision_me_rule", workspace="me", title="Rule of the me workspace.")
+        _seed_memory_row(con, name="decision_other_rule", workspace="other", title="Rule of the other workspace.")
         con.commit()
     finally:
         con.close()
 
     kernel = build_kernel_context(_base_row(workspace="other"), db_path=db)
 
-    assert "Sentinel preference for every executor." in kernel
-    assert "Legacy row still under me." in kernel
+    assert "Rule of the other workspace." in kernel
+    assert "Rule of the me workspace." not in kernel
+    assert "Sentinel preference" not in kernel and "memory:user/" not in kernel
 
 
-def test_memory_block_bumps_kernel_telemetry_on_each_same_named_row(tmp_path):
+def test_memory_block_bumps_kernel_telemetry_on_the_row_of_its_own_scope_only(tmp_path):
+    """Replaces "each same-named row": the bump is addressed by workspace and name, so a same slug elsewhere stays untouched."""
     db = tmp_path / "gaia.db"
     from gaia.store.writer import _connect
 
     con = _connect(db)
     try:
-        _seed_memory_row(
-            con, name="user_sentinel_executor_pref", workspace=USER_SENTINEL,
-            body="Sentinel preference.",
-        )
-        _seed_memory_row(
-            con, name="user_sentinel_executor_pref", workspace="other",
-            body="Same slug in another workspace.",
-        )
+        _seed_memory_row(con, name="decision_shared_slug", workspace="me", title="Rule of me.")
+        _seed_memory_row(con, name="decision_shared_slug", workspace="other", title="Rule of other.")
         con.commit()
     finally:
         con.close()
 
-    build_memory_block(db_path=db)
+    build_memory_block(_base_row(), db_path=db)
 
-    assert _telemetry_row(
-        db, "user_sentinel_executor_pref", USER_SENTINEL,
-    )["kernel_count"] == 1
-    assert _telemetry_row(
-        db, "user_sentinel_executor_pref", "other",
-    )["kernel_count"] == 1
+    assert _telemetry_row(db, "decision_shared_slug", "me")["kernel_count"] == 1
+    assert _telemetry_row(db, "decision_shared_slug", "other")["kernel_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +436,7 @@ class TestMemoryBlockKernelTelemetry:
         try:
             _seed_memory_row(
                 con, name="user_prefers_live_verification",
-                body="Live state and code outrank memory when they disagree.",
+                title="Live state and code outrank memory when they disagree.",
             )
             con.commit()
         finally:
@@ -453,7 +445,7 @@ class TestMemoryBlockKernelTelemetry:
         before = _telemetry_row(db, "user_prefers_live_verification")
         before_history = _history_count(db)
 
-        block = build_memory_block(db_path=db)
+        block = build_memory_block(_base_row(), db_path=db)
 
         after = _telemetry_row(db, "user_prefers_live_verification")
         after_history = _history_count(db)
@@ -480,7 +472,7 @@ class TestMemoryBlockKernelTelemetry:
             con.close()
 
         before = _telemetry_row(db, "user_a_log_entry")
-        build_memory_block(db_path=db)
+        build_memory_block(_base_row(), db_path=db)
         after = _telemetry_row(db, "user_a_log_entry")
 
         assert after == before
@@ -493,14 +485,14 @@ class TestMemoryBlockKernelTelemetry:
         try:
             _seed_memory_row(
                 con, name="user_prefers_live_verification",
-                body="Live state and code outrank memory when they disagree.",
+                title="Live state and code outrank memory when they disagree.",
             )
             con.commit()
         finally:
             con.close()
 
-        first = build_memory_block(db_path=db)
-        second = build_memory_block(db_path=db)
+        first = build_memory_block(_base_row(), db_path=db)
+        second = build_memory_block(_base_row(), db_path=db)
         assert first == second
 
     def test_degrades_when_telemetry_raises(self, tmp_path):
@@ -514,7 +506,7 @@ class TestMemoryBlockKernelTelemetry:
         try:
             _seed_memory_row(
                 con, name="user_prefers_live_verification",
-                body="Live state and code outrank memory when they disagree.",
+                title="Live state and code outrank memory when they disagree.",
             )
             con.commit()
         finally:
@@ -524,7 +516,7 @@ class TestMemoryBlockKernelTelemetry:
             "gaia.store.writer.record_memory_access",
             side_effect=RuntimeError("boom"),
         ):
-            block = build_memory_block(db_path=db)
+            block = build_memory_block(_base_row(), db_path=db)
 
         assert "Live state and code outrank memory" in block
 

@@ -4,7 +4,8 @@ Critical event detection.
 Detects events that warrant context updates:
 - Git commits
 - Git pushes
-- File modifications
+
+``EventType.FILE_MODIFICATIONS`` is declared but no detector emits it.
 """
 
 import re
@@ -63,13 +64,11 @@ class CriticalEventDetector:
 
         result_str = str(result)
 
-        # Extract commit hash
         commit_hash = ""
         match = re.search(r'\[[\w\-/]+ ([a-f0-9]{7,})\]', result_str)
         if match:
             commit_hash = match.group(1)
 
-        # Extract commit message
         commit_message = ""
         if commit_hash:
             msg_match = re.search(
@@ -106,7 +105,6 @@ class CriticalEventDetector:
 
         result_str = str(result)
 
-        # Extract branch info
         branch = ""
         match = re.search(
             r'To .+\n\s+[a-f0-9]+\.\.[a-f0-9]+\s+([\w\-/]+)\s+->',
@@ -133,12 +131,10 @@ class CriticalEventDetector:
         """Run all detectors and return found events."""
         events = []
 
-        # Git commit
         event = self.detect_git_commit(tool_name, parameters, result, success)
         if event:
             events.append(event)
 
-        # Git push
         event = self.detect_git_push(tool_name, parameters, result, success)
         if event:
             events.append(event)
@@ -146,7 +142,6 @@ class CriticalEventDetector:
         return events
 
 
-# Singleton detector
 _detector: Optional[CriticalEventDetector] = None
 
 

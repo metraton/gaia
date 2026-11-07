@@ -1,13 +1,13 @@
 """
 Approval scope builders and matching for T3 grants.
 
-The approval system supports two explicit scope shapes:
+The approval system supports three explicit scope shapes:
 
 - exact_command: tokenized command must match exactly
 - semantic_signature: same semantic command and normalized flags
+- file_path: the exact resolved path of a Write/Edit
 
-The verb_family scope type has been removed (M3 D7 decision).  Stale DB rows
-with scope='verb_family' are inert -- they will not match any new grants.
+Any other scope type, a stale ``verb_family`` row included, matches nothing.
 """
 
 from dataclasses import asdict, dataclass
@@ -15,6 +15,7 @@ from typing import Optional, Tuple, Union
 
 from .command_semantics import analyze_command, tokenize_command
 from .mutative_verbs import CATEGORY_UNKNOWN, CLI_FAMILY_LOOKUP, detect_mutative_command
+from .targets import UNDETERMINED, grant_target
 
 APPROVAL_SCOPE_VERSION = 2
 
@@ -31,7 +32,7 @@ SUPPORTED_SCOPE_TYPES = frozenset({
 
 @dataclass(frozen=True)
 class ApprovalSignature:
-    """Stable representation of an approved command scope."""
+    """Stable representation of an approved command scope; *target* is where the command landed when it was approved."""
 
     version: int = APPROVAL_SCOPE_VERSION
     scope_type: str = SCOPE_SEMANTIC_SIGNATURE
@@ -43,6 +44,7 @@ class ApprovalSignature:
     normalized_flags: Tuple[str, ...] = ()
     dangerous_flags: Tuple[str, ...] = ()
     exact_tokens: Tuple[str, ...] = ()
+    target: str = ""
 
     def to_dict(self) -> dict:
         """Return a JSON-serializable payload."""
@@ -62,6 +64,7 @@ class ApprovalSignature:
             normalized_flags=tuple(data.get("normalized_flags", ())),
             dangerous_flags=tuple(data.get("dangerous_flags", ())),
             exact_tokens=tuple(data.get("exact_tokens", ())),
+            target=data.get("target", ""),
         )
 
 
@@ -71,6 +74,7 @@ def build_approval_signature(
     *,
     danger_verb: str = "",
     danger_category: str = CATEGORY_UNKNOWN,
+    cwd: Optional[str] = None,
 ) -> Optional[ApprovalSignature]:
     """Build a stable scope signature for a command."""
     if scope_type not in SUPPORTED_SCOPE_TYPES:
@@ -107,10 +111,11 @@ def build_approval_signature(
         normalized_flags=_sorted_unique(semantics.flag_tokens_raw),
         dangerous_flags=_sorted_unique(danger.dangerous_flags),
         exact_tokens=exact_tokens,
+        target=grant_target(stripped, cwd=cwd),
     )
 
 
-def matches_approval_signature(signature: ApprovalSignature, command: str) -> bool:
+def matches_approval_signature(signature: ApprovalSignature, command: str, cwd: Optional[str] = None) -> bool:
     """Return True when a command falls inside an approved scope."""
     stripped = command.strip() if command else ""
     exact_tokens = tuple(tokenize_command(stripped))
@@ -123,19 +128,11 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     if signature.scope_type not in SUPPORTED_SCOPE_TYPES:
         return False
 
-    # Identity for a semantic-signature grant is derived ENTIRELY from
-    # analyze_command (base_cmd + semantic_tokens + normalized_flags) -- the
-    # SAME source used at build time (build_approval_signature) and here at
-    # match time, so the comparison is symmetric and reflexive for EVERY command
-    # class, including curl (which reaches T3 via the flag classifier, not
-    # detect_mutative_command). The previous verb/dangerous_flags guards re-ran
-    # detect_mutative_command at match time, which is NOT the verb source used at
-    # build for flag-classified commands: curl's grant verb is '-x put' but
-    # detect_mutative_command(curl) returns the URL -> the verb-equality guard
-    # rejected curl against its OWN grant on every retry. Byte-binding is fully
-    # preserved: semantic_tokens captures every non-flag token (incl. the URL and
-    # positional args) and normalized_flags captures every flag token (incl. the
-    # -d JSON body, -H auth header, -X method).
+    # Identity comes from analyze_command at build and at match time, so the
+    # comparison is reflexive for every command class, including those that
+    # reach T3 only through the flag classifier (curl) and whose grant verb
+    # detect_mutative_command does not reproduce. Every non-flag token and
+    # every flag token is bound, so the grant stays byte-bound.
     semantics = analyze_command(stripped)
     if semantics.base_cmd != signature.base_cmd:
         return False
@@ -143,10 +140,10 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     if signature.scope_type == SCOPE_SEMANTIC_SIGNATURE:
         incoming_semantic_tokens = _approval_identity_tokens(semantics)
         incoming_flags = _sorted_unique(semantics.flag_tokens_raw)
-        return (
-            incoming_semantic_tokens == signature.semantic_tokens
-            and incoming_flags == signature.normalized_flags
-        )
+        if incoming_semantic_tokens != signature.semantic_tokens or incoming_flags != signature.normalized_flags:
+            return False
+        current = grant_target(stripped, cwd=cwd)
+        return current != UNDETERMINED and current == signature.target
 
     return False
 
@@ -156,7 +153,7 @@ def build_file_path_signature(file_path: str) -> Optional[ApprovalSignature]:
 
     Unlike build_approval_signature, this does not parse a shell command.
     The file path is stored verbatim as a single exact_token so that
-    matches_approval_signature can do exact-path matching.
+    matches_file_path_approval can do exact-path matching.
 
     Args:
         file_path: Absolute or relative path to the file being written/edited.

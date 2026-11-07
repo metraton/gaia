@@ -126,7 +126,7 @@ def test_a_retargeted_symlink_is_blocked_again_under_a_new_request(tmp_path):
     assert find_pending_for_file(SESSION, str(second))
 
 
-def test_the_persistence_fallback_consents_against_the_resolved_file(
+def test_the_persistence_fallback_denies_without_an_inline_ask(
     tmp_path, monkeypatch
 ):
     """The fallback branch names the same object as the three consumers above.
@@ -159,7 +159,7 @@ def test_the_persistence_fallback_consents_against_the_resolved_file(
         return original_request_consent(request)
 
     monkeypatch.setattr(adapter, "request_consent", _capture)
-    adapter._adapt_write_edit(
+    response = adapter._adapt_write_edit(
         "Edit",
         {"file_path": str(through_link)},
         session_id=SESSION,
@@ -168,10 +168,10 @@ def test_the_persistence_fallback_consents_against_the_resolved_file(
         agent_type=AGENT_TYPE,
     )
 
-    assert seen.get("operation") == str(real), (
-        "the fallback must consent against the file the write lands on, not "
-        "the spelling that reached it"
-    )
+    assert seen == {}, "an unpersistable request fails closed instead of asking inline"
+    output = response.output["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "persistence failed" in output["permissionDecisionReason"]
 
 
 def test_the_resolver_keeps_the_form_the_symlink_actually_lands_on(tmp_path):

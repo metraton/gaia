@@ -82,28 +82,6 @@ def _due_rows(con: sqlite3.Connection, select: str, workspace: str | None,
     ).fetchall()
 
 
-def count_unread_notifications(
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> int:
-    """Return the number of notifications open and due now, optionally scoped.
-
-    Fail-soft: returns 0 on any query/connection error so the per-prompt hook
-    counter never breaks the pipeline.
-    """
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return 0
-    try:
-        rows = _due_rows(con, "SELECT COUNT(*)", workspace)
-        return int(rows[0][0]) if rows else 0
-    except Exception:
-        return 0
-    finally:
-        con.close()
-
-
 def list_unread_notifications(
     workspace: str | None = None,
     limit: int = 50,
@@ -123,6 +101,163 @@ def list_unread_notifications(
             con, "SELECT *", workspace,
             " ORDER BY COALESCE(due_at, created_at) DESC, id DESC LIMIT ?", (limit,),
         )
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def due_now(workspace: str | None = None) -> list[dict[str, Any]]:
+    """The one rule ``## Due`` and the prompt line share: open notifications due now in ``workspace`` and global, reports excluded."""
+    return [row for row in list_unread_notifications(workspace=workspace, limit=-1) if row["kind"] != "report"]
+
+
+def latest_signal_id(db_path: Path | None = None) -> int:
+    """Return the id of the newest signal, 0 when there is none or the table cannot be read."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return 0
+    try:
+        return int(con.execute("SELECT COALESCE(MAX(id), 0) FROM signals").fetchone()[0])
+    except Exception:
+        return 0
+    finally:
+        con.close()
+
+
+# An OpenCode child writes under its own session id, kept as harness_agent_id on
+# the row its parent dispatched; a Claude Code subagent writes under the parent's.
+_NOT_FROM_SESSION = (
+    "(session_id IS NULL OR session_id NOT IN ("
+    "SELECT ? UNION SELECT harness_agent_id FROM agent_contract_handoffs"
+    " WHERE session_id = ? AND harness_agent_id IS NOT NULL))"
+)
+
+
+def signals_from_others(
+    session_id: str,
+    after_id: int = 0,
+    upto_id: int | None = None,
+    limit: int | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return signals in ``(after_id, upto_id]`` not written by ``session_id`` or its children, newest first, with the memory row's current kind and placement; [] on error."""
+    where = ["s.id > ?"]
+    params: list[Any] = [after_id]
+    if upto_id is not None:
+        where.append("s.id <= ?")
+        params.append(upto_id)
+    if session_id:
+        where.append(_NOT_FROM_SESSION)
+        params += [session_id, session_id]
+    sql = (
+        "SELECT s.*, m.kind, m.description, m.initiative, m.project_ref, m.owner_level "
+        "FROM signals s LEFT JOIN memory m "
+        "ON s.source = 'memory' AND m.workspace = s.workspace AND m.name = s.ref "
+        f"WHERE {' AND '.join(where)} ORDER BY s.id DESC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def active_projects(db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Return every active project's workspace, name, path, group_name and project_identity; [] on error."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(
+            "SELECT workspace, name, path, group_name, project_identity FROM projects "
+            "WHERE status = 'active' ORDER BY workspace, name"
+        ).fetchall()]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def _read_only_rows(sql: str, params: tuple, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Rows of one SELECT run on a query_only connection, as dicts; [] on any error."""
+    try:
+        con = _ro_connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def pending_proposal_refs(db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Pending proposals oldest first, as id, kind and proposing contract only -- never the payload."""
+    return _read_only_rows(
+        "SELECT p.id, p.kind, h.contract_id FROM proposals p "
+        "JOIN agent_contract_handoffs h ON h.id = p.handoff_id "
+        "WHERE p.status = 'pending' ORDER BY p.id",
+        (), db_path,
+    )
+
+
+def dispatched_handoffs(session_id: str, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """The session's turns still in the DISPATCHED row state, newest first; [] without a session."""
+    if not session_id:
+        return []
+    return _read_only_rows(
+        "SELECT contract_id, agent_id FROM agent_contract_handoffs "
+        "WHERE session_id = ? AND agent_state = 'DISPATCHED' ORDER BY id DESC",
+        (session_id,), db_path,
+    )
+
+
+def dispatch_counts_by_project(days: int, db_path: Path | None = None) -> dict[str, int]:
+    """Turns dispatched in the last ``days`` days, counted per ``dispatch_project`` display ("name (/abs/path)").
+
+    One grouped read; turns that named no project are left out. ``{}`` on any DB error.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = _read_only_rows(
+        "SELECT dispatch_project, COUNT(*) AS turns FROM agent_contract_handoffs "
+        "WHERE created_at >= ? AND dispatch_project IS NOT NULL GROUP BY dispatch_project",
+        (since,), db_path,
+    )
+    return {row["dispatch_project"]: row["turns"] for row in rows}
+
+
+def active_plan_heads(workspace: str | None = None, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Each active, unpaused plan with its brief and lowest-ordered pending task, limited to ``workspace`` and its aliases."""
+    try:
+        con = _ro_connect(db_path)
+    except Exception:
+        return []
+    try:
+        scope_sql, params = "", []
+        if workspace is not None:
+            scope = workspace_scope(con, workspace)
+            scope_sql, params = f" AND b.workspace IN ({','.join('?' * len(scope))})", scope
+        rows = con.execute(
+            "SELECT p.id AS plan_id, b.name AS brief, t.id AS task_id, t.order_num AS task_order "
+            "FROM plans p JOIN briefs b ON b.id = p.brief_id "
+            "LEFT JOIN tasks t ON t.id = (SELECT id FROM tasks WHERE plan_id = p.id "
+            "AND status = 'pending' ORDER BY order_num LIMIT 1) "
+            f"WHERE p.status = 'active' AND p.paused_at IS NULL{scope_sql} ORDER BY p.id",
+            params,
+        ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         return []
@@ -187,10 +322,19 @@ def not_superseded(row: str = "memory") -> str:
     old end is matched by workspace and name, since a link across owners keeps
     it in ``dst_workspace`` rather than the link's own workspace.
     """
+    return f"NOT EXISTS (SELECT 1 {_supersedes_links_to(row)})"
+
+
+def superseded_by(row: str = "memory") -> str:
+    """SQL expression naming, comma-joined, the rows that supersede ``row``; NULL while it stands."""
+    return f"(SELECT group_concat(sl.src_name, ',') {_supersedes_links_to(row)})"
+
+
+def _supersedes_links_to(row: str) -> str:
     return (
-        "NOT EXISTS (SELECT 1 FROM memory_links sl "
+        "FROM memory_links sl "
         f"WHERE sl.kind = 'supersedes' AND sl.dst_name = {row}.name "
-        f"AND COALESCE(sl.dst_workspace, sl.workspace) = {row}.workspace)"
+        f"AND COALESCE(sl.dst_workspace, sl.workspace) = {row}.workspace"
     )
 
 
@@ -214,9 +358,8 @@ def pending_threads_by_project(
 ) -> list[dict]:
     """Live-pending thread rows of the projects in ``keys``, freshest first.
 
-    A project's pending work is one corpus whichever workspace wrote it
-    (AC-12 of brief ``una-gaia-cualquier-instalacion``), so no workspace
-    filters the rows: a row belongs to a project when
+    A project's pending work is one corpus whichever workspace wrote it, so
+    no workspace filters the rows: a row belongs to a project when
     ``gaia.store.writer.canonical_project_key`` of its ``initiative`` and
     ``project_ref`` is in ``keys``. The thread predicate is
     ``bin/cli/memory.py::_PENDING_VIVO_SELECT``'s, both excluding superseded
@@ -230,16 +373,25 @@ def pending_threads_by_project(
     return _rows_of_projects(_PENDING_THREADS_WITH_A_PROJECT, keys, db_path)
 
 
-_LIVE_ANCHORS_WITH_A_PROJECT = (
-    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
-    "       m.initiative, m.project_ref, m.class, m.status, "
-    "       m.measured_at, m.method "
+_LIVE_ANCHORS_OF_A_PROJECT_WHERE = (
     "FROM memory m "
     "WHERE m.deleted_at IS NULL "
     "  AND m.class = 'anchor' "
     "  AND (COALESCE(m.initiative, '') != '' OR COALESCE(m.project_ref, '') != '') "
     f"  AND {not_superseded('m')} "
     "ORDER BY COALESCE(m.updated_at, '') DESC"
+)
+
+_LIVE_ANCHORS_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
+    "       m.initiative, m.project_ref, m.class, m.status, "
+    "       m.measured_at, m.method "
+    + _LIVE_ANCHORS_OF_A_PROJECT_WHERE
+)
+
+_LIVE_ANCHOR_INDEX_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.description, m.initiative, m.project_ref "
+    + _LIVE_ANCHORS_OF_A_PROJECT_WHERE
 )
 
 
@@ -255,6 +407,18 @@ def anchors_by_project(
     ``[]`` for empty ``keys`` and on any DB error.
     """
     return _rows_of_projects(_LIVE_ANCHORS_WITH_A_PROJECT, keys, db_path)
+
+
+def anchor_index_by_project(
+    keys: list[str],
+    db_path: Path | None = None,
+) -> list[dict]:
+    """:func:`anchors_by_project` without bodies: the same rows, freshest first, name and description only.
+
+    For readers that announce the notes instead of carrying them, so a project
+    with long standing notes costs a dispatch no body read.
+    """
+    return _rows_of_projects(_LIVE_ANCHOR_INDEX_WITH_A_PROJECT, keys, db_path)
 
 
 def _rows_of_projects(select: str, keys: list[str], db_path: Path | None) -> list[dict]:
@@ -278,34 +442,24 @@ def _rows_of_projects(select: str, keys: list[str], db_path: Path | None) -> lis
         con.close()
 
 
-def project_row_workspaces(
+def memory_row_workspaces(
     name: str,
     *,
     include_deleted: bool = False,
     db_path: Path | None = None,
 ) -> list[str]:
-    """Sorted workspaces holding a row ``name`` that belongs to a project.
-
-    Membership is ``canonical_project_key`` of the row's ``project_ref`` and
-    ``initiative``, as in :func:`pending_threads_by_project`; a row with no
-    project is its workspace's alone and is never returned. Tombstoned rows
-    count only with ``include_deleted``. ``[]`` on any DB error.
-    """
+    """Sorted workspaces holding a row ``name``, whatever its owner; tombstones only with ``include_deleted``, ``[]`` on any DB error."""
     try:
-        from gaia.store.writer import canonical_project_key
         con = _connect(db_path)
     except Exception:
         return []
     live = "" if include_deleted else " AND deleted_at IS NULL"
     try:
         rows = con.execute(
-            f"SELECT workspace, project_ref, initiative FROM memory WHERE name = ?{live}",
+            f"SELECT DISTINCT workspace FROM memory WHERE name = ?{live} ORDER BY workspace",
             (name,),
         ).fetchall()
-        return sorted({
-            r["workspace"] for r in rows
-            if canonical_project_key(r["project_ref"], r["initiative"])
-        })
+        return [r["workspace"] for r in rows]
     except Exception:
         return []
     finally:
@@ -335,15 +489,15 @@ def count_pending_by_initiative(
 # memory reads -- who the user is
 # ---------------------------------------------------------------------------
 
-# Every workspace, not the caller's: user memory belongs to no workspace
-# (AC-11), and rows written before the _gaia_user sentinel existed still sit
+# Every workspace, not the caller's: user memory belongs to no workspace,
+# and rows written before the _gaia_user sentinel existed still sit
 # under the workspace that wrote them until they are relocated.
 _USER_ANCHORS = (
     "SELECT m.workspace, m.name, m.description, m.body "
     "FROM memory m "
     "WHERE m.type = 'user' AND m.class = 'anchor' AND m.deleted_at IS NULL "
     f"  AND {not_superseded('m')} "
-    "  AND (? IS NULL OR COALESCE(m.audience, 'any') IN (?, 'any')) "
+    "  AND (? IS NULL OR COALESCE(m.audience, 'any') = ?) "
     "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
 )
 
@@ -351,14 +505,7 @@ _USER_ANCHORS = (
 def user_anchor_rows(
     db_path: Path | None = None, *, audience: str | None = None,
 ) -> list[dict]:
-    """The user's standing rows: live ``type='user'`` anchors no row supersedes.
-
-    The one selection behind both the session birth block and the dispatch
-    kernel, so the orchestrator and every subagent know the user by the same
-    rows. ``audience`` names the reader's role: given, only rows addressed to
-    that role or to ``any`` come back; omitted, every row does, which is what
-    the orchestrator's birth block reads. Returns ``[]`` on any DB error.
-    """
+    """The user's live ``type='user'`` anchors, only those addressed to ``audience`` when given."""
     try:
         con = _connect(db_path)
     except Exception:
@@ -367,6 +514,102 @@ def user_anchor_rows(
         return [dict(r) for r in con.execute(_USER_ANCHORS, (audience, audience))]
     except Exception:
         return []
+    finally:
+        con.close()
+
+
+_USER_MEMORY = (
+    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.until, m.updated_at, m.surface "
+    "FROM memory m "
+    "WHERE m.owner_level = 'user' AND m.kind IN ('fact', 'preference') "
+    "  AND m.class = 'anchor' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+)
+
+
+def user_memory_rows(db_path: Path | None = None) -> list[dict]:
+    """The user's live facts and preferences, freshest first, a preference only while its ``until`` holds."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        from gaia.store.memory_placement import until_holds
+
+        return [dict(r) for r in con.execute(_USER_MEMORY) if until_holds(r["until"], con)]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+_USER_TOOLS = (
+    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.binary, m.replaces "
+    "FROM memory m "
+    "WHERE m.owner_level = 'user' AND m.kind = 'tool' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY m.binary"
+)
+
+
+def user_tool_rows(db_path: Path | None = None) -> list[dict]:
+    """The user's live tool rows, by binary; ``[]`` on any error, which the alias reader takes as no alias."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(_USER_TOOLS)]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+_SCOPE_MEMORY = (
+    "SELECT m.workspace, m.name, m.description, m.body, m.kind, m.until, m.updated_at, "
+    "       m.owner_level, m.initiative, m.project_ref "
+    "FROM memory m "
+    "WHERE m.owner_level IN ('workspace', 'group', 'project') "
+    "  AND m.kind IN ('preference', 'fact', 'lesson') "
+    "  AND m.class = 'anchor' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+)
+
+
+def scope_memory_rows(
+    workspace: str | None,
+    group_key: str | None,
+    project_key: str | None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """The live preferences, facts and lessons of a scope chain, each row stamped ``scope`` with the owner that holds it.
+
+    A workspace row belongs by its ``workspace``; a group or project row by
+    ``canonical_project_key`` of its ``initiative`` and ``project_ref``. A
+    preference counts only while its ``until`` holds. Raises on a read error:
+    ``[]`` means the chain holds no rows, and the caller reports a failure
+    instead of showing it as an empty scope.
+    """
+    from gaia.store.memory_placement import until_holds
+    from gaia.store.writer import canonical_project_key
+
+    con = _connect(db_path)
+    try:
+        rows = []
+        for r in con.execute(_SCOPE_MEMORY):
+            key = canonical_project_key(r["project_ref"], r["initiative"])
+            level = r["owner_level"]
+            held = (
+                (level == "workspace" and workspace and r["workspace"] == workspace)
+                or (level == "group" and group_key and key == group_key)
+                or (level == "project" and project_key and key == project_key)
+            )
+            if held and until_holds(r["until"], con):
+                rows.append({**dict(r), "scope": level})
+        return rows
     finally:
         con.close()
 
@@ -391,6 +634,21 @@ def live_owned_memory_rows(db_path: Path | None = None) -> list[dict]:
     con = _connect(db_path)
     try:
         return [dict(r) for r in con.execute(_LIVE_OWNED_ROWS)]
+    finally:
+        con.close()
+
+
+def memory_counts_by_type(db_path: Path | None = None) -> dict[str, dict[str, int]]:
+    """Undeleted curated rows of every workspace per type, split into ``live`` and ``superseded``."""
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT type, "
+            f"      SUM(CASE WHEN {not_superseded()} THEN 1 ELSE 0 END) AS live, "
+            f"      SUM(CASE WHEN {not_superseded()} THEN 0 ELSE 1 END) AS superseded "
+            "FROM memory WHERE deleted_at IS NULL GROUP BY type ORDER BY type"
+        ).fetchall()
+        return {r["type"]: {"live": r["live"], "superseded": r["superseded"]} for r in rows}
     finally:
         con.close()
 
@@ -484,10 +742,9 @@ def _query_memory(
         where.append("type = ?")
         params.append(type_filter)
 
-    # scan-v2 SV3: tombstoned rows (deleted_at non-NULL) are soft-deleted and
-    # must never surface in a query. delete_memory() stamps deleted_at instead
-    # of physically removing the row, so this filter is what keeps a tombstone
-    # invisible to `gaia query` / cross_surface_query.
+    # Tombstoned rows (deleted_at non-NULL) are soft-deleted: delete_memory()
+    # stamps deleted_at instead of removing the row, so this filter keeps a
+    # tombstone out of cross_surface_query.
     where.append("deleted_at IS NULL")
 
     sql = (
@@ -525,10 +782,8 @@ def _query_memory(
 
 
 # Metric fields projected out of episodes.context_metrics when metrics=True.
-# The workflow recorder nests these under the "metrics" key of the JSON blob
-# (T4 episodic-workflow-to-db); a few older migrated rows store them at the
-# top level, so each extraction COALESCEs the nested path with the flat one.
-# json1 is compiled into SQLite by default -- no schema migration required.
+# Each extraction COALESCEs the path nested under the "metrics" key of the JSON
+# blob with the flat top-level one, so rows of either shape project the field.
 _METRIC_JSON_FIELDS = (
     # (output column, json leaf path under $.metrics / $)
     ("compliance_score", "compliance_score.total"),
@@ -700,10 +955,8 @@ def _query_harness_events(
         where.append("result LIKE ?")
         params.append(command_like)
     if failed:
-        # For harness_events, "failed" maps to severity=error or
-        # result-string starting with 'fail'/'error', plus payload exit_code != 0
-        # when present. We use a SQL approximation here; payload exit_code
-        # parsing happens in Python below if needed.
+        # For harness_events, "failed" maps to severity=error or a result
+        # string starting with 'fail'/'error'; payload exit_code is not read.
         where.append(
             "(severity = 'error' OR result LIKE 'fail%' OR result LIKE 'error%')"
         )
@@ -721,10 +974,6 @@ def _query_harness_events(
     out = []
     for r in rows:
         d = {k: r[k] for k in r.keys()}
-        # Optional payload-level filtering: for command.executed, an exit_code
-        # field may live inside the JSON payload. When --failed was requested
-        # but the SQL approximation matched too broadly, keep the row as-is;
-        # users can refine with --command-like or --type.
         result = (d.get("result") or "").strip().replace("\n", " ")
         if len(result) > 80:
             result = result[:77] + "..."
@@ -968,7 +1217,8 @@ def cross_surface_query(
 
     Args:
         surface:       ``memory`` | ``episodes`` | ``harness_events`` | ``all``.
-        workspace:     Filter by project / workspace identity.
+        workspace:     Filter by workspace name; episodes and harness_events
+                       also match its retire aliases.
         since:         Lower bound for timestamps -- duration ('24h') or
                        date ('2026-05-01'). See :func:`parse_when`.
         until:         Upper bound for timestamps -- same format as ``since``.
@@ -1056,9 +1306,7 @@ def cross_surface_query(
 # Defect triage -- row-level reads across the two defect channels
 # ---------------------------------------------------------------------------
 #
-# ``gaia metrics`` already answers "how many of each anomaly type"; nothing
-# answered "show me the instances of one type so I can triage them". These
-# readers are that missing half -- one row per defect, never an aggregate.
+# These readers return one row per defect, never an aggregate.
 #
 # A defect reaches the substrate through two channels that cannot be merged
 # at the storage layer, so they are merged here:
@@ -1302,10 +1550,9 @@ def read_defects(
 #
 # episodes_fts is a content-linked FTS5 table (content='episodes') kept in
 # sync by INSERT/UPDATE/DELETE triggers declared in schema.sql. This is the
-# single canonical full-text index over episodic memory; the legacy
-# tools/memory/search_store.py (a separate search.db file) was retired in
-# favour of these two helpers, which both the ``gaia memory search`` CLI and
-# the context injector (tools/context/context_provider.py) call.
+# single canonical full-text index over episodic memory; the ``gaia memory
+# search`` CLI and the context injector (tools/context/context_provider.py)
+# both read it through the two helpers below.
 
 
 def sanitize_episodes_fts_query(query: str) -> str:
@@ -1317,11 +1564,6 @@ def sanitize_episodes_fts_query(query: str) -> str:
     break FTS5 MATCH syntax (quotes, stray ``*``) are removed. An empty or
     whitespace-only input yields an empty string, which callers use to skip
     the query entirely.
-
-    This preserves the tokenisation behaviour of the retired
-    ``search_store._sanitize_query`` so free-text prompts (e.g. the context
-    injector's ``user_task``) still produce meaningful matches instead of
-    erroring on raw punctuation.
     """
     query = (query or "").replace("-", " ")
     words = query.split()
@@ -1341,7 +1583,7 @@ def search_episodes_fts(
     Returns a list of episode dicts (all columns of the matched ``episodes``
     row) enriched with an ``fts_rank`` field (bm25 rank; lower = more
     relevant). Results are ordered by rank. When ``workspace`` is given the
-    match is restricted to that workspace.
+    match is restricted to it and its retire aliases.
 
     Fails safe: any import/DB/MATCH error yields an empty list so callers
     (CLI search, context injection) never block on a search failure. The
@@ -1424,6 +1666,23 @@ def _ro_connect(db_path: Path | None = None) -> sqlite3.Connection:
         # lacks it, fall back to the SELECT-only discipline of this module.
         pass
     return con
+
+
+def latest_session_event_type(
+    session_id: str, event_types: tuple[str, ...], db_path: Path | None = None,
+) -> str | None:
+    """The newest of ``event_types`` in ``harness_events`` whose payload names ``session_id``."""
+    marks = ",".join("?" * len(event_types))
+    con = _ro_connect(db_path)
+    try:
+        row = con.execute(
+            f"SELECT type FROM harness_events WHERE type IN ({marks}) "
+            "AND json_extract(payload, '$.session_id') = ? ORDER BY id DESC LIMIT 1",
+            (*event_types, session_id),
+        ).fetchone()
+    finally:
+        con.close()
+    return row[0] if row else None
 
 
 def _dedup_preserve(names) -> list[str]:

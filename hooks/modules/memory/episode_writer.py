@@ -1,9 +1,6 @@
 """
 Episodic memory capture for workflow episodes.
 
-Renamed from episode_capture.py. Absorbs get_session_events() from
-session_state.py directly into this module.
-
 Provides:
     - write(): Store workflow as episodic memory
     - get_session_events(): Read context.json, categorize events
@@ -20,10 +17,7 @@ logger = logging.getLogger(__name__)
 def _record_persist_failure(metrics: Dict[str, Any], reason: str) -> None:
     """Record a rejected episode write to ``harness_events``.
 
-    A failed INSERT used to end at the ERROR log line above -- visible only
-    to whoever happens to tail hooks-*.log at the right time. This mirrors
-    every other non-blocking hook signal (AGENT_DISPATCH, AGENT_COMPLETE) by
-    appending one row an operator can find later via
+    Appends one row an operator can find via
     ``gaia query --surface harness_events``. Never raises: a failure to
     record the failure must not mask the original one or crash the hook.
     """
@@ -43,12 +37,8 @@ def _record_persist_failure(metrics: Dict[str, Any], reason: str) -> None:
             },
         )
     except Exception:
-        pass  # Recording the failure must never itself fail the hook.
+        pass
 
-
-# ============================================================================
-# Session events (absorbed from session_state.py)
-# ============================================================================
 
 def get_session_events() -> Dict[str, Any]:
     """
@@ -120,10 +110,6 @@ def get_session_events() -> Dict[str, Any]:
         return {}
 
 
-# ============================================================================
-# Episodic memory capture
-# ============================================================================
-
 def write(
     metrics: Dict[str, Any],
     anomalies: Optional[List[Dict[str, str]]] = None,
@@ -134,15 +120,15 @@ def write(
     Capture workflow as episodic memory.
 
     Args:
-        metrics: Subagent metrics from workflow (includes plan_status, tier, task description)
+        metrics: Subagent metrics from workflow; this reads agent, prompt,
+            plan_status, exit_code, duration_ms, tags and context_anchor_hits
         anomalies: Detected anomalies from audit(), stored in episode context
-        commands_executed: List of commands extracted from EVIDENCE_REPORT
+        commands_executed: List of commands the turn ran
         outcome_override: Force the recorded outcome instead of deriving it from
             plan_status/exit_code. The derivation reads what the turn CLAIMED
             about itself, so a turn whose envelope says COMPLETE records
-            'success' even when the hook refused that claim -- measured on a
-            turn the rejection circuit cut, which was stored as a success three
-            times over. A caller that knows the turn failed states it here.
+            'success' even when the hook refused that claim. A caller that
+            knows the turn failed states it here.
 
     Returns:
         Episode ID if stored, None otherwise
@@ -175,9 +161,6 @@ def write(
 
         memory = episodic_module.EpisodicMemory()
 
-        # Use the real task description captured from the transcript.
-        # metrics["prompt"] now holds the first user message (task description)
-        # rather than the generic "SubagentStop for <agent>".
         prompt = metrics.get("prompt", "")
         if not prompt:
             prompt = f"Task for {metrics.get('agent', 'unknown')}"
@@ -185,7 +168,6 @@ def write(
         subagent_type = metrics.get("agent", "unknown")
         duration_seconds = metrics.get("duration_ms", 0) / 1000.0 if metrics.get("duration_ms") else None
 
-        # Determine outcome: prefer plan_status string, fall back to exit_code
         plan_status = metrics.get("plan_status", "")
         exit_code = metrics.get("exit_code", 0)
         if plan_status:
@@ -196,11 +178,8 @@ def write(
                 outcome = "failed"
                 success = False
             else:
-                # IN_PROGRESS, APPROVAL_REQUEST, NEEDS_INPUT, NEEDS_VERIFICATION
-                # (harness R2) -> partial. NEEDS_VERIFICATION does not collide
-                # with the "COMPLETE" or "BLOCKED" substring checks above, so
-                # it already falls into this bucket by construction -- no
-                # behavior change, named here explicitly for auditability.
+                # IN_PROGRESS, APPROVAL_REQUEST, NEEDS_INPUT and NEEDS_VERIFICATION
+                # contain neither substring above.
                 outcome = "partial"
                 success = None
         elif exit_code == 0:
@@ -214,12 +193,10 @@ def write(
             outcome = outcome_override
             success = {"success": True, "failed": False}.get(outcome_override)
 
-        # Tags from metrics -- filter empty strings defensively
         tags = [t for t in metrics.get("tags", []) if t]
         if not tags and subagent_type and subagent_type != "unknown":
             tags = [subagent_type]
 
-        # Enrich with session events and anomalies
         session_events = get_session_events()
         context = {"metrics": metrics}
         if session_events:
@@ -229,7 +206,6 @@ def write(
             context["anomalies"] = anomalies
             logger.info(f"Episode has {len(anomalies)} anomaly/anomalies")
 
-        # Include context anchor hit tracking if available
         anchor_hits = metrics.get("context_anchor_hits")
         if anchor_hits:
             context["context_anchor_hits"] = anchor_hits
@@ -240,7 +216,6 @@ def write(
                 anchor_hits.get("hit_rate", 0) * 100,
             )
 
-        # P3 CLI compatibility fields
         episode_id = memory.store_episode(
             prompt=prompt,
             clarifications={},
@@ -258,14 +233,9 @@ def write(
         return episode_id
 
     except RuntimeError as e:
-        # store_episode raises RuntimeError when the DB write fails (e.g.
-        # gaia.store.writer not importable, INSERT rejected). Log at ERROR
-        # level so the failure is visible in hooks-*.log instead of being
-        # swallowed at DEBUG, AND record it in harness_events -- a log line
-        # nobody tails is not a record an operator can consult later. This
-        # was the third and last of three layers (writer.insert_episode ->
-        # episodic.store_episode -> here) that turned a rejected INSERT into
-        # a silent None; the turn itself still closes COMPLETE.
+        # store_episode raises RuntimeError when the DB write fails. Logged at
+        # ERROR and recorded in harness_events, which an operator can query;
+        # a log line nobody tails cannot be.
         logger.error(f"Failed to persist episodic memory: {e}")
         _record_persist_failure(metrics, str(e))
         return None

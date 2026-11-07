@@ -24,7 +24,7 @@ LEGACY_GRANT_CACHE = Path(".claude") / "cache" / "approvals"
 
 
 def _prune_empty(directory: Path, stop: Path) -> None:
-    """Remove *directory* and its parents up to *stop* while they are empty; os.rmdir refuses a non-empty one."""
+    """Remove empty directories under *directory*, then *directory* and its parents up to *stop* (exclusive), ending at the first non-empty one."""
     for current in [*sorted(directory.rglob("*"), reverse=True), directory]:
         if current.is_dir() and not current.is_symlink():
             try:
@@ -71,10 +71,9 @@ def merge_legacy_data_dirs(workspace: Path, data_dir: Path) -> dict:
     return {"action": "migrated", "details": details}
 
 
-# Name prefix -> keys every record of that kind carried, as the last filesystem
-# grant writer wrote them (hooks/modules/security/approval_grants.py before
-# 24afac13 moved grants into gaia.db). "pending-index-" precedes "pending-",
-# whose prefix it shares.
+# Name prefix -> keys every record of that kind carried. "pending-index-" must
+# precede "pending-", whose prefix it shares: is_legacy_grant_file takes the
+# first match.
 LEGACY_GRANT_SHAPES = (
     ("grant-", frozenset({"session_id", "approved_scope", "scope_type", "scope_signature",
                           "granted_at", "ttl_minutes", "used"})),
@@ -98,7 +97,7 @@ def is_legacy_grant_file(path: Path) -> bool:
 
 
 def remove_stale_grant_cache(workspace: Path) -> dict:
-    """Delete the 5.x JSON approval grants, superseded by gaia.db and long expired; any other file stays."""
+    """Delete the 5.x JSON approval grants, superseded by gaia.db; any file not shaped like one stays."""
     cache = workspace / LEGACY_GRANT_CACHE
     if not cache.is_dir() or cache.is_symlink():
         return {"action": "noop", "details": "no 5.x grant cache"}

@@ -1,8 +1,8 @@
 """
-gaia -- Python library for Gaia substrate v6.
+gaia -- the Python library behind Gaia's CLI and hooks.
 
-Provides the canonical storage substrate for all Gaia state:
-paths, workspace identity, and directory layout.
+Holds the storage substrate (paths, workspace identity, the gaia.db store) and
+the approval, contract and retention machinery built on it.
 
 Usage::
 

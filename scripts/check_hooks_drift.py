@@ -2,24 +2,11 @@
 """Hooks-drift guard: fail if the committed generated hook artifacts diverge
 from what the manifest would produce.
 
-Background: ``hooks/hooks.json`` is GENERATED from ``build/gaia.manifest.json``
-via ``generate_hooks_json`` (scripts/build-plugin.py), invoked by
-``npm run generate:plugin-root``. The manifest is the single source of truth,
-and hooks/hooks.json is the SINGLE place hooks are declared.
-
-``.claude-plugin/plugin.json`` must NOT embed an inline ``hooks`` block:
-Claude Code reads both the inline block and hooks/hooks.json, so declaring
-hooks in both registered every hook twice and made every event fire twice.
-This guard asserts hooks/hooks.json matches the manifest AND that plugin.json
-carries no ``hooks`` key.
-
-If a committed artifact no longer matches the manifest, someone either
-hand-edited a generated file or forgot to re-run the generator after editing
-the manifest. Either way the published plugin would ship a hook configuration
-inconsistent with its own manifest -- e.g. dropping SubagentStart or
-degrading the PreToolUse matcher set. tests/hooks/adapters/test_plugin_manifests
-catches the symptom (event set); this guard catches the root cause (drift from
-the manifest) at publish time.
+``hooks/hooks.json`` is generated from ``build/gaia.manifest.json`` by
+``generate_hooks_json`` (scripts/build-plugin.py, run by ``npm run
+generate:plugin-root``). This guard asserts that its hooks and its ``modules``
+list match the manifest's, and that ``.claude-plugin/plugin.json`` carries no
+``hooks`` key, since Claude Code would register every hook twice.
 
 Exit codes: 0 = in sync, 1 = drift detected, 2 = setup/structural error.
 """

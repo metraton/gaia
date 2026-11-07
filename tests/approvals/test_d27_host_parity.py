@@ -1,10 +1,9 @@
-"""Both hosts ask the same question bytes for one signature (plan 76, task 16; D37 replaces the D27/D29 block).
+"""Both hosts ask one signature from one renderer, each in its own layout (plan 76, task 16).
 
 Claude Code's orchestrator asks what ``gaia approvals question`` prints;
 OpenCode's plugin writes into the orchestrator's question call the questions of
-``gaia approvals opencode-present`` (D39). Both come from one renderer, so each
-command's question and its Details re-ask must be identical, header and
-options included.
+``gaia approvals opencode-present`` (D39). Positions and option labels match;
+Claude Code's English text lists the commands on their own lines, OpenCode's keeps D37's.
 """
 
 from __future__ import annotations
@@ -68,19 +67,33 @@ def _shown(questions):
     return [{key: q[key] for key in ("question", "header", "options")} for q in questions]
 
 
-def test_d27_host_parity_block_bytes_match(approval_id):
-    """The signature question each host asks is the same bytes (D37)."""
-    opencode = _opencode_signature(approval_id)["questions"]
+def _frame(questions):
+    return [(q["header"].split()[-1], [option["label"] for option in q["options"]]) for q in questions]
 
-    assert _shown(_claude_code_questions(approval_id, details=False)) == opencode
+
+def _same_but_text(claude_code, opencode):
+    return _frame(claude_code) == _frame(opencode)
+
+
+def test_d27_host_parity_block_bytes_match(approval_id):
+    """Position and option labels match across hosts; each host words and lays out the text its own way."""
+    opencode = _opencode_signature(approval_id)["questions"]
+    claude_code = _claude_code_questions(approval_id, details=False)
+
+    assert _same_but_text(claude_code, opencode)
     assert opencode[0]["question"] == f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PUSH} ]"
+    assert claude_code[0]["question"] == (
+        f"Signature 1/1: developer requests 1 command\n\n1. {PUSH}\n\nWhat it does: Publicar la rama de prueba."
+    )
 
 
 def test_d27_host_parity_details_bytes_match(approval_id):
     opencode = _opencode_signature(approval_id)["details_questions"]
+    claude_code = _claude_code_questions(approval_id, details=True)
 
-    assert _shown(_claude_code_questions(approval_id, details=True)) == opencode
+    assert _same_but_text(claude_code, opencode)
     assert opencode[0]["question"].startswith("[ GAIA-SECURITY ] [ DETAILS ] [ developer ]")
+    assert "\nUndo: Borrar la rama remota." in claude_code[0]["question"]
 
 
 def test_d27_host_parity_opencode_question_carries_only_the_short_question(approval_id):

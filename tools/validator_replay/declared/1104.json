@@ -1,0 +1,10 @@
+{
+ "task": 1104,
+ "truth_rows": [],
+ "reviews": {
+  "node /home/jorge/.gaia/scratch/a8c83da46f982a0b7.b2ef468371f4/test.cjs /home/jorge/ws/me/.project-worktrees/chocolate-merken/c2b0c10a2ddf3add025c6cc018b44260/index.html /tmp/claude-1001/-home-jorge-ws/d143bd71-c797-405c-8c8f-eaa66dc457f9/scratchpad/ux-packs": "History + approvals, the node <scratch script>.cjs friction: a scratch test script over a local page, no signal at depth 1; the older lanes held only a no-model ask, so SIGNED(sign.lands) -> FREE.",
+  "npm --prefix /home/jorge/ws/me/balance run validate": "Approvals: the scan honors --prefix, reads scripts.validate and finds no signal; SIGNED(sign.lands) -> FREE.",
+  "/home/jorge/ws/me/gaia/hooks/hooks.json": "Approvals, UNKNOWN(unknown.dynamic-span) -> FREE: a bare literal path to a non-executable data file in program position cannot run, so FREE is harmless for it. The wider hole, a literal path to an existing executable file in program position that is never scanned, is pending as thread_gaia_scan_no_lee_script_sin_extension_por_ruta_absoluta_20261106."
+ },
+ "justification": "Decision B (2026-11-06): the scan only adds. A signal adds an ask anywhere; no signal frees only a no-model ask (_NO_MODEL_VERBS: unresolved package script, unreadable script, unresolved JS import, js-hidden-effect). Every verdict an older lane decides on evidence stands, so the 8 truth rows of the first replay (5 SIGNED -> FREE, 3 SIGNED -> UNKNOWN) and three history/approval frictions move back to SIGNED: snapshot.sh (ghx api graphql shape), bun run --cwd gen:traceability (fs-delete in scripts/generate-traceability.ts) and node scratch build.cjs (fs.writeFileSync). A script read only in part now asks (partial-read, unknown.dynamic-span)."
+}

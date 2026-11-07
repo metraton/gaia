@@ -4,8 +4,6 @@ Base Scanner Protocol
 Defines the abstract base class that all scanner modules must implement.
 Each scanner is a pure function: it reads filesystem state and returns
 structured section data without side effects.
-
-Contract: contracts/scanner-interface.md
 """
 
 from abc import ABC, abstractmethod
@@ -37,7 +35,8 @@ class BaseScanner(ABC):
     Every scanner MUST implement:
     - SCANNER_NAME: Unique scanner identifier (e.g., "stack", "git")
     - SCANNER_VERSION: Semver string for schema tracking (e.g., "1.0.0")
-    - OWNED_SECTIONS: List of section names this scanner owns in project-context.json
+    - OWNED_SECTIONS: List of section names this scanner owns; the registry
+      rejects a section claimed by two scanners
     - scan(root): Pure function that scans the project and returns a dict of sections
 
     Pure Function Contract:
@@ -55,13 +54,12 @@ class BaseScanner(ABC):
     - MUST respect 2-second timeout for --version calls
 
     Optional workspace_info attribute:
-    - Set by the orchestrator before scan() when workspace type has been
-      pre-detected. Scanners can check self.workspace_info for multi-repo
-      awareness. Defaults to None (single-repo assumed).
+    - Scanners check self.workspace_info for multi-repo awareness. None means
+      single-repo; ScanOrchestrator sets it to None before every run.
     """
 
     def __init__(self) -> None:
-        self.workspace_info = None  # Set by orchestrator if available
+        self.workspace_info = None
 
     @property
     @abstractmethod
@@ -78,7 +76,7 @@ class BaseScanner(ABC):
     @property
     @abstractmethod
     def OWNED_SECTIONS(self) -> List[str]:
-        """Section names this scanner owns in project-context.json."""
+        """Section names this scanner owns."""
         ...
 
     @abstractmethod

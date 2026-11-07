@@ -13,9 +13,10 @@ from tests.integration.test_opencode_consent_retry_e2e import (
     SESSION_ID, CALL_ID, DRIVER, DISPATCH_STEPS,
 )
 
+#: A T3 publication: a request-set signs only T3 commands, and `gh pr create` runs free.
 COMMAND = (
-    "gh pr create --repo example-org/gaia --head fix/attestation-cli-fixture "
-    "--title 'fixture regression' --body 'diagnostic only'"
+    "gh pr merge fix/attestation-cli-fixture --repo example-org/gaia "
+    "--squash --body 'diagnostic only'"
 )
 
 
@@ -121,7 +122,7 @@ def test_invalid_grant_cannot_acquire_env_delivery(db_env, status):
     assert json.loads(_grant(db, approval)["consumed_indexes_json"]) == []
 
 
-@pytest.mark.parametrize("command", [COMMAND + " --draft", "export GAIA_DISPATCH_AGENT=gaia-system; " + COMMAND])
+@pytest.mark.parametrize("command", [COMMAND + " --admin","export GAIA_DISPATCH_AGENT=gaia-system; " + COMMAND])
 def test_changed_bytes_and_user_compound_remain_denied(db_env, command):
     env, db = db_env
     approval = _request_set(env, (COMMAND,))

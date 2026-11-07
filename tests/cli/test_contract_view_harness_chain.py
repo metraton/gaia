@@ -129,11 +129,15 @@ def test_view_by_harness_id_follows_the_chain_when_ids_disagree_with_it(tmp_path
     assert shown["envelope"]["agent_status"]["agent_state"] == "COMPLETE"
 
 
-@pytest.mark.parametrize("wrong_kind_of_id", [AGENT_ID, SESSION])
-def test_view_by_another_kind_of_id_names_the_expected_id_and_the_rows_harness_id(
-    chain_ids, wrong_kind_of_id,
-):
-    result = _view_id(wrong_kind_of_id)
+def test_view_by_the_minted_agent_id_resolves_to_the_same_row(chain_ids):
+    result = _view_id(AGENT_ID)
+
+    assert result.returncode == 0, result.stderr
+    assert "Task result's agentId" not in result.stderr
+
+
+def test_view_by_a_session_id_names_the_expected_id_and_the_rows_harness_id(chain_ids):
+    result = _view_id(SESSION)
 
     assert result.returncode == 1
     message = result.stderr + result.stdout

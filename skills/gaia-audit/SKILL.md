@@ -66,19 +66,29 @@ through the usual `agent-protocol` contract rather than replacing that envelope.
    schema/contract drift (fields, tables, or envelope keys that have
    moved or renamed). Check single refs and cross refs to sibling
    components.
-3. **Enumerate what the component does TODAY.** State, with key verbatim
+3. **Check how the component judges its own output.** Find the step
+   where it decides its output is done and name that judge: an
+   instrument it runs, an independent verifier, the user, or itself.
+   Flag a component whose only judge is itself (a closing reread, a
+   self-review gate), one that reads a summary where a raw source is
+   reachable, and an identity or step that opens with a role ("You are
+   a ...", "act as ...") -- each against the creator rule it misses
+   (`agent-creation` Step 2 Instruments and sources / Termination,
+   `skill-creation` Step 3.5). Tag it factual-drift when the creator
+   states the rule as required, judgment-trim otherwise.
+4. **Enumerate what the component does TODAY.** State, with key verbatim
    extracts, what the component currently declares and instructs. This is
    the baseline the proposal edits against -- ground it in the text, not
    in memory.
-4. **Enumerate the drift.** List every gap between the declaration and
+5. **Enumerate the drift.** List every gap between the declaration and
    the implementation: what the code rejects, what is stale, what is
    missing. Each item names the claim, the symbol that contradicts it,
    and the direction of the drift.
-5. **Propose changes.** For each item, write the concrete change. Tag it
+6. **Propose changes.** For each item, write the concrete change. Tag it
    **factual-drift** (the code disagrees -- a fix) or **judgment-trim**
    (tighter or leaner -- a discussion). The tag tells the user how much
    deliberation each item needs.
-6. **Return for discussion.** Hand the enumerated proposal back; the
+7. **Return for discussion.** Hand the enumerated proposal back; the
    orchestrator presents it to the user. The audit ends here -- it does
    not apply edits.
 

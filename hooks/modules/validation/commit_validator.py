@@ -1,23 +1,12 @@
 """
 Git Commit Message Validator
 
-Validates commit messages against project standards before execution.
-This prevents commits with forbidden footers or incorrect format from
-being pushed to the repository.
+Validates the format of a commit message (Conventional Commits type, subject
+length, trailing period, emoji, body line length) before the commit runs.
+Footer detection is not done here; it lives in bash_validator.
 
-Usage:
-    from commit_validator import CommitMessageValidator
-
-    validator = CommitMessageValidator()
-    validation = validator.validate(commit_message)
-
-    if not validation.valid:
-        for error in validation.errors:
-            print(f"Error: {error['message']}")
-        # Do not proceed with commit
-    else:
-        # Safe to commit
-        git commit -m "$commit_message"
+The runtime caller is ``bash_validator._validate_commit_message``, which uses
+``validate_commit_message``.
 """
 
 import json
@@ -27,16 +16,6 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from dataclasses import dataclass
 
-
-# ---------------------------------------------------------------------------
-# Git commit standards -- inlined constants.
-#
-# These were previously loaded from config/git_standards.json. They are now
-# module-level constants: commit_validator.py is the single runtime consumer
-# of these format/subject/body rules, so the JSON indirection added drift risk
-# without any benefit. Footer detection/stripping is NOT here -- it lives,
-# hardcoded, in bash_validator (footers are bash_validator's responsibility).
-# ---------------------------------------------------------------------------
 
 FORMAT = "conventional_commits"
 
@@ -124,8 +103,6 @@ class CommitMessageValidator:
                          the module-level constants, not from any file.
         """
         if config_path is None:
-            # base_path -> gaia root, used to resolve the violation log.
-            # __file__ -> hooks/modules/validation/commit_validator.py
             base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         else:
             base_path = os.path.dirname(os.path.dirname(config_path))
@@ -146,23 +123,15 @@ class CommitMessageValidator:
         errors = []
         warnings = []
 
-        # Note: forbidden-footer detection is intentionally NOT done here.
-        # Footers are bash_validator's responsibility (stripping/detection
-        # is hardcoded there).
-
-        # 1. Check conventional commits format
         format_errors = self._check_conventional_format(message)
         errors.extend(format_errors)
 
-        # 2. Check subject line rules
         subject_errors = self._check_subject_rules(message)
         errors.extend(subject_errors)
 
-        # 3. Check body rules (warnings only)
         body_warnings = self._check_body_rules(message)
         warnings.extend(body_warnings)
 
-        # Log violations if configured
         if errors and self.enforcement.get('log_violations', False):
             self._log_violation(message, errors)
 
@@ -176,12 +145,9 @@ class CommitMessageValidator:
         """Check if message follows Conventional Commits format."""
         errors = []
 
-        # Get first line (subject)
         lines = message.split('\n')
         subject = lines[0].strip()
 
-        # Pattern: type(scope)?: description
-        # Examples: feat: add feature, fix(api): correct bug
         allowed_types = '|'.join(TYPE_ALLOWED)
         pattern = rf'^({allowed_types})(\(.+?\))?: .+$'
 
@@ -203,13 +169,10 @@ class CommitMessageValidator:
         lines = message.split('\n')
         subject = lines[0].strip()
 
-        # Extract description part (after type and scope)
-        # Example: "feat(scope): description" -> "description"
         match = re.match(r'^[a-z]+(\(.+?\))?: (.+)$', subject)
         if match:
             description = match.group(2)
 
-            # Check max length
             max_length = SUBJECT_MAX_LENGTH
             if len(subject) > max_length:
                 errors.append({
@@ -219,7 +182,6 @@ class CommitMessageValidator:
                     'severity': 'error'
                 })
 
-            # Check for period at end
             rules = SUBJECT_RULES
             if rules.get('no_period_at_end', True) and description.endswith('.'):
                 errors.append({
@@ -229,21 +191,20 @@ class CommitMessageValidator:
                     'severity': 'error'
                 })
 
-            # Check for emojis in subject line
             if rules.get('no_emoji', False):
                 emoji_pattern = re.compile(
                     "["
-                    "\U0001F600-\U0001F64F"  # emoticons
-                    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-                    "\U0001F680-\U0001F6FF"  # transport & map symbols
-                    "\U0001F700-\U0001F77F"  # alchemical symbols
-                    "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
-                    "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
-                    "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
-                    "\U0001FA00-\U0001FA6F"  # Chess Symbols
-                    "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
-                    "\U00002702-\U000027B0"  # Dingbats
-                    "\U000024C2-\U0001F251"  # Enclosed characters
+                    "\U0001F600-\U0001F64F"
+                    "\U0001F300-\U0001F5FF"
+                    "\U0001F680-\U0001F6FF"
+                    "\U0001F700-\U0001F77F"
+                    "\U0001F780-\U0001F7FF"
+                    "\U0001F800-\U0001F8FF"
+                    "\U0001F900-\U0001F9FF"
+                    "\U0001FA00-\U0001FA6F"
+                    "\U0001FA70-\U0001FAFF"
+                    "\U00002702-\U000027B0"
+                    "\U000024C2-\U0001F251"
                     "]+", flags=re.UNICODE
                 )
 
@@ -263,11 +224,9 @@ class CommitMessageValidator:
 
         lines = message.split('\n')
 
-        # Check if there's a body (more than just subject)
         if len(lines) <= 1:
             return warnings
 
-        # Check blank line after subject
         if len(lines) > 1 and lines[1].strip() != '':
             warnings.append({
                 'type': 'MISSING_BLANK_LINE',
@@ -276,9 +235,8 @@ class CommitMessageValidator:
                 'severity': 'warning'
             })
 
-        # Check body line length
         max_length = BODY_MAX_LINE_LENGTH
-        for i, line in enumerate(lines[2:], start=3):  # Skip subject and blank line
+        for i, line in enumerate(lines[2:], start=3):
             if len(line) > max_length and not line.startswith('http'):
                 warnings.append({
                     'type': 'BODY_LINE_TOO_LONG',
@@ -293,16 +251,14 @@ class CommitMessageValidator:
         """Log commit message violation for audit trail."""
         log_path = self.enforcement.get('log_path', '.claude/logs/commit-violations.jsonl')
 
-        # If log_path is relative, resolve from base_path (not cwd)
         if not os.path.isabs(log_path):
-            # Remove leading ./ if present
+            # The default '.claude/logs/...' loses its './' and 'claude/' and
+            # lands at '<base_path>/logs/...'.
             log_path = log_path.lstrip('./')
-            # If starts with 'claude/', remove it since base_path already points to .claude/
             if log_path.startswith('claude/'):
-                log_path = log_path[7:]  # Remove 'claude/' prefix
+                log_path = log_path[7:]
             log_path = os.path.join(self.base_path, log_path)
 
-        # Ensure log directory exists
         log_dir = os.path.dirname(log_path)
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
@@ -364,7 +320,6 @@ class CommitMessageValidator:
         return "\n".join(lines)
 
 
-# Convenience function for quick validation
 def validate_commit_message(message: str) -> ValidationResult:
     """
     Quick validation function.
@@ -374,35 +329,20 @@ def validate_commit_message(message: str) -> ValidationResult:
 
     Returns:
         ValidationResult
-
-    Example:
-        validation = validate_commit_message("feat: add new feature")
-        if not validation.valid:
-            print("Invalid commit message")
     """
     validator = CommitMessageValidator()
     return validator.validate(message)
 
 
-# Function for use in git commit workflow
 def safe_validate_before_commit(message: str) -> bool:
     """
-    Validate commit message and print errors if invalid.
-
-    This is the primary function that agents should call before git commit.
+    Validate commit message and print the formatted errors if invalid.
 
     Args:
         message: Commit message to validate
 
     Returns:
         True if valid, False if invalid (with errors printed)
-
-    Example:
-        if not safe_validate_before_commit(commit_message):
-            return {"status": "failed", "reason": "commit_validation_failed"}
-
-        # Safe to commit
-        Bash(f'git commit -m "{commit_message}"')
     """
     validator = CommitMessageValidator()
     validation = validator.validate(message)

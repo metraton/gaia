@@ -1,11 +1,7 @@
 """Plugin registry helpers for gaia hooks.
 
-Gaia ships as a single unified plugin ("gaia"). There is no longer a
-runtime mode distinction: every install runs the full orchestrator
-surface. The former runtime mode-detection layer has been removed.
-
-This module now exposes only ``has_plugin`` -- a direct registry membership
-check used independently of any mode concept.
+This module exposes only ``has_plugin``, a direct membership check against
+``plugin-registry.json``.
 """
 from __future__ import annotations
 

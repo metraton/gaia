@@ -136,8 +136,23 @@ def test_orchestrator_guard_denies_no_less_than_on_base(monkeypatch):
     base = _verdicts(monkeypatch, _base_tokenize_args, denied(forward))
     after = _verdicts(monkeypatch, StageDecomposer._tokenize_args, denied(PUBLISHED_GAIA))
     assert [tail for tail in base if base[tail] and not after[tail]] == []
-    assert after[r'echo "a\"; rm -rf /"'] is False
+    assert after[r'echo "a\"; rm -rf /"'] is True
     assert after[r'echo "a\\"; rm -rf /tmp/x'] is True
+
+
+def test_orchestrator_lane_admits_backslashes_only_in_the_trusted_program_word(monkeypatch):
+    monkeypatch.setattr(guard, "is_orchestrator_role", lambda payload: True)
+    monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda token: token == PUBLISHED_GAIA)
+    other = r"C:\Users\user\Workspace\node_modules\evil\bin\gaia"
+
+    assert guard.check(f'"{PUBLISHED_GAIA}" brief list', {}) == (True, None)
+    assert guard.check(f'"{other}" brief list', {})[0] is False
+    for tail in (r'"C:\x"', r"C:\x", r'--json "a\b"', r"'a' \x"):
+        assert guard.check(f'"{PUBLISHED_GAIA}" brief list {tail}', {})[0] is False
+    for word in (r'C:\x\"', r'C:\$HOME\gaia', r'C:\x\\gaia', "C:\\x`id`\\gaia"):
+        assert guard.check(f'"{word}" brief list', {})[0] is False
+    assert guard.check(f'"{PUBLISHED_GAIA}"x brief list', {})[0] is False
+    assert guard.check(f'"{PUBLISHED_GAIA}" brief list && "{PUBLISHED_GAIA}" brief list', {})[0] is False
 
 
 def test_doctor_hook_check_keeps_backslashes(tmp_path):

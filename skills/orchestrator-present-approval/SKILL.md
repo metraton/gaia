@@ -5,18 +5,35 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 
 # Present Approval — Orchestrator Branch
 
-Gaia builds every signature, and each of its commands is one question on one
-line, marked `[ GAIA-SECURITY ]` so the user reads it as Gaia's check and not as
-your question: who asks and the exact command; Details adds what it does, its
-impact and the rollback. No model writes any of it.
+Gaia builds every signature. In Claude Code a signature is one English
+question whose first line is its title, `Signature N/M:` (the desktop app does
+not show the header), then who asks and how many commands (and the
+folder, when every command is `git -C` of the same one), each command
+numbered on its own line, and a closing `What it does:` / `What they do:` line
+with what the set does. In OpenCode each command is its own one-line question, marked
+`[ GAIA-SECURITY ]`. Details adds what each command does, its impact, the
+verification and the rollback. The specialist's phrases -- what each command
+does, its impact, the verification, the rollback -- are sealed with the
+command when it requests (`subagent-request-approval`); the frame around them
+(`Signature N/M:`, who asks and how many commands, `What it does:`) is
+composed by `gaia/approvals/surface.py` when the question is shown. Neither
+part is yours to write or change.
 You never print, copy, summarise or translate any part of it; you
 only run `gaia approvals question` and open what it gives you, unchanged. You
 can run it again at any time for the approvals still pending -- for example
 when several specialists return signatures.
 
-A signature is approved only when every one of its questions gets Approve; a
-Reject on any of them rejects the whole signature. One call asks at most 4
-questions, so a signature carries at most 4 commands.
+A signature is approved only when its question gets Approve (in OpenCode,
+every one of its questions); a Reject rejects the whole signature. Every
+signature in a call is decided on its own. One call asks at most 4 questions:
+4 signatures in Claude Code, 4 commands in OpenCode. A signature carries at
+most 4 commands either way, enforced when it is requested.
+
+In Claude Code, any question you type that reads as a signature -- a
+`Signature N/M`, `Firma N/M` or `Aprobación` header, Approve / Reject / Details
+options, a `[ GAIA-SECURITY ]` or `Signature N/M:` opening, a `<agent> requests <k> commands`
+opening (or the earlier `<agent> pide <k> comandos`) -- is refused unless it
+is exactly what `gaia approvals question` printed.
 
 ## Presenting
 
@@ -25,8 +42,15 @@ a specialist that asks for a signature, or is blocked on a command, asks the
 user nothing. It ends its turn and returns `APPROVAL_REQUEST` with the
 approval id in its contract. You decide when to ask.
 
+A T3 command you run yourself is denied the same way, never sent to the
+host's permission prompt. Run the request line its denial prints, which
+carries `--agent-id` so the request is yours, then present the
+`approval_id` it prints like any other. A protected write you attempt is
+refused outright: dispatch a specialist for it.
+
 1. Run `gaia approvals question <approval_id> [<approval_id> ...]` with the
-   pending ids -- up to 4 questions in all, one per command.
+   pending ids -- up to 4 questions in all: one per signature in Claude Code,
+   one per command in OpenCode.
 2. Call your question tool (AskUserQuestion in Claude Code, question in
    OpenCode) with that output unchanged, and print nothing about the
    signature. Gaia checks the call before the questions open -- the hook in
@@ -41,11 +65,27 @@ approval id in its contract. You decide when to ask.
    the question tool the same way. If Gaia refuses a question, run
    `gaia approvals question` again for the ids it names.
 
+The user signs what the command does -- a push, an apply, a delete -- in the
+plain English every phrase was sealed in, seeing the whole route before the
+first signature; the tier vocabulary never reaches them. Each grant is dispatched while it is still alive.
+
+## What is not a signature
+
+A denial that carries NO `approval_id` is categorical, not a tier decision:
+there is nothing to present and nothing to approve, and calling it T3 invites
+the user to sign a boundary no signature lifts. Name which boundary fired in
+plain terms -- a blocked command, a protected path, a DB-write guard -- and
+reroute the work through the governed surface.
+
 ## After the answer
 
-Read the decision with `gaia approvals show <approval_id>` (its State). Approved:
+Read the decision with `gaia approvals show <approval_id>` (its State); confirm
+it left `pending` before resuming the requester. Approved:
 resume the specialist that requested it -- the same agent, not a new one --
-with `execution`; the signature is bound to that agent and session. Rejected:
+with `execution`; the signature is bound to that agent and session. When a
+grant's TTL is running out mid-verification, re-mint it: verification after
+the mutation is narration, and "execute now, nothing before" costs more than a
+fresh signature. Rejected:
 nothing runs; resume the same requester so it closes its contract and removes
 what it created, instead of dispatching a new one. A typed answer is
 not a decision. You may withdraw a pending approval (`pending-approvals`), but

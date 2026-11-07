@@ -23,22 +23,18 @@ from modules.security.mutative_verbs import detect_mutative_command
 class TestHelpFlagExemption:
     """--help must downgrade any command to non-mutative."""
 
-    def test_gaia_update_help_is_not_mutative(self):
-        """Regression: ghost P-738355ab was created from this exact command."""
-        result = detect_mutative_command(
-            "/home/user/ws/me/gaia-dev/bin/gaia update --help 2>&1"
-        )
+    def test_gaia_update_help_is_not_mutative(self, installed_gaia):
+        """Regression: ghost P-738355ab was created from this command, run from an install."""
+        result = detect_mutative_command(f"{installed_gaia} update --help 2>&1")
         assert result.is_mutative is False, (
             f"--help must downgrade 'update' to non-mutative. "
             f"Got: category={result.category}, verb={result.verb}, "
             f"reason={result.reason}"
         )
 
-    def test_gaia_approvals_clean_help_is_not_mutative(self):
-        """Regression: ghost P-0b06738b was created from this exact command."""
-        result = detect_mutative_command(
-            "/home/user/ws/me/gaia-dev/bin/gaia approvals clean --help 2>&1"
-        )
+    def test_gaia_approvals_clean_help_is_not_mutative(self, installed_gaia):
+        """Regression: ghost P-0b06738b was created from this command, run from an install."""
+        result = detect_mutative_command(f"{installed_gaia} approvals clean --help 2>&1")
         assert result.is_mutative is False, (
             f"--help must downgrade 'clean' to non-mutative. "
             f"Got: category={result.category}, verb={result.verb}, "

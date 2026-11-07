@@ -74,6 +74,7 @@ def _seed_atom(workspace: str = "me", name: str = "atom_seed") -> None:
         workspace,
         name,
         type="atom",
+        kind="fact",
         body="seed body",
         description="seed",
     )
@@ -110,6 +111,7 @@ def test_upsert_memory_allowed_for_gaia_operator(tmp_db, clear_dispatch, monkeyp
         "me",
         "atom_curator_operator",
         type="atom",
+        kind="fact",
         body="curator wrote me",
     )
     assert res["status"] == "applied"
@@ -124,6 +126,7 @@ def test_upsert_memory_allowed_for_gaia_orchestrator(tmp_db, clear_dispatch, mon
         "me",
         "atom_curator_orchestrator",
         type="atom",
+        kind="fact",
         body="curator wrote me",
     )
     assert res["status"] == "applied"
@@ -138,6 +141,7 @@ def test_upsert_memory_allowed_for_human_caller_no_env(tmp_db, clear_dispatch):
         "me",
         "atom_human_caller",
         type="atom",
+        kind="fact",
         body="human wrote me from a shell",
     )
     assert res["status"] == "applied"
@@ -152,6 +156,7 @@ def test_upsert_memory_empty_env_treated_as_unset(tmp_db, clear_dispatch, monkey
         "me",
         "atom_empty_env",
         type="atom",
+        kind="fact",
         body="ok with empty string",
     )
     assert res["status"] == "applied"
@@ -254,6 +259,7 @@ def test_cli_cmd_add_rejects_non_curator_dispatch(tmp_db, tmp_path, monkeypatch,
     args = argparse.Namespace(
         name="atom_cli_forbidden",
         type="atom",
+        kind="fact",
         body="should not land",
         description="x",
         workspace="me",
@@ -278,6 +284,7 @@ def test_cli_cmd_add_json_error_carries_structural_message(
     args = argparse.Namespace(
         name="atom_cli_json_forbidden",
         type="atom",
+        kind="fact",
         body="x",
         description=None,
         workspace="me",
@@ -302,6 +309,7 @@ def test_cli_cmd_add_allowed_human_caller(tmp_db, tmp_path, monkeypatch, capsys)
     args = argparse.Namespace(
         name="atom_cli_human",
         type="atom",
+        kind="fact",
         body="human wrote me",
         description="ok",
         workspace="me",

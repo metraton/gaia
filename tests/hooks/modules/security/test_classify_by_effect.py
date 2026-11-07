@@ -56,7 +56,7 @@ CASES = [
     ("wrapper-pr-update-branch", f"{GH_WRAPPER} pr update-branch 42 --rebase", CONSENT),
     ("twin-gh-pr-view", "gh pr view 42", FREE),
     ("twin-wrapper-pr-view", f"{GH_WRAPPER} pr view 42", FREE),
-    # -- Provoking CI through a gh wrapper declared in GAIA_CLI_ALIASES ------
+    # -- Provoking CI through a gh wrapper declared by a tool row -------------
     ("wrapper-workflow-run", f"{GH_WRAPPER} workflow run ci.yml --ref main", CONSENT),
     ("wrapper-run-rerun", f"{GH_WRAPPER} run rerun 123456", CONSENT),
     ("twin-wrapper-run-view", f"{GH_WRAPPER} run view 123456", FREE),
@@ -83,7 +83,7 @@ CASES = [
     ("twin-db-mentioned-in-quoted-text",
      f"echo 'never run: cp /tmp/x.db {_DB}'", FREE),
     ("twin-db-listing", f"ls -l {_DB}", FREE),
-    ("twin-db-select", f"sqlite3 {_DB} \"SELECT count(*) FROM handoffs\"", FREE),
+    ("db-sqlite3-select", f"sqlite3 {_DB} \"SELECT count(*) FROM handoffs\"", FLOOR),
     ("twin-db-copied-out", f"cp {_DB} /tmp/snapshot.db", CONSENT),
     # -- Executors whose payload travels quoted ------------------------------
     ("xargs-sh-c-push", "xargs sh -c 'git push origin main'", DENIED),
@@ -151,8 +151,8 @@ def _clear_classifier_caches():
 
 
 @pytest.fixture(autouse=True)
-def fresh_classifier(monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{GH_WRAPPER}=gh")
+def fresh_classifier(declare_alias):
+    declare_alias(f"{GH_WRAPPER}=gh")
     _clear_classifier_caches()
     yield
     _clear_classifier_caches()

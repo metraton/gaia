@@ -1,8 +1,9 @@
 """
 Approval Gate Enforcement
 
-Ensures that no realization occurs without explicit user approval.
-This is a CRITICAL component of the Two-Phase Workflow.
+Builds the AskUserQuestion configuration for a realization package and appends
+each decision to ``logs/approvals.jsonl``. It enforces nothing itself: the
+caller decides what to run after ``process_approval_response``.
 """
 
 import json
@@ -12,16 +13,10 @@ from datetime import datetime
 
 
 class ApprovalGate:
-    """
-    Enforces approval gate before any realization actions.
-
-    CRITICAL: This gate is MANDATORY in the workflow. No realization
-    can proceed without explicit user approval via AskUserQuestion.
-    """
+    """Approval question, response validation and audit log for a realization package."""
 
     def __init__(self):
-        # Calculate base path (.claude/) from this file location
-        # From .claude/tools/validation/ go up to .claude/
+        # The log directory sits beside the tools/ directory that holds this file.
         base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.approval_log_path = os.path.join(base_path, "logs", "approvals.jsonl")
         self._ensure_log_directory()
@@ -247,7 +242,6 @@ class ApprovalGate:
             "git_commit": realization_package.get("git_operations", {}).get("commit_message", "N/A")
         }
 
-        # Append to JSONL log file
         with open(self.approval_log_path, "a") as f:
             f.write(json.dumps(log_entry) + "\n")
 
@@ -261,9 +255,7 @@ def request_approval(
     phase: str
 ) -> Dict[str, Any]:
     """
-    Main function to request approval from user.
-
-    This should be called by the orchestrator in Phase 4 (Approval Gate).
+    Build the approval summary and question for a realization package.
 
     Args:
         realization_package: The complete realization package from the agent
@@ -306,10 +298,8 @@ def process_approval_response(
         Dict with validation result and action to take
     """
 
-    # Validate response
     validation = gate_instance.validate_approval_response(user_response)
 
-    # Log the decision
     gate_instance.log_approval(
         realization_package,
         user_response,

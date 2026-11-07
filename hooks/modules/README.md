@@ -4,7 +4,7 @@ This directory contains the modular hook system for Gaia.
 
 ## What is this?
 
-A refactored, maintainable architecture for Claude Code hooks. Instead of monolithic 1000+ line files, the logic is split into focused modules that can be tested, maintained, and extended independently.
+The logic of the Claude Code hooks, split into modules the entry points in `hooks/` and the adapters in `hooks/adapters/` import.
 
 ## Where does this fit?
 
@@ -12,8 +12,8 @@ A refactored, maintainable architecture for Claude Code hooks. Instead of monoli
 Claude Code invokes hook
         |
         v
-[session_start.py] --------> [modules/context/context_freshness] -> Staleness check
-        |                     [modules/scanning/scan_trigger]     -> Auto-refresh
+[session_start.py] --------> [modules/session/session_lifecycle] -> Registry, sweeps, birth block
+        |
         v
 [pre_tool_use.py] ---------> [modules/security/*] -> Tier classification
         |                     [modules/tools/*]   -> Bash/Task validation
@@ -21,10 +21,12 @@ Claude Code invokes hook
     Tool executes
         |
         v
-[post_tool_use.py] --------> [modules/audit/*]    -> Logging & metrics
+[post_tool_use.py] --------> [modules/audit/*]    -> Logging & event detection
                               [modules/session/*]  -> Session context updates
-                              [modules/agents/*]   -> Anomaly detection
+                              [modules/agents/*]   -> Task result observation
 ```
+
+`context/context_freshness.py` and `scanning/scan_trigger.py` have no caller: SessionStart scans no workspace.
 
 ## Module Structure
 
@@ -32,70 +34,83 @@ Claude Code invokes hook
 modules/
 ├── __init__.py           # Package marker
 ├── core/                 # Shared utilities
-│   ├── __init__.py
 │   ├── paths.py          # find_claude_dir() - single source of truth
+│   ├── plugin_setup.py   # Plugin channel's first-session settings merge (allow list, empty ask list, no deny rule)
 │   └── state.py          # Pre/post hook state sharing
 │
-├── security/             # Security classification & approval
-│   ├── __init__.py
+├── security/             # Classification, guards and approval
 │   ├── tiers.py          # SecurityTier enum (T0-T3)
-│   ├── blocked_commands.py # Blocked patterns by category
-│   ├── mutative_verbs.py   # CLI-agnostic verb detector, approval_id-gated deny
-│   ├── subagent_memory_write_guard.py # Blocks `gaia memory` writes from subagents (non-operator)
-│   ├── gaia_db_write_guard.py # Blocks direct sqlite3 writes to gaia.db (categorical)
-│   ├── protected_path_guard.py # Blocks Bash writes into the .claude/ tree (hooks/settings) (categorical)
-│   ├── source_lexer.py     # Per-language comment/string lexer for the JS script lane
-│   ├── approval_grants.py  # Nonce-based approval grant management
-│   ├── approval_constants.py # Approval system constants
-│   ├── approval_messages.py  # Approval denial message formatting
-│   ├── approval_scopes.py   # Approval scope definitions
+│   ├── verdict.py        # FREE / SIGNED / BLOCKED / UNKNOWN and the rule ids with their remediation
+│   ├── blocked_commands.py # Permanently blocked patterns by category
+│   ├── mutative_verbs.py   # CLI-agnostic verb detector; a T3 is denied with an approval_id
+│   ├── verb_lexicon.py     # The closed change-verb lexicon, the ambiguous words and the closed exception table
+│   ├── execution_scan.py   # The short depth-1 scan of an execution and its literal local callees for six signals
+│   ├── store_code_guard.py # Python runs free only with a proven import closure; Python reaching the store is refused
+│   ├── privilege_guard.py  # sudo, su and doas sign under sign.privilege
+│   ├── nested_executors.py # kubectl/docker exec, op run, ... take the verdict of the command they run
+│   ├── targets.py        # Where a command lands: context, project, account, branch; production detection
+│   ├── canonical_path.py # One canonical form of a path for every path guard (Windows spellings included)
+│   ├── gaia_cli_only_guard.py # The orchestrator's Bash lane: the trusted gaia binary and an allowlist of verbs
+│   ├── gaia_db_write_guard.py # Runs sqlite3 only in an allowlisted subset (sqlite_subset.py; writes to another database included) and signs it; refuses gaia.db, shell writes to it, and a relative operand unless sqlite3 is the line's first command and only sqlite3 run ("could not prove"; absolute paths as written)
+│   ├── subagent_memory_write_guard.py # Refuses `gaia memory` writes from subagents
+│   ├── memory_skill_guard.py # Refuses the main session's memory writes until Skill('memory') is loaded
+│   ├── subagent_resume_point_guard.py # Classifies `gaia session` per verb; refuses a subagent's session writes
+│   ├── verifier_scratch_guard.py # Confines the verifier's Write to its own scratch entry
+│   ├── protected_path_guard.py # Refuses Bash writes into the .claude/ tree and anywhere in an installed Gaia root (categorical)
+│   ├── shell_write_guard.py # Refuses a shell-authored file write into a git working tree (categorical); a shell write under /etc, /usr or /boot signs
+│   ├── sensitive_read_guard.py # Refuses reading or listing a path where secrets live (categorical)
+│   ├── comment_push_gate.py # Refuses a `git push` of a branch over the comment limit (categorical, fails open with a warning)
+│   ├── source_lexer.py     # Per-language comment/string lexer for the script lanes
+│   ├── approval_grants.py  # Approval grant management
+│   ├── approval_scopes.py  # Approval scope matching
 │   └── command_semantics.py  # Command semantic analysis
 │
 ├── tools/                # Tool-specific validators
-│   ├── __init__.py
-│   ├── shell_parser.py   # Parse compound commands
-│   ├── bash_validator.py # Bash command validation (orchestrates pipeline)
-│   ├── task_validator.py # Task tool validation with context enforcement
+│   ├── shell_parser.py   # Quote-aware split of compound commands and shell words
+│   ├── bash_validator.py # Bash command validation (orchestrates the pipeline below); decide_t3_outcome
+│   ├── task_validator.py # Task/Agent dispatch validation
 │   ├── cloud_pipe_validator.py # Cloud pipe/redirect/chain check
 │   └── hook_response.py  # Standardized hook response formatting
 │
 ├── context/              # Context management
-│   ├── __init__.py
-│   ├── context_writer.py # Write context updates
-│   └── context_freshness.py     # Check staleness for SessionStart
+│   ├── kernel_builder.py # The subagent kernel, # Project context block included
+│   ├── user_sections.py  # ## User memory for the birth block, and the shared context budget
+│   ├── compact_context_builder.py # Instructions for the compaction summarizer
+│   ├── context_writer.py # Writes project-context updates under the project each one names
+│   └── context_freshness.py # Staleness check for SessionStart
 │
-├── scanning/             # Scan triggering
-│   ├── __init__.py
-│   └── scan_trigger.py   # Lightweight scan invocation for SessionStart
+├── session/              # Session lifecycle
+│   ├── session_lifecycle.py # Host-neutral SessionStart core: registry, sweeps, the dead-turn reaper, the birth block
+│   ├── session_manifest.py  # Assembles the birth block, the behind-gaia.db line included
+│   ├── install_integrity.py # Session-start notice when install links or settings keys drift from the install manifest
+│   └── session_registry.py  # Heartbeat-based registry of live sessions
 │
-├── session/              # Session context management
-│   ├── __init__.py
-│   └── session_context_writer.py # Write critical events to session context
+├── events/
+│   └── capability_usage.py # Records cli.invoked and skill.loaded harness events
 │
 ├── validation/           # Commit validation
-│   ├── __init__.py
 │   └── commit_validator.py # Conventional Commits enforcement
 │
 ├── audit/                # Logging and metrics
-│   ├── __init__.py
 │   ├── logger.py         # AuditLogger
-│   ├── metrics.py        # MetricsCollector + FUNCTIONAL generate_summary
+│   ├── metrics.py        # MetricsCollector + generate_summary
 │   └── event_detector.py # CriticalEventDetector
 │
 └── agents/               # Subagent support
-    ├── __init__.py
-    ├── response_contract.py # Agent response contract validation
-    ├── contract_validator.py # Legacy fence parser (no closing role) + envelope field resolvers
-    ├── dispatch_binding.py   # Born-at-dispatch row: extract + validate + birth the nascent handoff row from dispatch metadata
+    ├── dispatch_binding.py   # Born-at-dispatch row: extract + validate + birth the handoff row from dispatch metadata
+    ├── dispatch_lifecycle.py # Dispatch row lifecycle, including reap_stale_turn
     ├── handoff_persister.py  # Persist/finalize the terminal agent_contract_handoffs row
-    ├── skill_injection_verifier.py # Verify required skills were injected
+    ├── contract_validator.py # Legacy fence parser (no closing role) + envelope field resolvers
+    ├── skill_injection_verifier.py # Verify declared and inferred skills were loaded
+    ├── call_ceiling.py       # Tool-call ceiling notice
     ├── state_tracker.py      # Legal agent_state transitions (_LEGAL_TRANSITIONS)
     ├── task_info_builder.py  # Build task_info from SubagentStop hook data
-    ├── transcript_analyzer.py # Analyze subagent transcript on stop
     └── transcript_reader.py  # Read the subagent transcript file
 ```
 
-### `dispatch_binding.py` (born-at-dispatch, plan 34)
+The tree names the modules a change most often touches; `git ls-files hooks/modules` lists all of them. Beside `modules/`, `hooks/mods/` holds the Claude Code mods the host loads in-process (`mods/compaction/register.ts`, named under `host_mods` in `build/gaia.manifest.json`).
+
+### `dispatch_binding.py` (born-at-dispatch)
 
 At dispatch time (PreToolUse:Agent / SubagentStart), the hook BIRTHS the
 nascent `agent_contract_handoffs` row from the dispatch metadata, stamping the
@@ -135,13 +150,7 @@ emitting agent's role.
 ## Key Features
 
 ### Orchestrator Gate
-The orchestrator is restricted to four tools:
-- `Agent` -- dispatch work to specialist agents
-- `SendMessage` -- resume a previously spawned agent
-- `AskUserQuestion` -- get clarification or approval from the user
-- `Skill` -- load on-demand procedures
-
-This enforces the principle: "Orchestrator delegates, agents execute."
+The orchestrator's tools are the `tools:` list of `agents/gaia-orchestrator.md`: `Read`, `Bash`, `Agent`, `SendMessage`, `AskUserQuestion`, `Skill`, the `Task*` and `Cron*` tools, `WebSearch`, `WebFetch`, `ToolSearch` and `mcp__gaia__compact_when_idle`; `disallowedTools` removes `Glob`, `Grep`, `Edit`, `Write`, `NotebookEdit` and the plan and worktree modes. Its `Bash` is a lane, not a shell: `security/gaia_cli_only_guard.py` admits only the trusted `gaia` binary and an allowlist of verbs (`ALLOWED_READ_PHRASES`, `ALLOWED_WRITE_PHRASES`), and refuses everything else categorically. Domain work still goes to a specialist.
 
 ### SendMessage Validation (PreToolUse matcher)
 SendMessage is validated as a PreToolUse event (not a separate hook event):
@@ -150,34 +159,29 @@ SendMessage is validated as a PreToolUse event (not a separate hook event):
 - Grant activation is not part of this validation. It happens on PostToolUse, when the `AskUserQuestion` matcher reaches `adapters/claude_code.py::_handle_ask_user_question_result` and every answered label carrying a `[P-<nonce>]` tag activates its own grant
 
 ### Context Enforcement
-Task invocations for project agents inject project-context via `context_provider.py`.
+A dispatched subagent receives its project context at SubagentStart, as the `# Project context` block of the kernel `context/kernel_builder.py` renders: the dispatch project's `can_read` sections, whole when they fit, else one `gaia context get-contract` pointer per section, else a count line.
 
 ### State Sharing
-Pre-hook saves state to `.claude/.hooks_state.json`, which post-hook reads to get:
+Pre-hook saves a `HookState` per `(session_id, tool_use_id)` under `.claude/.hooks_state/` (`.claude/.hooks_state.json` when either id is missing), which post-hook reads to get:
 - Security tier assigned
 - Command executed
 - Timestamp for duration calculation
 
-### Functional Metrics
-`generate_summary()` now actually works - reads JSONL metrics files and aggregates:
+### Metrics
+`generate_summary()` reads the audit logs and aggregates:
 - Total executions
-- Success rate
 - Average duration
 - Top command types
 - Tier distribution
+- Security events
 
 ## Usage
 
 ### Entry Points
 
+The host runs each hook with the event JSON on stdin. The metrics summary:
+
 ```bash
-# Pre-hook (validation)
-python3 pre_tool_use.py --test
-
-# Post-hook (audit)
-python3 post_tool_use.py --test
-
-# Metrics
 gaia metrics
 ```
 
@@ -195,7 +199,7 @@ print(f"Blocked: {result.blocked}, Reason: {result.reason}")
 
 # Classify command tier
 tier = classify_command_tier("kubectl get pods")
-print(f"Tier: {tier}")  # SecurityTier.T0
+print(f"Tier: {tier}")  # SecurityTier.T0_READ_ONLY
 
 # Validate Bash command (full pipeline: blocked -> mutative verbs -> safe by elimination)
 validator = BashValidator()
@@ -204,7 +208,7 @@ print(f"Allowed: {result.allowed}, Tier: {result.tier}")
 
 # Get metrics summary
 summary = generate_summary(days=7)
-print(f"Success rate: {summary['success_rate']:.1%}")
+print(f"Executions: {summary['total_executions']}")
 ```
 
 ## Architecture Notes
@@ -214,18 +218,66 @@ The modular architecture maintains full backward compatibility with Claude Code'
 All security rules (blocked patterns, mutative verbs, tiers) are hardcoded in the Python modules for performance and simplicity - no external JSON config files needed.
 
 ### Validation Order (Defense-in-Depth)
-bash_validator checks commands in this order (short-circuit on first match):
-0. **Indirect execution detection** — `bash -c`, `eval`, `python -c` etc. → ask (orchestrator), deny with the correct form (subagent), or block
-0b. **Categorical write guards** — gaia_db_write_guard.py (direct sqlite3 writes to gaia.db), subagent_memory_write_guard.py (`gaia memory` writes from non-operator subagents), protected_path_guard.py (Bash writes into the `.claude/` hooks/settings tree) → exit 2, not approvable
-1. **Blocked commands** (blocked_commands.py) — permanently denied patterns, exit 2
-2. **Claude footer stripping** — transparent via updatedInput
+`BashValidator.validate` checks commands in this order (short-circuit on first match):
+0. **Orchestrator lane** (gaia_cli_only_guard.py) — for the orchestrator role only, ahead of everything else: the trusted `gaia` binary and its allowlisted verbs, or a categorical deny
+0a. **Host consent verbs** (host_consent_verb_guard.py) — the OpenCode plugin's own consent verbs are refused from any shell; then a sealed retry of an approved command is recognized, and Claude footers are stripped
+0b. **Categorical guards**, in this order — publish attribution, comment_push_gate.py, gaia_db_write_guard.py (the `sqlite3` CLI on gaia.db whatever its SQL, the store found by name, realpath or inode in any word of a line that runs sqlite3 or of a file it reads as SQL (`<`, `-init`, `.read` targets, the sqliterc under an assigned `HOME`/`XDG_CONFIG_HOME`, the files a `cat` of literal paths on the line prints, recursively; an unreadable one is not read and signs), a database argument, `.open` or `ATTACH`/`VACUUM INTO` target it cannot resolve to a literal path refused as "could not prove", the denial naming `gaia context query`; every relative path judged also in each folder a literal sqlite3 `.cd` enters, and any relative file operand after a `.cd` it cannot resolve refused as "could not prove"; on another database, a `.shell`/`.system` command, any dot-command operand starting with `|`, `edit()`'s second argument, a `VISUAL`/`EDITOR` the line assigns, or a `.once`/`.output`/`.log`/`.save`/`.backup`/`writefile()` file the shell itself would be refused; plus shell writers over the file and Python that reaches the store in-process, `store_code_guard.py::check`), subagent_memory_write_guard.py (`gaia memory` writes from subagents), memory_skill_guard.py (main-session memory writes before `Skill('memory')`), subagent_resume_point_guard.py (a subagent's `gaia session` writes), contract ownership, protected_path_guard.py (Bash writes into the `.claude/` hooks/settings tree or an installed Gaia root; any line naming or running inside an install root must be all known readers, judged after substituting line assignments and well-known environment variables and expanding brace and glob words), shell_write_guard.py (shell-authored writes into a git working tree), sensitive_read_guard.py (secret reads) → exit 2, not approvable. A shell write whose target resolves under `/etc`, `/usr` or `/boot` signs (`shell_write_guard.py::system_path_target`, `sign.system-path`), a write target starting with a variable nothing resolves is T3 instead (`unprovable_write_target`), and so is every other sqlite3 call, whatever its flags, since `-safe` still reads files through fsdir() (`sqlite_unproven_effect`, verb `sqlite-reach`). These guards split the line with the quote-aware `tools/shell_parser.py`, so an operator or a path inside quotes is text: a quoted CLI argument is data, not a command
+1. **Indirect execution detection** — `bash -c`, `eval` and the other wrappers: a subagent is refused with the correct form; for the main session a wrapper whose inner command mutates goes on to the T3 gate, and one that does not asks the host
+2. **Blocked commands** (blocked_commands.py) — permanently denied patterns, exit 2
 3. **Commit message validation** — conventional commits enforcement
-4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny
-5. **Mutative verbs** (mutative_verbs.py) — CLI-agnostic verb detector, native `ask` dialog
+4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny, then pipe composition (composition_rules.py)
+5. **Mutative verbs** (mutative_verbs.py) — `detect_mutative_command` runs the verb ladder over the closed lexicon and exception table (`security/verb_lexicon.py`), then the execution scan (`_check_execution_scan`, which only adds asks and frees only a `_NO_MODEL_VERBS` ask, never on inline code), then the Python closure check (`store_code_guard.py::unproven_reason`); then `privilege_guard.py::privilege_verdict` makes a command under sudo, su or doas ask (`sign.privilege`) and the production-target check makes one landing on production ask. Every T3 converges on `bash_validator.py::decide_t3_outcome`: a deny carrying an `approval_id` and the `gaia approvals request-set` line, for a subagent and for the main session alike, never the host's permission prompt; a chain of several T3 commands is denied whole and asks for a plan-first request-set
 6. **Everything else** — SAFE by elimination (auto-approved)
+
+### Heredoc readers
+
+Every `<<` on a line is paired with the command segment that reads it, and bodies are taken in the order the shell reads them (`_heredoc_openers`, `_scan_heredocs` in `tools/bash_validator.py`). A segment starts after `;`, `|`, `&`, `&&`, `||` or `(`.
+
+A heredoc body is data only when that reader, after its wrappers (`sudo`, `env`, `timeout`, `nice`, `command`, `builtin`, `exec`), provably cannot execute or write what it reads (`_heredoc_reader`):
+
+- **Pure data readers.** `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `nl`, `rev`, `fold`, `tee`, and `base64` encoding or decoding. A `tee` that writes a protected or account path is still refused or signed by the write guards, which read the command line.
+- **`jq`**, even with `-f /dev/stdin`: a jq program cannot run a command.
+- **`grep`/`egrep`/`fgrep` without `-f`/`--file`.**
+- **Message flags**, keyed by program, subcommand path and flag (`_HEREDOC_MESSAGE_FLAGS`). Any other path, alias or extension (`gh x`, `gh myext run`, `gh api`) is code, because it may run stdin.
+
+`awk`, `gawk`, `sed` and `yq` are not on the list, whatever their flags. Their languages run commands or write files (`system()`, sed's `e` and `w`, `print >`), so a heredoc they read fails closed even when it only feeds them input.
+
+A heredoc that `ruby`, `perl` or `php` reads as its program asks: no parser here can prove what that code does.
+
+`xargs` is never relief. Each body line is evaluated through the whole validator as `<target> <line>`, the command xargs would run (`_xargs_payload`, value flags such as `-d`, `-I` and `--arg-file` skipped). `xargs cat` with `~/.ssh/id_rsa` is refused as a secret read, `xargs tee` with `~/.bashrc` signs as an account write, and `xargs cat` with `notes.txt` runs free. Each line is checked in the caller's working directory, the one the hook payload carries, so `xargs tee` with `notes.txt` inside a git repository is refused exactly as `tee notes.txt` is there. When that directory is unknown, a line with a relative word (neither `/`, `~` nor `-` first) asks for a signature instead of resolving against the hook's own directory.
+
+| Program | Subcommand path | Flag reading `-` |
+|---------|-----------------|------------------|
+| `git` | `commit`, `tag`, `notes` | `-F`, `--file` |
+| `gh` | `pr` or `issue` + `create`, `edit`, `comment`; `release` + `create`, `edit` | `--body-file`, `--notes-file`, `-F` |
+| `glab` | `mr` or `issue` + `create`, `update`, `note` | `--description` |
+
+A data heredoc's command keeps its own verdict: `git commit -F - <<EOF` runs free, while `git tag -a v1 -F -` still signs for the tag. A data body is never read as commands, by the blocked-command floor, the secret-read guard, the cloud-pipe check and the kubectl secret-output check alike, so a commit message that names `kubectl delete ns prod` is not refused. Only a line of an unquoted body that holds `$` or a backtick is checked, because the shell expands it before the reader sees it. A data reader whose output is piped on (`cat <<EOF | sh`) keeps its body as commands, and so does one whose line ends in a backslash: the shell joins the next line (`| sh`) to the command before it reads the body.
+
+Every other reader makes the body code, and the heredoc fails closed (`_fail_closed_on_code_heredoc`):
+
+- Each body line is read as a shell command.
+- A reading that hits a floor blocks the command. A mutative reading signs it, with the rule of its strongest effect.
+- With neither, the command asks as UNKNOWN (`unknown.dynamic-span`). Gaia does not parse another language: Python behind `timeout` or `nice` is code it cannot read.
+
+One reader is read in full: an interpreter that takes its program from the heredoc with nothing before it (`python3 -`, `node -`, `bash -s`, bare `sh`; `security/program_heredoc.py`). Its body goes through the inline-code or script lanes like a script file, wherever the heredoc sits on the line (`_heredoc_as_program`). That holds only while the body is the program that runs. An unquoted delimiter whose body carries `$` or a backtick lets the shell rewrite the body first, so it asks as UNKNOWN too.
+
+awk (`awk`, `gawk`, `mawk`, `nawk`, `goawk`, `original-awk`, `onetrue-awk`, `bwk-awk`; `AWK_PROGRAMS`) runs free only when its whole program is proven read-only by construction (`security/flag_classifiers.py::_classify_awk`). Every program text must be proven verbatim by the line, and none may contain `>`, `|`, `system`, `@` or `/inet` anywhere, line breaks ignored (`_AWK_EFFECT_TOKENS`). Anything else signs.
+
+- **Sources.** The program can come from an inline word or `-e` that is a literal word: no expansion, no ANSI-C `$'...'`, no backslash outside single quotes, no `$` even inside double quotes (`_literal_word`). It can also come from a `-f` file that reads whole, or from stdin (`-f` naming `-`, `/dev/stdin`, `/dev/fd/0` or `/proc/self/fd/0`) through the one source the line proves (`_awk_stdin_program`). That source is a quoted heredoc body, a literal here-string, a readable `< file`, or the single stage piped into awk (`_piped_program`). A piped stage counts only as an `echo` with no `-e` flag and no backslash, a `printf` whose format holds no backslash and no directive but `%s` and `%%`, or a `cat` of readable files.
+- **Tokens.** `|` also covers `cmd | getline` and `|&`. `@` covers `@include`, `@load` and gawk's indirect call `@f()`, which reaches `system()` without naming it. A `>` or `||` used as an operator, and the word `system` in a string, sign too, an accepted over-ask.
+- **Options.** `-i`, `-l` and `-E` (and `--include`, `--load`, `--exec`) always sign, as do `-d`, `-o`, `-p`, `-D`, `-W` and a long option gawk would not resolve (`_AWK_UNPROVEN_OPTIONS`).
+- **Program lookup.** gawk looks a `-f` name with no slash up through `AWKPATH`, so under `awk`, `gawk` or `nawk` (names a gawk install can take; `_AWK_NAMES_GAWK_CAN_HOLD`) such a name signs and only `./prog.awk` or an absolute path is read. An `AWKPATH` assigned or exported anywhere earlier on the line signs every later awk (`mutative_verbs.py::_CODE_INJECTING_ENVIRONMENT`). An `AWKPATH` inherited from the tool's environment is not visible to the line.
+- **What signs.** An unreadable `-f` file, an unquoted heredoc, an inherited stdin, more than one source, and a line that cannot be read word by word all sign. `close()` alone runs free, since it has no effect by itself.
+
+The flag classifiers read a stage as bash runs it (`classify_by_flags`): a comment is dropped only where bash ends it, never inside a heredoc body, a quote or a substitution, and from where the tokeniser cannot prove bash's reading the text is kept whole (`shell_parser.strip_comment`, the one comment rule every caller shares), and the `{`, `}`, `(` and `)` that group the stage with others are not its words (`shell_parser.strip_grouping`), so `{ awk ...; }` and `( awk ... )` are judged as awk, and the first stage of a `{ ... }` group fed by a pipe keeps that feeder.
+
+The flag classifier keys every program it knows by base name (`classify_by_flags`), so `/usr/bin/gawk`, `/bin/tar` or `./sed` is judged as the bare name. A `~` in an awk `-f` path is expanded only where bash expands it: an unquoted leading `~` of its own word, never `'~/x'`, `~'/x'` or `--file=~/x`.
+
+The list is short on purpose. A reader left off it over-asks, which is the cost of failing closed. A reader wrongly on it would run a body nobody classified.
 
 ### Tier Classification
 - **T0**: Read-only (get, list, describe, show)
 - **T1**: Local validation (validate, lint, fmt, check)
 - **T2**: Simulation (plan, template, diff, --dry-run)
-- **T3**: State-modifying (apply, delete, push, commit)
+- **T3**: State-modifying (apply, delete, push); `git commit` and `git add` are local-only and free

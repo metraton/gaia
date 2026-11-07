@@ -22,7 +22,7 @@ THE DISTINCTION DOES NOT DEPEND ON ANYONE DECLARING IT
     statement whose target table already held rows. Both inputs are evidence,
     not testimony.
 
-ONE CONSENT COVERS ONE CHAIN (D68)
+ONE CONSENT COVERS ONE CHAIN
     A chain that only adds structure applies on its own, after a backup. A
     chain in which any migration reaches data asks once for the whole chain,
     and the consent names the chain (``v51..v58``) rather than a file, so it
@@ -242,13 +242,67 @@ def compat_mark(sql: str) -> str | None:
     return marks[0]
 
 
+_ADDED_COLUMN = re.compile(rf"^alter\s+table\s+{_IDENT}\s+add\s+(?:column\s+)?{_IDENT}", re.I)
+_UPDATE_SET = re.compile(rf"^update\s+(?:or\s+\w+\s+)?{_IDENT}\s+set\s+", re.I)
+_TOKEN = re.compile(r"'(?:[^']|'')*'|\"[^\"]*\"|`[^`]*`|\[[^\]]*\]|\w+|\S")
+_SET_LIST_END = frozenset({"where", "from", "returning", "order", "limit"})
+
+
+def added_columns(sql: str) -> dict[str, set[str]]:
+    """Columns each table gains through ``ALTER TABLE ... ADD`` in this script, lower-cased."""
+    added: dict[str, set[str]] = {}
+    for statement in split_statements(sql):
+        match = _ADDED_COLUMN.match(normalize(statement))
+        if match:
+            added.setdefault(match.group(1).lower(), set()).add(match.group(2).lower())
+    return added
+
+
+def _set_targets(fragment: str) -> tuple[str, list[str]] | None:
+    """(table, assigned columns) of an UPDATE, or None when its SET list cannot be read."""
+    head = _UPDATE_SET.match(fragment)
+    if not head:
+        return None
+    targets: list[str] = []
+    depth, expecting = 0, True
+    tokens = _TOKEN.findall(fragment[head.end():])
+    for index, token in enumerate(tokens):
+        word = token.lower()
+        if token == "(" or word == "case":
+            if expecting:
+                return None
+            depth += 1
+        elif token == ")" or word == "end":
+            depth -= 1
+        elif depth == 0 and token == ",":
+            expecting = True
+        elif depth == 0 and word in _SET_LIST_END:
+            break
+        elif expecting:
+            if index + 1 >= len(tokens) or tokens[index + 1] != "=":
+                return None
+            targets.append(token.strip("\"`[]").lower())
+            expecting = False
+    return head.group(1).lower(), targets
+
+
+def _fills_added_columns(fragment: str, added: dict[str, set[str]]) -> bool:
+    read = _set_targets(fragment)
+    if read is None:
+        return False
+    table, targets = read
+    return bool(targets) and set(targets) <= added.get(table, set())
+
+
 def destructive_statements(sql: str) -> list[str]:
-    """Statements that rewrite, remove or rename rows, whatever the table holds."""
-    return [
-        normalize(statement)
-        for statement in split_statements(sql)
-        if _classify(normalize(statement))[0] is not None
-    ]
+    """Statements that rewrite rows; an UPDATE filling only columns the same script adds is not one."""
+    added = added_columns(sql)
+    found = []
+    for statement in split_statements(sql):
+        fragment = normalize(statement)
+        if _classify(fragment)[0] is not None and not _fills_added_columns(fragment, added):
+            found.append(fragment)
+    return found
 
 
 def is_breaking(sql: str) -> bool:

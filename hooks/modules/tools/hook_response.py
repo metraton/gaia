@@ -2,13 +2,12 @@
 Shared builder for PreToolUse permission responses.
 
 Hooks communicate permission decisions via a host-specific JSON structure.
-This module provides a single builder so the call sites (bash_validator allow,
-bash_validator deny, cloud_pipe_validator deny) share one entry point.
+This module provides a single builder so the call sites (bash_validator
+allow, deny and ask, cloud_pipe_validator deny) share one entry point.
 
 The host-specific shape is assembled entirely inside the adapter layer: this
 builder delegates to ``format_validation_response`` / ``format_ask_response``
-and returns whatever the adapter produces, while preserving the original
-function signature so callers require zero changes.
+and returns whatever the adapter produces.
 """
 
 from __future__ import annotations

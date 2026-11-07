@@ -40,7 +40,8 @@ def _validate(command, *, is_subagent):
 def _assert_categorical_refusal(result, case_id):
     assert result.allowed is False, case_id
     assert result.tier == SecurityTier.T3_BLOCKED, case_id
-    assert result.reason == guard.REJECTION_MESSAGE, f"{case_id}: refused by another rule: {result.reason}"
+    assert result.rule == "floor.subagent-resume-point", f"{case_id}: refused by another rule: {result.reason}"
+    assert result.reason.split("\n", 1)[0] == guard.REJECTION_MESSAGE, case_id
     assert result.approval_id is None, case_id
     assert result.block_response is None, case_id
 
@@ -60,6 +61,7 @@ UNPROVEN_VERBS = [
 # categorical guard runs ahead of this one in the validator; both refuse with
 # no approval.
 REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD = {"variable-group", "variable-group-verb", "glob-verb"}
+REFUSED_FIRST_BY_THE_LITERAL_WORDS_RULE = {"variable-verb", "backtick-verb"}
 
 
 @pytest.mark.parametrize(
@@ -70,7 +72,7 @@ REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD = {"variable-group", "variable-group-ver
 def test_a_subagent_resume_point_write_is_refused_outright(case_id, command):
     assert guard.check(command, is_subagent=True) == (False, guard.REJECTION_MESSAGE), case_id
     result = _validate(command, is_subagent=True)
-    if case_id in REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD:
+    if case_id in REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD | REFUSED_FIRST_BY_THE_LITERAL_WORDS_RULE:
         assert result.allowed is False and result.approval_id is None and result.block_response is None
         assert "not approvable" in result.reason, result.reason
     else:
@@ -92,8 +94,8 @@ def test_a_symlinked_gaia_binary_is_refused_for_a_subagent(monkeypatch):
     )
 
 
-def test_a_declared_gaia_wrapper_is_refused_for_a_subagent(monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", "gx=gaia")
+def test_a_declared_gaia_wrapper_is_refused_for_a_subagent(declare_alias):
+    declare_alias("gx=gaia")
     _assert_categorical_refusal(
         _validate("gx session resume-point set --session-id s --text t", is_subagent=True), "alias"
     )

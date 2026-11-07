@@ -31,7 +31,7 @@ def ensure_layout() -> None:
     - ``logs_dir()``         -- logs
     - ``events_dir()``       -- events
     - ``cache_dir()``        -- cache
-    - ``scratch_dir()``      -- ephemeral agent scratch (T0 rm exception)
+    - ``scratch_dir()``      -- ephemeral agent scratch
 
     Mode is forced to 0o700 after creation to override any umask
     interference. The function is idempotent: calling it on an existing

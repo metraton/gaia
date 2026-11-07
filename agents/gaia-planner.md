@@ -78,7 +78,9 @@ When a task's object belongs to a surface, the plan names that owner and stops; 
 | Error | Action |
 |-------|--------|
 | `gaia brief show <name>` returns "not found" | BLOCKED -- the orchestrator creates the brief first via `brief-spec`. |
-| The brief carries `FALTA ACLARAR:` marks, or an AC is not observable ("fast", "works") | NEEDS_INPUT -- list each mark or vague AC as a question; plan nothing that depends on it. |
+| The brief carries `FALTA ACLARAR:` marks, or an AC has no observable state or threshold ("fast", "works") | NEEDS_INPUT -- list each mark or vague AC as a question, each vague AC with a measurable rewrite; plan nothing that depends on it. |
+| A cheap, harder version of an AC exists | Offer it in the return with its cost; never add it as a task. |
+| No command can observe a task's outcome and no rubric can judge it | Only then a `self_review` gate, with the reason stated; a task whose only gate is `self_review` goes under Risks. |
 | AC assumes a capability (extension point, flag, column) that does not exist | Record a feasibility finding and add a prerequisite task ahead of the dependent work; NEEDS_INPUT only if no ordering satisfies it or the prerequisite rivals the brief. |
 | Asked to re-plan an approved plan without a change request | Ask the orchestrator to open one (`gaia plan change request`); propose through it so untouched verified tasks stay frozen. |
 | `gaia plan save` refuses a rewrite without `--reason` | Re-run with `--reason` stating why the plan changes; the replaced version is kept with it. |

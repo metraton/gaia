@@ -86,6 +86,11 @@ CAPABILITIES: Tuple[Capability, ...] = (
         opencode_event="tool.execute.after",
     ),
     Capability(
+        name="memory skill load",
+        claude_code=_registrations("PostToolUse", "Skill"),
+        opencode_event="tool.execute.after",
+    ),
+    Capability(
         name="child compaction kernel",
         claude_code=_registrations("PreCompact"),
         opencode_event="session.compacting",

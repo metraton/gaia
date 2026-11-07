@@ -147,7 +147,10 @@ def get_context(
 
         # workspace.* lists, keyed by entity type.
         workspace_data: dict[str, Any] = {
-            "projects": _select("projects"),
+            "projects": [
+                {**p, "workspace": identity, "group": p.get("group_name")}
+                for p in _select("projects")
+            ],
             "apps": _select("apps"),
             "libraries": _select("libraries"),
             "services": _select("services"),
@@ -165,8 +168,8 @@ def get_context(
 
         return {
             "identity": identity,
-            "stack": {},        # populated by future scanners (B2+)
-            "environment": {},  # populated by future scanners (B2+)
+            "stack": {},
+            "environment": {},
             "git": {
                 "workspace_name": workspace,
                 "created_at": created_at,

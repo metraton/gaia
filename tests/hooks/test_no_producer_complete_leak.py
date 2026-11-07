@@ -91,6 +91,7 @@ def _complete_envelope(agent_id: str = AGENT_ID) -> dict:
         "evidence_report": _evidence(),
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
     env["evidence_report"]["verification"] = {
         "method": "test", "result": "pass", "details": "suite green",
@@ -273,6 +274,7 @@ def _build_complete_draft_at(env: dict, draft_id: str) -> None:
     })
     assert _run_cli(["fill", "--draft-id", draft_id, "--json", patch], env).returncode == 0
     assert _run_cli(["set", "--draft-id", draft_id, "agent_status.next_action", "done"], env).returncode == 0
+    assert _run_cli(["set", "--draft-id", draft_id, "user_facing_summary", "Work recorded."], env).returncode == 0
     assert _run_cli(["set", "--draft-id", draft_id, "agent_status.agent_state", "COMPLETE"], env).returncode == 0
 
 
@@ -366,6 +368,38 @@ def test_path_b_unbound_no_born_row_finalize_still_completes(cli_env):
     fin = _run_cli(["finalize", "--draft-id", draft_id, "--json"], cli_env)
     assert fin.returncode == 0, f"unbound COMPLETE must finalize: {fin.stderr}"
     assert _row_state(db, draft_id) == "COMPLETE"
+
+
+def _draft_needing_verification(env: dict, agent_id: str) -> str:
+    init = _run_cli(["init", "--agent-id", agent_id, "--json"], env)
+    assert init.returncode == 0, init.stderr
+    draft_id = json.loads(init.stdout)["draft_id"]
+    _build_complete_draft_at(env, draft_id)
+    assert _run_cli(["set", "--draft-id", draft_id, "agent_status.agent_state", "NEEDS_VERIFICATION"],
+                    env).returncode == 0
+    return draft_id
+
+
+def test_path_b_unbound_needs_verification_finalize_is_refused_and_a_bound_one_closes(cli_env):
+    """With no plan_task_id and no parent_handoff_id nothing settles NEEDS_VERIFICATION, so finalize refuses it."""
+    db = _db_path(cli_env)
+    _seed_binding_targets(db)
+    unbound = _draft_needing_verification(cli_env, AGENT_ID)
+    insert_dispatched_handoff(contract_id=unbound, agent_id=AGENT_ID, workspace=WORKSPACE,
+                              kind="investigation", session_id="sess-nv", db_path=db)
+    bound = _draft_needing_verification(cli_env, AGENT_ID)
+    insert_dispatched_handoff(contract_id=bound, agent_id=AGENT_ID, workspace=WORKSPACE,
+                              plan_task_id=TASK_ID, plan_id=PLAN_ID, kind="task_execution",
+                              session_id="sess-nv", db_path=db)
+
+    refused = _run_cli(["finalize", "--draft-id", unbound, "--json"], cli_env)
+    closed = _run_cli(["finalize", "--draft-id", bound, "--json"], cli_env)
+
+    assert refused.returncode == 1, refused.stdout
+    assert json.loads(refused.stdout)["codes"] == ["NEEDS_VERIFICATION_UNBOUND"]
+    assert _row_state(db, unbound) == "DISPATCHED"
+    assert closed.returncode == 0, closed.stdout + closed.stderr
+    assert _row_state(db, bound) == "NEEDS_VERIFICATION"
 
 
 # ===========================================================================

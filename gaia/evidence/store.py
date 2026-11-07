@@ -2,9 +2,11 @@
 gaia.evidence.store -- DB operations for the evidence three-tier storage model.
 
 Layered atop gaia.store.writer._connect. Stores evidence rows in the
-``evidence`` table introduced in v5 (extended by Plan B).
+``evidence`` table.
 
-Storage modes (decision: EVIDENCE_INLINE_MAX_BYTES = 4096):
+Storage modes (``bin/cli/evidence.py`` picks inline for payloads up to
+EVIDENCE_INLINE_MAX_BYTES = 4096; ``insert_evidence`` itself only requires one
+of text or artifact_path):
   * inline: text IS NOT NULL, artifact_path IS NULL -- payload fits in DB page.
   * blob:   artifact_path IS NOT NULL, text IS NULL -- payload lives in FS at
             <data_dir>/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid}.{ext}
@@ -23,8 +25,8 @@ Public API::
 
     insert_evidence(workspace, brief_id, ac_id, *, type, text=None,
                     artifact_path=None, size_bytes=None, task_id=None,
-                    created_by_agent=None, db_path=None,
-                    bypass_dispatch_guard=False) -> dict
+                    created_by_agent=None, gate_id=None, polarity="positive",
+                    db_path=None, bypass_dispatch_guard=False) -> dict
     get_evidence(evidence_id, *, db_path=None) -> dict | None
     list_evidence_for_ac(brief_id, ac_id, *, db_path=None) -> list[dict]
     delete_evidence(evidence_id, *, db_path=None) -> bool
@@ -166,8 +168,7 @@ def insert_evidence(
     refutes; only positive evidence can accept an AC.
 
     Args:
-        workspace:        Workspace slug (used for FK lookup; not stored in
-                          evidence table directly).
+        workspace:        Workspace slug; not read by this function.
         brief_id:         FK to briefs.id (must exist; CASCADE on delete).
         ac_id:            Acceptance-criteria identifier (TEXT, no FK).
         type:             Evidence type; one of VALID_EVIDENCE_TYPES.

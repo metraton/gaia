@@ -1,8 +1,7 @@
 # gaia.contract -- Portable, harness-agnostic contract validation core.
 #
 # The single source of truth for validating an ``agent_contract_handoff``
-# envelope. Two layers (brief:
-# contract-as-managed-data-agent-contract-handoff-agnostico-por-cli):
+# envelope, in two layers:
 #
 #   Layer 1 (form)       -- gaia.contract.validator: pure, stdlib-only SHAPE
 #                           validation with NAMED error codes. Imports nothing
@@ -11,35 +10,16 @@
 #   Layer 2 (cross-check)-- gaia.contract.crosscheck: consults gaia.db for
 #                           approval_id / nonce resolution against the
 #                           `approvals` table; degrades gracefully (no-op) to
-#                           Layer 1 alone when gaia.db is absent. Never
-#                           imports hooks/ (portability/agnosticism holds).
-#
-# Public surface:
-#   from gaia.contract.validator import (
-#       validate_form, FormErrorCode, FormError, FormValidationResult,
-#       CANONICAL_REPAIR_MESSAGE,
-#   )
-#   from gaia.contract.crosscheck import (
-#       validate_crosscheck, validate, CrossCheckErrorCode, CrossCheckError,
-#       CrossCheckResult, EnvelopeValidationResult, CROSSCHECK_REPAIR_MESSAGE,
-#   )
+#                           Layer 1 alone when gaia.db is absent.
 
-# NOTE (T3, portability-critical): gaia.contract.validator is eagerly
-# re-exported here -- it is on tests/contract/test_validator_portable.py's
-# ALLOWED_GAIA_MODULES whitelist, so importing it at package-init time never
-# breaks AC-2. gaia.contract.crosscheck is NOT on that whitelist (it pulls in
-# gaia.paths / gaia.approvals.store, both real dependencies of layer 2's
-# gaia.db cross-check). Since Python always executes a package's __init__.py
-# before any of its submodules, an eager `from gaia.contract.crosscheck import
-# ...` HERE would make even `from gaia.contract.validator import validate_form`
-# transitively pull in layer 2 -- breaking layer 1's portability boundary for
-# every caller, not just those who want layer 2. So crosscheck's re-export is
-# LAZY (PEP 562 module `__getattr__`): `gaia.contract.crosscheck` is only
-# imported the first time an attribute below is actually accessed as
-# `gaia.contract.<name>`; plain `import gaia.contract.validator` never
-# triggers it. Direct `from gaia.contract.crosscheck import ...` (as AC-3's
-# test suite does) is unaffected either way.
-from gaia.contract.validator import (  # noqa: E402  (re-export, appended T3)
+# gaia.contract.validator is re-exported eagerly: it is on
+# tests/contract/test_validator_portable.py's ALLOWED_GAIA_MODULES whitelist.
+# gaia.contract.crosscheck is not, and Python runs a package's __init__.py before
+# any of its submodules, so an eager import of crosscheck here would put layer 2
+# in the module graph of every `from gaia.contract.validator import validate_form`.
+# Its re-export is therefore lazy (PEP 562 module `__getattr__`): crosscheck is
+# imported the first time one of _LAZY_CROSSCHECK_NAMES is read from this package.
+from gaia.contract.validator import (  # noqa: E402
     CANONICAL_REPAIR_MESSAGE,
     ROW_ENVELOPE_REPAIR_MESSAGE,
     FormError,

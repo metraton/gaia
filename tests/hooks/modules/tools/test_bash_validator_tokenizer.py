@@ -90,7 +90,7 @@ TRUE_POSITIVE_CASES = [
     "git push origin main",
     "gh pr comment 42 --body lgtm",
     "kubectl delete pod mypod",
-    "docker exec container ls",
+    "docker exec container rm -rf /data",
     "gaia install --postinstall",
     "helm install myrelease ./chart",
 ]

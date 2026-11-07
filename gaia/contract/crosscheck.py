@@ -1,44 +1,36 @@
 """
 Cross-check layer (layer 2) -- gaia.db-backed approval_id / nonce resolution.
 
-This module is the SECOND layer of the two-layer validator core (brief:
-contract-as-managed-data-agent-contract-handoff-agnostico-por-cli, decision
-#2). Layer 1 (``gaia.contract.validator``) validates an envelope by SHAPE
-ONLY and deliberately EXCLUDES ``approval_request`` / nonce validation --
-that cross-check is this module's job.
+This module is the SECOND layer of the two-layer validator core. Layer 1
+(``gaia.contract.validator``) validates an envelope by SHAPE ONLY and
+deliberately EXCLUDES ``approval_request`` / nonce validation -- that
+cross-check is this module's job.
 
-What it does (AC-3):
+What it does:
     When an envelope's ``approval_request.approval_id`` does NOT resolve to a
     row with ``status == 'pending'`` in the ``approvals`` table of gaia.db,
     this layer REJECTS it with the named code ``APPROVAL_ID_NOT_PENDING``.
-    This revives the DEAD ``nonce_issue`` variable in
-    ``hooks/modules/agents/contract_validator.py::validate_approval_request``
-    (hardcoded to ``None`` -- never actually checked against a real grant).
 
-Graceful degradation (AC-3):
+Graceful degradation:
     When gaia.db is absent, this layer is a NO-OP: it never creates the
     database as a side effect of validating (a plain ``Path.exists()`` check
     gates every DB touch), and it reports ``skipped=True`` / ``ok=True`` so
     the FORM layer alone continues to gate the envelope. Cross-check absence
     is not itself a rejection reason.
 
-Agnosticism (decision #1):
-    gaia.db is Gaia's OWN substrate, not the harness's -- consulting it does
-    not violate agnosticism. What IS forbidden, and enforced by never
-    importing anything under ``hooks/`` from this module, is coupling to the
-    Claude Code harness. This module imports only the standard library plus
-    gaia-substrate modules that are themselves harness-free on the paths it
-    uses: ``gaia.paths`` (DB path resolution), ``gaia.approvals.store`` (the
-    canonical read API for the ``approvals`` table) and
-    ``gaia.approvals.reading`` (the derived state of a non-pending row).
+Agnosticism:
+    This module imports nothing under ``hooks/``. Besides the standard library
+    and ``gaia.contract.validator`` it imports ``gaia.paths`` (DB path
+    resolution), ``gaia.approvals.store`` (the canonical read API for the
+    ``approvals`` table) and ``gaia.approvals.reading`` (the derived state of a
+    non-pending row), each imported inside the function that uses it.
 
 Read-only by construction:
     The DB is opened with a ``mode=ro`` URI connection -- this layer NEVER
     writes to gaia.db. Combined with the existence gate above, a missing
     gaia.db is never brought into being by running a cross-check.
 
-Public surface (stable for T4/T9/T16 -- the CLI validate-on-write path, the
-finalize store writer, and the hook full-verdict gate all consume this):
+Public surface:
     validate_crosscheck(envelope, *, db_path=None) -> CrossCheckResult
     validate(envelope, *, db_path=None, source="declaration") -> EnvelopeValidationResult
     CrossCheckErrorCode.APPROVAL_ID_NOT_PENDING
@@ -49,7 +41,7 @@ finalize store writer, and the hook full-verdict gate all consume this):
 unchanged and never read by this module -- it selects which of the two
 canonical repair messages a shape failure gets, "declaration" (the agent's
 own final fence) or "row" (the turn's persisted dispatch row); see the
-row-first SubagentStop gate, ``hooks/adapters/claude_code.py::
+row-first SubagentStop gate, ``hooks/adapters/subagent_stop_core.py::
 resolve_subagent_stop_gate``.
 """
 
@@ -74,12 +66,13 @@ _PENDING_STATUS = "pending"
 
 
 class CrossCheckErrorCode(str, Enum):
-    """Named, stable error code emitted by the cross-check layer (AC-3).
+    """Named, stable error code emitted by the cross-check layer.
 
     ``str`` mixin: round-trips through JSON/CLI output like FormErrorCode.
     """
 
     APPROVAL_ID_NOT_PENDING = "APPROVAL_ID_NOT_PENDING"
+    NEEDS_VERIFICATION_UNBOUND = "NEEDS_VERIFICATION_UNBOUND"
 
 
 @dataclass(frozen=True)
@@ -105,6 +98,17 @@ CROSSCHECK_REPAIR_MESSAGE = (
 )
 
 
+UNBOUND_VERIFICATION_REPAIR_MESSAGE = (
+    "Repair: NEEDS_VERIFICATION belongs to a plan-task-bound turn, whose task "
+    "gate an independent verifier settles. This turn carries no plan_task_id "
+    "and no parent_handoff_id, so nothing would ever verify or settle it. "
+    "Close COMPLETE with a verification you can stand behind (type none when "
+    "no oracle was required, self_review with reviewed, or a command this turn "
+    "ran), or BLOCKED / NEEDS_INPUT naming why not. Executing a plan task? "
+    "Finalize with --plan-task-id <id>."
+)
+
+
 @dataclass(frozen=True)
 class CrossCheckResult:
     """Outcome of layer-2 (cross-check) validation.
@@ -112,12 +116,12 @@ class CrossCheckResult:
     Attributes:
         ok: True when there is nothing to check (no approval_id present),
             the id resolves to a pending grant, or the check was skipped
-            because gaia.db is absent (graceful degrade -- AC-3).
+            because gaia.db is absent (graceful degrade).
         errors: tuple of CrossCheckError; non-empty only when ``ok`` is False.
         checked: True iff an approval_id was present AND gaia.db was
             queried (skipped runs, and runs with no approval_id, are False).
         skipped: True iff an approval_id was present but gaia.db does not
-            exist -- the graceful-fallback path required by AC-3.
+            exist -- the graceful-fallback path.
         repair_message: CROSSCHECK_REPAIR_MESSAGE when ``ok`` is False, else
             empty string.
     """
@@ -240,7 +244,7 @@ def validate_crosscheck(
     Returns:
         CrossCheckResult. ``ok`` is True when there is nothing to check, the
         approval_id resolves to a pending grant, or gaia.db is absent
-        (graceful degrade, AC-3). ``ok`` is False only when gaia.db exists
+        (graceful degrade). ``ok`` is False only when gaia.db exists
         AND the approval_id fails to resolve to a pending row.
     """
     approval_id = _extract_approval_id(envelope)
@@ -249,7 +253,7 @@ def validate_crosscheck(
 
     resolved = Path(db_path) if db_path is not None else _default_db_path()
     if not resolved.exists():
-        # AC-3 graceful fallback: no gaia.db -- the form layer stands alone,
+        # Graceful fallback: no gaia.db -- the form layer stands alone,
         # and this layer never brings the DB into existence to check it.
         return CrossCheckResult(ok=True, checked=False, skipped=True)
 
@@ -278,8 +282,80 @@ def validate_crosscheck(
     )
 
 
+def _chain_binding(db_path: Path, contract_id: str) -> Tuple[bool, bool]:
+    """Whether *contract_id*'s row or any link it continues carries a plan_task_id, and a parent_handoff_id."""
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return False, False
+    try:
+        row = con.execute(
+            "SELECT plan_task_id, parent_handoff_id, continues_handoff_id "
+            "FROM agent_contract_handoffs WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchone()
+        has_task = has_parent = False
+        seen = set()
+        while row is not None:
+            has_task = has_task or row[0] is not None
+            has_parent = has_parent or row[1] is not None
+            if row[2] is None or row[2] in seen:
+                break
+            seen.add(row[2])
+            row = con.execute(
+                "SELECT plan_task_id, parent_handoff_id, continues_handoff_id "
+                "FROM agent_contract_handoffs WHERE id = ?",
+                (row[2],),
+            ).fetchone()
+        return has_task, has_parent
+    except sqlite3.OperationalError:
+        return False, False
+    finally:
+        con.close()
+
+
+def validate_verification_binding(
+    envelope: Any,
+    *,
+    contract_id: str,
+    plan_task_id: Optional[int] = None,
+    db_path: Optional[Path] = None,
+) -> CrossCheckResult:
+    """Refuse a NEEDS_VERIFICATION close with no plan_task_id and no parent_handoff_id; skipped without gaia.db."""
+    status = envelope.get("agent_status") if isinstance(envelope, dict) else None
+    if not isinstance(status, dict) or status.get("agent_state") != "NEEDS_VERIFICATION":
+        return CrossCheckResult(ok=True, checked=False)
+    if plan_task_id is not None:
+        return CrossCheckResult(ok=True, checked=True)
+    resolved = Path(db_path) if db_path is not None else _default_db_path()
+    if not resolved.exists():
+        return CrossCheckResult(ok=True, checked=False, skipped=True)
+    has_task, has_parent = _chain_binding(resolved, contract_id)
+    if has_task or has_parent:
+        return CrossCheckResult(ok=True, checked=True)
+    error = CrossCheckError(
+        code=CrossCheckErrorCode.NEEDS_VERIFICATION_UNBOUND,
+        field="agent_status.agent_state",
+        detail=(
+            f"contract {contract_id!r} closes NEEDS_VERIFICATION with no "
+            "plan_task_id and no parent_handoff_id"
+        ),
+    )
+    return CrossCheckResult(
+        ok=False,
+        errors=(error,),
+        checked=True,
+        repair_message=UNBOUND_VERIFICATION_REPAIR_MESSAGE,
+    )
+
+
 def validate(
-    envelope: Any, *, db_path: Optional[Path] = None, source: str = "declaration"
+    envelope: Any,
+    *,
+    db_path: Optional[Path] = None,
+    source: str = "declaration",
+    contract_id: Optional[str] = None,
+    plan_task_id: Optional[int] = None,
 ) -> EnvelopeValidationResult:
     """Full-verdict validation: layer 1 (form) gates layer 2 (cross-check).
 
@@ -294,6 +370,7 @@ def validate(
             (default) or ``"row"``. Purely a wording choice for layer 1's
             MISSING_FIELD detail and repair message; never a validation input,
             and irrelevant to layer 2, which does not read it.
+        contract_id, plan_task_id: passed by finalize only, to add ``validate_verification_binding``.
 
     Returns:
         EnvelopeValidationResult. ``ok`` is True only when BOTH layers pass.
@@ -310,6 +387,10 @@ def validate(
         )
 
     crosscheck_result = validate_crosscheck(envelope, db_path=db_path)
+    if crosscheck_result.ok and contract_id:
+        crosscheck_result = validate_verification_binding(
+            envelope, contract_id=contract_id, plan_task_id=plan_task_id, db_path=db_path,
+        )
     return EnvelopeValidationResult(
         ok=crosscheck_result.ok,
         form=form_result,
@@ -323,6 +404,8 @@ __all__ = [
     "CrossCheckResult",
     "EnvelopeValidationResult",
     "CROSSCHECK_REPAIR_MESSAGE",
+    "UNBOUND_VERIFICATION_REPAIR_MESSAGE",
     "validate_crosscheck",
+    "validate_verification_binding",
     "validate",
 ]

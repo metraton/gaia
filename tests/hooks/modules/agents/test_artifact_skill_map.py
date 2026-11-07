@@ -146,7 +146,7 @@ class TestExpectedSkillForPathUnrecognized:
         assert expected_skill_for_path(None) is None
 
     def test_directory_like_path_with_no_suffix_returns_none(self):
-        assert expected_skill_for_path("skills/diagram-builder/assets/") is None
+        assert expected_skill_for_path("skills/deck-builder/assets/") is None
 
 
 # ============================================================================

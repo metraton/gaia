@@ -1,11 +1,9 @@
 """
 Workflow auditing: anomaly detection and Gaia analysis signaling.
 
-Renamed from anomaly_detector.py and expanded with additional anomaly types.
-
 Provides:
     - audit(): Full anomaly detection suite -> list of anomaly dicts
-    - signal_gaia_analysis(): Create flag file for Gaia analysis
+    - signal_gaia_analysis(): Log the anomaly count; writes no file
 """
 
 import json
@@ -20,11 +18,6 @@ from ..agents.transcript_analyzer import TranscriptAnalysis
 from .workflow_recorder import get_workflow_memory_dir
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Transcript-analysis check helpers (T009)
-# ---------------------------------------------------------------------------
 
 
 def _check_investigation_skip(
@@ -86,17 +79,11 @@ def _check_context_update_missing(
     project-context contract (``project_context_contracts.write`` non-empty),
     captured in the runtime snapshot as ``context_write_contracts``. Such an
     agent is expected to be able to emit an ``update_contracts`` clause when it
-    discovers indexable state. The prior trigger keyed on the deleted
-    ``context-updater`` skill being injected; that skill no longer exists.
+    discovers indexable state.
 
     The clause is looked for in the SERIALIZED envelope rather than by key
-    lookup, because that is what preserves the measurement across the move off
-    the message text: the pre-migration check scanned the whole message for the
-    substring, so a turn that only NAMED the clause in prose was exempted too.
-    Census over the 10822 historical rows: 112 carry the substring somewhere
-    other than the top-level key, and a key lookup would newly flag every one
-    of them. Tightening that looseness is a separate decision, not a side
-    effect of changing where the envelope is read from.
+    lookup, so a turn that only NAMES the clause somewhere in the envelope is
+    exempted too; a key lookup would flag it.
     """
     snapshot = metrics.get("default_skills_snapshot")
     if not isinstance(snapshot, dict):
@@ -130,10 +117,8 @@ EXCESSIVE_TOOL_CALL_THRESHOLD = 50
 """Tool-call count above which a turn enters the elevated-truncation band.
 
 Measured over 2416 archived transcripts: the rate of turns ending in a harness
-cut steps up roughly sevenfold once a turn crosses 50 tool calls. The previous
-value, 75, sat above every cut in OBSERVED_HARNESS_CUT_TOOL_CALLS but one, so
-the check fired after the risk it was meant to observe had already
-materialized. The number is the measured step, not a round figure.
+cut steps up roughly sevenfold once a turn crosses 50 tool calls. The number is
+the measured step, not a round figure.
 """
 
 
@@ -454,10 +439,10 @@ def audit(
 
     Checks:
     - execution_failure: exit_code != 0
-    - consecutive_failures: 3+ failures in a row for same agent
     - missing_evidence: COMPLETE but no evidence in the turn's envelope
     - empty_evidence: envelope evidence exists but commands_run empty or all "not run"
-    - skipped_verification: task has verify command in injected_context but not in commands_run
+    - skipped_verification: a required check in injected_context names "verify"
+      and the envelope lists no commands_run
     - scope_escalation: rejected_sections exist (agent tried to write outside its scope)
 
     Transcript-analysis checks (only when transcript_analysis is provided):
@@ -478,30 +463,6 @@ def audit(
     - duplicate_tools: duplicate tool calls detected
     - bash_permission_gate: agent declares Bash but made 0 calls (native layer block)
 
-    Retired: ``context_ignored`` (warned when the first tool call's arguments
-    carried none of ["project-context", ".claude/", "CLAUDE.md",
-    "context-contracts"]). Removed because it measured a delivery mechanism
-    Gaia does not use -- project context is injected inline as prompt text
-    (``context_injector.py::build_project_context``), never as a file path
-    the agent opens, so the four literal strings had no relationship to
-    whether context was actually read. A sample of real firings (25 rows out
-    of 600 historical) showed zero genuine context-ignoring behavior, only
-    ordinary first actions (``git status``, ``gh auth status``, ``npm run
-    build``) that do not happen to mention those substrings; cross-checking
-    unflagged episodes showed only ~4% coincidental matches, unrelated to
-    real context usage. No working structural signal was available to
-    replace it with: ``anchor_tracker.py``'s ``context_anchor_hit_rate`` is
-    wired but always null in production (a separate, unrelated defect).
-    ``contract_validator.check_context_usage`` -- a self-reported variant
-    that compared anchors against the agent's own ``evidence_report``
-    instead of the real transcript -- was later removed as dead code
-    (implemented, tested, never wired to a production call site), since a
-    self-reported comparison is manipulable and false-negatives when an
-    agent used the context but phrased it differently.
-    The historical ``episode_anomalies`` rows of this type are left in place
-    as audit trace; the glossary entry in ``bin/cli/metrics.py`` documents
-    the type as retired rather than being deleted.
-
     Args:
         metrics: Workflow metrics dict (from workflow_recorder.record()).
         task_info: Task metadata including injected_context (for verification checks).
@@ -512,7 +473,7 @@ def audit(
         row_envelope: The turn's contract envelope, resolved by the caller and
             passed in -- this function performs no DB read and no parse of the
             response text. The production caller
-            (``ClaudeCodeAdapter.adapt_subagent_stop``) hands its
+            (``hooks/adapters/subagent_stop_core.py``) hands its
             ``_authoritative_envelope``, i.e. the persisted
             ``agent_contract_handoffs`` row the SubagentStop gate already
             resolved, so the four envelope checks below measure the record the
@@ -525,7 +486,6 @@ def audit(
     anomalies: List[Dict[str, str]] = []
     task_info = task_info or {}
 
-    # --- existing: execution_failure ---
     if metrics.get("exit_code", 0) != 0:
         anomalies.append({
             "type": "execution_failure",
@@ -533,12 +493,8 @@ def audit(
             "message": f"Agent {metrics['agent']} failed with exit code {metrics['exit_code']}"
         })
 
-    # The guard the three checks below used to carry was `if agent_output:` --
-    # "audit only a turn that said something". Its row-lane equivalent would be
-    # "audit only a turn with a reachable envelope", and missing_evidence
-    # deliberately does not adopt it: a COMPLETE turn that left no reachable
-    # record has no evidence by definition, which is what it reports.
-    # --- NEW: missing_evidence ---
+    # missing_evidence audits a COMPLETE turn even with no reachable envelope:
+    # such a turn has no evidence by definition, which is what it reports.
     plan_status = metrics.get("plan_status", "")
     if "COMPLETE" in plan_status:
         has_evidence = (
@@ -556,7 +512,6 @@ def audit(
                 ),
             })
 
-    # --- NEW: empty_evidence ---
     if isinstance(row_envelope, dict):
         evidence = row_envelope.get("evidence_report")
         if isinstance(evidence, dict):
@@ -590,14 +545,12 @@ def audit(
                         ),
                     })
 
-    # --- NEW: skipped_verification ---
     injected = task_info.get("injected_context") or {}
-    investigation_brief = injected.get("agent_contract_handoff") or injected.get("investigation_brief", {}) or {}  # dual-key lookup during M2 dual-mode window
+    investigation_brief = injected.get("agent_contract_handoff") or injected.get("investigation_brief", {}) or {}
     required_checks = investigation_brief.get("required_checks", [])
     if required_checks:
-        # Extract commands that were actually run from evidence. The row
-        # envelope goes through the SAME normalizer the fenced text used to,
-        # so a tolerated {"command": ...} entry still resolves to a command.
+        # Commands actually run, via the contract normalizer, so a tolerated
+        # {"command": ...} entry still resolves to a command.
         from ..agents.contract_validator import _commands_from_contract_dict
         commands_run = _commands_from_contract_dict(row_envelope)
 
@@ -616,7 +569,6 @@ def audit(
                     })
                     break
 
-    # --- NEW: scope_escalation ---
     if rejected_sections:
         anomalies.append({
             "type": "scope_escalation",
@@ -627,7 +579,6 @@ def audit(
             ),
         })
 
-    # --- Transcript-analysis checks (T009) ---
     if transcript_analysis is not None:
         for check_fn in (
             _check_investigation_skip,
@@ -671,26 +622,10 @@ def signal_gaia_analysis(
     """
     Signal that Gaia analysis is needed.
 
-    T4 of brief ``episodic-workflow-to-db`` removed the filesystem signals:
-
-    * ``signals/needs_analysis.flag`` and ``anomalies.jsonl`` are no longer
-      written. Anomalies are persisted as ``episode_anomalies`` rows by
-      ``hooks/modules/memory/episode_writer.write()`` via ``store_episode()``,
-      keyed by the parent episode_id. Querying recent anomalies is therefore
-      a SQL question:
-
-          SELECT * FROM episode_anomalies
-          WHERE workspace = ? AND timestamp > ?
-          ORDER BY timestamp DESC;
-
-    * The orchestrator's prior reliance on the ``.flag`` heuristic is the
-      reader half of the migration (T6) -- the writer side has been retired
-      already so dispatches no longer leave file droppings under
-      ``.claude/project-context/workflow-episodic-memory/``.
-
-    This function is now a no-op aside from a log line; the signature is
-    preserved so existing call sites (``hooks/subagent_stop.py``) continue
-    to work without coordinated changes.
+    No flag or ``anomalies.jsonl`` file is written: anomalies are persisted as
+    ``episode_anomalies`` rows by ``hooks/modules/memory/episode_writer.write()``
+    via ``store_episode()``, keyed by the parent episode_id. This function only
+    logs.
     """
     if anomalies:
         logger.info(

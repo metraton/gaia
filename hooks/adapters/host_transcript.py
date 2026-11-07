@@ -4,19 +4,11 @@ Host Transcript Access for Gaia.
 Adapter-owned utility that encapsulates how the host CLI (Claude Code) persists
 a subagent transcript on disk. The host-specific format -- a JSONL file whose
 lines are JSON objects with the role/content nested inside a ``message`` field
--- lives ONLY here (inside ``hooks/adapters/``). Business logic modules iterate
-over normalized ``(role, content)`` entries via :func:`iter_transcript_entries`
-instead of opening the file and calling ``json.loads`` themselves, so the core
-stays agnostic to the host CLI's transcript-serialization convention.
-
-Mirrors the ``host_session.py`` pattern: a small standalone module under
-``adapters/`` that owns a single host-specific detail and is imported by
-business logic, with no dependency on the heavier ``ClaudeCodeAdapter`` (avoids
-any circular-import or instantiation concern in low-level modules).
-
-If a future host advertises its transcript in a different shape (e.g. a single
-JSON array, or a different nesting), only this module changes; the readers in
-``modules/agents/transcript_reader.py`` keep iterating normalized entries.
+-- is read here. Business logic modules iterate over normalized
+``(role, content)`` entries via :func:`iter_transcript_entries` instead of
+opening the file and calling ``json.loads`` themselves. It depends on nothing
+from ``ClaudeCodeAdapter``, so low-level modules can import it without a
+circular import.
 """
 
 import json

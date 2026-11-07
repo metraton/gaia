@@ -1,12 +1,13 @@
-"""The one renderer of a signature's surface: one one-line question per command (D33, D37).
+"""The one renderer of a signature's surface, in each host's layout.
 
 Gaia composes every line a user reads; the requester only seals short phrases
 (title, question, and per item what it does and its impact, plus the rollback)
-and a host only shows the result. Each command of a signature is its own
-question, on one line, the same text in both hosts, in the machine format of
-D37: bracketed fields under a ``[ GAIA-SECURITY ]`` prefix whose labels are fixed
-English, while the requester's phrases stay in the user's language. A Details
-re-ask replaces each command's question with its one-line Details text. Phrase
+and a host only shows the result. Claude Code asks one question per signature
+(:func:`render_signatures`), in English: who asks, its commands numbered one per
+line, and what the set does, with real line breaks. OpenCode, whose question shows no line
+break, asks one one-line question per command (:func:`render_batch`) in
+the machine format: bracketed fields under a ``[ GAIA-SECURITY ]`` prefix.
+Either way a Details re-ask replaces each question with its Details text. Phrase
 limits are checked when a request is sealed (:func:`check_phrases`, called by
 ``core.seal_request``), so an over-long phrase is returned to its author
 instead of reaching a presentation; nothing is truncated.
@@ -17,6 +18,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from gaia.approvals.core import SealError, _ensure_hooks_importable, is_signed
@@ -24,13 +26,15 @@ from gaia.approvals.core import SealError, _ensure_hooks_importable, is_signed
 TITLE_MAX = 120
 QUESTION_MAX = 60
 LINE_MAX = 100
-#: Host limits of one AskUserQuestion call: its header and its question count.
-#: A question is one command, so one signature covers at most BATCH_MAX commands.
+#: Host limits of one question call: its header and its question count. An
+#: OpenCode question is one command, so a signature is sealed with at most BATCH_MAX.
 HEADER_MAX = 12
+#: ``Signature N/M``: Claude Code's schema describes 12 header characters but does not enforce it.
+SIGNATURE_HEADER_MAX = 13
 BATCH_MAX = 4
-OPTION_WORDS_MAX = 8
+OPTION_WORDS_MAX = 10
 
-#: Headers of the pre-D33 surface, still recognised on a question a model copied.
+#: The earlier surface's headers, still recognised on a question a model copied, and OpenCode's options.
 HEADER = "Aprobación"
 DETAILS_HEADER = "Detalles"
 DEFAULT_QUESTION = "¿Apruebo esta solicitud?"
@@ -39,13 +43,22 @@ OPTIONS = (
     ("Reject", "Rechaza la firma; no se ejecuta nada"),
     ("Details", "Qué hace, impacto, verificación y cómo deshacerlo"),
 )
+SIGNATURE_OPTIONS = (
+    ("Approve", "Authorizes exactly this command"),
+    ("Reject", "Rejects the signature; nothing runs"),
+    ("Details", "What it does, impact, verification and how to undo it"),
+)
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 
-#: Opens every question Gaia asks, so the user reads it as Gaia's security and not the model's (D37).
+#: Opens each OpenCode question and Details re-ask, so the user reads it as Gaia's security and not the model's.
 _PREFIX = "[ GAIA-SECURITY ]"
 #: The prefix however a model spaced it, unspaced included: the user reads any spacing as Gaia's.
 _TYPED_PREFIX = re.compile(r"\[\s*GAIA-SECURITY\s*\]")
+#: The opening of Claude Code's question, however a model worded the count, the earlier Spanish one included.
+_TYPED_REQUEST = re.compile(r"(?i)\b(pide\s+\S+\s+(comandos?|archivos?)|requests\s+\S+\s+(commands?|files?))\b")
+_SIGNATURE_HEADER = re.compile(r"(Signature|Details|Firma|Aprob\.|Detalle)( [A-Z] ?| )\d+/\d+")
+_GIT_IN_FOLDER = re.compile(r"git -C (/[\w./@+,=%-]*) (.+)", re.S)
 _RELATIVE_START = re.compile(r"\.{1,2}(/|$)")
 _FILE_NAME = re.compile(r"[\w-]\.[A-Za-z][A-Za-z0-9]{0,7}$")
 _NO_AGENT = "agente sin identificar"
@@ -54,6 +67,14 @@ _NO_IMPACT = "no declarado"
 _NO_ROLLBACK = "no declarado; no supongas que se puede deshacer"
 _NO_VERIFICATION = "no declarada"
 _NO_SHARED_STATE = "no declarado; no supongas que no toca estado compartido"
+_ABSENT = {
+    "agent": "unidentified agent",
+    "does": "(no description declared)",
+    "impact": "not declared",
+    "verification": "not declared",
+    "shared_state": "not declared; do not assume it leaves shared state alone",
+    "rollback_hint": "not declared; do not assume it can be undone",
+}
 
 
 class SurfaceLimitError(SealError):
@@ -62,12 +83,11 @@ class SurfaceLimitError(SealError):
 
 @dataclass(frozen=True)
 class Surface:
-    """One signature as both hosts show it: one question per sealed command (D33).
+    """One signature as a host shows it: its questions, their Details re-asks and their texts.
 
-    ``questions[i]`` asks signed command ``i`` and shows the unsigned steps
-    around it in their order; ``details_questions[i]`` is its Details re-ask.
-    ``text`` shows every step in its position, one per line, an unsigned step
-    included and marked; ``details`` is the Details texts.
+    ``details_questions[i]`` is the Details re-ask of ``questions[i]``. In
+    Claude Code's layout there is one of each; in OpenCode's, one per signed
+    command, each carrying the unsigned steps around it.
     """
 
     approval_id: str
@@ -110,9 +130,9 @@ def check_phrases(
         _check_line(f"item {position} impact", item.get("impact"), LINE_MAX)
 
 
-def check_question(question: Mapping[str, Any]) -> None:
+def check_question(question: Mapping[str, Any], *, header_max: int = HEADER_MAX) -> None:
     """Reject a question object whose header or options exceed the host limits."""
-    _check_line("header", question.get("header"), HEADER_MAX)
+    _check_line("header", question.get("header"), header_max)
     for option in question.get("options") or ():
         words = len(str(option.get("description") or "").split())
         if words > OPTION_WORDS_MAX:
@@ -147,15 +167,35 @@ def _one_line(text: str) -> str:
 
 
 def _target(item: Mapping[str, Any]) -> str:
-    return _one_line(item.get("command") or item.get("path") or "")
+    from gaia.redaction import mask_clear_secrets
+
+    return _one_line(mask_clear_secrets(item.get("command") or item.get("path") or ""))
 
 
-def _agent(payload: Mapping[str, Any]) -> str:
-    return (payload.get("requested_by") or {}).get("agent_id") or _NO_AGENT
+def _agent(payload: Mapping[str, Any], absent: str = _NO_AGENT) -> str:
+    return (payload.get("requested_by") or {}).get("agent_id") or absent
+
+
+def _home_relative(folder: str) -> str:
+    home = str(Path.home())
+    if home != "/" and (folder == home or folder.startswith(home + "/")):
+        return "~" + folder[len(home):]
+    return folder
+
+
+def _lifted_folder(items: Sequence[Mapping[str, Any]]) -> Optional[str]:
+    """The plain absolute folder every step names as ``git -C <folder>``, so lifting it is exactly reversible; else ``None``."""
+    folders = set()
+    for item in items:
+        match = _GIT_IN_FOLDER.fullmatch(str(item.get("command") or ""))
+        if "command" not in item or match is None:
+            return None
+        folders.add(match.group(1))
+    return folders.pop() if len(folders) == 1 else None
 
 
 def _folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str]:
-    """The folder a command runs in, only when it is not the requester's shell folder (D3).
+    """The folder a command runs in, only when it is not the requester's shell folder.
 
     ``requested_from`` is sealed by the request; a payload sealed without it
     (a reactive block, which seals the folder it ran in, or an older row) shows
@@ -191,7 +231,7 @@ def _uses_relative_path(command: str) -> bool:
 
 
 def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str]:
-    """The sealed folder, shown when it differs from the requester's or the command reads relative paths (D37)."""
+    """The sealed folder, shown when it differs from the requester's or the command reads relative paths."""
     folder = _folder(payload, item)
     if folder:
         return folder
@@ -202,6 +242,12 @@ def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Opti
     return None
 
 
+def shown_folders(payload: Mapping[str, Any]) -> list[str]:
+    """Each folder Details names for the request's commands, once each, in order: none when every command reads absolute paths in the requester's folder."""
+    folders = (_details_folder(payload, item) for item in _items(payload))
+    return list(dict.fromkeys(folder for folder in folders if folder))
+
+
 def _allowed_exit(item: Mapping[str, Any]) -> list[str]:
     """The ``ALLOWED EXIT`` field of a command that declared non-zero exits it may end with, else none."""
     codes = item.get("expect_exit") or []
@@ -209,7 +255,7 @@ def _allowed_exit(item: Mapping[str, Any]) -> list[str]:
 
 
 def _steps_text(payload: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
-    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37).
+    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP``.
 
     A signed command that declared exits it may end with non-zero shows them
     after its text, so the user signs what the set tolerates as well as what it runs.
@@ -295,7 +341,7 @@ def _captured_work(command: Optional[str]) -> Optional[str]:
 
 
 def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's Details question (D37).
+    """One command's Details question.
 
     The command, what it does, its impact, how the result is verified, whether
     it rewrites shared state, the rollback, its folder when it matters, and
@@ -319,21 +365,101 @@ def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
     return " ".join([_PREFIX, *fields])
 
 
-def _question(text: str, header: str) -> dict:
+def _signed_noun(items: Sequence[Mapping[str, Any]]) -> tuple[int, str]:
+    """How many items a request signs and their noun, ``command(s)`` or ``file(s)``, agreeing with that count."""
+    signed = [item for item in items if is_signed(item)]
+    noun = "command" if any("command" in item for item in signed) else "file"
+    return len(signed), f"{noun}{'' if len(signed) == 1 else 's'}"
+
+
+def _request_opening(
+    title: str, payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], folder: Optional[str] = None,
+) -> str:
+    """``<title>: <agent> requests <k> command(s)[ in <folder>]``, the title being the header the desktop app does not show."""
+    count, noun = _signed_noun(items)
+    where = f" in {_home_relative(folder)}" if folder else ""
+    return f"{title}: {_agent(payload, _ABSENT['agent'])} requests {count} {noun}{where}"
+
+
+def _approve_description(items: Sequence[Mapping[str, Any]]) -> str:
+    """The Approve option of Claude Code's question, naming what one signature authorizes."""
+    count, noun = _signed_noun(items)
+    return f"Authorizes exactly {'this' if count == 1 else f'these {count}'} {noun}"
+
+
+def _numbered_step(position: int, item: Mapping[str, Any], folder: Optional[str] = None) -> str:
+    codes = item.get("expect_exit") or []
+    notes = [] if is_signed(item) else ["unsigned step"]
+    if codes and is_signed(item):
+        notes.append(f"allowed exit: {','.join(str(code) for code in codes)}")
+    shown = _target(item)
+    if folder:
+        shown = "git " + _target({"command": _GIT_IN_FOLDER.fullmatch(item["command"]).group(2)})
+    return f"{position}. {shown}" + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def _what_line(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+    plural = len([item for item in items if is_signed(item)]) > 1
+    lead = "What they do" if plural else "What it does"
+    return f"{lead}: {_one_line(payload.get('what') or _ABSENT['does'])}"
+
+
+def _request_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], title: str) -> str:
+    """Claude Code's question: its title and who asks, every step numbered on its own line, and what the set does."""
+    folder = _lifted_folder(items)
+    steps = [_numbered_step(position, item, folder) for position, item in enumerate(items, start=1)]
+    return "\n".join([_request_opening(title, payload, items, folder), "", *steps, "", _what_line(payload, items)])
+
+
+def _request_details_text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], title: str) -> str:
+    """Claude Code's Details re-ask: each full command with what it does and its impact, then the set's verification, shared state and rollback."""
+    lines = [_request_opening(title, payload, items), ""]
+    for position, item in enumerate(items, start=1):
+        lines.append(_numbered_step(position, item))
+        lines.append(f"   Does: {_one_line(item.get('does') or _ABSENT['does'])}")
+        lines.append(f"   Impact: {_one_line(item.get('impact') or _ABSENT['impact'])}")
+        folder = _details_folder(payload, item)
+        if folder:
+            lines.append(f"   Folder: {_one_line(folder)}")
+        captured = _captured_work(item.get("command"))
+        if captured:
+            lines.append(f"   Captured: {_one_line(captured)}")
+    lines += [
+        "",
+        _what_line(payload, items),
+        *(
+            f"{label}: {_one_line(payload.get(key) or _ABSENT[key])}"
+            for label, key in (
+                ("Verification", "verification"),
+                ("Shared state", "shared_state"),
+                ("Undo", "rollback_hint"),
+            )
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def _question(
+    text: str, header: str, approve: Optional[str] = None,
+    *, options: Sequence[tuple[str, str]] = OPTIONS, header_max: int = HEADER_MAX,
+) -> dict:
     question = {
         "question": text,
         "header": header,
-        "options": [{"label": label, "description": description} for label, description in OPTIONS],
+        "options": [
+            {"label": label, "description": approve if label == "Approve" and approve else description}
+            for label, description in options
+        ],
         "multiSelect": False,
     }
-    check_question(question)
+    check_question(question, header_max=header_max)
     return question
 
 
 def batch_header(
     position: int, total: int, *, details: bool = False, signature: Optional[str] = None,
 ) -> str:
-    """The header of a question, or of its Details re-ask: ``Firma 1/2``, or ``Firma A 1/2`` inside signature ``A`` (D38).
+    """The header of an OpenCode question, or of its Details re-ask: ``Firma 1/2``, or ``Firma A 1/2`` inside signature ``A``.
 
     ``Detalle A1/2`` drops the space ``Firma A 1/2`` keeps: with it the header
     would run to 13 characters, one past the host's :data:`HEADER_MAX`.
@@ -343,6 +469,11 @@ def batch_header(
     if details:
         return f"Detalle {signature}{position}/{total}"
     return f"Firma {signature} {position}/{total}"
+
+
+def signature_header(position: int, total: int, *, details: bool = False) -> str:
+    """The header of Claude Code's question, ``Signature 1/2``, or of its Details re-ask, ``Details 1/2``."""
+    return f"{'Details' if details else 'Signature'} {position}/{total}"
 
 
 def signature_letter(index: int) -> str:
@@ -395,6 +526,61 @@ def render(payload: Mapping[str, Any], approval_id: str) -> Surface:
     return render_at(payload, approval_id, 1, question_count(payload))
 
 
+def render_signature(
+    payload: Mapping[str, Any], approval_id: str, position: int, total: int,
+) -> Surface:
+    """Render one request as Claude Code asks it: one question, the ``position``-th of ``total`` signatures."""
+    items = _items(payload)
+    asked = [item for item in items if is_signed(item)]
+    if not asked:
+        raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
+    if len(asked) > BATCH_MAX:
+        raise SurfaceLimitError(
+            f"approval {approval_id} seals {len(asked)} commands; a signature is "
+            f"asked with at most {BATCH_MAX}"
+        )
+    header = signature_header(position, total)
+    details_header = signature_header(position, total, details=True)
+    text = _request_text(payload, items, header)
+    details = _request_details_text(payload, items, details_header)
+    approve = _approve_description(items)
+    english = {"options": SIGNATURE_OPTIONS, "header_max": SIGNATURE_HEADER_MAX}
+    return Surface(
+        approval_id=approval_id,
+        text=text,
+        details=details,
+        questions=(_question(text, header, approve, **english),),
+        details_questions=(_question(details, details_header, approve, **english),),
+    )
+
+
+def render_signatures(
+    requests: Sequence[tuple[Mapping[str, Any], str]],
+) -> list[Surface]:
+    """Render the requests one Claude Code question call asks: one question per signature, ``Signature N/M``, at most BATCH_MAX."""
+    if not 1 <= len(requests) <= BATCH_MAX:
+        raise SurfaceLimitError(
+            f"a question call asks 1 to {BATCH_MAX} signatures, one question each, "
+            f"not {len(requests)}; ask fewer signatures per call"
+        )
+    surfaces = [
+        render_signature(payload, approval_id, position, len(requests))
+        for position, (payload, approval_id) in enumerate(requests, start=1)
+    ]
+    _require_distinct(surfaces)
+    return surfaces
+
+
+def _require_distinct(surfaces: Sequence[Surface]) -> None:
+    """Refuse a call two of whose questions read the same: the host indexes each answer by its text."""
+    for kind in ("questions", "details_questions"):
+        texts = [q["question"] for s in surfaces for q in getattr(s, kind)]
+        if len(set(texts)) != len(texts):
+            raise SurfaceLimitError(
+                "two questions of one call read the same; ask those signatures in separate calls"
+            )
+
+
 def is_signature_question(question: Mapping[str, Any]) -> bool:
     """Whether a host question object has the shape of a signature: its header or its options."""
     header = str(question.get("header") or "")
@@ -404,7 +590,7 @@ def is_signature_question(question: Mapping[str, Any]) -> bool:
     ]
     return (
         header in (HEADER, DETAILS_HEADER)
-        or re.fullmatch(r"(Firma|Aprob\.|Detalle)( [A-Z] ?| )\d+/\d+", header) is not None
+        or _SIGNATURE_HEADER.fullmatch(header) is not None
         or labels == [label for label, _ in OPTIONS]
     )
 
@@ -419,8 +605,18 @@ def looks_like_signature(question: Mapping[str, Any]) -> bool:
     header = str(question.get("header") or "")
     return (
         is_signature_question(question)
-        or re.match(r"(?i)(aprob|approv)", header) is not None
+        or re.match(r"(?i)(aprob|approv|firma|signature)", header) is not None
         or _TYPED_PREFIX.match(str(question.get("question") or "")) is not None
+    )
+
+
+def reads_as_request(question: Mapping[str, Any]) -> bool:
+    """Whether a Claude Code question reads as a signature: :func:`looks_like_signature`, a ``Signature N/M:`` title or a ``requests … command`` opening."""
+    text = str(question.get("question") or "")
+    return (
+        looks_like_signature(question)
+        or _SIGNATURE_HEADER.match(text.lstrip()) is not None
+        or _TYPED_REQUEST.search(text) is not None
     )
 
 
@@ -431,8 +627,8 @@ def render_batch(
 
     A call asking one signature heads each question with its position in the
     call, ``Firma N/M``; a call mixing signatures names each one by a letter
-    and counts inside it, ``Firma A 1/2``, ``Firma A 2/2``, ``Firma B 1/1``
-    (D38). Question texts must differ: the host indexes each answer by its
+    and counts inside it, ``Firma A 1/2``, ``Firma A 2/2``, ``Firma B 1/1``.
+    Question texts must differ: the host indexes each answer by its
     question text.
     """
     counts = [question_count(payload) for payload, _ in requests]
@@ -450,12 +646,7 @@ def render_batch(
             render_at(payload, approval_id, 1, count, signature=signature_letter(index))
             for index, ((payload, approval_id), count) in enumerate(zip(requests, counts))
         ]
-    for kind in ("questions", "details_questions"):
-        texts = [q["question"] for s in surfaces for q in getattr(s, kind)]
-        if len(set(texts)) != len(texts):
-            raise SurfaceLimitError(
-                "two questions of one call read the same; ask those signatures in separate calls"
-            )
+    _require_distinct(surfaces)
     return surfaces
 
 

@@ -7,7 +7,7 @@ text only.
 Public API:
     format_age(seconds) -> str
     print_approvals_table(rows) -> None
-    print_approval_detail(approval, events, grant=None) -> None
+    print_approval_detail(approval, events, grant=None, reading=None) -> None
     print_events_table(events) -> None
     print_history_table(rows) -> None
 """
@@ -17,6 +17,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from gaia.approvals.surface import shown_folders
+from gaia.redaction import mask_clear_secrets
 
 
 def format_age(seconds: float) -> str:
@@ -31,7 +34,7 @@ def format_age(seconds: float) -> str:
 
 
 def _short_id(approval_id: str) -> str:
-    """Return the first 8 chars after the P- prefix for compact display."""
+    """Return the P- prefix and the first 8 chars after it, for compact display."""
     if approval_id.startswith("P-"):
         tail = approval_id[2:]
         return f"P-{tail[:8]}"
@@ -48,8 +51,7 @@ def _command_summary(payload_json: Optional[str]) -> str:
         return "-"
     # Prefer exact_content for human readability; fall back to operation.
     content = payload.get("exact_content") or payload.get("operation") or "-"
-    # Truncate for table display.
-    content = str(content).replace("\n", " ")
+    content = mask_clear_secrets(str(content)).replace("\n", " ")
     if len(content) > 50:
         return content[:47] + "..."
     return content
@@ -94,11 +96,7 @@ def print_approvals_table(rows: List[Dict[str, Any]]) -> None:
 
 
 def _window_note(expires_at: str) -> str:
-    """Say whether a grant's window is still open, in words a reader can act on.
-
-    A bare timestamp asks the reader to subtract; the whole reason this plane was
-    invisible is that "approved" was read as "usable".
-    """
+    """Say whether a grant's window is still open, in words a reader can act on."""
     try:
         expiry = datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
@@ -125,11 +123,8 @@ def print_approval_detail(
         grant: The approval_grants row for the same id, when one exists. It is a
             different fact from ``approval['status']``: the decision says the
             user signed, the grant says whether that signature is still usable.
-            Omitting it printed ``approved`` for a capability that had already
-            expired.
         reading: The approval's reading (gaia.approvals.reading.read); its
-            state replaces the stored status, which calls a replaced or an
-            expired request revoked.
+            state replaces the stored status.
     """
     approval_id = approval.get("id", "?")
     reading = reading or {}
@@ -177,7 +172,9 @@ def print_approval_detail(
         )
         window = reading.get("window_minutes")
         lines.append(f"  Window      : {f'{window} min from the decision' if window else 'not sealed'}")
-        lines.append(f"  Directory   : {', '.join(reading.get('cwd') or []) or 'not sealed'}")
+        folders = shown_folders(payload) if payload.get("items") else []
+        if folders:
+            lines.append(f"  Directory   : {', '.join(folders)}")
     lines += [
         f"  Age         : {age_str}",
         f"  Created     : {created_at}",
@@ -206,7 +203,7 @@ def print_approval_detail(
             lines.append(f"    operation    : {operation}")
         exact_content = payload.get("exact_content")
         if exact_content:
-            lines.append(f"    exact_content: {exact_content}")
+            lines.append(f"    exact_content: {mask_clear_secrets(exact_content)}")
         scope = payload.get("scope")
         if scope:
             lines.append(f"    scope        : {scope}")
@@ -223,7 +220,7 @@ def print_approval_detail(
         if commands:
             lines.append(f"    commands ({len(commands)}):")
             for i, cmd in enumerate(commands):
-                lines.append(f"      [{i}] {cmd}")
+                lines.append(f"      [{i}] {mask_clear_secrets(cmd)}")
 
     if events:
         lines.append("")

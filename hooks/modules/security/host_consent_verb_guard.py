@@ -171,6 +171,9 @@ def _closing_paren(text: str, start: int) -> int:
 
 def _parse(command: str) -> _Parsed:
     """Split ``command`` into simple commands of bash words, quotes removed."""
+    from ..tools.shell_parser import strip_comment
+
+    command = strip_comment(command)
     parsed = _Parsed()
     current = _Command()
     word: Optional[_Word] = None
@@ -301,10 +304,6 @@ def _parse(command: str) -> _Parsed:
             end_word()
             i += 1
             continue
-        if char == "#" and word is None:
-            newline = command.find("\n", i)
-            i = n if newline < 0 else newline
-            continue
         if char == "\n":
             end_command()
             i += 1
@@ -344,7 +343,7 @@ def _basename(word: _Word) -> str:
 
 
 def _peel(words: List[_Word]) -> List[_Word]:
-    """Drop leading assignments and wrapper programs, down to the program that runs."""
+    """Drop leading assignments and wrapper programs with their flags, ``NAME=value`` words and durations."""
     i = 0
     while i < len(words) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[i].text):
         i += 1
@@ -562,6 +561,42 @@ def _refused(command: str, cwd: Optional[str], depth: int) -> Optional[str]:
     if _feeds_a_program_from_input(parsed.commands) and _code_spells_verb(command):
         return _INPUT_SPELLS_VERB
     return None
+
+
+def gaia_calls(command: str, depth: int = 0) -> List[List[str]]:
+    """The argument words of each Gaia CLI call in ``command``, through substitutions, eval, shell ``-c``/heredoc bodies and xargs (not ``find -exec`` or scripts)."""
+    if not command or depth > _MAX_DEPTH:
+        return []
+    parsed = _parse(command)
+    calls: List[List[str]] = []
+    for inner in parsed.substitutions:
+        calls.extend(gaia_calls(inner, depth + 1))
+    for simple in parsed.commands:
+        calls.extend(_command_gaia_calls(simple, depth))
+    return calls
+
+
+def _command_gaia_calls(command: _Command, depth: int) -> List[List[str]]:
+    words = _peel(command.words)
+    if not words:
+        return []
+    program = _basename(words[0])
+    if program == "xargs":
+        inner, i = words[1:], 0
+        while i < len(inner) and inner[i].text.startswith("-"):
+            i += 2 if inner[i].text in _XARGS_VALUE_FLAGS else 1
+        words = _peel(inner[i:])
+    elif program == "eval":
+        return gaia_calls(" ".join(word.text for word in words[1:]), depth + 1)
+    elif program in _SHELLS:
+        for index, word in enumerate(words[1:-1], start=1):
+            if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", word.text):
+                return gaia_calls(words[index + 1].text, depth + 1)
+        if command.heredoc is not None and not _non_flags(words[1:]):
+            return gaia_calls(command.heredoc, depth + 1)
+        return []
+    gaia_args = _is_gaia(words)
+    return [[word.text for word in gaia_args]] if gaia_args is not None else []
 
 
 def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]:

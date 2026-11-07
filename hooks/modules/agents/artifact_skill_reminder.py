@@ -1,50 +1,31 @@
 """
 Per-turn, per-artifact-class advisory reminder for PreToolUse Write/Edit.
 
-This is the PREVENTION half of the skill-gap story that
-``skill_injection_verifier`` only ever DETECTED, and only after the fact: that
-module runs at SubagentStop, once the file is already written, and can only
-report that the governing skill's fingerprint never showed up in the
-transcript. By then the artifact exists without the convention it was
-supposed to follow. This module moves the same governance -- still derived
-from ``artifact_skill_map``, never from a semantic match on the dispatch goal
--- to the moment the agent is ABOUT to write the file, so the requirement
-reaches the agent while the artifact is still being formed, not once it is
-history.
+Where ``skill_injection_verifier`` detects at SubagentStop that a governing
+skill's fingerprint never showed up in the transcript, this module reminds the
+agent before the write. The skill comes from ``artifact_skill_map``, never
+from the dispatch goal.
 
 Two constraints shape the design:
 
 - **PreToolUse cannot see what the agent already loaded this turn.** The
-  Claude Code payload for a subagent's Write/Edit call carries no
-  ``transcript_path`` (only SubagentStop gets ``agent_transcript_path``), and
-  the ``Skill`` tool itself is not wired into any PreToolUse matcher in
-  ``hooks/hooks.json`` -- a ``Skill(...)`` call never reaches this hook at
-  all. So this module does not attempt to answer "was the skill already
-  loaded?" (unanswerable from here); it answers a narrower, always-answerable
-  question instead -- "does this file's class require a skill, and have we
-  already said so this turn?" -- and reminds unconditionally on the first
-  "no."
-- **Noise is the real failure mode.** Reminding on every Write of every file
-  in a governed class (e.g. every ``.py`` write in a hook module plus its
-  test) would be as invisible as ``pipe_retroactive`` firing on every pipe
-  used to be, before it was narrowed to cloud/infra CLI pipes. The reminder
-  fires at most once per (session, agent, skill) triple -- once per turn,
-  per artifact CLASS, never per file -- by checking and marking a small
-  on-disk marker before returning the advisory.
+  Write/Edit payload carries no transcript path, and ``hooks/hooks.json`` has
+  no PreToolUse matcher for the ``Skill`` tool. So the module does not ask
+  whether the skill was loaded; it asks whether this file's class requires a
+  skill and whether the agent was already reminded this turn, and reminds on
+  the first "no".
+- **Noise is the real failure mode.** The reminder fires at most once per
+  (session, agent, skill) triple, by checking and marking a small on-disk
+  marker before returning the advisory.
 
-Persistence mirrors the existing PreToolUse -> SubagentStart bridges in
-``hooks/adapters/claude_code.py`` (``_cache_context_for_subagent`` /
-``_cache_resume_mapping``): a TTL-bounded file under ``gaia.paths.tmp_dir()``, not the
-project's own ``.claude/`` state directory, because this marker carries no
-audit value once the turn ends -- it exists only to suppress a repeat
-reminder within one subagent's lifetime.
+The marker is a TTL-bounded file under ``gaia.paths.tmp_dir()``, like the
+PreToolUse -> SubagentStart bridges in ``hooks/adapters/claude_code.py``
+(``_cache_context_for_subagent`` / ``_cache_resume_mapping``); it only
+suppresses a repeat reminder within one subagent's lifetime.
 
 The caller (``ClaudeCodeAdapter._adapt_write_edit``) carries the text this
-module builds in ``hookSpecificOutput.additionalContext``, never in
-``permissionDecisionReason``: with ``permissionDecision: "allow"``, Claude
-Code documents the reason string as visible only in logs and the debug
-transcript, not to the model, so a reminder placed there never reaches the
-agent it is meant for.
+module builds in ``hookSpecificOutput.additionalContext``, not in
+``permissionDecisionReason``.
 """
 
 import json
@@ -146,21 +127,10 @@ def cleanup_stale_markers(now: Optional[float] = None) -> None:
 def build_reminder_context(file_path: str, skill: str) -> str:
     """Build the advisory ``additionalContext`` text for ``skill``.
 
-    Carried in ``additionalContext``, not ``permissionDecisionReason``: with
-    ``permissionDecision: "allow"``, Claude Code's own hook contract states
-    the reason string is surfaced only in logs and the debug transcript, never
-    to the model -- so a reminder placed there is inert by construction and
-    ``additionalContext`` is the documented channel for text Claude should
-    read (see ``code.claude.com/docs/en/hooks.md``, "PreToolUse decision
-    control").
-
-    Phrased as a factual observation, not an instruction: this fires before
-    the agent's own skill choices for the turn are knowable from here (see
-    module docstring), so it cannot claim the skill is missing -- only that
-    this artifact class is governed by it. The wording also avoids anything
-    shaped like an out-of-band system directive, which prompt-injection
-    defenses could otherwise flag and surface to the user instead of folding
-    quietly into context.
+    Phrased as a factual observation, not an instruction: from here the
+    skill's presence is unknowable (see module docstring), so the text claims
+    only that this artifact class is governed by it, and avoids wording shaped
+    like an out-of-band system directive.
     """
     return (
         f"[SKILL_REMINDER] '{file_path}' falls under an artifact class "

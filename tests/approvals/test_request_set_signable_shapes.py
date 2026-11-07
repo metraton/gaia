@@ -26,7 +26,7 @@ ACCEPTED = {
         "echo ready | curl -X POST --data-binary @- https://example.com/hook"
     ),
     "quoted title with parentheses": (
-        'gh pr create --title "fix(approvals): accept scripts" --body "Scripts are signable."'
+        'gh pr edit 42 --base release --title "fix(approvals): accept scripts" --body "Scripts are signable."'
     ),
 }
 
@@ -81,7 +81,7 @@ def test_request_set_rejects_shape_that_cannot_run_once_signed(request_set, case
 
 def test_request_set_rejects_unquoted_parentheses_naming_the_argument(request_set):
     result = request_set(
-        'gh pr create --title fix(approvals): accept scripts --body "Scripts are signable."'
+        'gh pr edit 42 --base release --title fix(approvals): accept scripts --body "Scripts are signable."'
     )
     assert result.returncode != 0, result.stdout
     assert "--title" in result.stdout + result.stderr

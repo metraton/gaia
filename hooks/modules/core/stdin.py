@@ -2,8 +2,7 @@
 Stdin availability check for hook entrypoints.
 
 Provides a single ``has_stdin_data()`` helper that determines whether the
-current process has data available on stdin. This replaces the duplicate
-implementations that previously lived in ``adapters.utils``.
+current process has data available on stdin.
 """
 
 import logging

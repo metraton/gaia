@@ -32,6 +32,7 @@ VERSION_DIRS = (".claude-plugin/",)
 # so a name in them proves nothing: only a changed line that is the version
 # declaration itself leaves the tested code as it was.
 VERSION_LINE = re.compile(r'^\s*(?:"version"\s*:\s*"[^"]+",?|version\s*=\s*"[^"]+")\s*$')
+# CHANGELOG.md is prose: any edit to it leaves the tested code as it was.
 PROSE_FILE = "CHANGELOG.md"
 
 

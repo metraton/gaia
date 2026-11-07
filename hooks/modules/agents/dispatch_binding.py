@@ -1,12 +1,12 @@
 """
-Born-at-dispatch binding + referential integrity (plan 34 task 6, Fase 2;
-plan 49 task 1 -- free-turn birth + degrade-not-drop, D1).
+Born-at-dispatch binding + referential integrity, with free-turn birth and
+degrade-not-drop.
 
 At dispatch time (the PreToolUse:Agent / SubagentStart path) the hook BIRTHS the
 nascent ``agent_contract_handoffs`` row via
 ``gaia.store.writer.insert_dispatched_handoff``, stamping the four binding
 coordinates (plan_task_id, plan_id, parent_handoff_id, kind) from the dispatch
-metadata. Task 5 froze the writer primitive: it performs the INSERT but is
+metadata. The writer primitive performs the INSERT but is
 deliberately semantics-free -- it does NOT know which ``kind`` of dispatch
 requires which coordinate. That knowledge lives HERE, as REFERENTIAL INTEGRITY
 validation of the nascent row (validation of the row's coordinates, NOT semantic
@@ -23,7 +23,7 @@ gating by ``kind``):
     an existing ``agent_contract_handoffs.id`` row (a verifier turn binds to the
     producer turn it verifies). A verifier dispatch with a missing / unknown
     parent is REJECTED.
-  * ``kind`` is a PURE LABEL (plan 34 S3): NO value of ``kind`` is ever rejected
+  * ``kind`` is a PURE LABEL: NO value of ``kind`` is ever rejected
     for its value. ``kind`` names what the turn is (task_execution / verifier /
     investigation / memory / ...); only the binding's referential integrity is
     validated, never the label itself.
@@ -35,11 +35,10 @@ as a raw SQLite foreign-key ``IntegrityError`` from the writer's INSERT. The
 extra dispatchability constraint (status='pending') is scoped to task_execution,
 per the rules above.
 
-``validate_dispatch_binding`` / ``birth_dispatched_row`` above keep their raise
-contract unchanged -- reject, birth nothing -- which is exactly what
+``validate_dispatch_binding`` / ``birth_dispatched_row`` raise on a failed
+binding and birth nothing, which
 ``tests/hooks/test_dispatch_referential_integrity.py`` locks down. The
-free-turn / degrade work below is deliberately layered ON TOP rather than
-folded into them:
+free-turn and degrade paths are layered on top of them rather than folded in:
 
   * A dispatch that extracts with NO binding token at all (see
     ``extract_dispatch_binding``) is labeled a FREE kind (``investigation`` /
@@ -49,7 +48,7 @@ folded into them:
   * BIRTH IS TOTAL: a dispatch whose binding fails referential integrity still
     calls ``validate_dispatch_binding`` first and still gets the same
     ``DispatchBindingError``, but the CALLER
-    (``hooks/adapters/claude_code.py``, ``_maybe_birth_dispatched_row``)
+    (``hooks/adapters/tool_policy.py``, ``ToolPolicy._maybe_birth_dispatched_row``)
     DEGRADES every one of them via :func:`birth_degraded_row` below instead of
     letting the row go unborn. The unresolvable coordinate is stamped NULL (the
     FK forbids sealing a coordinate that does not resolve), the rejection
@@ -58,21 +57,17 @@ folded into them:
     (``DISPATCH_BINDING_REJECTED_EVENT``) still fires -- degrading the row does
     not silence it.
 
-WHY TOTAL, AND NOT A CURATED SET OF DEGRADABLE REASONS. Degradation started
-scoped to the two ``plan_task_id`` reasons, leaving the three others to drop
-the row. That scoping was measured to cost far more than it protected: an
-unborn row is not a weaker binding, it is NO CONTRACT AT ALL -- no identity, no
-kernel, and above all no ``harness_agent_id``, which is stamped only at the
-SubagentStart claim (``gaia.store.writer.stamp_harness_agent_id``) and which no
-CLI verb can write afterwards. A turn that starts without a row therefore
-cannot recover one, and a turn cut before it finalizes leaves nothing behind.
-The verifier lane made that concrete: ``extract_dispatch_binding`` labels any
-agent whose NAME contains "verifier" a verifier turn, which REQUIRES a
-resolvable ``parent_handoff_id=<N>`` token in the dispatch prompt; every
-dispatch that omitted the token was dropped, so an entire agent type ran with
-no contract. Refusing to seal an unresolved coordinate is the property worth
-defending, and NULL already defends it. Refusing to record the turn defends
-nothing.
+WHY TOTAL, AND NOT A CURATED SET OF DEGRADABLE REASONS. An unborn row is not a
+weaker binding, it is NO CONTRACT AT ALL -- no identity, no kernel, and above
+all no ``harness_agent_id``, which is stamped only at the SubagentStart claim
+(``gaia.store.writer.stamp_harness_agent_id``) and which no CLI verb can write
+afterwards. A turn that starts without a row therefore cannot recover one, and
+a turn cut before it finalizes leaves nothing behind. E.g.
+``extract_dispatch_binding`` labels any agent whose NAME contains "verifier" a
+verifier turn, which REQUIRES a resolvable ``parent_handoff_id=<N>`` token in
+the dispatch prompt; dropping every dispatch that omitted it would leave an
+entire agent type with no contract. Refusing to seal an unresolved coordinate
+is the property worth defending, and NULL already defends it.
 """
 
 from __future__ import annotations
@@ -98,7 +93,11 @@ _TASK_EXECUTION_KIND = "task_execution"
 # The turn role that makes a resolvable parent_handoff_id MANDATORY.
 _VERIFIER_ROLE = "verifier"
 
-# Free-turn kind labels (plan 49 task 1, S1). Neither requires plan_task_id --
+# ``project=none``: the dispatch is about no project, so the birth stamps none
+# and skips the cwd fallback.
+NO_PROJECT = "none"
+
+# Free-turn kind labels. Neither requires plan_task_id --
 # they exist so a dispatch with NO binding token at all still births a row,
 # instead of being forced through the task_execution branch it never intended
 # to satisfy.
@@ -175,7 +174,7 @@ def _import_drafts():
 def _precreate_draft(contract_id: str, agent_id: str) -> None:
     """Best-effort creation of the on-disk draft the row was born under.
 
-    The dispatched turn no longer runs ``gaia contract init``: its draft must
+    The dispatched turn does not run ``gaia contract init``: its draft must
     already exist when its first ``gaia contract set/add/fill`` lands. An
     already-existing draft is never overwritten (a re-dispatch must not blank
     accumulated evidence), and any failure is swallowed -- the DB row is the
@@ -359,9 +358,8 @@ def birth_dispatched_row(
 ) -> dict:
     """Validate the binding, then BIRTH the nascent DISPATCHED row.
 
-    The dispatch-side counterpart to task 5's writer primitive: it runs
-    :func:`validate_dispatch_binding` FIRST (raising ``DispatchBindingError`` and
-    NOT touching the DB when the binding fails referential integrity), then
+    Runs :func:`validate_dispatch_binding` FIRST (raising ``DispatchBindingError``
+    and NOT touching the DB when the binding fails referential integrity), then
     stamps the binding into a nascent ``agent_state='DISPATCHED'`` row via
     ``gaia.store.writer.insert_dispatched_handoff``.
 
@@ -370,10 +368,10 @@ def birth_dispatched_row(
     that does not ADOPT its minted identity still shares with its own row, so it
     is what lets such a row be found and closed at SubagentStop.
 
-    The ``dispatch_*`` / ``context_anchors`` / ``kernel_sections`` fields (v43)
-    and ``dispatch_project`` (v44) are the dispatch coordinates
-    ``claim_dispatch_row`` correlates on and the payload the dispatch kernel
-    renders from -- pass-through to the writer, all optional.
+    The ``dispatch_*`` / ``context_anchors`` / ``kernel_sections`` fields and
+    ``dispatch_project`` are the dispatch coordinates ``claim_dispatch_row``
+    correlates on and the payload the dispatch kernel renders from --
+    pass-through to the writer, all optional.
 
     Birth also PRE-CREATES the on-disk draft under the same identity
     (:func:`_precreate_draft`): the dispatched turn starts with its contract
@@ -451,8 +449,8 @@ def birth_degraded_row(
     ``tasks.id`` / ``agent_contract_handoffs.id`` forbid sealing a coordinate
     that does not resolve, and NULL on ``plan_task_id`` is also exactly what
     keeps the blind-verification gate reading this turn as UNBOUND
-    (``_blind_verification_required`` in ``hooks/adapters/claude_code.py`` is a
-    pure function of the column, not of ``kind``) -- the documented residual: a
+    (``_blind_verification_required`` in ``hooks/adapters/subagent_stop_core.py``
+    is a pure function of the column, not of ``kind``) -- the documented residual: a
     degraded turn runs without the blind-verification gate, same as a turn with
     no row at all did. For a VERIFIER turn that residual is not even a change
     in behavior: a verifier is meant to read as unbound so it can self-COMPLETE
@@ -507,16 +505,13 @@ def birth_degraded_row(
 
 
 def _classify_free_kind(prompt: str) -> str:
-    """S1: label a FREE dispatch (no binding token at all) 'investigation' by
+    """Label a FREE dispatch (no binding token at all) 'investigation' by
     default, 'memory' when the prompt names the memory skill explicitly.
 
-    ``Skill('memory')`` (or the double-quoted spelling) is the literal marker
-    every memory dispatch carries -- see ``agents/gaia-orchestrator.md``
-    ("only when the user needs depth ... do I dispatch a subagent with
-    `Skill('memory')`") and ``agents/gaia-operator.md`` ("written through the
-    `gaia memory` CLI under the rules in `Skill('memory')`"). A dispatch that
-    does not name it is classified 'investigation', the more general free-turn
-    shape.
+    ``Skill('memory')`` (or the double-quoted spelling) is the marker a memory
+    dispatch is recognized by; the Memory rows of ``agents/gaia-orchestrator.md``
+    route memory work through it. A dispatch that does not name it is
+    classified 'investigation', the more general free-turn shape.
     """
     import re as _re
 
@@ -530,26 +525,24 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
 
     The orchestrator dispatches a subagent WITHOUT touching the CLI, so the
     binding coordinates must be read from the dispatch metadata (the Task tool
-    parameters). This is a conservative parser -- it reads ``plan_id`` and
-    ``task_id`` tokens from the dispatch prompt and infers ``turn_role`` from the
-    target agent name -- and is intentionally forgiving: a coordinate it cannot
-    find is left as None. The caller decides whether the resulting binding is
-    complete enough to birth a row (the referential-integrity validation is the
-    hard gate; this is only extraction).
+    parameters). This is a conservative parser -- it reads the ``plan_id``,
+    ``task_id``, ``parent_handoff_id``, ``project`` and ``ceiling`` tokens from
+    the dispatch prompt and infers ``turn_role`` from the target agent name --
+    and is intentionally forgiving: a coordinate it cannot find is left as
+    None. The caller decides whether the resulting binding is complete enough
+    to birth a row (the referential-integrity validation is the hard gate; this
+    is only extraction).
 
-    ``kind`` classification (plan 49 task 1, S1/S2): a verifier dispatch is
-    always ``kind='verifier'``. Everything else is ``task_execution`` iff the
-    prompt carries ANY binding-shaped token -- ``task_id=``, ``plan_id=``, or a
-    stray ``parent_handoff_id=`` -- and a FREE kind (``investigation`` /
-    ``memory``, see :func:`_classify_free_kind`) only when NONE of the three
-    are present. This is deliberately conservative (S2: "free only when there
-    is no binding token at all; any token present keeps task_execution
-    semantics"), so a dispatch that named a plan but dropped its ``task_id=``
-    token (the misdispatch shape ``_is_anomalous_dispatch_binding_rejection``
-    in ``hooks/adapters/claude_code.py`` flags) is never silently reclassified
-    as free -- doing so would disarm the blind-verification gate for what may
-    be a genuinely plan-task-bound turn, which is the one regression this task
-    must not introduce.
+    ``kind`` classification: a verifier dispatch is always ``kind='verifier'``.
+    Everything else is ``task_execution`` iff the prompt carries ANY
+    binding-shaped token -- ``task_id=``, ``plan_id=``, or a stray
+    ``parent_handoff_id=`` -- and a FREE kind (``investigation`` / ``memory``,
+    see :func:`_classify_free_kind`) only when NONE of the three are present.
+    A dispatch that named a plan but dropped its ``task_id=`` token (the
+    misdispatch shape ``_is_anomalous_dispatch_binding_rejection`` in
+    ``hooks/adapters/tool_policy.py`` flags) is therefore never silently
+    reclassified as free, which would disarm the blind-verification gate for
+    what may be a genuinely plan-task-bound turn.
 
     Returns a dict with keys ``plan_id``, ``plan_task_id``, ``kind``,
     ``turn_role``, ``parent_handoff_id``, ``project``, ``ceiling`` -- any of
@@ -571,31 +564,29 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
 
     plan_id = _int_token(r"plan_id\s*=\s*(\d+)")
     plan_task_id = _int_token(r"task_id\s*=\s*(\d+)")
-    # ``project=<name>`` (v44 follow-up): the orchestrator KNOWS which project
-    # a dispatch is about; the cwd does not (it dispatches from the workspace
-    # root, so path-based resolution never matches). The name travels in the
-    # same token channel as task_id=/plan_id= -- the only structured channel a
-    # Task dispatch has -- and is resolved to "name (/abs/path)" at birth,
-    # with cwd resolution kept only as the fallback. Deliberately NOT a
-    # binding coordinate: it never gates a birth, so it plays no part in the
-    # kind classification below.
+    # ``project=<name>``: the orchestrator KNOWS which project a dispatch is
+    # about; the cwd does not (it dispatches from the workspace root, so
+    # path-based resolution never matches). The name travels in the same token
+    # channel as task_id=/plan_id= and is resolved at birth
+    # (``ToolPolicy._kernel_dispatch_facts``), with cwd resolution as the
+    # fallback. It is NOT a binding coordinate: it never gates a birth, so it
+    # plays no part in the kind classification below.
     # The name may hold inner dots (``metraton.github.io``) but must end on a
     # word character, so a sentence's closing ``.`` is not read as part of it.
-    project_match = _re.search(
-        r"\bproject\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])", prompt,
+    names = _re.findall(
+        r"(?:^|(?<=[\s(\[{<\"'`]))project\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])",
+        prompt,
     )
-    project = project_match.group(1) if project_match else None
+    real = [name for name in names if name.lower() != NO_PROJECT]
+    project = real[0] if real else (NO_PROJECT if names else None)
     # A verifier dispatch names the PRODUCER handoff it verifies via a
-    # ``parent_handoff_id=<N>`` token in its prompt. Without this the verifier
-    # branch of validate_dispatch_binding (which REQUIRES a resolvable
-    # parent_handoff_id) always failed with 'verifier_requires_parent_handoff_id'
-    # and the verifier's nascent row was never born. Extract it so the birth
-    # can stamp the parent binding. Left None for a non-verifier dispatch, where
-    # it is optional (and only existence-checked if present).
+    # ``parent_handoff_id=<N>`` token in its prompt, which the verifier branch
+    # of validate_dispatch_binding requires to resolve. Left None for a
+    # non-verifier dispatch, where it is optional (and only existence-checked
+    # if present).
     parent_handoff_id = _int_token(r"parent_handoff_id\s*=\s*(\d+)")
-    # The tool calls the orchestrator budgets for the turn; read at PostToolUse
-    # by ``modules.agents.call_ceiling``. Dispatch data like ``project=``,
-    # never a binding coordinate.
+    # The turn's tool-call budget, dispatch data like ``project=``; absent, it
+    # falls back to the agent's ``maxTurns`` (``call_ceiling.effective_ceiling``).
     ceiling = _int_token(r"\bceiling\s*=\s*(\d+)")
 
     is_verifier = "verifier" in agent.lower()
@@ -604,19 +595,13 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     if is_verifier:
         kind = _VERIFIER_ROLE
         # A verifier turn is bound to the PRODUCER it verifies via
-        # parent_handoff_id, NOT to a plan_task_id of its own (see module
-        # docstring + the finalize gate in
-        # hooks/adapters/claude_code.py::_blind_verification_required). The
-        # verifier prompt still MENTIONS the task_id it is verifying, so the
-        # `task_id=` token extraction above would otherwise STAMP that
-        # plan_task_id onto the verifier's nascent row -- which the
-        # plan_task_id-keyed blind-verification gate would then read as "this
-        # turn is a plan-task-bound producer" and force its COMPLETE to
-        # NEEDS_VERIFICATION. That is a DEADLOCK: the verifier could never
-        # promote the increment because it would itself be sent back for
-        # verification forever. Drop the plan_task_id for a verifier turn so
-        # it binds by parent_handoff_id only and is treated as UNBOUND by the
-        # gate (free to self-COMPLETE / promote).
+        # parent_handoff_id, NOT to a plan_task_id of its own. Its prompt still
+        # MENTIONS the task_id it is verifying, and a plan_task_id stamped on
+        # its row would make the finalize gate
+        # (hooks/adapters/subagent_stop_core.py::_blind_verification_required)
+        # read it as a plan-task-bound producer and force its COMPLETE to
+        # NEEDS_VERIFICATION -- the verifier could never promote the increment.
+        # Dropping it leaves the verifier UNBOUND for the gate.
         plan_task_id = None
     elif plan_task_id is not None or plan_id is not None or parent_handoff_id is not None:
         kind = _TASK_EXECUTION_KIND

@@ -1,37 +1,29 @@
 #!/usr/bin/env python3
-"""
-migrate_06_state_machines.py -- One-shot migration that:
+"""One-shot migration that adds CHECK constraints to the state columns of gaia.db.
 
-1. Backs up ``~/.gaia/gaia.db`` to a timestamped sibling.
-2. Cleans legacy data in ``episodes.plan_status``:
-     * REVIEW          -> APPROVAL_REQUEST   (deprecated -> canonical rename)
-     * <STATUS>        -> BLOCKED            (placeholder leak -> closest semantic)
-     * '' (empty str)  -> COMPLETE           (pre-substrate backfill per brief)
-3. Recreates the four state-machine-bearing tables with CHECK constraints
-   driven by the canonical Python tuples in ``gaia.state``:
-     * episodes.plan_status   (NULL allowed for forward compatibility)
-     * briefs.status
-     * plans.status
-     * tasks.status
-4. Preserves indexes, triggers, and FTS5 mirrors via the SQLite recreate-
-   table pattern (CREATE new with CHECK -> INSERT INTO new SELECT FROM old
-   -> DROP old -> RENAME new -> reapply indexes/triggers).
+1. Backs up the database to ``<name>.bak.<timestamp>`` beside it (not on --dry-run).
+2. Cleans episodes.plan_status: REVIEW becomes APPROVAL_REQUEST, the unfilled
+   placeholder <STATUS> becomes BLOCKED, and '' or NULL become COMPLETE.
+3. Recreates episodes, briefs, plans and tasks with CHECK clauses built from the
+   tuples in ``gaia.state`` (episodes.plan_status still admits NULL), copies
+   the rows over, re-applies the indexes and triggers of
+   ``_REAPPLY_INDEXES_TRIGGERS`` and rebuilds the two FTS5 indexes.
 
-The script is idempotent only insofar as a backup is always created; it
-expects to find the pre-CHECK schema and will refuse to run a second time
-once the CHECK constraint is already in place (detected via ``sqlite_master.sql``
-inspection).
+The run refuses to repeat: when any of the four tables already has the text
+CHECK in its DDL it exits 1, or 0 with --allow-already-migrated, before taking
+a backup.
 
 Usage::
 
     python3 tools/migration/migrate_06_state_machines.py
     python3 tools/migration/migrate_06_state_machines.py --db /path/to/gaia.db
     python3 tools/migration/migrate_06_state_machines.py --dry-run
+    python3 tools/migration/migrate_06_state_machines.py --allow-already-migrated
 
 Exit codes:
-    0  Migration succeeded (or already applied + --idempotent).
-    1  Pre-flight check failed (DB missing, schema unexpected).
-    2  Mid-migration failure -- restore the backup file manually.
+    0  Migrated, dry run done, or already migrated with --allow-already-migrated.
+    1  The database file is missing, or already migrated without that flag.
+    2  The migration raised; the backup written just before is the way back.
 """
 
 from __future__ import annotations
@@ -43,7 +35,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Ensure gaia package is importable when run from repo root or `tools/migration`
+# Run as a script, the repo root is not on sys.path.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -61,10 +53,8 @@ from gaia.state.check_clauses import build_check_clause  # noqa: E402
 DEFAULT_DB = Path.home() / ".gaia" / "gaia.db"
 
 
-# ---------------------------------------------------------------------------
-# CREATE TABLE statements with CHECK constraints applied. These match the
-# upstream schema in gaia/store/schema.sql with the new CHECK clauses.
-# ---------------------------------------------------------------------------
+# The CREATE TABLE statements are the schema as it stood when this ran, plus the
+# CHECK clauses. schema.sql has since renamed project to workspace and added columns.
 
 def _episodes_create_sql() -> str:
     check = build_check_clause("plan_status", VALID_PLAN_STATUSES, allow_null=True)
@@ -150,9 +140,8 @@ def _tasks_create_sql() -> str:
     """
 
 
-# ---------------------------------------------------------------------------
-# Index + trigger DDL (re-applied after rename). Mirrors gaia/store/schema.sql.
-# ---------------------------------------------------------------------------
+# Dropping a table removes its indexes and triggers; these are the ones put back,
+# in their pre-rename form.
 
 _REAPPLY_INDEXES_TRIGGERS = """
     CREATE INDEX IF NOT EXISTS idx_episodes_project_timestamp ON episodes(project, timestamp DESC);
@@ -200,10 +189,6 @@ _REAPPLY_INDEXES_TRIGGERS = """
 """
 
 
-# ---------------------------------------------------------------------------
-# Cleanup queries
-# ---------------------------------------------------------------------------
-
 _CLEANUP_SQL_PRE_RECREATE = """
     -- Cleanup #1: REVIEW -> APPROVAL_REQUEST (deprecated rename)
     UPDATE episodes SET plan_status = 'APPROVAL_REQUEST' WHERE plan_status = 'REVIEW';
@@ -228,31 +213,20 @@ _CLEANUP_SQL_PRE_RECREATE = """
 """
 
 
-# ---------------------------------------------------------------------------
-# Idempotency: detect whether the migration has already been applied.
-# ---------------------------------------------------------------------------
-
 def _already_migrated(con: sqlite3.Connection) -> bool:
-    """Return True if any of the four target tables already carries a CHECK
-    on its state column. We probe by inspecting ``sqlite_master.sql`` for the
-    string 'CHECK' near the column name."""
+    """Return True if the DDL of any of the four tables contains the text CHECK."""
     rows = con.execute(
         "SELECT name, sql FROM sqlite_master WHERE type='table' AND name IN ('episodes','briefs','plans','tasks')"
     ).fetchall()
     found = {r[0]: (r[1] or "") for r in rows}
-    # Heuristic: the new schema contains 'CHECK' inside the table DDL.
     for tbl in ("episodes", "briefs", "plans", "tasks"):
         if "CHECK" in found.get(tbl, "").upper():
             return True
     return False
 
 
-# ---------------------------------------------------------------------------
-# Audit + migration drivers
-# ---------------------------------------------------------------------------
-
 def _audit(con: sqlite3.Connection) -> dict:
-    """Snapshot of legacy / canonical row counts. Returned for reporting."""
+    """Count the rows of each table per status value."""
     out: dict = {"episodes": {}, "briefs": {}, "plans": {}, "tasks": {}}
     rows = con.execute(
         "SELECT IFNULL(plan_status,'(NULL)') AS v, COUNT(*) FROM episodes GROUP BY plan_status"
@@ -281,11 +255,7 @@ def _recreate_table(
     create_new_sql: str,
     column_list_sql: str,
 ) -> None:
-    """Recreate-table pattern: CREATE new -> INSERT SELECT -> DROP -> RENAME.
-
-    The ``column_list_sql`` is the explicit column projection used in both the
-    INSERT INTO and SELECT FROM clauses, so the migration is order-independent.
-    """
+    """Create ``<table>_new``, copy the rows over by ``column_list_sql``, drop the old table and rename."""
     con.executescript(create_new_sql)
     con.execute(
         f"INSERT INTO {table}_new ({column_list_sql}) "
@@ -301,23 +271,18 @@ def _migrate(con: sqlite3.Connection, *, dry_run: bool = False) -> dict:
     if dry_run:
         return {"status": "dry-run", "pre_audit": pre, "post_audit": None}
 
-    con.execute("PRAGMA foreign_keys = OFF;")  # required for recreate pattern
+    # With foreign keys on, dropping briefs or plans would cascade-delete their children.
+    con.execute("PRAGMA foreign_keys = OFF;")
     con.execute("BEGIN")
     try:
-        # ---- Cleanup ---------------------------------------------------
         con.executescript(_CLEANUP_SQL_PRE_RECREATE)
 
-        # ---- Drop FTS triggers & legacy table-bound triggers BEFORE rename ----
-        # Triggers reference the OLD table by name; SQLite drops triggers on
-        # their parent table automatically when the parent is dropped, but
-        # we re-create them explicitly after the rename via the schema script.
         for trig in (
             "episodes_ai", "episodes_ad", "episodes_au",
             "briefs_ai", "briefs_ad", "briefs_au",
         ):
             con.execute(f"DROP TRIGGER IF EXISTS {trig};")
 
-        # ---- Recreate tables with CHECK ---------------------------------
         _recreate_table(
             con,
             table="episodes",
@@ -352,12 +317,10 @@ def _migrate(con: sqlite3.Connection, *, dry_run: bool = False) -> dict:
             column_list_sql="id, plan_id, order_num, goal, status, evidence_path",
         )
 
-        # ---- Re-apply indexes + triggers --------------------------------
         con.executescript(_REAPPLY_INDEXES_TRIGGERS)
 
-        # ---- Rebuild FTS5 mirrors (rowids changed on table recreate) ----
-        # episodes_fts and briefs_fts are external content tables -- rebuild
-        # so their internal indexes match the new base-table rowids.
+        # Both are external-content FTS5 tables, and episodes has no integer
+        # primary key, so the copy may assign it new rowids.
         con.execute("INSERT INTO episodes_fts(episodes_fts) VALUES ('rebuild');")
         con.execute("INSERT INTO briefs_fts(briefs_fts) VALUES ('rebuild');")
 
@@ -371,10 +334,6 @@ def _migrate(con: sqlite3.Connection, *, dry_run: bool = False) -> dict:
     post = _audit(con)
     return {"status": "applied", "pre_audit": pre, "post_audit": post}
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -413,7 +372,6 @@ def main() -> int:
             print(f"  {tbl}: {counts}")
         return 0
 
-    # Backup before any mutation.
     backup = _backup_db(args.db)
     print(f"Backup written: {backup}")
 

@@ -45,7 +45,6 @@ def calls(monkeypatch, tmp_path):
     stub("modules.session.plugin_upgrade", "reconcile_plugin_install", "")
     monkeypatch.setattr("modules.core.plugin_setup.recorded_in_manifest", contextlib.nullcontext)
     stub("modules.session.session_manifest", "build_session_context", "BIRTH")
-    stub("modules.context.compact_context_builder", "build_compact_context", "REFRESH")
 
     monkeypatch.setenv("CLAUDE_SESSION_ID", "from-the-environment")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
@@ -84,6 +83,7 @@ def test_start_maintenance_runs_in_order_on_the_explicit_inputs(calls, tmp_path)
         "installed_root",
         "reconcile_plugin_install",
         "workspace_status",
+        "installed_root",
         "build_session_context",
     ]
     by_name = {name: (args, kwargs) for name, args, kwargs in calls}
@@ -113,18 +113,25 @@ def test_birth_builds_the_manifest_with_the_notices_as_alarms(calls, tmp_path):
     outcome = session_lifecycle.start_session(_start(tmp_path))
 
     birth = [kwargs for name, _, kwargs in calls if name == "build_session_context"]
-    assert birth == [{"alarms": ["## Data home\nhome moved"], "record_injection": True, "session_id": "explicit-sid"}]
+    assert birth == [{
+        "source": "startup", "alarms": ["## Data home\nhome moved"], "notices": [],
+        "record_injection": True, "session_id": "explicit-sid",
+    }]
     assert outcome.context == "BIRTH"
     assert outcome.notices == {"## Data home": "home moved"}
     assert outcome.setup_message == "setup done"
 
 
-def test_compaction_takes_the_refresh_branch_instead_of_the_birth_block(calls, tmp_path):
+def test_compaction_is_a_birth_whose_leftovers_the_block_may_drop(calls, monkeypatch, tmp_path):
+    monkeypatch.setattr(session_lifecycle, "_leftovers_notice", lambda d: "2 worktrees")
+
     outcome = session_lifecycle.start_session(_start(tmp_path, source="compact"))
 
-    assert "build_session_context" not in _names(calls)
-    assert "build_compact_context" in _names(calls)
-    assert outcome.context == "## Data home\nhome moved\n\nREFRESH"
+    birth = [kwargs for name, _, kwargs in calls if name == "build_session_context"]
+    assert [(b["source"], b["alarms"], b["notices"]) for b in birth] == [
+        ("compact", ["## Data home\nhome moved"], ["## Leftovers\n2 worktrees"]),
+    ]
+    assert outcome.notices["## Leftovers"] == "2 worktrees"
 
 
 def test_an_undeclared_root_becomes_a_workspace_alarm(calls, monkeypatch, tmp_path):
@@ -145,23 +152,23 @@ def test_a_prompt_beats_the_given_session_then_counts_the_given_workspace(monkey
         lambda sid: made.append(("touch", sid)),
     )
 
-    def count(ws):
+    def due(ws):
         made.append(("count", ws))
-        return 2
-    monkeypatch.setattr("gaia.store.reader.count_unread_notifications", count)
+        return [{"id": i, "kind": "reminder", "headline": f"due-{i}"} for i in range(4)]
+    monkeypatch.setattr("gaia.store.reader.due_now", due)
     monkeypatch.setenv("CLAUDE_SESSION_ID", "from-the-environment")
 
     context = session_lifecycle.prompt_context("explicit-sid", "me")
 
     assert made == [("touch", "explicit-sid"), ("count", "me")]
     assert context == (
-        "\U0001F514 2 notifications due (`gaia notifications list --unread` to see them)"
+        "\U0001F514 4 notifications due (`gaia notifications list --unread` to see them)"
     )
 
 
 def test_a_prompt_with_nothing_due_adds_nothing(monkeypatch):
     monkeypatch.setattr("modules.session.session_registry.touch_session", lambda sid: None)
-    monkeypatch.setattr("gaia.store.reader.count_unread_notifications", lambda ws: 0)
+    monkeypatch.setattr("gaia.store.reader.due_now", lambda ws: [])
 
     assert session_lifecycle.prompt_context("explicit-sid", None) == ""
 

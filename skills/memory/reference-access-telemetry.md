@@ -50,8 +50,9 @@ deliberate from automatic -- whether the CALLER identified the rows, never
 whether the answer carried the body. That property alone reaches only two
 buckets; it does not by itself split the automatic bucket further. A second,
 purely mechanical test does that: an automatic surface is `kernel` when it
-renders a FIXED corpus on every subagent dispatch (the same `type=user AND
-audience=executor` rows, regardless of what the dispatch is about), and
+renders a corpus fixed by the dispatch's scope rather than by what it asks
+(the preferences, facts and lessons of its workspace > group > project
+chain, whatever the goal is about), and
 `injection` when the rendered rows vary with what the caller's window
 actually selects (`get-relevant`'s digest/sections/types). Splitting on that
 axis is what keeps the dispatch-kernel's fixed rows from dominating a
@@ -62,7 +63,7 @@ list:
 | Call site | Symbol | Kind |
 |---|---|---|
 | `get-relevant` (no flag), `--sections=`, `--types=` | `_bump_injection_telemetry` (`bin/cli/memory.py`) | injection |
-| Subagent kernel's "How the user works" block | `_record_kernel_telemetry` (`hooks/modules/context/kernel_builder.py`) | kernel |
+| Subagent kernel's "Scope memory" block | `_record_kernel_telemetry` (`hooks/modules/context/kernel_builder.py`) | kernel |
 | `memory show <slug>`, every mode including `--links`/`--history` | `_cmd_curated_show` (`bin/cli/memory.py`) | deliberate |
 | `memory story <slug>`, the seed row alone | `_cmd_story` (`bin/cli/memory_story.py`) | deliberate |
 | `get-relevant --initiative=<key>`, text and JSON alike | `_render_project_mode` (`bin/cli/memory.py`) | deliberate |
@@ -109,7 +110,7 @@ direct query against the `memory` table, never through `show` or `list`.
 
 Reading them back is their only consumer, for the two pairs that are read
 back at all. Automatic SessionStart selection -- `get-relevant`'s digest,
-`--sections=`, `--types=`, and the kernel's "How the user works" block --
+`--sections=`, `--types=`, and the kernel's "Scope memory" block --
 still ignores all three counters and orders by `updated_at` alone,
 unchanged. Wiring injection SELECTION itself to any counter remains a
 separate, undecided step.

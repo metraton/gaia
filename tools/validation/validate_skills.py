@@ -202,9 +202,7 @@ def generate_report(skills, validation, agents, injection_info):
     return "\n".join(report)
 
 def main():
-    # Gaia es un plugin único unificado (sin plugins legacy como
-    # "conductor-orchestrator"); los agentes y skills viven en gaia/agents y
-    # gaia/skills (fuente) y su copia instalada en .claude/agents, .claude/skills.
+    # Relative to the cwd; a directory that does not exist yields nothing.
     skill_dirs = ["gaia/skills", ".claude/skills"]
     agent_dirs = ["gaia/agents", ".claude/agents"]
 

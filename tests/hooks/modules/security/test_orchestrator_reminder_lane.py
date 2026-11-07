@@ -11,15 +11,12 @@ sys.path.insert(0, str(HOOKS))
 from modules.security import gaia_cli_only_guard as guard  # noqa: E402
 from modules.security.tiers import SecurityTier, classify_command_tier  # noqa: E402
 
-TRUSTED = "/trusted/node_modules/gaia/bin/gaia"
-
-
 @pytest.fixture
-def run_guard(monkeypatch):
+def run_guard(monkeypatch, installed_gaia):
     monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _binary: True)
 
     def _run(argline: str):
-        return guard.check(f"{TRUSTED} {argline}", {"session_id": "s"})
+        return guard.check(f"{installed_gaia} {argline}", {"session_id": "s"})
 
     return _run
 
@@ -31,10 +28,10 @@ def run_guard(monkeypatch):
     "notifications snooze 12 --for 2h",
     "notifications cancel 12",
 ])
-def test_bounded_reminder_writes_pass_the_guard_at_t0(run_guard, argline):
+def test_bounded_reminder_writes_pass_the_guard_at_t0(run_guard, installed_gaia, argline):
     allowed, reason = run_guard(argline)
     assert allowed, reason
-    assert classify_command_tier(f"{TRUSTED} {argline}") == SecurityTier.T0_READ_ONLY
+    assert classify_command_tier(f"{installed_gaia} {argline}") == SecurityTier.T0_READ_ONLY
 
 
 @pytest.mark.parametrize("argline", [

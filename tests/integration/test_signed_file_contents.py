@@ -84,7 +84,7 @@ def _payload(db_path, approval_id):
 FILE_CASES = {
     "script the command runs": ("bash deploy.sh", "deploy.sh", SCRIPT),
     "body file the command reads": (
-        "gh pr create --title seal --body-file body.md", "body.md", BODY,
+        "gh pr merge 42 --squash --body-file body.md", "body.md", BODY,
     ),
     "manifest read through -f": ("kubectl apply -f app.yaml", "app.yaml", "kind: Namespace\n"),
 }
@@ -129,7 +129,7 @@ def test_a_file_absent_at_signing_that_appears_before_running_no_longer_matches(
     "command, prepare",
     [
         ("bash missing.sh", lambda root: None),
-        ("gh pr create --title seal --body-file missing.md", lambda root: None),
+        ("gh pr merge 42 --squash --body-file missing.md", lambda root: None),
         ("kubectl apply -f manifests", lambda root: (root / "manifests").mkdir()),
     ],
     ids=["script not written yet", "body file not written yet", "directory operand"],

@@ -29,28 +29,31 @@ from .canonical_path import canonical_path, is_absolute
 CREDENTIAL_DIR_NAMES = frozenset({".ssh", ".gnupg", ".aws", ".azure"})
 
 # File names that are credentials wherever they sit.
-CREDENTIAL_FILE_NAMES = frozenset({".netrc", ".pgpass", ".git-credentials"})
+CREDENTIAL_FILE_NAMES = frozenset({".netrc", ".pgpass", ".git-credentials", ".credentials.json"})
 
 # Private-key stems; ``id_rsa.pub`` shares the stem and is kept with it.
 PRIVATE_KEY_STEMS = frozenset({"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"})
 
 CREDENTIAL_SUFFIXES = (".pem", ".key")
 
-# Project secrets. The two templates stay readable: they are committed on
-# purpose to show the shape without the values (the user's choice, matching
-# OpenCode's own default).
+# Project secrets. The two templates stay readable: they show the shape of the
+# file without the values.
 ENV_FILE_NAME = ".env"
 READABLE_ENV_TEMPLATES = frozenset({".env.example", ".env.sample"})
 
 SYSTEM_SECRET_FILES = frozenset({"/etc/shadow", "/etc/passwd"})
 SYSTEM_SECRET_DIRS = frozenset({"/etc/ssl/private"})
 
+# A process environment holds the tokens the process was started with; only
+# that file is refused, its siblings (status, cmdline) stay readable.
+PROCESS_ENVIRON = re.compile(r"/proc/(?:self|thread-self|\d+)(?:/task/\d+)?/environ")
+
 READ = "read"
 WRITE = "write"
 _BOTH = frozenset({READ, WRITE})
 _WRITE_ONLY = frozenset({WRITE})
 
-# Under $HOME, each entry marked by use (D22). READ: reading or listing it is
+# Under $HOME, each entry marked by use. READ: reading or listing it is
 # refused, because secrets live there. WRITE: writing it asks a signature,
 # because it decides who may log in, runs on the next shell or git invocation,
 # or names the program that hands out credentials. Shell start-up files and git
@@ -65,8 +68,25 @@ HOME_ENTRIES = {
     ".config/git": _WRITE_ONLY, ".gitconfig": _WRITE_ONLY,
     ".bashrc": _WRITE_ONLY, ".bash_profile": _WRITE_ONLY, ".bash_login": _WRITE_ONLY,
     ".profile": _WRITE_ONLY, ".zshrc": _WRITE_ONLY, ".zprofile": _WRITE_ONLY,
-    ".zshenv": _WRITE_ONLY,
+    ".zshenv": _WRITE_ONLY, ".sqliterc": _WRITE_ONLY, ".config/sqlite3": _WRITE_ONLY,
 }
+
+# Coding-agent CLI token and API-key files, each with the source naming the path;
+# a CLI that keeps them only in the OS keychain has no file to refuse.
+CODING_CLI_CREDENTIAL_STORES = {
+    ".claude/.credentials.json": "https://code.claude.com/docs/en/iam#credential-management",
+    ".claude.json": "https://code.claude.com/docs/en/settings (MCP server configurations, whose env and headers carry tokens)",
+    ".config/anthropic": "https://code.claude.com/docs/en/iam#anthropic-profiles-and-federation-credentials",
+    ".codex/auth.json": "https://developers.openai.com/codex/auth",
+    ".gemini/oauth_creds.json": "google-gemini/gemini-cli packages/core/src/config/storage.ts::OAUTH_FILE",
+    ".gemini/mcp-oauth-tokens.json": "google-gemini/gemini-cli packages/core/src/config/storage.ts::getMcpOAuthTokensPath",
+    ".qwen/oauth_creds.json": "QwenLM/qwen-code docs/users/qwen-serve.md",
+    ".local/share/opencode/auth.json": "https://opencode.ai/docs/providers/#credentials",
+    ".copilot/config.json": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli",
+    ".config/github-copilot/hosts.json": "https://aider.chat/docs/llms/github.html (oauth_token of the Copilot IDE plugins)",
+    ".config/github-copilot/apps.json": "https://aider.chat/docs/llms/github.html (oauth_token of the Copilot IDE plugins)",
+}
+HOME_ENTRIES.update(dict.fromkeys(CODING_CLI_CREDENTIAL_STORES, _BOTH))
 
 # The Windows homes of the same uses, marked like HOME_ENTRIES and matched
 # anywhere in an absolute path: a profile may sit on any drive or under
@@ -114,7 +134,7 @@ _HOME_SPELLINGS = (
 )
 
 
-def _expand_home(path: str) -> str:
+def expand_home(path: str) -> str:
     """Expand the spellings of $HOME and the Windows profile folders a command may carry unexpanded."""
     for spelling, below_home in _HOME_SPELLINGS:
         match = spelling.match(path)
@@ -125,11 +145,11 @@ def _expand_home(path: str) -> str:
 
 
 def _canonical(path: str) -> str:
-    return canonical_path(_expand_home(path.strip()), _SHORT_NAMES)
+    return canonical_path(expand_home(path.strip()), _SHORT_NAMES)
 
 
 def _home_relative(candidate: str) -> str:
-    """The part of a canonical absolute *candidate* under $HOME, or "" when it lands elsewhere."""
+    """The part of a canonical absolute *candidate* under $HOME ("." for $HOME itself), or "" when it is relative or lands elsewhere."""
     if not is_absolute(candidate):
         return ""
     home = posixpath.normpath(canonical_path(os.path.expanduser("~")))
@@ -159,12 +179,21 @@ def _home_entry_marks(path: str) -> frozenset:
     return marks
 
 
+def holds_credentials(path: str) -> bool:
+    """True when *path* is $HOME or a directory under it above a read-refused HOME_ENTRIES entry, so copying it whole copies secrets."""
+    relative = _home_relative(_canonical(path)) if path else ""
+    if relative == ".":
+        return True
+    return bool(relative) and any(
+        READ in uses and entry.startswith(relative.rstrip("/") + "/") for entry, uses in HOME_ENTRIES.items()
+    )
+
+
 def is_account_path(path: str) -> bool:
-    """True when writing *path* hands out access to the user's own account.
+    """True when writing *path* decides who may log in, what runs on the next shell or git invocation, or which program hands out credentials.
 
     Sensitive by CONTENTS, not by location: the home directory is otherwise
-    free, which is the reasoning that once left ``~/.ssh/authorized_keys``
-    open. Relative paths are never account paths.
+    free. Relative paths are never account paths.
     """
     return WRITE in _home_entry_marks(path)
 
@@ -175,7 +204,7 @@ def _file_name_label(name: str) -> str:
         name.startswith(ENV_FILE_NAME + ".") and name not in READABLE_ENV_TEMPLATES
     ):
         return "environment secrets file"
-    if name in CREDENTIAL_FILE_NAMES:
+    if any(name == known or name.startswith(known + ".") for known in CREDENTIAL_FILE_NAMES):
         return "credentials file"
     if any(name == stem or name.startswith(stem + ".") for stem in PRIVATE_KEY_STEMS):
         return "private key"
@@ -187,13 +216,24 @@ def _file_name_label(name: str) -> str:
 
 
 def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
-    """Name why *path* is sensitive to read or list, or "" when it is not.
+    """Name why *path*, or the file its symlinks lead to, is sensitive to read or list, or "" when it is not.
 
     *cwd* anchors a relative path so an account entry under $HOME is still
     recognized; without it a relative path is judged by its names alone.
     """
     if not path:
         return ""
+    label = _spelling_label(path, cwd)
+    anchored = os.path.join(cwd or "", expand_home(path.strip()))
+    if label or not os.path.isabs(anchored):
+        return label
+    try:
+        return _spelling_label(os.path.realpath(anchored))
+    except (OSError, ValueError):
+        return ""
+
+
+def _spelling_label(path: str, cwd: Optional[str] = None) -> str:
     candidate = _canonical(path)
     if cwd and not is_absolute(candidate):
         candidate = canonical_path(cwd) + "/" + candidate
@@ -203,6 +243,8 @@ def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
             return "system credentials file"
         if any(candidate == d or candidate.startswith(d + "/") for d in SYSTEM_SECRET_DIRS):
             return "system private keys"
+        if PROCESS_ENVIRON.fullmatch(candidate):
+            return "process environment"
         if READ in _home_entry_marks(candidate):
             return "account credentials"
     parts = [part for part in candidate.split("/") if part]
@@ -265,7 +307,7 @@ def _path_candidates(token: str) -> Iterable[str]:
 
 
 def first_sensitive_token(tokens: Iterable[str], cwd: Optional[str] = None) -> str:
-    """The first token naming a sensitive path, or ""."""
+    """The first path-like piece of *tokens* that is a sensitive path, or ""."""
     for token in tokens:
         for piece in _path_candidates(token):
             if sensitive_path_label(piece, cwd):

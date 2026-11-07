@@ -1,21 +1,17 @@
 """Event writer for the GAIA Event Context system.
 
-As of Brief 54 / Task 2.2 the event pipeline writes to the ``harness_events``
-table in the Gaia SQLite substrate (``~/.gaia/gaia.db``) instead of the legacy
-``events.jsonl`` file. This is an ATOMIC cutover: ``write_event`` no longer
-touches ``events.jsonl`` in any code path -- there is NO dual-write.
+The event pipeline writes to the ``harness_events`` table in the Gaia SQLite
+substrate (``~/.gaia/gaia.db``); ``write_event`` never touches ``events.jsonl``.
 
 Provides:
     - EventWriter: non-blocking, silent-on-failure DB event writer
-    - read_events(): legacy JSONL reader (read-only; retained until Task 2.3
-      removes events.jsonl entirely -- no longer the canonical read path)
+    - read_events(): read-only reader of the legacy ``events.jsonl`` file
     - Event type constants
 
 The DB write delegates to ``gaia.store.writer.write_harness_event``, which
-resolves the DB path the same way every other gaia DB writer does (via
-``gaia.paths.db_path()`` -> ``GAIA_DATA_DIR`` / ``gaia.db``, falling back to
-``~/.gaia/gaia.db``). The hook subprocess imports the ``gaia`` package via the
-repo-root fallback already established by handoff_persister.
+resolves the DB path through ``gaia.paths.db_path()``: ``GAIA_DB``, else
+``GAIA_DATA_DIR``/``gaia.db``, else ``~/.gaia/gaia.db``. When ``gaia`` is not
+importable, the repo root (the parent of ``hooks/``) is added to ``sys.path``.
 """
 
 import json
@@ -29,10 +25,6 @@ from ..core.paths import get_events_dir
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Event type constants
-# ---------------------------------------------------------------------------
-
 AGENT_DISPATCH = "agent.dispatch"
 AGENT_COMPLETE = "agent.complete"
 COMMAND_EXECUTED = "command.executed"
@@ -45,10 +37,8 @@ USER_NOTE = "user.note"
 def _import_store_writer():
     """Import gaia.store.writer, falling back to the repo layout.
 
-    Mirrors the import contract used by
-    hooks/modules/agents/handoff_persister.py: prefer a sibling ``gaia``
-    package if installed; otherwise add the repo root (two levels above
-    ``hooks/``) to ``sys.path`` and import from there.
+    Prefers an importable ``gaia`` package; otherwise adds the repo root (the
+    parent of ``hooks/``) to ``sys.path`` and imports from there.
     """
     try:
         from gaia.store import writer as _writer
@@ -63,12 +53,8 @@ def _resolve_workspace() -> str:
     """Resolve the workspace to attribute this event to via the canonical cascade.
 
     Delegates to ``gaia.project.resolve_workspace`` (``GAIA_DISPATCH_WORKSPACE``
-    -> ``GAIA_WORKSPACE`` -> ``gaia.project.current()`` -> ``"global"``) instead
-    of reading a single env var. ``GAIA_WORKSPACE`` is NOT set in the process
-    Claude Code runs hooks in, so the pre-cascade single-var read fell through to
-    ``None`` and every harness_events row landed with ``workspace=NULL``. The
-    cascade derives the identity from the cwd's repo when no env var is present,
-    and only ever falls back to ``"global"`` -- never ``None``.
+    -> ``GAIA_WORKSPACE`` -> ``gaia.project.current()`` -> ``"global"``), which
+    falls back to ``"global"`` and never returns ``None``.
 
     Uses the same repo-root import fallback as :func:`_import_store_writer`. Any
     failure returns ``"global"`` so event writing stays non-blocking.
@@ -90,14 +76,12 @@ class EventWriter:
     """Non-blocking DB event writer.
 
     All writes are wrapped in try/except -- events are non-critical and must
-    never block the hook pipeline. The ``events_dir`` argument is retained for
-    backward compatibility (legacy JSONL reads still resolve it) but is no
-    longer used for writes, which target the ``harness_events`` DB table.
+    never block the hook pipeline. Writes target the ``harness_events`` DB
+    table; ``events_dir`` is not used by them.
     """
 
     def __init__(self, events_dir: Optional[Path] = None):
-        # Retained for compatibility with the legacy reader; not used for
-        # writes. Never raises here: an unwritable data home leaves it None.
+        # Never raises here: an unwritable data home leaves events_dir None.
         try:
             self.events_dir = events_dir or get_events_dir()
         except OSError:
@@ -111,11 +95,11 @@ class EventWriter:
         result: str,
         severity: str = "info",
         meta: Optional[Dict[str, Any]] = None,
+        lean: bool = False,
     ) -> None:
         """Append a single event to the ``harness_events`` DB table.
 
-        Fails silently on any error to avoid disrupting the hook pipeline --
-        same contract as the historical file writer.
+        Fails silently on any error to avoid disrupting the hook pipeline.
 
         Args:
             event_type: Dotted event category (e.g. "agent.dispatch").
@@ -125,11 +109,14 @@ class EventWriter:
             severity: info | warning | error.
             meta: Optional type-specific structured data (stored as JSON in
                 the ``payload`` column).
+            lean: Take the cheaper write for events raised on every tool call
+                (``write_harness_event_lean``).
         """
         try:
             writer = _import_store_writer()
             workspace = _resolve_workspace()
-            writer.write_harness_event(
+            write = writer.write_harness_event_lean if lean else writer.write_harness_event
+            write(
                 event_type=event_type,
                 source=source,
                 agent=agent,
@@ -150,10 +137,9 @@ def read_events(
 ) -> List[Dict[str, Any]]:
     """Read recent events from the legacy JSONL log.
 
-    NOTE: As of Task 2.2 this is no longer the canonical read path -- new
-    events are written to the ``harness_events`` DB table. This reader is
-    retained read-only until Task 2.3 removes ``events.jsonl`` entirely, so
-    historical pre-cutover events remain consultable. New callers should use
+    Events are written to the ``harness_events`` DB table, not to this file, so
+    this only reads what an earlier layout left in ``events.jsonl``. Current
+    events are read with
     ``gaia.store.reader.cross_surface_query(surface="harness_events")``.
 
     Args:
@@ -184,7 +170,6 @@ def read_events(
                 except json.JSONDecodeError:
                     continue
 
-                # Time filter
                 try:
                     ts = datetime.fromisoformat(evt.get("ts", ""))
                     if ts < cutoff:
@@ -192,13 +177,11 @@ def read_events(
                 except (ValueError, TypeError):
                     continue
 
-                # Type filter
                 if event_type and evt.get("type") != event_type:
                     continue
 
                 results.append(evt)
 
-        # Return the most recent events, capped at limit
         return results[-limit:]
 
     except Exception as exc:

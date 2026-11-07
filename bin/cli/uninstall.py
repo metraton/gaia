@@ -63,12 +63,7 @@ from cli import _manifest  # type: ignore  # noqa: E402
 from cli.cleanup import _find_project_root  # type: ignore  # noqa: E402
 
 # cli.cleanup (imported above) already inserts the repo root into sys.path,
-# so gaia.paths is importable here. Single source of truth for BOTH the
-# snapshot directory (AC-4: gaia/paths/resolver.py snapshot_dir() and this
-# module MUST resolve to the same plural `snapshots` directory) AND the
-# snapshot+retention implementation itself (AC-7: shared with the
-# SessionStart auto-backup in hooks/modules/session/db_backup.py -- ONE
-# "create gzip snapshot + keep last N" implementation, two call sites).
+# so gaia.paths is importable here.
 from gaia.paths import create_snapshot  # noqa: E402
 from gaia.paths import snapshot_dir as _resolver_snapshot_dir  # noqa: E402
 
@@ -77,13 +72,6 @@ DEFAULT_DB_PATH = Path.home() / ".gaia" / "gaia.db"
 DEFAULT_SNAPSHOT_DIR = _resolver_snapshot_dir()
 DEFAULT_RETAIN = 5
 
-
-# ---------------------------------------------------------------------------
-# DB snapshot helper (on by default; --no-backup skips it; DB is preserved
-# either way). Thin wrapper over the shared gaia.paths.create_snapshot so
-# uninstall and the SessionStart auto-backup (AC-7) share ONE
-# create-snapshot-and-rotate implementation.
-# ---------------------------------------------------------------------------
 
 def _snapshot_db(db_path: Path, snapshot_dir: Path, dry_run: bool) -> dict:
     """Create a gzip snapshot of the DB and enforce the shared retention
@@ -98,10 +86,8 @@ def _snapshot_db(db_path: Path, snapshot_dir: Path, dry_run: bool) -> dict:
        "pruned":  ["<path>", ...],
        "error":   "<message>" (only on failure)}
 
-    This is purely additive to the source DB -- it never deletes or
-    modifies it. A failure here only means no backup was written; the DB
-    is untouched. See gaia.paths.snapshot.create_snapshot for the
-    copy-based safety guarantee.
+    The source DB is only read; a failure here means no backup was written.
+    See gaia.paths.snapshot.create_snapshot.
     """
     return create_snapshot(
         db_path, snapshot_dir, dry_run=dry_run, retain=DEFAULT_RETAIN,
@@ -109,20 +95,12 @@ def _snapshot_db(db_path: Path, snapshot_dir: Path, dry_run: bool) -> dict:
     )
 
 
-# ---------------------------------------------------------------------------
-# Workspace resolution
-# ---------------------------------------------------------------------------
-
 def _resolve_workspace(arg_workspace: str | None) -> Path:
     """Return the workspace root to clean. --workspace overrides auto-detect."""
     if arg_workspace:
         return Path(arg_workspace).expanduser().resolve()
     return _find_project_root()
 
-
-# ---------------------------------------------------------------------------
-# Plugin interface
-# ---------------------------------------------------------------------------
 
 def register(subparsers):
     """Register the 'uninstall' subcommand."""
@@ -261,11 +239,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         result["cleanup_error"] = str(exc)
 
-    # --- DB handling --------------------------------------------------------
-    # The DB is ALWAYS preserved -- uninstall has no delete path for it.
-    # A gzip snapshot is taken by DEFAULT (skippable via --no-backup): it is
-    # purely additive -- writes a new snapshot and rotates old ones, never
-    # touches the source DB, so a failed backup never blocks anything.
+    # A failed backup never blocks the cleanup; the snapshot rotates old
+    # snapshots and never touches the source DB.
     if backup:
         snapshot_result = _snapshot_db(db_path, snapshot_dir, dry_run)
         result["snapshot"] = snapshot_result
@@ -289,7 +264,6 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         "note": "gaia uninstall never deletes the DB. It is snapshotted by default (use --no-backup to skip).",
     }
 
-    # --- Reporting --------------------------------------------------------
     if as_json:
         print(json.dumps(result, indent=2))
     elif not quiet:

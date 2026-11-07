@@ -33,10 +33,16 @@ _SHELL_SYNTAX = frozenset("|&;<>()`$\\'\"")
 class HeredocProgram:
     interpreter: str
     body: str
+    expands: bool = False
 
     @property
     def is_shell(self) -> bool:
         return self.interpreter in SHELL_INTERPRETERS
+
+    @property
+    def is_readable(self) -> bool:
+        """Whether the classified body is the program that runs: no expansion rewrites it first."""
+        return not (self.expands and set("$`") & set(self.body))
 
 
 def _reads_program_from_stdin(interpreter: str, args: List[str]) -> bool:
@@ -44,8 +50,12 @@ def _reads_program_from_stdin(interpreter: str, args: List[str]) -> bool:
 
     A code interpreter takes no positional or a final ``-``; a shell takes no
     positional. Neither may carry an inline-code flag, whose program is its
-    argument instead.
+    argument instead. awk names stdin as a program or include file.
     """
+    from .flag_classifiers import AWK_PROGRAMS, awk_reads_program_from_stdin
+
+    if interpreter in AWK_PROGRAMS:
+        return awk_reads_program_from_stdin(args)
     positionals = [arg for arg in args if not arg.startswith("-") or arg == _STDIN_SENTINEL]
     if interpreter in CODE_INTERPRETERS:
         if _CODE_INLINE_FLAGS.intersection(args):
@@ -71,7 +81,7 @@ def heredoc_program(command: str) -> Optional[HeredocProgram]:
     opener = _read_heredoc_opener(declaring_line, opener_at)
     if opener is None:
         return None
-    delimiter, _expands, strip_tabs, after_word = opener
+    delimiter, expands, strip_tabs, after_word = opener
     if declaring_line[after_word:].strip():
         return None
 
@@ -89,4 +99,4 @@ def heredoc_program(command: str) -> Optional[HeredocProgram]:
     if not terminated or command[resume:].strip():
         return None
     body_lines = command[body_start:resume].rstrip("\n").split("\n")[:-1]
-    return HeredocProgram(interpreter=interpreter, body="\n".join(body_lines))
+    return HeredocProgram(interpreter=interpreter, body="\n".join(body_lines), expands=expands)

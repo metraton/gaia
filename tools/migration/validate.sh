@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # validate.sh
-# Read-only: verifica que la migración haya cargado los datos esperados.
-# 5 aserciones (V1..V5). Imprime PASS/FAIL por cada una.
-# Exit 0 si todas pasan, 1 si alguna falla.
+# Read-only: checks that the migrated rows match their sources (V1..V5).
+# Prints PASS or FAIL for each; exits 1 if any fails.
 set -euo pipefail
 
 DB_PATH="${HOME}/.gaia/gaia.db"
@@ -11,15 +10,13 @@ EPISODES_SRC="${EPISODES_SRC:?set EPISODES_SRC to the episodes.jsonl migrate_01 
 EVENTS_SRC="${EVENTS_SRC:?set EVENTS_SRC to the events.jsonl the harness_events rows came from}"
 NOTES_DIR="${NOTES_DIR:?set NOTES_DIR to the memory directory migrate_02 read}"
 
-# Conteos esperados (dinámicos donde aplica).
-# Líneas no-vacías en JSONL = registros candidatos (los .py descartan blank/bad,
-# pero la base actual no tiene líneas inválidas -- ver auditoría previa).
+# Non-blank JSONL lines count as candidate records; migrate_01 also drops
+# invalid JSON, so V1 assumes the episodes source has none.
 EXPECTED_V1="$(grep -c -v '^[[:space:]]*$' "${EPISODES_SRC}")"
 EXPECTED_V2="$(find "${NOTES_DIR}" -maxdepth 1 -type f -name '*.md' \! -name 'MEMORY.md' | wc -l | tr -d ' ')"
 EXPECTED_V3="12"
 EXPECTED_V4="$(grep -c -v '^[[:space:]]*$' "${EVENTS_SRC}")"
 
-# Función helper: ejecuta un SELECT que retorna un escalar.
 sqlite_count() {
     sqlite3 "${DB_PATH}" "$1"
 }
@@ -38,23 +35,19 @@ run_check() {
     fi
 }
 
-# V1: episodes count == líneas de episodes.jsonl
 ACTUAL_V1="$(sqlite_count "SELECT COUNT(*) FROM episodes WHERE project='${PROJECT}';")"
 run_check "V1 episodes" "${EXPECTED_V1}" "${ACTUAL_V1}"
 
-# V2: memory count == 28 (archivos .md sin contar MEMORY.md)
 ACTUAL_V2="$(sqlite_count "SELECT COUNT(*) FROM memory WHERE project='${PROJECT}';")"
 run_check "V2 memory" "${EXPECTED_V2}" "${ACTUAL_V2}"
 
-# V3: context_contracts count == 12
+# V3 expects the 12 sections of the original project-context.json.
 ACTUAL_V3="$(sqlite_count "SELECT COUNT(*) FROM context_contracts WHERE project='${PROJECT}';")"
 run_check "V3 context_contracts" "${EXPECTED_V3}" "${ACTUAL_V3}"
 
-# V4: harness_events count == líneas de events.jsonl
 ACTUAL_V4="$(sqlite_count "SELECT COUNT(*) FROM harness_events WHERE project='${PROJECT}';")"
 run_check "V4 harness_events" "${EXPECTED_V4}" "${ACTUAL_V4}"
 
-# V5: episodes_fts count == episodes count (FTS sync via triggers).
 ACTUAL_V5_FTS="$(sqlite_count "SELECT COUNT(*) FROM episodes_fts;")"
 EXPECTED_V5="${ACTUAL_V1}"
 run_check "V5 episodes_fts sync" "${EXPECTED_V5}" "${ACTUAL_V5_FTS}"

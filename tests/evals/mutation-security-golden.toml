@@ -86,7 +86,6 @@ excluded-modules = [
     "**/flag_classifiers.py",
     "**/gaia_db_write_guard.py",
     "**/inline_ast_analyzer.py",
-    "**/network_hosts.py",
     "**/prompt_validator.py",
     "**/shell_unwrapper.py",
 ]

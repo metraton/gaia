@@ -155,14 +155,18 @@ def test_every_write_lane_verb_is_admitted_at_verb_level(help_text):
 @pytest.mark.parametrize(
     "phrase,args",
     [
-        (("brief", "ac", "add"), ("my-brief", "--id", "AC-1", "--text", "x")),
-        (("brief", "ac", "add"), ("my-brief", "--id=AC-1", "--text", "x")),
-        (("brief", "ac", "edit"), ("my-brief", "--id", "AC-1", "--text", "x")),
-        (("brief", "ac", "edit"), ("my-brief", "--id=AC-1", "--text", "x")),
+        (("brief", "ac", "add"), ("my-brief", "--id", "AC-1", "--description", "x")),
+        (("brief", "ac", "add"), ("my-brief", "--id=AC-1", "--description", "x")),
+        (("brief", "ac", "edit"), ("my-brief", "--id", "AC-1", "--description", "x")),
+        (("brief", "ac", "edit"), ("my-brief", "--id=AC-1", "--description", "x")),
         (("brief", "ac", "remove"), ("my-brief", "--id", "AC-1")),
         (("brief", "ac", "remove"), ("my-brief", "--id=AC-1")),
         (("brief", "new"), ("--title", "t", "--headless")),
         (("brief", "new"), ("--title=t", "--headless")),
+        (("memory", "reclassify"), ("--from-file", "f", "--from", "me")),
+        (("memory", "reclassify"), ("--from-file=f", "--from=me")),
+        (("memory", "link"), ("--from-file", "-")),
+        (("memory", "link"), ("--from-file=-",)),
     ],
 )
 def test_declared_write_accepts_both_argparse_spellings_of_its_value(phrase, args):

@@ -1,37 +1,26 @@
 #!/usr/bin/env python3
-"""
-migrate_08_rename_workspace.py -- Rename the v1 ``projects``/``repos`` schema
-to the v2 ``workspaces``/``projects`` vocabulary.
+"""Rename the v1 ``projects``/``repos`` schema to the v2 ``workspaces``/``projects`` vocabulary.
 
-Vocabulary:
-  * v1 ``projects``   -> v2 ``workspaces``  (organizational container)
-  * v1 ``repos``      -> v2 ``projects``    (git-bearing source repo)
-  * v1 child column ``project`` -> v2 child column ``workspace``
+  * v1 ``projects`` becomes v2 ``workspaces`` (the organizational container)
+  * v1 ``repos`` becomes v2 ``projects`` (a git-bearing source repo)
+  * the ``project`` column of the child tables becomes ``workspace``
 
-Behaviour:
+The run, in order:
 
-1. Idempotency probe: if ``workspaces`` already exists and ``repos`` does
-   not, the migration is a no-op (exit 0).
-2. Sanity probe: if neither ``projects`` (v1) nor ``workspaces`` (v2) exist,
-   the database is uninitialised -- exit 1.
-3. Optional backup of ``~/.gaia/gaia.db`` to a timestamped sibling.
-4. Transactional rename:
-     - ALTER TABLE projects RENAME TO workspaces
-     - ALTER TABLE repos    RENAME TO projects
-     - For every child table that carries a ``project`` column pointing to
-       the workspace identity, ALTER TABLE ... RENAME COLUMN project TO
-       workspace. SQLite >= 3.25.0 (2018) supports column rename natively.
-5. Identity cleanup: any workspace row whose ``identity`` is a remote URL
-   shape (contains ``/``) but whose ``name`` is a flat directory name
-   (no ``/``) collapses to ``identity = name``. Workspaces that are real
-   git-bearing repos keep their ``host/owner/repo`` identity untouched.
-6. FTS5 mirror tables and triggers are recreated to point at the renamed
-   tables (SQLite does not automatically rewrite contentless FTS triggers
-   when the underlying table is renamed).
+1. Exits 0 with nothing done when ``workspaces`` exists and ``repos`` does not.
+2. Exits 1 unless the layout is v1: ``projects`` and ``repos`` present,
+   ``workspaces`` absent.
+3. With --dry-run, prints the statements and stops.
+4. Copies the database to ``<name>.bak_migrate_08_<timestamp>`` unless --no-backup.
+5. In one transaction: drops the FTS triggers and tables, renames the two
+   tables, renames ``project`` to ``workspace`` on each existing table of
+   ``_CHILD_TABLES_WITH_WORKSPACE_FK`` that has it (SQLite >= 3.25.0 renames
+   columns natively), sets ``identity = name`` on workspace rows whose
+   identity contains ``/`` while the name does not, and recreates the FTS5
+   tables and triggers.
 
-The script NEVER touches ``~/.gaia/gaia.db`` automatically; the default
-``--db`` value points there but the user must pass it explicitly or accept
-the default. Tests invoke it with ``--db /tmp/...``.
+``--db`` defaults to ``~/.gaia/gaia.db``, so a run without it migrates the
+real database.
 
 Usage::
 
@@ -40,9 +29,9 @@ Usage::
     python3 tools/migration/migrate_08_rename_workspace.py --no-backup
 
 Exit codes:
-    0  Migration applied (or already in place).
-    1  Pre-flight check failed (DB missing, schema unrecognised).
-    2  Mid-migration failure -- restore the backup file manually.
+    0  Migrated, dry run done, or already on the v2 layout.
+    1  The database file is missing, or its layout is neither v1 nor migrated.
+    2  The migration raised and was rolled back; restore the backup if one was taken.
 """
 
 from __future__ import annotations
@@ -56,24 +45,10 @@ from pathlib import Path
 from typing import Iterable
 
 
-# ---------------------------------------------------------------------------
-# Table inventory
-# ---------------------------------------------------------------------------
-
-# Tables that in v1 carried a ``project`` column pointing at the
-# organisational identity (i.e. the v1 ``projects`` table key). In v2 the
-# column is renamed to ``workspace`` to match the new vocabulary.
-#
-# Derived by scanning gaia/store/schema.sql for ``FOREIGN KEY (workspace)
-# REFERENCES workspaces(name)``. Includes both project-scoped tables
-# (which also carry a per-project FK) and workspace-only tables.
-#
-# NOTE: ``projects`` appears in this list because it is examined AFTER the
-# table rename step (v1 ``repos`` -> v2 ``projects``); the renamed table
-# still carries its old ``project`` column that referenced the old
-# workspace identity and which we now rename to ``workspace``.
+# Tables whose v1 ``project`` column holds the workspace key. They are read after
+# the table renames, so ``projects`` here is the former ``repos``.
 _CHILD_TABLES_WITH_WORKSPACE_FK: tuple[str, ...] = (
-    "projects",  # post-rename: was v1 `repos`, still has `project` column
+    "projects",
     "apps",
     "libraries",
     "services",
@@ -94,12 +69,9 @@ _CHILD_TABLES_WITH_WORKSPACE_FK: tuple[str, ...] = (
     "harness_events",
 )
 
-# Tables that participate in FTS5 mirrors. When their base table is renamed,
-# the triggers that keep the FTS index in sync still reference the OLD name
-# inside their SQL body, so we recreate them.
+# (base table, FTS table) pairs dropped before the renames and recreated after.
 _FTS_MIRRORS: tuple[tuple[str, str], ...] = (
-    # (base_table, fts_table)
-    ("projects", "projects_fts"),  # v2 projects (was v1 repos)
+    ("projects", "projects_fts"),
     ("apps", "apps_fts"),
     ("services", "services_fts"),
     ("briefs", "briefs_fts"),
@@ -107,10 +79,6 @@ _FTS_MIRRORS: tuple[tuple[str, str], ...] = (
     ("memory", "memory_fts"),
 )
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _default_db_path() -> Path:
     return Path.home() / ".gaia" / "gaia.db"
@@ -142,10 +110,6 @@ def _iter_existing_child_tables(con: sqlite3.Connection) -> Iterable[str]:
             yield table
 
 
-# ---------------------------------------------------------------------------
-# Core migration steps
-# ---------------------------------------------------------------------------
-
 def _is_already_migrated(con: sqlite3.Connection) -> bool:
     """v2 layout: `workspaces` exists, `repos` does not."""
     return _table_exists(con, "workspaces") and not _table_exists(con, "repos")
@@ -161,50 +125,33 @@ def _is_v1_layout(con: sqlite3.Connection) -> bool:
 
 
 def _rename_tables(con: sqlite3.Connection) -> None:
-    """Step 1: rename v1 projects -> workspaces and v1 repos -> projects.
+    """Drop the FTS triggers and tables, then rename projects to workspaces and repos to projects.
 
-    Order matters: drop the dependent FTS triggers first (they reference the
-    OLD table names by SQL body), rename, then recreate the triggers.
+    _recreate_fts builds the FTS side again against the new names.
     """
-    # Drop FTS triggers and their virtual tables first. They reference the
-    # old base table names in their CREATE SQL and would otherwise become
-    # stale after the rename. They are reconstructed in _recreate_fts().
     for base, fts in _FTS_MIRRORS:
-        # NOTE: at this point `projects` still means the v1 organisational
-        # table; the actual git-bearing repo FTS lives over `repos_fts` (if
-        # it existed in v1) or `projects_fts` (if v1 only mirrored repos).
-        # The drop is best-effort; missing triggers are fine.
         for suffix in ("_ai", "_ad", "_au", "_insert", "_delete", "_update", "_fts_insert", "_fts_delete", "_fts_update"):
             con.execute(f"DROP TRIGGER IF EXISTS {base}{suffix}")
         con.execute(f"DROP TABLE IF EXISTS {fts}")
-    # Also drop the v1 ``repos_fts`` triggers and table (if any) -- its
-    # content table is about to be renamed to ``projects`` and the triggers
-    # still reference the old name ``repos`` in their SQL body.
+    # repos_fts and the repos triggers name `repos`, which the rename retires.
     for suffix in ("_insert", "_delete", "_update", "_fts_insert", "_fts_delete", "_fts_update", "_ai", "_ad", "_au"):
         con.execute(f"DROP TRIGGER IF EXISTS repos_fts{suffix}")
         con.execute(f"DROP TRIGGER IF EXISTS repos{suffix}")
     con.execute("DROP TABLE IF EXISTS repos_fts")
 
-    # Rename the two top-level tables.
     con.execute("ALTER TABLE projects RENAME TO workspaces")
     con.execute("ALTER TABLE repos RENAME TO projects")
 
 
 def _rename_columns(con: sqlite3.Connection) -> None:
-    """Step 2: rename `project` -> `workspace` on every child table that has it."""
+    """Rename `project` to `workspace` on each listed table that has `project` and no `workspace`."""
     for table in _iter_existing_child_tables(con):
         if _has_column(con, table, "project") and not _has_column(con, table, "workspace"):
             con.execute(f"ALTER TABLE {table} RENAME COLUMN project TO workspace")
 
 
 def _clean_contaminated_identity(con: sqlite3.Connection) -> int:
-    """Step 3: collapse remote-URL-shaped identities on workspace rows whose
-    `name` is a flat directory name (no ``/``).
-
-    A workspace identity like ``github.com/foo/bar`` only makes sense when
-    the workspace itself is a single git-bearing repo (its `name` matches
-    the remote shape). For organisational workspaces whose `name` is just
-    ``aaxis`` / ``me`` / ``qxo`` the identity should equal the name.
+    """Set identity = name on workspace rows whose identity contains ``/`` and whose name does not.
 
     Returns the number of rows updated.
     """
@@ -221,12 +168,10 @@ def _clean_contaminated_identity(con: sqlite3.Connection) -> int:
 
 
 def _recreate_fts(con: sqlite3.Connection) -> None:
-    """Step 4: rebuild FTS5 mirrors + triggers for the renamed tables.
+    """Recreate each FTS5 table and its triggers, then rebuild its index, for every base table present.
 
-    The FTS shape mirrors gaia/store/schema.sql exactly. Only mirrors whose
-    base table actually exists are recreated.
+    The definitions are those of gaia/store/schema.sql; change one there and here together.
     """
-    # --- projects_fts (v2 projects = git-bearing repos) -----------------
     if _table_exists(con, "projects"):
         con.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS projects_fts USING fts5(
@@ -257,10 +202,8 @@ def _recreate_fts(con: sqlite3.Connection) -> None:
                 VALUES (new.rowid, new.name, new.role, new.primary_language);
             END
         """)
-        # Rebuild contents from base table.
         con.execute("INSERT INTO projects_fts(projects_fts) VALUES ('rebuild')")
 
-    # --- apps_fts -------------------------------------------------------
     if _table_exists(con, "apps"):
         con.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
@@ -293,7 +236,6 @@ def _recreate_fts(con: sqlite3.Connection) -> None:
         """)
         con.execute("INSERT INTO apps_fts(apps_fts) VALUES ('rebuild')")
 
-    # --- services_fts ---------------------------------------------------
     if _table_exists(con, "services"):
         con.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS services_fts USING fts5(
@@ -326,7 +268,6 @@ def _recreate_fts(con: sqlite3.Connection) -> None:
         """)
         con.execute("INSERT INTO services_fts(services_fts) VALUES ('rebuild')")
 
-    # --- briefs_fts -----------------------------------------------------
     if _table_exists(con, "briefs"):
         con.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS briefs_fts USING fts5(
@@ -359,7 +300,6 @@ def _recreate_fts(con: sqlite3.Connection) -> None:
         """)
         con.execute("INSERT INTO briefs_fts(briefs_fts) VALUES ('rebuild')")
 
-    # --- episodes_fts ---------------------------------------------------
     if _table_exists(con, "episodes"):
         con.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
@@ -394,7 +334,6 @@ def _recreate_fts(con: sqlite3.Connection) -> None:
         """)
         con.execute("INSERT INTO episodes_fts(episodes_fts) VALUES ('rebuild')")
 
-    # --- memory_fts -----------------------------------------------------
     if _table_exists(con, "memory"):
         con.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
@@ -444,10 +383,6 @@ def _migrate(con: sqlite3.Connection) -> dict:
     return {"identity_rows_fixed": identity_fixed}
 
 
-# ---------------------------------------------------------------------------
-# CLI entrypoint
-# ---------------------------------------------------------------------------
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(_default_db_path()),
@@ -494,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             stats = _migrate(con)
-        except Exception as exc:  # noqa: BLE001 -- we re-print and exit 2
+        except Exception as exc:  # noqa: BLE001
             print(f"Error during migration: {exc}", file=sys.stderr)
             if not args.no_backup:
                 print("Restore the backup manually.", file=sys.stderr)

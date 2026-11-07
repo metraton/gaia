@@ -5,9 +5,6 @@ Detects cloud providers, IaC tools, container tooling, CI/CD platforms,
 application services, and infrastructure-related directory paths. Only
 produces the 'infrastructure' section when at least one indicator is found;
 returns empty dict for projects with no infrastructure files.
-
-Schema: data-model.md section 2.7
-Contract: contracts/scanner-interface.md
 """
 
 import logging
@@ -22,18 +19,13 @@ from tools.scan.walk import walk_project, walk_project_named
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Terraform provider patterns
-# ---------------------------------------------------------------------------
 _TF_PROVIDER_PATTERNS: Dict[str, str] = {
     "gcp": r'provider\s+"google"',
     "aws": r'provider\s+"aws"',
     "azure": r'provider\s+"azurerm"',
 }
 
-# ---------------------------------------------------------------------------
-# Cloud-related environment variable prefixes (non-secret only)
-# ---------------------------------------------------------------------------
+# Names of cloud-related environment variables; none of them holds a secret
 _CLOUD_ENV_VARS: Dict[str, List[str]] = {
     "gcp": [
         "GOOGLE_CLOUD_PROJECT",
@@ -51,9 +43,6 @@ _CLOUD_ENV_VARS: Dict[str, List[str]] = {
     ],
 }
 
-# ---------------------------------------------------------------------------
-# IaC tool markers
-# ---------------------------------------------------------------------------
 _IAC_MARKERS: List[Dict[str, str]] = [
     {"tool": "terraform", "rglob": "*.tf"},
     {"tool": "terragrunt", "rglob": "terragrunt.hcl"},
@@ -61,17 +50,11 @@ _IAC_MARKERS: List[Dict[str, str]] = [
     {"tool": "cdk", "rglob": "cdk.json"},
 ]
 
-# ---------------------------------------------------------------------------
-# Container markers
-# ---------------------------------------------------------------------------
 _CONTAINER_GLOBS: List[Dict[str, Any]] = [
     {"tool": "docker", "rglob_patterns": ["Dockerfile", "Dockerfile.*"]},
     {"tool": "docker-compose", "rglob_patterns": ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]},
 ]
 
-# ---------------------------------------------------------------------------
-# CI/CD platform markers
-# ---------------------------------------------------------------------------
 _CICD_MARKERS: List[Dict[str, Any]] = [
     {"platform": "github-actions", "type": "dir", "path": ".github/workflows"},
     {"platform": "gitlab-ci", "type": "file", "path": ".gitlab-ci.yml"},
@@ -82,9 +65,6 @@ _CICD_MARKERS: List[Dict[str, Any]] = [
     {"platform": "cloud-build", "type": "file", "path": "cloudbuild.json"},
 ]
 
-# ---------------------------------------------------------------------------
-# Known infrastructure directory names
-# ---------------------------------------------------------------------------
 _INFRA_DIR_NAMES: Dict[str, List[str]] = {
     "gitops": ["gitops", "flux", "argocd", "deploy", "k8s"],
     "terraform": ["terraform", "terragrunt", "infra", "infrastructure"],
@@ -117,9 +97,8 @@ class InfrastructureScanner(BaseScanner):
     def scan(self, root: Path) -> ScanResult:
         """Scan for infrastructure indicators.
 
-        In multi-repo mode, scans each repo subdirectory and tags IaC
-        entries with their containing repo name. In single-repo mode,
-        behaves as before.
+        When workspace_info marks a multi-repo workspace, tags IaC, container
+        and CI/CD entries with their containing repo name.
 
         Args:
             root: Absolute path to the project root directory.
@@ -139,13 +118,11 @@ class InfrastructureScanner(BaseScanner):
             paths = self._detect_paths(root, warnings)
             app_services = self._detect_application_services(root, warnings)
 
-            # Multi-repo mode: also scan each repo subdirectory and tag results
             if self.workspace_info and self.workspace_info.is_multi_repo:
                 self._enrich_multi_repo(
                     root, iac, containers, ci_cd, warnings
                 )
 
-            # Only produce section when at least one indicator is found
             has_indicators = (
                 cloud_providers
                 or iac
@@ -239,23 +216,16 @@ class InfrastructureScanner(BaseScanner):
         for entry in ci_cd:
             _tag_repo(entry, "config_path")
 
-    # ------------------------------------------------------------------
-    # Cloud provider detection
-    # ------------------------------------------------------------------
-
     def _detect_cloud_providers(
         self, root: Path, warnings: List[str]
     ) -> List[Dict[str, Any]]:
         """Detect cloud providers from Terraform, CLI configs, and env vars."""
         providers: Dict[str, Dict[str, Any]] = {}
 
-        # 1. Terraform provider blocks
         self._detect_providers_from_terraform(root, providers, warnings)
 
-        # 2. CLI configs
         self._detect_providers_from_cli_configs(providers)
 
-        # 3. Environment variables (non-secret only)
         self._detect_providers_from_env_vars(providers)
 
         return list(providers.values())
@@ -286,7 +256,6 @@ class InfrastructureScanner(BaseScanner):
         """Check for cloud CLI config files."""
         home = Path.home()
 
-        # GCP: gcloud CLI config
         gcloud_config = home / ".config" / "gcloud" / "properties"
         if gcloud_config.is_file() and "gcp" not in providers:
             providers["gcp"] = {
@@ -294,7 +263,6 @@ class InfrastructureScanner(BaseScanner):
                 "detected_by": "cli_config",
             }
 
-        # AWS: aws CLI config
         aws_config = home / ".aws" / "config"
         if aws_config.is_file() and "aws" not in providers:
             providers["aws"] = {
@@ -302,7 +270,6 @@ class InfrastructureScanner(BaseScanner):
                 "detected_by": "cli_config",
             }
 
-        # Azure: az CLI config
         azure_config = home / ".azure" / "azureProfile.json"
         if azure_config.is_file() and "azure" not in providers:
             providers["azure"] = {
@@ -325,10 +292,6 @@ class InfrastructureScanner(BaseScanner):
                     }
                     break
 
-    # ------------------------------------------------------------------
-    # IaC tool detection
-    # ------------------------------------------------------------------
-
     def _detect_iac(
         self, root: Path, warnings: List[str]
     ) -> List[Dict[str, Any]]:
@@ -336,8 +299,8 @@ class InfrastructureScanner(BaseScanner):
 
         Groups detected files into distinct IaC roots. For example, if both
         ``terraform/`` (shared modules) and ``features/infra/`` contain .tf
-        files, they become separate entries. Validates that all reported file
-        paths actually exist on disk (Fix 3: ghost references).
+        files, they become separate entries. Files that no longer exist on disk
+        are dropped.
         """
         results: List[Dict[str, Any]] = []
 
@@ -353,7 +316,6 @@ class InfrastructureScanner(BaseScanner):
                 if not found_files:
                     continue
 
-                # Fix 3: filter out files whose paths no longer exist
                 found_files = [f for f in found_files if f.exists()]
 
                 if not found_files:
@@ -363,9 +325,6 @@ class InfrastructureScanner(BaseScanner):
                     str(f.relative_to(root)) for f in found_files
                 ]
 
-                # Group files into distinct IaC roots. A "root" is the
-                # top-level directory under `root` that contains the file
-                # (depth-1 or depth-2 for monorepo subdirs).
                 iac_roots = self._group_iac_roots(root, found_files)
 
                 for iac_root_path, root_files in sorted(iac_roots.items()):
@@ -388,13 +347,12 @@ class InfrastructureScanner(BaseScanner):
     def _group_iac_roots(
         root: Path, files: List[Path]
     ) -> Dict[str, List[Path]]:
-        """Group IaC files by their top-level infrastructure root directory.
+        """Group IaC files by their infrastructure root directory.
 
-        Identifies distinct IaC roots by looking for well-known directory
-        names (``terraform/``, ``infra/``) in the file path. Files that
-        share a common IaC root are grouped together.
+        The root of a file is the path up to the first well-known directory
+        name (``terraform/``, ``infra/``) found in it, else the file's parent
+        directory. Files that share a root are grouped together.
         """
-        # Known IaC root directory names
         iac_dir_names = {"terraform", "terragrunt", "infra", "infrastructure", "iac"}
 
         groups: Dict[str, List[Path]] = {}
@@ -403,16 +361,13 @@ class InfrastructureScanner(BaseScanner):
             rel = f.relative_to(root)
             parts = rel.parts
 
-            # Find the deepest IaC-root-named directory in the path
             iac_root = None
-            for i, part in enumerate(parts[:-1]):  # exclude filename
+            for i, part in enumerate(parts[:-1]):
                 if part.lower() in iac_dir_names:
-                    # Use path up to and including this directory
                     iac_root = str(Path(*parts[: i + 1]))
                     break
 
             if iac_root is None:
-                # No known IaC directory found; use common base path logic
                 iac_root = str(rel.parent) if len(parts) > 1 else "."
 
             if iac_root not in groups:
@@ -421,28 +376,22 @@ class InfrastructureScanner(BaseScanner):
 
         return groups
 
-    # ------------------------------------------------------------------
-    # Container detection
-    # ------------------------------------------------------------------
-
     def _detect_containers(
         self, root: Path, warnings: List[str]
     ) -> List[Dict[str, Any]]:
         """Detect container tooling from file presence.
 
-        Validates that all reported paths actually exist (Fix 3: ghost refs).
+        Validates that all reported paths actually exist.
         """
         results: List[Dict[str, Any]] = []
 
         for container_def in _CONTAINER_GLOBS:
             found: List[str] = []
             try:
-                # Separate exact names from prefix patterns (e.g., "Dockerfile.*")
                 exact_names = []
                 prefixes = []
                 for pattern in container_def["rglob_patterns"]:
                     if "*" in pattern:
-                        # "Dockerfile.*" -> prefix "Dockerfile."
                         prefixes.append(pattern.replace("*", ""))
                     else:
                         exact_names.append(pattern)
@@ -451,7 +400,6 @@ class InfrastructureScanner(BaseScanner):
                     if match.exists():
                         found.append(str(match.relative_to(root)))
 
-                # Handle prefix patterns (e.g., "Dockerfile.*") via walk
                 if prefixes:
                     from tools.scan.walk import walk_project_prefix
                     for match in walk_project_prefix(root, prefixes):
@@ -472,23 +420,19 @@ class InfrastructureScanner(BaseScanner):
 
         return results
 
-    # ------------------------------------------------------------------
-    # CI/CD detection
-    # ------------------------------------------------------------------
-
     def _detect_cicd(
         self, root: Path, warnings: List[str]
     ) -> List[Dict[str, Any]]:
         """Detect CI/CD platforms from config files/directories.
 
-        Checks root-level marker files first, then scans subdirectories
-        for CI/CD configuration files and manifests (e.g., gitlab-runner
-        kustomize files).
+        Checks root-level marker files first; when none match, immediate
+        subdirectories are checked for the same markers. Unless gitlab-ci was
+        found, directory names are then matched against runner names
+        (e.g., a gitlab-runner directory).
         """
         results: List[Dict[str, Any]] = []
         detected_platforms: set = set()
 
-        # Check root-level markers
         for marker in _CICD_MARKERS:
             target = root / marker["path"]
             detected = False
@@ -503,19 +447,14 @@ class InfrastructureScanner(BaseScanner):
                     "platform": marker["platform"],
                     "config_path": marker["path"],
                 }
-                # Enrich GitLab CI entries with related files and stages
                 if marker["platform"] == "gitlab-ci":
                     self._enrich_gitlab_ci(root, entry, warnings)
                 results.append(entry)
                 detected_platforms.add(marker["platform"])
 
-        # Check subdirectories for CI/CD config files (handles monorepo
-        # and nested project structures)
         if not results:
             self._detect_cicd_in_subdirs(root, results, detected_platforms, warnings)
 
-        # Detect CI/CD from manifest content (e.g., gitlab-runner in
-        # kustomize manifests)
         if "gitlab-ci" not in detected_platforms:
             self._detect_cicd_from_manifests(root, results, detected_platforms, warnings)
 
@@ -550,7 +489,6 @@ class InfrastructureScanner(BaseScanner):
                             "platform": marker["platform"],
                             "config_path": rel_path,
                         }
-                        # Enrich GitLab CI entries found in subdirectories
                         if marker["platform"] == "gitlab-ci":
                             self._enrich_gitlab_ci(entry, cicd_entry, warnings)
                         results.append(cicd_entry)
@@ -565,12 +503,11 @@ class InfrastructureScanner(BaseScanner):
         detected_platforms: set,
         warnings: List[str],
     ) -> None:
-        """Detect CI/CD platforms from Kubernetes manifest content.
+        """Detect CI/CD platforms from directory names.
 
-        Looks for CI/CD-related resources like gitlab-runner deployments
-        in kustomize/Kubernetes manifests.
+        Walks the tree and matches each directory's name against runner names
+        such as gitlab-runner; no file contents are read.
         """
-        # CI/CD-related directory or file name patterns
         cicd_manifest_indicators = {
             "gitlab-runner": "gitlab-ci",
             "github-actions-runner": "github-actions",
@@ -602,10 +539,6 @@ class InfrastructureScanner(BaseScanner):
         except OSError as exc:
             warnings.append(f"CI/CD manifest scan error: {exc}")
 
-    # ------------------------------------------------------------------
-    # GitLab CI enrichment
-    # ------------------------------------------------------------------
-
     def _enrich_gitlab_ci(
         self,
         root: Path,
@@ -623,12 +556,10 @@ class InfrastructureScanner(BaseScanner):
         related_files: List[str] = []
 
         try:
-            # Check for .gitlab/ci/ directory
             gitlab_ci_dir = root / ".gitlab" / "ci"
             if gitlab_ci_dir.is_dir():
                 related_files.append(".gitlab/ci/")
 
-            # Check for additional CI yml files at root
             for candidate in sorted(root.iterdir()):
                 if not candidate.is_file():
                     continue
@@ -640,7 +571,6 @@ class InfrastructureScanner(BaseScanner):
                 ):
                     related_files.append(name)
 
-            # Check for .ci-local/ directory
             ci_local_dir = root / ".ci-local"
             if ci_local_dir.is_dir():
                 related_files.append(".ci-local/")
@@ -651,7 +581,6 @@ class InfrastructureScanner(BaseScanner):
         if related_files:
             entry["related_files"] = related_files
 
-        # Extract stage names from the main .gitlab-ci.yml
         try:
             ci_file = root / ".gitlab-ci.yml"
             if ci_file.is_file():
@@ -675,13 +604,11 @@ class InfrastructureScanner(BaseScanner):
         for line in content.splitlines():
             stripped = line.strip()
 
-            # Detect the start of the stages block (must be top-level, no leading spaces)
             if line.startswith("stages:") and not line[0].isspace():
                 in_stages = True
                 continue
 
             if in_stages:
-                # A list item under stages
                 if stripped.startswith("- "):
                     stage_name = stripped[2:].strip().strip("'\"")
                     if stage_name:
@@ -690,14 +617,9 @@ class InfrastructureScanner(BaseScanner):
                     # Blank lines and comments are OK inside the block
                     continue
                 else:
-                    # Any other non-list content ends the stages block
                     break
 
         return stages
-
-    # ------------------------------------------------------------------
-    # Infrastructure path detection
-    # ------------------------------------------------------------------
 
     def _detect_paths(
         self, root: Path, warnings: List[str]
@@ -706,7 +628,7 @@ class InfrastructureScanner(BaseScanner):
 
         Searches depth=1 and depth=2 to handle monorepo structures where
         infra directories live inside a workspace subdirectory (e.g.,
-        ``qxo-monorepo/terraform/``).
+        ``<monorepo>/terraform/``).
         """
         detected: Dict[str, Optional[str]] = {
             "gitops": None,
@@ -718,7 +640,6 @@ class InfrastructureScanner(BaseScanner):
                 "dist", "build", ".venv", "venv"}
 
         try:
-            # Depth=1: immediate subdirectories of root
             subdirs = [
                 d for d in root.iterdir()
                 if d.is_dir() and not d.name.startswith(".") and d.name not in skip
@@ -733,8 +654,6 @@ class InfrastructureScanner(BaseScanner):
                 if detected[path_key] is None and dir_name in candidates:
                     detected[path_key] = str(subdir.relative_to(root))
 
-        # Depth=2: check inside each depth-1 subdirectory for infra dirs
-        # This handles monorepo layouts like qxo-monorepo/terraform/
         for subdir in subdirs:
             try:
                 for child in subdir.iterdir():
@@ -750,10 +669,6 @@ class InfrastructureScanner(BaseScanner):
                 continue
 
         return detected
-
-    # ------------------------------------------------------------------
-    # Application service detection
-    # ------------------------------------------------------------------
 
     def _detect_application_services(
         self, root: Path, warnings: List[str]
@@ -773,8 +688,6 @@ class InfrastructureScanner(BaseScanner):
                 ".terragrunt-cache", "vendor", "dist", "build",
                 ".venv", "venv", "charts", "infra"}
 
-        # Search up to depth=4 for service-runtime dirs and Dockerfiles
-        # that indicate a service boundary
         self._find_services_recursive(
             root, root, services, seen_names, skip, warnings, depth=0, max_depth=4
         )
@@ -807,7 +720,6 @@ class InfrastructureScanner(BaseScanner):
             if entry.name in skip:
                 continue
 
-            # Check if this directory looks like a service
             has_service_runtime = (entry / "service-runtime").is_dir()
             has_dockerfile = (entry / "Dockerfile").is_file()
             has_docker_compose = (
@@ -827,15 +739,10 @@ class InfrastructureScanner(BaseScanner):
                         "has_service_runtime": has_service_runtime,
                     })
 
-            # Continue recursing into subdirectories
             self._find_services_recursive(
                 root, entry, services, seen_names, skip, warnings,
                 depth + 1, max_depth,
             )
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _common_base_path(paths: List[str]) -> str:
@@ -860,9 +767,8 @@ class InfrastructureScanner(BaseScanner):
         return str(Path(*common)) if common else "."
 
 
-# Module-level convenience for verify commands
 def scan(root: Path) -> Dict[str, Any]:
-    """Module-level convenience function for infrastructure scanning.
+    """Run InfrastructureScanner on ``root`` and return only its sections dict.
 
     Args:
         root: Absolute path to the project root directory.

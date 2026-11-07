@@ -1,97 +1,63 @@
 # tools/migration
 
-Scripts de migración one-shot para absorber datos locales del workspace `me`
-desde el filesystem hacia `~/.gaia/gaia.db`.
+One-shot scripts that moved the local data of the `me` workspace from files on
+disk into `~/.gaia/gaia.db`, and reshaped that database before the versioned
+migration ledger existed. They are history: each one already ran, the files
+they read are gone (`.claude/project-context/episodic-memory/episodes.jsonl`,
+`.claude/project-context/project-context.json`, `.claude/events/events.jsonl`),
+and the tables they wrote have since been renamed and rebuilt. Nothing in
+Gaia's runtime, install or CI runs them.
 
-> **Histórico.** Estos converters leían artefactos de filesystem que el modelo
-> actual ya retiró: `.claude/project-context/episodic-memory/episodes.jsonl` y
-> `.claude/project-context/project-context.json`. En el modelo nuevo,
-> `~/.gaia/gaia.db` es canónico — `gaia scan` no genera `project-context.json`,
-> y la memoria episódica se persiste directamente vía el hook `subagent_stop`.
-> Las rutas de origen en la tabla de abajo describen el filesystem legacy tal
-> como existía cuando estos scripts one-shot corrieron; se conservan como
-> registro histórico de la absorción, no como fuentes vivas.
+They stay because two tests import them as fixtures of past behaviour
+(`tests/unit/test_migrate_08_rename_workspace.py`,
+`tests/integration/test_state_machine_check.py`), and because the gaia.db
+write guard names this folder as the sanctioned home of hand-run data moves
+(`hooks/modules/security/gaia_db_write_guard.py`). A person runs them by hand,
+from a terminal, never an agent.
 
-## Dominios
+## How it is wired in
 
-| # | Dominio | Origen | Tabla destino |
-|---|---------|--------|---------------|
-| 01 | Episodes | `.claude/project-context/episodic-memory/episodes.jsonl` | `episodes` (+`episodes_fts`) |
-| 02 | Memory | `~/.claude/projects/<project-slug>/memory/*.md` | `memory` (+`memory_fts`) |
-| 03 | Context contracts | `.claude/project-context/project-context.json` | `context_contracts` |
-| 04 | Harness events | ~~`.claude/events/events.jsonl`~~ (ELIMINADO) | `harness_events` |
+Invoked, by hand, once. The converters `migrate_01` to `migrate_03` and
+`migrate_05` read a source on disk and write a `.sql` file of
+`INSERT OR IGNORE` statements under `/tmp`; they never open the database. The
+`.sh` wrappers of `01` to `03` run their converter and then feed that file to
+`sqlite3 ~/.gaia/gaia.db`. `migrate_06` to `migrate_08` open the database
+themselves, back it up to a timestamped sibling first, and refuse or no-op on
+a database already in the shape they produce.
 
-> **Dominio 04 completado y eliminado.** `events.jsonl` y su archivo `.lock` fueron
-> retirados. El hook `event_writer` escribe directamente a `harness_events` en la DB.
-> El script `migrate_04_harness_events.py` y su wrapper `.sh` fueron borrados una vez
-> completada la absorción. Los datos vivos se leen desde `harness_events` en `~/.gaia/gaia.db`.
+What breaks if you get it wrong: running any of them against a current
+database. Schema changes now ship only as `scripts/migrations/v{N-1}_to_v{N}.sql`,
+applied in order and recorded in `schema_version` by `gaia migrate apply`; a
+script here bypasses that ledger, its backup and its consent gate, and targets
+table and column names that no longer exist (`migrate_08` renamed `projects`
+to `workspaces` and `repos` to `projects`).
 
-Cada dominio tiene 2 archivos:
-
-- `migrate_<NN>_<dominio>.py` — converter Python read-only sobre filesystem.
-  No conecta a SQLite. Lee la fuente, parsea, emite `/tmp/migrate_<NN>_<dominio>.sql`
-  con `INSERT OR IGNORE` literales.
-- `migrate_<NN>_<dominio>.sh` — wrapper que llama al `.py` y luego ejecuta
-  `sqlite3 ~/.gaia/gaia.db < /tmp/migrate_<NN>_<dominio>.sql`. El `sqlite3` con
-  INSERT es interceptado por el hook `pre_tool_use` (flujo correcto).
-
-## Orden de ejecución
+## What's here
 
 ```
-bootstrap.sh                             # crea/inicializa ~/.gaia/gaia.db con schema.sql (out of scope; gaia-system anterior)
-./migrate_01_episodes.sh <episodes.jsonl>                # ~50-80 MB de SQL, batch 80
-./migrate_02_memory.sh <memory-dir>                      # 28 .md (MEMORY.md excluido)
-./migrate_03_context_contracts.sh <project-context.json> # 12 secciones
-# migrate_04_harness_events.sh ELIMINADO — dominio 04 completado; eventos en DB-canonical
-EPISODES_SRC=<episodes.jsonl> EVENTS_SRC=<events.jsonl> NOTES_DIR=<memory-dir> \
-  ./validate.sh                                          # aserciones read-only (V4 eliminada junto con 04)
+migrate_01_episodes.py / .sh            # episodes.jsonl -> episodes (+ episodes_fts)
+migrate_02_memory.py / .sh              # memory/*.md (MEMORY.md excluded) -> memory (+ memory_fts)
+migrate_03_context_contracts.py / .sh   # project-context.json -> context_contracts
+migrate_05_briefs.py                    # brief directories (brief.md, plan.md, ...) -> briefs; source via --src
+migrate_06_state_machines.py            # cleans legacy statuses, rebuilds four tables with CHECK constraints
+migrate_07_plans_content.py             # adds plans.content and plans.updated_at
+migrate_08_rename_workspace.py          # renames projects/repos to workspaces/projects
+validate.sh                             # read-only row-count checks after 01-03
 ```
 
-La ruta de origen no tiene default: cada wrapper la recibe como primer argumento
-y sin ella se detiene con una línea de uso; `migrate_05_briefs.py` la recibe con `--src`.
+Domain 04 (harness events) was absorbed and its scripts deleted; the
+`event_writer` hook writes `harness_events` directly.
 
-Cada script imprime `[migrate_NN] OK` al terminar.
+## Conventions
 
-## Idempotencia
+Nothing new is added here. A schema change is a file in `scripts/migrations/`
+(see its README); a data change goes through the `gaia` CLI and the typed
+store API in `gaia/store/writer.py`. Each source path has no default: a
+wrapper takes it as its first argument and stops with a usage line without
+it. The shell scripts run under `set -euo pipefail`, and the project is fixed
+to `me` throughout. The `.sh` wrappers' progress messages and the line `migrate_02_memory.py` writes into its SQL header are still in Spanish.
 
-| Dominio | Estrategia | Re-ejecutable |
-|---------|-----------|---------------|
-| 01 episodes | `INSERT OR IGNORE` (PK = `episode_id`) | sí |
-| 02 memory | `INSERT OR IGNORE` (PK = `(project, name)`) | sí |
-| 03 context_contracts | `INSERT OR IGNORE` (PK = `(project, section_name)`) | sí |
-| 04 harness_events | N/A — tool eliminado; escritura vía `event_writer` DB-direct | N/A |
+## See also
 
-## Validación
-
-`validate.sh` corre 5 aserciones read-only contra `~/.gaia/gaia.db`:
-
-| # | Check |
-|---|-------|
-| V1 | `COUNT(*) FROM episodes` == líneas no vacías de `episodes.jsonl` |
-| V2 | `COUNT(*) FROM memory` == archivos `.md` (excluyendo `MEMORY.md`) |
-| V3 | `COUNT(*) FROM context_contracts` == 12 |
-| ~~V4~~ | ~~`COUNT(*) FROM harness_events` == líneas no vacías de `events.jsonl`~~ — eliminado junto con el dominio 04 |
-| V5 | `COUNT(*) FROM episodes_fts` == `COUNT(*) FROM episodes` (FTS sync) |
-
-Exit code: 0 si todas pasan, 1 si alguna falla.
-
-## Cleanup
-
-Una vez que `validate.sh` reporte `ALL PASS` y los datos se hayan absorbido en
-los flujos normales de Gaia, todo el directorio `tools/migration/` se borra:
-
-```
-rm -rf <gaia-source-checkout>/tools/migration
-rm -f  /tmp/migrate_0{1,2,3,4}_*.sql
-```
-
-Estos scripts son one-shot; no forman parte del runtime de Gaia.
-
-## Notas y restricciones
-
-- `set -euo pipefail` en todos los `.sh`.
-- Los `.py` **no** importan `sqlite3` ni abren conexiones a la DB.
-- Solo I/O de filesystem y escritura de SQL plano a `/tmp/`.
-- `bash -n` y `python3 -m py_compile` deben pasar para todos los archivos.
-- Project hardcoded a `'me'` en los 4 dominios.
-- Comentarios internos en español.
+- [`scripts/migrations/README.md`](../../scripts/migrations/README.md) -- the versioned ledger that replaced these scripts.
+- [`hooks/modules/security/gaia_db_write_guard.py`](../../hooks/modules/security/gaia_db_write_guard.py) -- why a shell write to gaia.db is refused, and the paths it sanctions.

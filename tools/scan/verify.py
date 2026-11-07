@@ -2,13 +2,12 @@
 Health Check / Verification Functions for `gaia scan`
 
 Provides post-install verification checks to confirm that the
-gaia installation is healthy. Used after fresh install (Mode 1)
-and after rescan+sync (Mode 2).
+gaia installation is healthy.
 
 Functions:
 - run_verification: run all checks, return summary
 - check_symlinks: verify symlinks exist and are valid
-- check_claude_md: legacy check (CLAUDE.md no longer generated)
+- check_claude_md: always passes; CLAUDE.md is not required
 - check_settings_json: verify valid JSON
 - check_project_context: verify exists and has sections
 - check_python: verify python3 available
@@ -43,10 +42,10 @@ class CheckResult:
 
 
 def check_symlinks(project_root: Path) -> CheckResult:
-    """Verify that all expected symlinks exist in .claude/.
+    """Verify that the expected entries exist in .claude/.
 
     Checks for: agents, tools, hooks, commands, config,
-    skills, CHANGELOG.md (7 total).
+    skills, CHANGELOG.md (7 total); a file or directory counts as well as a link.
 
     Args:
         project_root: Project root directory.
@@ -74,10 +73,7 @@ def check_symlinks(project_root: Path) -> CheckResult:
 
 
 def check_claude_md(project_root: Path) -> CheckResult:
-    """Check for CLAUDE.md presence. No longer required -- identity injected by hook.
-
-    Kept for backward compatibility with callers that expect this check.
-    """
+    """Report whether CLAUDE.md is present; the check passes either way, since identity is injected by hook."""
     path = project_root / "CLAUDE.md"
     if path.is_file():
         return CheckResult(
@@ -123,10 +119,10 @@ def check_settings_json(project_root: Path) -> CheckResult:
 
 
 def check_project_context(project_root: Path) -> CheckResult:
-    """Verify that project context contracts exist in the DB (T1.3: DB-backed read).
+    """Verify that project context contracts exist in the DB.
 
-    Reads from project_context_contracts table in gaia.db rather than from
-    the legacy project-context.json file.
+    Counts the project_context_contracts rows of the workspace in gaia.db;
+    fewer than 3 fails the check.
 
     Args:
         project_root: Project root directory.

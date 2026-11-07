@@ -79,7 +79,7 @@ def _add_args(**overrides):
         name=None, type="atom", body="body text", body_file=None,
         description=None, workspace=None, class_=None, status=None,
         project=None, project_ref=None, audience=None, initiative=None,
-        json=True,
+        kind="lesson", json=True,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -246,7 +246,7 @@ def test_get_relevant_initiative_mode_MECHANISM_DEMONSTRATION_inverted(
 def test_digest_includes_sentinel_rows_alongside_session_workspace(tmp_db, capsys):
     memory_mod._cmd_add(_add_args(
         name="thread_me_local_pending", type="project", workspace="me",
-        class_="thread", status="open",
+        class_="thread", status="open", kind="fact",
     ))
     capsys.readouterr()
     memory_mod._cmd_add(_add_args(

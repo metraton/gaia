@@ -1,23 +1,20 @@
 """
-migrate_workspace.py -- B5 rescan-real-workspaces-with-backup
-
-Migrates a real workspace to ~/.gaia/gaia.db via:
+migrate_workspace.py -- re-ingest a workspace into ~/.gaia/gaia.db:
   1. Grant scanner agent permissions (idempotent)
-  2. wipe_workspace(<identity>, preserve_memory=True)  -- SV3: memory survives
+  2. wipe_workspace(<identity>, preserve_memory=True)
   3. scan_workspace_to_store (populate projects + infra + orchestration)
-  4. Verify row counts
-  5. Print diff JSON
+  4. Snapshot row counts before and after, write the diff JSON
+  5. Verify the workspace has at least one project
 
 Usage:
     python3 migrate_workspace.py <workspace_root> [--verify-only] [--diff-path <path>]
 
 Options:
-    --verify-only   Run scan but do NOT commit (dry-run mode for AC-1 test).
-                    Note: wipe_workspace is NOT called in verify-only mode.
+    --verify-only   Skip the wipe; the scan and the permission grant still write.
     --diff-path     Path to write .diff.json (default: <workspace_root>.diff.json)
 
 Exit codes:
-    0  Verify passed (rows > 0 in repos after scan)
+    0  Verify passed (projects > 0 after scan)
     1  Verify failed or error
 """
 
@@ -35,16 +32,12 @@ if str(_GAIA_ROOT) not in sys.path:
     sys.path.insert(0, str(_GAIA_ROOT))
 
 
-# ---------------------------------------------------------------------------
-# Agent permission bootstrap
-# ---------------------------------------------------------------------------
-
 _SCANNER_AGENTS = [
     "developer",
     "platform-architect",
     "gitops-operator",
     "gaia-system",
-    "cloud-troubleshooter",  # B3 M2: read+write declarativo sobre estado observado (clusters, tf_live)
+    "cloud-troubleshooter",
 ]
 _SCANNER_TABLES = [
     "workspaces", "projects", "apps", "integrations", "gaia_installations",
@@ -75,10 +68,6 @@ def _grant_scanner_permissions(db_path: Path) -> None:
     finally:
         con.close()
 
-
-# ---------------------------------------------------------------------------
-# Row count snapshot (for diff)
-# ---------------------------------------------------------------------------
 
 _SNAPSHOT_TABLES = [
     "projects", "apps", "services", "libraries", "features",
@@ -121,10 +110,6 @@ def _build_diff(before: dict, after: dict) -> dict:
     return {"added": added, "removed": removed, "changed": changed}
 
 
-# ---------------------------------------------------------------------------
-# Main migration logic
-# ---------------------------------------------------------------------------
-
 def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: Path) -> int:
     from gaia.project import current
     from gaia.store import wipe_workspace
@@ -138,32 +123,22 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
     print(f"[migrate] db_path={db_path}")
     print(f"[migrate] verify_only={verify_only}")
 
-    # Resolve identity. NOTE: migrate is a legacy one-shot re-ingest tool; it
-    # still derives identity from the git remote via gaia.project.current (a
-    # non-scan caller). The deterministic --workspace scan path lives in
-    # tools.scan.classify.
+    # Identity comes from the git remote via gaia.project.current; the
+    # deterministic --workspace scan path lives in tools.scan.classify.
     identity = current(cwd=workspace_root)
     print(f"[migrate] identity={identity!r}")
 
-    # Grant permissions (idempotent)
     _grant_scanner_permissions(db_path)
 
-    # Snapshot before
     before = _snapshot(db_path, identity)
     print(f"[migrate] snapshot before: {before}")
 
     if not verify_only:
-        # Wipe existing workspace rows so the re-scan repopulates projects +
-        # infra + orchestration cleanly. scan-v2 SV3 (Vector 4): pass
-        # preserve_memory=True EXPLICITLY -- a re-ingest must never destroy
-        # curated memory. The CASCADE still clears scannable children; memory +
-        # memory_links + the workspaces row are captured and restored by
-        # wipe_workspace.
+        # preserve_memory is explicit: a re-ingest must never destroy curated
+        # memory, which wipe_workspace captures and restores.
         wipe_workspace(identity, preserve_memory=True, db_path=db_path)
         print(f"[migrate] wiped workspace {identity!r} (memory preserved)")
 
-    # Scan repos via store_populator (deterministic: all repos under
-    # workspace_root attributed to `identity`; _list_repos discovers them).
     results = scan_workspace_to_store(
         workspace=identity,
         root=workspace_root,
@@ -171,9 +146,8 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
         db_path=db_path,
     )
 
-    # Infra + orchestration per repo -- use the SAME repo set scan_workspace_to_store
-    # discovered via _list_repos (whose results dict keys are repo names that exist in
-    # the `repos` table, satisfying the FK constraint for child tables).
+    # The same project set scan_workspace_to_store discovered, so the child
+    # tables' foreign key to projects is satisfied.
     from tools.scan.store_populator import _list_repos
     for project_path in _list_repos(workspace_root):
         project_name = project_path.name
@@ -194,11 +168,9 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
 
     print(f"[migrate] scan results: {results}")
 
-    # Snapshot after
     after = _snapshot(db_path, identity)
     print(f"[migrate] snapshot after: {after}")
 
-    # Build and write diff
     diff = _build_diff(before, after)
     diff["workspace"] = identity
     diff["workspace_root"] = str(workspace_root)
@@ -210,7 +182,6 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
     diff_path.write_text(json.dumps(diff, indent=2))
     print(f"[migrate] diff written to {diff_path}")
 
-    # Verify: projects count must be > 0
     projects_count = after.get("projects", 0)
     if projects_count > 0:
         print(f"[migrate] VERIFY OK: projects={projects_count} for workspace {identity!r}")

@@ -45,10 +45,11 @@ Ask the orchestrator "what is Gaia?" or "what can you do for me?" and it explain
 |---|---|
 | Change or investigate code, infrastructure, a cluster's desired state, or a live system | A specialist: `developer`, `platform-architect`, `gitops-operator`, `cloud-troubleshooter` |
 | Understand something -- a system, a process, what happened, why it failed | `technical-explanation` |
-| A README for a repository or a folder | `readme-writing` |
+| A README, a runbook, a PR body, a report or a CHANGELOG entry | `technical-writing` |
+| A message or an email for someone else, sent in the user's name | `ghostwriting` |
 | A ticket or an issue | `ticket-writing` |
 | A blog post | `blog-writing` |
-| A diagram deck -- an architecture map, a timeline, a flow, a comparison | `diagram-builder` |
+| A diagram deck -- an architecture map, a timeline, a flow, a comparison | `deck-builder` |
 | Capture a feature before planning it | `brief-spec` |
 | Plan it -- decompose it into verifiable tasks | `gaia-planner` (a skill and the agent of the same name) |
 | A review of a module, a branch or a PR | `code-review` |
@@ -77,7 +78,10 @@ One turn, from your prompt to the answer:
    on OpenCode, opencode/bridge.py prepends the same kernel to the Task
    prompt, with the specialist's skills listed by name.
 4. The specialist works. Every command passes the tier classifier:
-   T0-T2 run; T3 stops with an approval_id you answer in the host's dialog;
+   T0-T2 run; T3 is denied with an approval_id, the request is phrased with
+   gaia approvals request-set, and the orchestrator asks you with the
+   question gaia approvals question prints -- the host's own permission
+   prompt is never the route, the orchestrator's own commands included;
    a blocked command is refused with nothing to approve.
 5. The specialist fills its row as it goes (gaia contract set/add/fill) and
    closes it (gaia contract finalize); the SubagentStop gate validates the
@@ -98,7 +102,7 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 
 ## How it is used
 
-Gaia reaches your host through one of three channels. The folder you install in is where the host loads Gaia; it is not a workspace until you declare one (see [Workspaces and projects](#workspaces-and-projects)).
+Gaia reaches your host through one of three channels. The folder you install in is where the host loads Gaia; it is not a workspace until you declare one (see [Workspaces, groups and projects](#workspaces-groups-and-projects)).
 
 | Channel | Host | What you install | Where `gaia` runs from |
 |---|---|---|---|
@@ -137,7 +141,11 @@ npx gaia scan --workspace <name> <path>
 
 On the plugin, `gaia` is on the Bash tool's `PATH` inside a Claude Code session in the install folder, so the same two commands run there without `npx`.
 
-### Workspaces and projects
+### Workspaces, groups and projects
+
+- **Workspace**: the folder declared with `gaia workspace declare`.
+- **Group**: a folder inside it holding the projects of one product, client or theme, computed by `gaia scan`.
+- **Project**: one git repository, named by its folder and identified by its `origin` remote.
 
 Gaia is installed once. That one install, and its one database at `~/.gaia/gaia.db`, serves every workspace you declare.
 
@@ -192,6 +200,8 @@ chain reaches rows that exist   -> stops, and the message (or the plugin's
      gaia migrate apply --consent-chain vA..vB  # consent once, for that chain
 ```
 
+The other direction happens when two installs share one database: the newer one migrates it, and the older one is now behind. Each of the older install's sessions opens with a `## Database schema` line saying so, whether it still writes or already refuses every write, and the update command for its channel.
+
 **Uninstall.** Each channel takes back only what it wrote. `~/.gaia/gaia.db` is never touched: delete `~/.gaia/` yourself if you want the memory gone too.
 
 ```
@@ -221,11 +231,11 @@ The orchestrator answers with the picture above and the table of what it can off
 ```
 gaia/
 ├── agents/          # orchestrator + eight specialists; routing: seeds the table
-├── skills/          # 40 techniques loaded by description match
+├── skills/          # 43 techniques loaded by description match
 ├── hooks/           # host lifecycle entry points + security/context modules
 ├── gaia/            # host-neutral core: approvals, SQLite store, worktrees
 ├── opencode/        # the OpenCode plugin; registered by --channel opencode
-├── config/          # context contracts, git standards and rules the hooks read
+├── config/          # reserved for data files; holds only its README today
 ├── build/           # gaia.manifest.json -> plugin.json + hooks.json at pack
 ├── bin/             # the gaia CLI and its subcommands (bin/cli/)
 ├── tools/           # scanners, context providers and validators for CLI/hooks

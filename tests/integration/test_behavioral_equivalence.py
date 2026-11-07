@@ -155,7 +155,7 @@ EQUIVALENCE_COMMANDS = [
     "helm template my-release ./chart",
     "kubectl diff -f manifest.yaml",
     "terraform validate",
-    "terraform fmt",
+    "terraform fmt -check",
     # --- MUTATIVE verbs ---
     "terraform apply",
     "kubectl apply -f manifest.yaml",
@@ -169,6 +169,8 @@ EQUIVALENCE_COMMANDS = [
     "flux reconcile source git flux-system",
     "npm publish",
     "docker push my-image:latest",
+    "git push --force origin main",
+    "git push -f origin main",
     # --- BLOCKED patterns ---
     "rm -rf /",
     "rm -rf ~",
@@ -176,8 +178,6 @@ EQUIVALENCE_COMMANDS = [
     "kubectl delete ns staging",
     "terraform destroy",
     "terragrunt destroy",
-    "git push --force origin main",
-    "git push -f origin main",
     "git reset --hard HEAD~1",
     "aws eks delete-cluster --name my-cluster",
     "gcloud container clusters delete cluster-1",
@@ -260,7 +260,7 @@ CLASSIFICATION_SCENARIOS = [
     ("helm template my-release ./chart", True, "T0"),
     ("kubectl diff -f manifest.yaml", True, "T0"),
     ("terraform validate", True, "T0"),
-    ("terraform fmt", True, "T0"),
+    ("terraform fmt -check", True, "T0"),
     # === Dry-run overrides ===
     ("kubectl apply --dry-run=client -f manifest.yaml", True, "T0"),
     ("kubectl apply --dry-run=server -f manifest.yaml", True, "T0"),
@@ -295,8 +295,9 @@ CLASSIFICATION_SCENARIOS = [
     # The multi-module sweeps stayed on the floor.
     ("terragrunt run-all destroy", False, "BLOCKED"),
     ("terragrunt destroy-all", False, "BLOCKED"),
-    ("git push --force origin main", False, "BLOCKED"),
-    ("git push -f origin main", False, "BLOCKED"),
+    # Force push left the floor: it signs naming what it destroys (sign.destroys).
+    ("git push --force origin main", False, "T3"),
+    ("git push -f origin main", False, "T3"),
     # git reset --hard moved from BLOCKED to T3-approvable in the
     # bash_validator AST redesign -- it now follows the nonce approval flow.
     ("git reset --hard HEAD~1", False, "T3"),

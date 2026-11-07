@@ -1,10 +1,9 @@
 """
-gaia brief -- Manage briefs (and their plans) in the Gaia DB substrate (B8).
+gaia brief -- Manage briefs (and their plans) in the Gaia DB substrate.
 
-Architecture: Opción B (DB canónica). All mutating operations write only to
-``~/.gaia/gaia.db``; nothing under ``.claude/project-context/briefs/`` is ever
-created or modified by this CLI. The filesystem layout there is legacy /
-read-only-for-humans; the database is the single source of truth.
+All mutating operations write only to the Gaia database (``gaia.db``);
+nothing under ``.claude/project-context/briefs/`` is ever created or modified
+by this CLI. The database is the single source of truth.
 
 Subcommands:
     gaia brief new <name>                 Create a new brief (opens $EDITOR)
@@ -14,9 +13,10 @@ Subcommands:
     gaia brief show <name> [--json]       Print brief as markdown
     gaia brief list [--status=...]        List briefs in the workspace
                   [--format=table|count|json]
-    gaia brief close <name>               Set status -> closed (advisory: runs
-                                          verify_brief and prints inconsistencies;
-                                          does NOT change AC/milestone/plan status)
+    gaia brief close <name>               Close the brief and its active plan: syncs each
+                                          pending AC that computes done, runs
+                                          verify_brief, and closes only when it finds
+                                          no inconsistencies (exit 2 otherwise)
     gaia brief set-status <name> <status> Validated state-machine transition
     gaia brief set-project <name> <project> Tag a brief so it moves with its project
                                           (DB-only)
@@ -24,6 +24,11 @@ Subcommands:
     gaia brief search <query> [--limit N] FTS5 search over objective/context/approach
     gaia brief delete <name> [--yes]      Hard-delete a brief from the DB
                   [--json]                (cascades to ACs, milestones, deps)
+    gaia brief verify <name> [--json]     Report inconsistencies (exit 2 when found)
+    gaia brief history <name> [--json]    List the brief's recorded events
+    gaia brief milestone <add|remove>     Manage the brief's milestones
+    gaia brief decision <add|list>        Record or list the brief's decisions
+    gaia brief ac <add|edit|remove>       Manage the brief's acceptance criteria
 """
 
 from __future__ import annotations
@@ -35,11 +40,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
-
-# ---------------------------------------------------------------------------
-# File / stdin helpers
-# ---------------------------------------------------------------------------
 
 # Ensure the gaia package (repo root) is importable regardless of cwd.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -65,8 +65,7 @@ def _resolve_field(inline_val, file_val, field_name):
     ``file_val`` of None means --X-file was not given; ``inline_val`` passes
     through unchanged in that case (including None, meaning neither was
     given). Raises ValueError (caller converts to _err) on a missing/unreadable
-    file. Module-level so every handler in this file can share it -- it used
-    to be a closure inside `_cmd_new`; hoisted out for `_cmd_ac`'s edit path.
+    file.
     """
     if file_val is None:
         return inline_val
@@ -78,18 +77,10 @@ def _resolve_field(inline_val, file_val, field_name):
         raise ValueError(f"--{field_name}-file: cannot read '{file_val}': {exc}")
 
 
-# ---------------------------------------------------------------------------
-# Workspace resolution
-# ---------------------------------------------------------------------------
-
 def _resolve_workspace(explicit: str | None) -> str:
     from gaia.project import cli_workspace
     return cli_workspace(explicit)
 
-
-# ---------------------------------------------------------------------------
-# Editor round-trip
-# ---------------------------------------------------------------------------
 
 _BRIEF_TEMPLATE = """\
 ---
@@ -148,10 +139,6 @@ def _open_in_editor(initial_text: str) -> str:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
-
 def _err(msg: str, as_json: bool = False) -> int:
     if as_json:
         print(json.dumps({"error": msg}))
@@ -169,10 +156,8 @@ def _cmd_new(args) -> int:
     )
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
-    # A brief created without --workspace lands in the resolved workspace,
-    # which from inside a sub-repo may not be the one intended. Advisory only
-    # (stderr, non-blocking) so headless/agent flows are never gated; it names
-    # no particular workspace because none is universal.
+    # Advisory only (stderr): without --workspace the brief lands in the resolved
+    # workspace, which from inside a sub-repo may not be the one intended.
     if not getattr(args, "workspace", None):
         print(
             f"Warning: creating brief in workspace '{workspace}' "
@@ -440,7 +425,7 @@ def _cmd_show(args) -> int:
     name = args.name
     as_json = getattr(args, "json", False)
 
-    # FIX 1: when the argument is all-digits, resolve by numeric id first.
+    # When the argument is all-digits, resolve by numeric id first.
     if name.isdigit():
         brief = get_brief_by_id(int(name))
         if brief is not None:
@@ -455,7 +440,7 @@ def _cmd_show(args) -> int:
 
     brief = get_brief(workspace, name)
     if brief is None:
-        # FIX 2: cross-workspace hint instead of bare "not found".
+        # Cross-workspace hint instead of bare "not found".
         other_workspaces = find_brief_workspaces(name)
         if other_workspaces:
             hint = ", ".join(repr(w) for w in other_workspaces)
@@ -669,16 +654,10 @@ def _cmd_search(args) -> int:
 def _cmd_delete(args) -> int:
     """Hard-delete a brief from the DB (DB-only, no filesystem touch).
 
-    NOTE (initial implementation): This performs a *hard* delete -- the row
-    in ``briefs`` is removed and FK CASCADE wipes acceptance_criteria,
+    The row in ``briefs`` is removed and FK CASCADE wipes acceptance_criteria,
     milestones, brief_dependencies, plans, plan_tasks, and the FTS5 mirror.
-    The data is unrecoverable from the DB after commit.
-
-    A follow-up brief is planned for *soft delete* (status=archived or a
-    ``deleted_at`` column) so that brief deletion is reversible and audit
-    trails are preserved. Until that brief lands, prefer
-    ``gaia brief set-status <name> archived`` over ``gaia brief delete``
-    when the goal is to retire a brief rather than purge it for testing.
+    The data is unrecoverable from the DB after commit. To retire a brief
+    without purging it, use ``gaia brief set-status <name> archived``.
     """
     from gaia.briefs import get_brief, delete_brief
     workspace = _resolve_workspace(getattr(args, "workspace", None))
@@ -729,10 +708,6 @@ def _cmd_delete(args) -> int:
               f"previous_status={brief.get('status')!r})")
     return 0
 
-
-# ---------------------------------------------------------------------------
-# Plugin registration
-# ---------------------------------------------------------------------------
 
 def register(subparsers) -> None:
     """Register the `brief` subcommand with the root parser."""

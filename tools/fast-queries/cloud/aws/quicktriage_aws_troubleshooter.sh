@@ -1,10 +1,6 @@
 #!/bin/bash
-# QuickTriage script for AWS Troubleshooter
-# Status: STANDBY - AWS agent not yet active
-
-# Description: Quick health check for AWS infrastructure
-# Usage: quicktriage_aws_troubleshooter.sh [profile] [region]
-# Note: This agent is currently in standby mode
+# Placeholder: prints the profile and region it was given and the checks planned for AWS;
+# it queries nothing. Usage: quicktriage_aws_troubleshooter.sh [profile] [region]
 
 set -euo pipefail
 
