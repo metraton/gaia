@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.0] - 2026-11-07
+
 ### Upgrading from 5.6
 
 1. **The database migrates from schema v67 to v75, so run `gaia install` or `gaia update` after upgrading.** The migration writes a verified backup of the database first. `v68_to_v69` is breaking, so 5.6 cannot write a migrated database: going back to 5.6 means restoring that backup.
