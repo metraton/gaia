@@ -47,18 +47,13 @@ path reconstructed by variable interpolation or read from a file
 literal token and is not caught here. The literal-token slice is the bounded,
 low-false-positive portion that is closed.
 
-An installed Gaia root is the exception to the categorical rule: a write into
-one, or a line that names one or runs inside one without being all known readers
-(``_names_install_root_unread``), asks a signature naming that install
-(``install_root_change``) instead, so the user knows the install is changing;
-running its ``bin/gaia`` or reading it stays free. A hardlink made earlier is a
-known limit.
+A write into an installed Gaia root, or a line naming one that is not all known readers,
+asks a signature (``install_root_change``) instead of this refusal; a hardlink made earlier is a known limit.
 
 Public API:
     targets_protected_path(command: str, cwd: str | None = None) -> str | None
     rejection_message(path: str) -> str
     check(command: str, cwd: str | None = None) -> tuple[bool, str | None]
-    install_root_change(command: str, cwd: str | None = None) -> str | None
 """
 
 from __future__ import annotations

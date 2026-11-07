@@ -639,12 +639,7 @@ print(json.dumps(verdicts))
 
 
 def gate_marketplace_identity(pack: dict[str, Any], *, timeout: int = 120) -> dict[str, Any]:
-    """Gate 7: the tarball laid out as the Claude Code marketplace cache must run its own `bin/gaia` free.
-
-    5.7.0 shipped with the hook unable to recognise that layout as an install, so
-    every by-path `gaia` call asked a signature; this replays the installed hook
-    on its own `cli=` path, for the orchestrator and for a subagent.
-    """
+    """Gate 7: the tarball laid out as the marketplace cache runs its own `bin/gaia --version` free for the orchestrator and a subagent."""
     t0 = _now_ms()
     name = "marketplace:identity"
     if pack["action"] == "error":

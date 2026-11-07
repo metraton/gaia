@@ -25,12 +25,10 @@ replacing a live install still requires consent.
 THE DERIVATION. Two lanes, both install-specific by construction and judged on
 a path's literal, absolute and symlink-resolved forms. ``_shape_hit`` matches a
 ``hooks`` tree under ``.claude``. ``_install_root`` protects EVERYTHING inside
-an install root -- a directory whose package.json names ``@jaguilar87/gaia``
-and that holds no ``.git``, whichever channel put it there -- because the plain
-``gaia`` CLI imports ``bin/`` and ``gaia/`` from there, so a planted module or
-``.pth`` is code the next call runs. The Bash guard refuses a write to the
-``.claude`` lanes outright and asks a signature for one that changes an install
-(``install_roots_ignored`` tells the two apart).
+an install root -- a directory whose package.json names ``@jaguilar87/gaia``,
+holding no ``.git``, from any channel -- because the plain ``gaia`` CLI imports
+``bin/`` and ``gaia/`` from there, so a planted module or ``.pth`` is code the
+next call runs.
 
 ``declared_hook_tree_roots()`` resolves checkout roots from the workspace
 registry for a DIFFERENT caller: ``adapters/subagent_stop_core.py`` uses it to
@@ -194,13 +192,7 @@ def _declares_gaia(directory: Path) -> bool:
 
 
 def _install_root(path: Path) -> Optional[Path]:
-    """The installed Gaia root `path` is or lies inside, or None.
-
-    Every channel lays the same package.json out, so the nearest ancestor that
-    declares Gaia is the root wherever the channel put it: the Claude Code
-    marketplace cache, the dev-plugin cache, npm local or global. The scope and
-    dev-plugin shapes also hold a root that does not exist yet.
-    """
+    """The installed Gaia root `path` is or lies inside, or None."""
     parts = path.parts
     for index in range(len(parts) - 1):
         if os.path.normcase(parts[index]) == _PACKAGE_SCOPE_DIR and os.path.normcase(parts[index + 1]) == _PACKAGE_DIR:
@@ -230,7 +222,6 @@ def _install_root_hit(path: Path) -> bool:
 
 
 def _live_install_containers() -> Tuple[Path, ...]:
-    """Up to three directories above the install this hook runs from, never the home folder or above it."""
     from .mutative_verbs import _HOOK_ROOT, _hook_root_is_install
 
     if not _hook_root_is_install():

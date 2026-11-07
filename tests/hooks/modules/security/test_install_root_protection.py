@@ -25,7 +25,6 @@ def _gaia_tree(root: Path) -> Path:
 
 
 def _guard(command, cwd=None):
-    """The Bash guard's verdict, counting an install change as stopped: it asks a signature instead of running."""
     allowed, reason = protected_path_guard.check(command, cwd=cwd)
     if allowed and protected_path_guard.install_root_change(command, cwd) is not None:
         return False, "install root change"
