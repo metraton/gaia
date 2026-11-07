@@ -1,4 +1,4 @@
-"""A preference marked for the conversation leads the birth, survives its cut, and rides beside every prompt under 400 characters."""
+"""A preference marked for the conversation leads the birth, survives its cut, and rides beside every prompt with its title in full."""
 
 from __future__ import annotations
 
@@ -18,12 +18,15 @@ for _path in (_REPO, _REPO / "hooks"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from gaia.store.memory_placement import PREFERENCE_DESCRIPTION_MAX  # noqa: E402
 from modules.context import user_sections  # noqa: E402
 from modules.session import answer_form, register_skill  # noqa: E402
 
 SLUG = "user_pref_conversacion_frases_simples_20261106"
 TITLE = ("Conversation with Jorge: a few plain sentences, like a colleague; "
          "no bold, headers, tables, menus or recaps.")
+PR_TITLE = "PRs: show Jorge a PR only when it is his to merge; put PR links in one closing block, never repeated."
+FILES_TITLE = r"Files for Jorge: give the Windows Explorer path \\wsl.localhost\sandbox--aaxis-env\home\jorge\<path>."
 MARK = ("memory", "reclassify", SLUG, "--surface=conversation")
 
 
@@ -88,9 +91,14 @@ def test_the_marked_row_leads_the_birth_preview_and_survives_the_cut(store, tmp_
     assert "Left out to fit" in user_part and SLUG not in user_part.split("Left out")[1]
 
 
-def test_a_simulated_prompt_carries_the_title_under_400_until_human_register_loads(store, tmp_path):
+def test_a_simulated_prompt_carries_the_three_live_titles_verbatim_until_human_register_loads(store, tmp_path):
     assert _prompt_line(tmp_path) == ""
     assert _gaia(tmp_path, *MARK).returncode == 0
+    con = sqlite3.connect(store)
+    _user(con, "user_pref_pr_links", PR_TITLE, "2026-01-02T00:00:00Z", surface="conversation")
+    _user(con, "user_pref_files_path", FILES_TITLE, "2026-01-03T00:00:00Z", surface="conversation")
+    con.commit()
+    con.close()
 
     first = _prompt_line(tmp_path)
     register_skill.record_loaded("s-pref")
@@ -98,20 +106,35 @@ def test_a_simulated_prompt_carries_the_title_under_400_until_human_register_loa
     register_skill.record_dropped("s-pref")
 
     assert len(first) <= user_sections.PREFERENCES_LINE_MAX
-    assert TITLE in first and user_sections.PREFERENCES_CLAUSE in first
-    assert user_sections.REGISTER_REMINDER in first
-    assert TITLE in loaded and user_sections.REGISTER_REMINDER not in loaded
+    for title in (PR_TITLE, FILES_TITLE, TITLE):
+        assert title in first and title in loaded
+    assert "memory:user/" not in first
+    assert user_sections.PREFERENCES_CLAUSE in first
+    assert user_sections.REGISTER_REMINDER in first and user_sections.REGISTER_REMINDER not in loaded
     assert user_sections.REGISTER_REMINDER in _prompt_line(tmp_path)
 
 
-def test_past_three_rows_the_line_names_the_count_and_coordinates_within_400():
+def test_three_titles_at_the_write_cap_fit_the_line_budget_with_the_reminder():
     rows = [{"name": f"user_pref_conv_{i}", "workspace": "_gaia_user", "kind": "preference",
-             "surface": "conversation", "description": f"Conversation: rule {i}."} for i in range(5)]
+             "surface": "conversation", "description": "x" * PREFERENCE_DESCRIPTION_MAX} for i in range(3)]
 
     line = user_sections.preferences_line(rows, remind_register=True)
 
-    assert line.startswith("~ 5 conversation preferences")
-    assert "memory:user/user_pref_conv_0" in line and len(line) <= user_sections.PREFERENCES_LINE_MAX
+    assert line.count("x" * PREFERENCE_DESCRIPTION_MAX) == 3
+    assert len(line) <= user_sections.PREFERENCES_LINE_MAX
+
+
+def test_past_three_rows_the_first_three_keep_their_titles_and_the_rest_are_counted_with_coordinates():
+    rows = [{"name": f"user_pref_conv_{i}", "workspace": "_gaia_user", "kind": "preference",
+             "surface": "conversation", "description": f"Conversation: rule {i}."} for i in range(5)]
+
+    line = user_sections.preferences_line(rows, remind_register=False)
+
+    assert all(f"Conversation: rule {i}." in line for i in range(3))
+    assert "Conversation: rule 3." not in line and "Conversation: rule 4." not in line
+    assert "2 more, each read with `gaia memory show <coordinate>`: " \
+           "memory:user/user_pref_conv_3, memory:user/user_pref_conv_4" in line
+    assert "memory:user/user_pref_conv_0" not in line
     assert user_sections.preferences_line(rows[:1] + [{**rows[1], "surface": "document"}],
                                           remind_register=False).count("Conversation: rule") == 1
 

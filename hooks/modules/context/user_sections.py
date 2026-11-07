@@ -19,9 +19,10 @@ CONTEXT_BUDGET = 9_500
 KIND_ORDER = ("preference", "fact", "lesson")
 
 CONVERSATION = "conversation"
-PREFERENCES_LINE_MAX = 400
+# Three titles of 120 characters (the cap on write), the clause and the reminder.
+PREFERENCES_LINE_MAX = 540
 PREFERENCES_LINE_ROWS = 3
-PREFERENCES_CLAUSE = "These set the form of your answer; norm 7's shape and any host output style give way to them."
+PREFERENCES_CLAUSE = "They set the form of your answer, ahead of norm 7's shape and the host output style."
 REGISTER_REMINDER = "Load Skill('human-register') before answering."
 
 
@@ -118,24 +119,17 @@ def fit_user_sections(rows: list[dict], max_chars: int) -> tuple[str, list[dict]
 
 
 def preferences_line(rows: list[dict], *, remind_register: bool) -> str:
-    """The line beside a prompt naming the user's conversation preferences: up to three titles within 400 characters, else their count and coordinates; "" when none."""
+    """The line beside a prompt naming the user's conversation preferences: the titles of the first three in full, then the count and coordinates of any others; "" when none."""
     governing = [row for row in rows if is_conversation_preference(row)]
     if not governing:
         return ""
+    parts = [f'"{title_of(row)}"' for row in governing[:PREFERENCES_LINE_ROWS]]
+    rest = governing[PREFERENCES_LINE_ROWS:]
+    if rest:
+        coordinates = ", ".join(memory_ref(row) for row in rest)
+        parts.append(f"{len(rest)} more, each read with `gaia memory show <coordinate>`: {coordinates}")
     tail = f" {PREFERENCES_CLAUSE}" + (f" {REGISTER_REMINDER}" if remind_register else "")
-    if len(governing) <= PREFERENCES_LINE_ROWS:
-        titles = "; ".join(f'"{title_of(row)}"' for row in governing)
-        line = f"~ Your conversation preferences: {titles}.{tail}"
-        if len(line) <= PREFERENCES_LINE_MAX:
-            return line
-    head = f"~ {len(governing)} conversation preferences, each read with `gaia memory show <coordinate>`:"
-    coordinates: list[str] = []
-    for row in governing:
-        candidate = [*coordinates, memory_ref(row)]
-        if len(f"{head} {', '.join(candidate)}.{tail}") > PREFERENCES_LINE_MAX:
-            break
-        coordinates = candidate
-    return f"{head} {', '.join(coordinates) or 'the first lines of ## User memory'}.{tail}"
+    return f"~ Your conversation preferences: {'; '.join(parts)}.{tail}"
 
 
 def render_user_sections(rows: list[dict], omitted: list[str] = ()) -> str:
