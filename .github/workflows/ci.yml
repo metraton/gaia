@@ -402,6 +402,9 @@ jobs:
           pip install pytest==8.3.5 pyyaml pytest-xdist
           python -m pytest -q --tb=short tests/hooks/adapters/test_shell_channel_gate.py tests/hooks/modules/security/test_windows_path_spellings.py tests/hooks/modules/security/test_windows_executable_identity.py tests/hooks/adapters/test_powershell_command_positions.py tests/hooks/modules/security/test_install_channel_identity.py
 
+      - name: Install smoke on Windows
+        run: python -m pytest -q --tb=short -n0 tests/cli/test_release_install_smoke.py
+
       # AC-4 -- `gaia install` must exit 0 on Windows. Exercises the
       # cross-platform bootstrap (no sqlite3 CLI, no bash), the forward-slash
       # settings paths, and the symlink copy/junction fallback on an

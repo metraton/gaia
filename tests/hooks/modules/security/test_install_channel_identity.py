@@ -101,6 +101,45 @@ def test_a_checkout_carrying_the_same_manifest_is_no_install(tmp_path, monkeypat
     assert mv.detect_mutative_command(f"{root.as_posix()}/bin/gaia --version").is_mutative is True
 
 
+@pytest.mark.parametrize("payload", [SUBAGENT, ORCHESTRATOR], ids=["subagent", "orchestrator"])
+def test_a_bare_gaia_with_none_on_the_hook_path_resolves_to_this_install(install, tmp_path, monkeypatch, payload):
+    git_only = os.path.dirname(shutil.which("git"))
+    assert shutil.which("gaia", path=git_only) is None
+    monkeypatch.setenv("PATH", git_only)
+    result = _validate("gaia memory show user_pref_x", payload, tmp_path)
+    assert result.allowed, result.reason
+
+
+def _cmd_shim(prefix: Path, script: str) -> Path:
+    shim = prefix / "gaia.cmd"
+    shim.write_text(
+        '@ECHO off\r\nSET dp0=%~dp0\r\nIF EXIST "%dp0%\\python3.exe" (SET "_prog=%dp0%\\python3.exe")\r\n'
+        f'"%_prog%"  "%dp0%\\{script}" %*\r\n', encoding="utf-8",
+    )
+    return shim
+
+
+def test_an_npm_launcher_wrapping_the_package_bin_is_the_trusted_cli(tmp_path):
+    prefix = tmp_path / "npm"
+    _lay_out(prefix / "node_modules" / "@jaguilar87" / "gaia")
+    shim = _cmd_shim(prefix, "node_modules\\@jaguilar87\\gaia\\bin\\gaia")
+    (prefix / "gaia.ps1").write_text(
+        '$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n'
+        '& "$basedir/python3$exe"  "$basedir/node_modules/@jaguilar87/gaia/bin/gaia" $args\n', encoding="utf-8",
+    )
+    assert gaia_cli_only_guard.is_trusted_gaia_binary(str(shim))
+    assert gaia_cli_only_guard.is_trusted_gaia_binary(str(prefix / "gaia.ps1"))
+
+
+@pytest.mark.parametrize("script", ["node_modules\\other\\bin\\gaia", "bin\\gaia\" & \"%dp0%\\evil.py"])
+def test_a_launcher_running_anything_else_is_not_trusted(tmp_path, script):
+    prefix = tmp_path / "npm"
+    _lay_out(prefix / "node_modules" / "@jaguilar87" / "gaia")
+    (prefix / "node_modules" / "other" / "bin").mkdir(parents=True)
+    (prefix / "node_modules" / "other" / "bin" / "gaia").write_text("print()", encoding="utf-8")
+    assert not gaia_cli_only_guard.is_trusted_gaia_binary(str(_cmd_shim(prefix, script)))
+
+
 def _windows_spellings(path: Path) -> list:
     forward = str(path).replace("\\", "/")
     return [

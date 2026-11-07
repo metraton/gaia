@@ -1921,16 +1921,9 @@ def _gaia_dep_spec(project_root: Path) -> "str | None":
     A ``file:`` spec means a LOCAL (dev) install; a registry range/semver means
     an NPM install. Reads every supported dependency section in precedence.
     """
-    pkg = _read_json(project_root / "package.json")
-    if not pkg:
-        return None
-    for key in ("dependencies", "devDependencies", "optionalDependencies"):
-        deps = pkg.get(key)
-        if isinstance(deps, dict) and "@jaguilar87/gaia" in deps:
-            spec = deps["@jaguilar87/gaia"]
-            if isinstance(spec, str):
-                return spec
-    return None
+    from gaia.install_provenance import declared_dependency_spec
+
+    return declared_dependency_spec(project_root)
 
 
 def _provenance_summary(record: dict) -> str:
@@ -1946,6 +1939,14 @@ def _provenance_summary(record: dict) -> str:
     return f"{line}: " + "; ".join(notes + findings)
 
 
+def _dev_plugin_enabled(project_root: Path) -> bool:
+    from cli import _install_helpers  # noqa: F401, PLC0415 -- puts hooks/ on sys.path
+    from cli._dev_plugin import PLUGIN_ID  # noqa: PLC0415
+    from modules.core.plugin_setup import enabled_gaia_plugins  # noqa: PLC0415
+
+    return any(key == PLUGIN_ID for key, _ in enabled_gaia_plugins(project_root))
+
+
 @register_check("Install provenance", order=57)
 def check_install_provenance(project_root: Path) -> dict:
     """Diagnose recorded dev-install drift, retaining legacy resolution checks when no record exists."""
@@ -1954,7 +1955,7 @@ def check_install_provenance(project_root: Path) -> dict:
     name = "Install provenance"
     records = [record for record in (
         inspect_install(project_root, _gaia_dep_spec(project_root)),
-        inspect_install(project_root, None, channel="plugin"),
+        inspect_install(project_root, None, channel="plugin") if _dev_plugin_enabled(project_root) else None,
     ) if record is not None]
     if records:
         diagnostics = [d for record in records for d in record["diagnostics"]]

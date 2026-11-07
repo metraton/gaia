@@ -1587,6 +1587,17 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
         if shadow_warning is None:
             _warn_launcher_dir_absent(link="~/.local/bin/gaia", quiet=quiet)
 
+    from gaia.install_provenance import retire_package_record
+
+    try:
+        retired = retire_package_record(workspace)
+    except OSError as exc:
+        _report_step(name="dev-install record", result={"action": "error", "details": str(exc)}, quiet=quiet, verbose=verbose)
+    else:
+        if retired is not None:
+            _report_step(name="dev-install record", result={"action": "updated", "details": f"retired {retired}"},
+                         quiet=quiet, verbose=verbose)
+
     env_prior: dict = {}
     if opt_path and _is_windows():
         env_prior = _manifest.windows_env_prior()

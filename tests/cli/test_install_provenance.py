@@ -51,6 +51,37 @@ def installation(tmp_path, _isolate_gaia_data_dir):
     return source, workspace, destination, tarball, marker
 
 
+def select_dev_plugin(workspace, enabled=True):
+    (workspace / ".claude").mkdir(exist_ok=True)
+    (workspace / ".claude" / "settings.local.json").write_text(json.dumps({"enabledPlugins": {"gaia@gaia-dev": enabled}}))
+
+
+def test_a_registry_reinstall_retires_the_dev_record(installation):
+    _, workspace, _, _, marker = installation
+    assert provenance.retire_package_record(workspace) is None
+    assert marker.exists()
+
+    (workspace / "package.json").write_text(json.dumps({"dependencies": {"@jaguilar87/gaia": "^5.7.2"}}))
+    assert doctor.check_install_provenance(workspace)["severity"] == "error"
+    assert provenance.retire_package_record(workspace) == marker
+    assert not marker.exists()
+    assert doctor.check_install_provenance(workspace)["severity"] != "error"
+
+
+def test_a_plugin_record_counts_only_while_gaia_dev_serves_the_workspace(installation):
+    source, workspace, _, tarball, _ = installation
+    plugin_dir = workspace.parent / "dev-plugin"
+    plugin_dir.mkdir()
+    provenance.record_install(workspace, provenance.capture_source(source, tarball=tarball),
+                              channel="plugin", destination=plugin_dir)
+    (plugin_dir / "planted.txt").write_text("drift")
+
+    select_dev_plugin(workspace)
+    assert doctor.check_install_provenance(workspace)["severity"] == "error"
+    select_dev_plugin(workspace, enabled=False)
+    assert doctor.check_install_provenance(workspace)["severity"] != "error"
+
+
 def test_pack_record_and_doctor_match(installation):
     source, workspace, destination, tarball, marker = installation
     data = json.loads(marker.read_text())
@@ -199,6 +230,7 @@ def test_plugin_channel_record_shows_in_doctor_json(installation, monkeypatch, c
     plugin_dir = workspace.parent / "dev-plugin"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.json").write_text('{"name":"gaia"}')
+    select_dev_plugin(workspace)
     captured = provenance.capture_source(source, tarball=tarball)
     marker = provenance.record_install(workspace, captured, channel="plugin", destination=plugin_dir)
     assert marker != provenance.provenance_path(workspace)
@@ -254,6 +286,7 @@ def test_removed_source_is_reported_without_degrading(installation, monkeypatch,
     plugin_dir = workspace.parent / "dev-plugin"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.json").write_text('{"name":"gaia"}')
+    select_dev_plugin(workspace)
     provenance.record_install(workspace, provenance.capture_source(source, tarball=tarball),
                               channel="plugin", destination=plugin_dir)
     head = git(source, "rev-parse", "HEAD")

@@ -145,6 +145,7 @@ class TestPreflightPublish(unittest.TestCase):
         for target, value in (
             ("cli.release.resolve_push_branch", ("feat/x", None)),
             ("cli.release._check_push_fast_forward", None),
+            ("cli.release._check_promoted_from_rc", None),
         ):
             patcher = patch(target, return_value=value)
             patcher.start()
@@ -212,7 +213,8 @@ class TestPreflightStableOnlyFromMain(unittest.TestCase):
              patch("cli.release._check_tag_absent", return_value=None), \
              patch("cli.release._check_xdist_importable", return_value=None), \
              patch("cli.release.resolve_push_branch", return_value=resolved), \
-             patch("cli.release._check_push_fast_forward", return_value=None):
+             patch("cli.release._check_push_fast_forward", return_value=None), \
+             patch("cli.release._check_promoted_from_rc", return_value=None):
             return preflight_publish(_REPO_ROOT, version)
 
     def test_stable_version_off_main_fails_naming_main(self):
@@ -331,7 +333,7 @@ class TestReleaseCheckReusesCiVerdict(unittest.TestCase):
             stack.enter_context(patch("cli.release.step_node_deps", return_value=_PASS))
             for gate in (
                 "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
-                "gate_convergence", "gate_opencode_surface", "gate_marketplace_identity",
+                "gate_convergence", "gate_opencode_surface", "gate_install_smoke",
             ):
                 stack.enter_context(patch(f"cli.release.{gate}", return_value=_PASS))
             npm_test = stack.enter_context(patch("cli.release.gate_npm_test", return_value=_SUITE_PASS))

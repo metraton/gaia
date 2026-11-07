@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.2] - 2026-11-07
+
+### Added
+
+- **`gaia release check` proves every install channel the way users install it** (`install:smoke`, which replaces `marketplace:identity`). The packed tarball is laid out in a throwaway home as the marketplace plugin cache, a workspace's `node_modules` with its `.bin` launcher, the npm global prefix with its launchers (`gaia.cmd`, `gaia.ps1` and `gaia` on Windows) and a dev-plugin cache entry. For each, that copy's own hooks must let the orchestrator and a subagent run `--version`, `now`, `doctor`, `memory show` and `approvals question`, and the subagent `contract finalize`, by path and as a bare `gaia`, from a workspace outside the install; the commands must then work, `gaia doctor` must show no install-identity error, and the prompt hook must name a seeded conversation preference. `gaia release publish` runs it after the sandbox install, CI runs it on Windows, and `gaia release smoke` runs it alone.
+- **A stable is promoted only from a live-tested RC.** `gaia release publish rc` publishes the next release candidate. `gaia release smoke --live --version <rc>` runs the same smoke set on the copies of that RC installed on this machine through the marketplace plugin and npm, and records the pass. `gaia release publish <stable>` refuses unless origin holds a `v<stable>-rc.N` tag whose live smoke passed here and HEAD holds that RC's code.
+
+### Fixed
+
+- **A bare `gaia` reaches the orchestrator's read lane when the hook's PATH has no `gaia`.** The Claude Code marketplace plugin's hooks run without Gaia on PATH; a bare `gaia` now resolves to the installed Gaia the hook runs from.
+- **npm's Windows launchers count as the trusted CLI.** A `gaia.cmd` or `gaia.ps1` that runs the package's declared `bin/gaia` is judged as that `bin/gaia`.
+- **Switching from `gaia dev` to a published build no longer leaves `gaia doctor` failing.** `gaia install` and `gaia update` retire the dev-install record once the workspace declares a registry version, and the plugin channel's record counts only while `gaia@gaia-dev` serves the workspace.
+- **A stable release folds its own changelog section with its release candidates** instead of writing a second section of the same version.
+- The security-tiers skill and `hooks/modules/README.md` say what 5.7.1 does: a change inside an installed Gaia asks for a signature naming it, and only `.claude` hook trees and settings stay refused.
+
 ## [5.7.1] - 2026-11-07
 
 ### Fixed

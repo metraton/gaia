@@ -594,7 +594,7 @@ class TestGateConvergence(unittest.TestCase):
 class TestRunReleaseCheckOrchestration(unittest.TestCase):
     _GATES = (
         "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
-        "gate_tests", "gate_convergence", "gate_opencode_surface", "gate_marketplace_identity",
+        "gate_tests", "gate_convergence", "gate_opencode_surface", "gate_install_smoke",
     )
 
     def _run_check(self, gates, **kwargs):
@@ -628,7 +628,7 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
         calls = {name: (a, k) for name, a, k in call_order}
         self.assertEqual(calls["gate_npm_sandbox"][0][1], _CREATED_PACK)
         self.assertEqual(calls["gate_opencode_surface"][0][0], _CREATED_PACK)
-        self.assertEqual(calls["gate_marketplace_identity"][0][0], _CREATED_PACK)
+        self.assertEqual(calls["gate_install_smoke"][0][0], _CREATED_PACK)
         self.assertEqual(results[5]["name"], "gate_opencode_surface")
 
     def test_does_not_short_circuit_on_early_failure(self):

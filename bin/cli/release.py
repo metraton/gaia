@@ -48,7 +48,7 @@ module never reimplements pre-publish-validate.js, validate-sandbox.sh, or
 plugin-dryrun.sh; gate 5 is an in-process, read-only inspection via the shared
 `cli/_converge` inspector (no reimplementation of the direction guard either),
 and gate 6 an in-process inspection confined to temporary directories.
-All six gates always run (no short-circuit) so the summary reports a complete
+All seven gates always run (no short-circuit) so the summary reports a complete
 PASS/FAIL/SKIP picture per gate.
 
 No npm registry publish and no external repo. The only network reads are the
@@ -140,6 +140,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 from cli import _converge  # type: ignore  # noqa: E402
 from cli import _install_helpers  # type: ignore  # noqa: E402
+from cli import _install_smoke  # type: ignore  # noqa: E402
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
 
@@ -621,62 +622,77 @@ def gate_opencode_surface(pack: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "status": "FAIL" if problems else "PASS", "detail": detail, "duration_ms": _now_ms() - t0}
 
 
-_MARKETPLACE_PROBE = """
-import json, sys
-root, workspace = sys.argv[1], sys.argv[2]
-sys.path[:0] = [root + "/hooks", root]
-from modules.tools.bash_validator import BashValidator
-verdicts = {}
-for agent_type, payload in (("gaia-orchestrator", {}), ("developer", {"agent_id": "a0000000000000000"})):
-    payload = {"session_id": "release-check", "agent_type": agent_type, **payload}
-    result = BashValidator().validate(
-        root.replace("\\\\", "/") + "/bin/gaia --version", is_subagent=bool(payload.get("agent_id")),
-        session_id="release-check", agent_type=agent_type, hook_payload=payload, cwd=workspace,
-    )
-    verdicts[agent_type] = {"allowed": result.allowed, "reason": result.reason}
-print(json.dumps(verdicts))
-"""
-
-
-def gate_marketplace_identity(pack: dict[str, Any], *, timeout: int = 120) -> dict[str, Any]:
-    """Gate 7: the tarball laid out as the marketplace cache runs its own `bin/gaia --version` free for the orchestrator and a subagent."""
+def gate_install_smoke(pack: dict[str, Any]) -> dict[str, Any]:
+    """Gate 7: the tarball laid out as every install channel passes the session smoke set (`_install_smoke.smoke`)."""
     t0 = _now_ms()
-    name = "marketplace:identity"
+    name = "install:smoke"
     if pack.get("action") == "error":
         return {"name": name, "status": "FAIL", "detail": f"npm pack failed: {pack.get('details')}", "duration_ms": _now_ms() - t0}
+    problems, passed = _install_smoke.smoke(Path(pack["tarball"]), str(pack.get("version") or "0.0.0"))
+    detail = "\n".join(problems) or f"{', '.join(passed)}: every session command runs free and works"
+    return {"name": name, "status": "FAIL" if problems else "PASS", "detail": detail, "duration_ms": _now_ms() - t0}
 
-    with tempfile.TemporaryDirectory(prefix="gaia-release-check-marketplace-") as tmp:
-        home = Path(tmp).resolve()
-        root = home / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / str(pack.get("version") or "0.0.0")
-        try:
-            with tarfile.open(pack["tarball"]) as archive:
-                archive.extractall(home / "unpacked", filter="data")
-        except (OSError, tarfile.TarError) as exc:
-            return {"name": name, "status": "FAIL", "detail": f"cannot extract {pack['tarball']}: {exc}", "duration_ms": _now_ms() - t0}
-        root.parent.mkdir(parents=True)
-        shutil.move(str(home / "unpacked" / "package"), str(root))
-        workspace = home / "workspace"
-        workspace.mkdir()
-        env = {**os.environ, "GAIA_DATA_DIR": str(home / "gaia-data")}
-        env.pop("GAIA_DB", None)
-        env.pop("CLAUDE_PLUGIN_ROOT", None)
-        rc, out, err = _run(
-            [sys.executable, "-c", _MARKETPLACE_PROBE, str(root), str(workspace)], cwd=workspace, timeout=timeout, env=env,
-        )
 
+def live_channels(version: str, workspace: Path | None) -> list[_install_smoke.Channel]:
+    """The installs of *version* on this machine: the marketplace plugin cache, npm global, and *workspace*'s node_modules."""
+    from cli import install as install_mod  # noqa: PLC0415
+
+    found = [("marketplace", Path.home() / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / version, None)]
+    prefix = install_mod._npm_global_prefix()
+    if prefix is not None:
+        windows = os.name == "nt"
+        root = (prefix if windows else prefix / "lib") / "node_modules" / "@jaguilar87" / "gaia"
+        found.append(("npm-global", root, prefix if windows else prefix / "bin"))
+    if workspace is not None:
+        modules = workspace / "node_modules"
+        found.append(("npm-local", modules / "@jaguilar87" / "gaia", modules / ".bin"))
+    return [
+        _install_smoke.installed_channel(name, root.resolve(), path_dir)
+        for name, root, path_dir in found
+        if _installed_version(root) == version
+    ]
+
+
+def _installed_version(root: Path) -> str | None:
     try:
-        verdicts = json.loads(out.strip().splitlines()[-1]) if rc == 0 else None
-    except (ValueError, IndexError):
-        verdicts = None
-    if verdicts is None:
-        detail = f"the probe exited {rc}: {(out + err).strip()[-_DETAIL_TAIL:]}"
+        return json.loads((root / "package.json").read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def live_smoke_record(version: str) -> Path:
+    """Where a passed live smoke of *version* on this machine is recorded."""
+    from gaia.paths import state_dir  # noqa: PLC0415
+
+    return state_dir() / "release-smoke" / f"{version}.json"
+
+
+def run_live_smoke(version: str, workspace: Path | None) -> dict[str, Any]:
+    """Drive the installed copies of *version* through the smoke set and record a pass that covers marketplace and npm."""
+    t0 = _now_ms()
+    name = "install:smoke (live)"
+    channels = live_channels(version, workspace)
+    names = [channel.name for channel in channels]
+    missing = [need for need in ("marketplace", "npm") if not any(n.startswith(need) for n in names)]
+    if missing:
+        detail = (
+            f"{version} is not installed through {' and '.join(missing)} on this machine (found: "
+            f"{', '.join(names) or 'none'}). Install it as users do -- `/plugin marketplace add "
+            f"metraton/gaia#v{version}` and `/plugin install gaia@gaia-marketplace`; `npm install "
+            f"@jaguilar87/gaia@{version}` in --workspace, or `npm install -g` -- and re-run."
+        )
         return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": _now_ms() - t0}
-    refused = {role: v["reason"] for role, v in verdicts.items() if not v["allowed"]}
-    detail = (
-        "; ".join(f"{role}: `<cache>/bin/gaia --version` refused -- {reason}" for role, reason in refused.items())
-        or "`<cache>/bin/gaia --version` runs free for the orchestrator and a subagent"
-    )
-    return {"name": name, "status": "FAIL" if refused else "PASS", "detail": detail, "duration_ms": _now_ms() - t0}
+    problems, passed = _install_smoke.smoke_installed(channels, version)
+    if problems:
+        return {"name": name, "status": "FAIL", "detail": "\n".join(problems), "duration_ms": _now_ms() - t0}
+    record = live_smoke_record(version)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({
+        "version": version, "channels": {c.name: str(c.root) for c in channels},
+        "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, indent=2) + "\n", encoding="utf-8")
+    return {"name": name, "status": "PASS", "detail": f"{', '.join(passed)} passed; recorded {record}",
+            "duration_ms": _now_ms() - t0}
 
 
 def _opencode_surface_problems(package: Path, workspace: Path) -> list[str]:
@@ -759,11 +775,13 @@ def resolve_publish_version(repo_root: Path, version_arg: str) -> tuple[str | No
     if _SEMVER_RE.match(version_arg):
         return version_arg, None
 
-    if version_arg not in _BUMP_KEYWORDS:
+    if version_arg not in (*_BUMP_KEYWORDS, "rc"):
         return None, (
             f'"{version_arg}" is not a valid semver and not one of the bump '
-            f"keywords {'/'.join(_BUMP_KEYWORDS)}."
+            f"keywords {'/'.join(_BUMP_KEYWORDS)}/rc."
         )
+    if version_arg == "rc":
+        return _next_rc(repo_root)
 
     pkg = repo_root / "package.json"
     try:
@@ -784,6 +802,68 @@ def resolve_publish_version(repo_root: Path, version_arg: str) -> tuple[str | No
     else:
         patch += 1
     return f"{major}.{minor}.{patch}", None
+
+
+def _next_rc(repo_root: Path) -> tuple[str | None, str | None]:
+    try:
+        current = json.loads((repo_root / "package.json").read_text())["version"]
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        return None, f"could not read current version from {repo_root / 'package.json'}: {exc}"
+    candidate = re.fullmatch(r"(\d+\.\d+\.\d+)-rc\.(\d+)", current)
+    if candidate:
+        return f"{candidate.group(1)}-rc.{int(candidate.group(2)) + 1}", None
+    if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+        return None, f"current version {current!r} is neither a stable nor an -rc.N candidate"
+    rc, _, _ = _run(["git", "rev-parse", "-q", "--verify", f"refs/tags/v{current}"], cwd=repo_root, timeout=30)
+    if rc != 0:
+        return f"{current}-rc.1", None
+    patch, _ = resolve_publish_version(repo_root, "patch")
+    return f"{patch}-rc.1", None
+
+
+def _rc_tags(repo_root: Path, version: str, *, timeout: int = 30) -> dict[str, str] | None:
+    listing = _git_out(repo_root, ["ls-remote", "--tags", _PUSH_REMOTE, f"refs/tags/v{version}-rc.*"], timeout=timeout)
+    if listing is None:
+        return None
+    tags: dict[str, str] = {}
+    for sha, _, ref in (line.partition("\t") for line in listing.splitlines()):
+        name = ref.removeprefix("refs/tags/v").removesuffix("^{}")
+        if ref.endswith("^{}") or name not in tags:
+            tags[name] = sha
+    return dict(sorted(tags.items(), key=lambda item: int(item[0].rsplit(".", 1)[-1])))
+
+
+def _check_promoted_from_rc(repo_root: Path, version: str, *, timeout: int = 30) -> str | None:
+    """Why stable *version* cannot be promoted from a published, live-smoked RC whose tree HEAD keeps; None when it can."""
+    if _is_prerelease(version):
+        return None
+    tags = _rc_tags(repo_root, version, timeout=timeout)
+    if tags is None:
+        return f"could not list the v{version}-rc.N tags on {_PUSH_REMOTE}, so no RC can be shown to precede {version}"
+    if not tags:
+        return (
+            f"stable {version} is promoted only from a published RC, and {_PUSH_REMOTE} has no "
+            f"v{version}-rc.N tag: publish one (`gaia release publish rc`), install it through the "
+            f"marketplace and npm on this machine, pass `gaia release smoke --live --version "
+            f"{version}-rc.N`, then promote."
+        )
+    candidate, commit = next(reversed(tags.items()))
+    if not live_smoke_record(candidate).is_file():
+        return (
+            f"RC {candidate} has no passed live smoke on this machine: install it through the "
+            f"marketplace and npm as users do, then run `gaia release smoke --live --version {candidate} "
+            f"--workspace <folder>`."
+        )
+    changed = _git_out(repo_root, ["diff", "--name-only", commit, "HEAD"], timeout=timeout)
+    if changed is None:
+        return f"cannot compare HEAD with RC {candidate} ({commit[:12]}); fetch its tag and re-run"
+    drift = [path for path in changed.splitlines() if path not in _VERSION_SOURCES]
+    if drift:
+        return (
+            f"HEAD differs from RC {candidate} outside the version sources ({', '.join(drift[:5])}); "
+            f"what was smoke-tested is not what would ship. Publish a new RC and test it live."
+        )
+    return None
 
 
 def _git_commit_paths(repo_root: Path) -> list[str]:
@@ -880,7 +960,7 @@ def step_sandbox_install(repo_root: Path, *, timeout: int = 600) -> dict[str, An
         pack = _pack_helpers.pack_tarball(repo_root, dest_dir=Path(tmp))
         result = gate_npm_sandbox(repo_root, pack, timeout=timeout)
         if result["status"] == "PASS":
-            result = gate_marketplace_identity(pack)
+            result = gate_install_smoke(pack)
     return {**result, "name": name, "duration_ms": _now_ms() - t0}
 
 
@@ -1238,7 +1318,8 @@ def preflight_publish(
       2. tag ``v<version>`` does not already exist (local or remote);
       3. pytest-xdist is importable (`npm test` uses `-n auto`);
       4. the push target resolves and HEAD fast-forwards it;
-      5. a stable version pushes to ``main`` (a pre-release to any branch).
+      5. a stable version pushes to ``main`` (a pre-release to any branch);
+      6. a stable version is promoted from a published, live-smoked RC.
     """
     t0 = _now_ms()
     name = "preconditions"
@@ -1251,6 +1332,7 @@ def preflight_publish(
             _check_xdist_importable(),
             branch_error or _check_push_fast_forward(repo_root, push_branch, timeout=timeout),
             _check_stable_from_main(version, push_branch),
+            _check_promoted_from_rc(repo_root, version, timeout=timeout),
         )
         if p
     ]
@@ -1397,7 +1479,7 @@ def run_release_check(
             gate_tests(repo_root, local_suite=local_suite, gh=gh),
             gate_convergence(repo_root),
             gate_opencode_surface(pack),
-            gate_marketplace_identity(pack),
+            gate_install_smoke(pack),
         ]
     return results
 
@@ -1501,6 +1583,14 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "                                    opencode` does and FAILs naming what is\n"
             "                                    missing (opencode/plugin.ts, ./bridge.py,\n"
             "                                    ../bin/gaia, an agent {file:...}, a skill link)\n"
+            "  7. install:smoke               -- gate 2's tarball laid out as every install\n"
+            "                                    channel (marketplace cache, npm local and\n"
+            "                                    global with their launchers, dev-plugin); each\n"
+            "                                    copy's own hooks must let the orchestrator and\n"
+            "                                    a subagent run --version, now, doctor, memory\n"
+            "                                    show, approvals question and contract finalize\n"
+            "                                    from a workspace, and its prompt hook must name\n"
+            "                                    the seeded conversation preference\n"
             "\n"
             "No npm publish and no external repo. Gate 4 reads the GitHub API; the\n"
             "other gates reach only what npm pack/install already reach for.\n"
@@ -1531,6 +1621,29 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Suppress per-gate progress output; only print the final summary",
     )
     p_check.set_defaults(func=cmd_release_check)
+
+    p_smoke = sub.add_parser(
+        "smoke",
+        help="Run the install smoke set on a packed tarball, or live on the installs of an RC",
+        description=(
+            "Without --live: lay a tarball (--tarball, else a fresh pack of this tree) out as\n"
+            "every install channel in a throwaway home and run the smoke set, as release check\n"
+            "gate 7 does.\n"
+            "\n"
+            "With --live --version <rc>: run the same set on the copies of <rc> installed on\n"
+            "this machine through the marketplace plugin and npm (global, or --workspace's\n"
+            "node_modules), and record the pass. A stable is promoted only from an RC that\n"
+            "was published to the rc channel, installed that way, and passed here.\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_smoke.add_argument("--tarball", default=None, metavar="PATH", help="Packed tarball to lay out (default: pack this tree)")
+    p_smoke.add_argument("--live", action="store_true", default=False, help="Drive the installed copies of --version")
+    p_smoke.add_argument("--version", default=None, metavar="VERSION", help="With --live: the installed version to drive")
+    p_smoke.add_argument("--workspace", default=None, metavar="PATH",
+                         help="With --live: the folder whose node_modules holds the npm-local install")
+    p_smoke.add_argument("--quiet", action="store_true", default=False, help="Only print the final summary")
+    p_smoke.set_defaults(func=cmd_release_smoke)
 
     p_publish = sub.add_parser(
         "publish",
@@ -1573,8 +1686,13 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "they run -- that is expected, not a bug.\n"
             "\n"
             "<version> accepts a bare semver (e.g. 5.0.5, 5.1.0-rc.1) or one of the bump\n"
-            "keywords patch/minor/major, computed from the current package.json version.\n"
-            "Defaults to patch when omitted.\n"
+            "keywords patch/minor/major, computed from the current package.json version,\n"
+            "or rc: the next -rc.N of the version being released. Defaults to patch.\n"
+            "\n"
+            "A stable is promoted only from an RC: origin must hold a v<version>-rc.N tag,\n"
+            "that RC must have passed `gaia release smoke --live` on this machine after\n"
+            "being installed through the marketplace plugin and npm, and HEAD must hold\n"
+            "the RC's tree (version sources aside). The preconditions gate refuses otherwise.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1582,7 +1700,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "version",
         nargs="?",
         default="patch",
-        help="Target version: a bare semver, or patch/minor/major (default: patch)",
+        help="Target version: a bare semver, or patch/minor/major/rc (default: patch)",
     )
     p_publish.add_argument(
         "--dry-run",
@@ -1635,6 +1753,43 @@ def cmd_release_check(args: argparse.Namespace) -> int:
     _report(results, quiet=quiet)
 
     return 1 if any(r["status"] == "FAIL" for r in results) else 0
+
+
+def cmd_release_smoke(args: argparse.Namespace) -> int:
+    """Execute `gaia release smoke`: the install smoke on a tarball, or `--live` on this machine's installs."""
+    quiet = bool(getattr(args, "quiet", False))
+    if getattr(args, "live", False):
+        version = getattr(args, "version", None)
+        if not version:
+            print("gaia release smoke: --live needs --version <the installed rc>", file=sys.stderr)
+            return 1
+        workspace = getattr(args, "workspace", None)
+        result = run_live_smoke(version, Path(workspace).expanduser().resolve() if workspace else None)
+    else:
+        tarball = getattr(args, "tarball", None)
+        with tempfile.TemporaryDirectory(prefix="gaia-release-smoke-pack-") as tmp:
+            if tarball:
+                pack = {"action": "created", "tarball": Path(tarball).resolve(), "version": _tarball_version(Path(tarball))}
+            else:
+                root, err = resolve_source_root()
+                if err:
+                    print(f"gaia release smoke: {err}", file=sys.stderr)
+                    return 1
+                pack = _pack_helpers.pack_tarball(root, dest_dir=Path(tmp))
+            result = gate_install_smoke(pack)
+    _report([result], quiet=quiet, title="gaia release smoke -- the install smoke set")
+    return 1 if result["status"] == "FAIL" else 0
+
+
+def _tarball_version(tarball: Path) -> str:
+    try:
+        with tarfile.open(tarball) as archive:
+            member = archive.extractfile("package/package.json")
+            if member is None:
+                return "0.0.0"
+            return json.loads(member.read()).get("version") or "0.0.0"
+    except (OSError, tarfile.TarError, KeyError, ValueError):
+        return "0.0.0"
 
 
 def cmd_release_publish(args: argparse.Namespace) -> int:
@@ -1694,6 +1849,8 @@ def _release_default(args: argparse.Namespace) -> int:
     print("Usage: gaia release SUBCOMMAND [options]")
     print("")
     print("  check [--functional] [--local-suite] [--gh PROGRAM]  -- run the full pre-release gate")
+    print("  smoke [--tarball PATH] | --live --version RC [--workspace PATH]")
+    print("                                                       -- the install smoke set; --live records an RC's pass")
     print("  publish [version] [--dry-run] [--local-suite] [--gh PROGRAM] [--branch NAME]")
     print("                                                       -- trigger the Layer 3 release pipeline")
     print("")
