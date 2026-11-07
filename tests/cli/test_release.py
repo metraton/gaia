@@ -594,7 +594,7 @@ class TestGateConvergence(unittest.TestCase):
 class TestRunReleaseCheckOrchestration(unittest.TestCase):
     _GATES = (
         "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
-        "gate_tests", "gate_convergence", "gate_opencode_surface",
+        "gate_tests", "gate_convergence", "gate_opencode_surface", "gate_marketplace_identity",
     )
 
     def _run_check(self, gates, **kwargs):
@@ -614,24 +614,25 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
             return _gate
         return {name: make_gate(name) for name in self._GATES}
 
-    def test_runs_all_six_gates_in_order(self):
+    def test_runs_all_seven_gates_in_order(self):
         call_order = []
         results = self._run_check(self._recording_gates(call_order))
 
         self.assertEqual([name for name, _, _ in call_order], list(self._GATES))
-        self.assertEqual(len(results), 6)
+        self.assertEqual(len(results), 7)
 
-    def test_release_check_runs_the_opencode_gate_on_the_shared_pack(self):
+    def test_release_check_runs_the_pack_gates_on_the_shared_pack(self):
         call_order = []
         results = self._run_check(self._recording_gates(call_order))
 
         calls = {name: (a, k) for name, a, k in call_order}
         self.assertEqual(calls["gate_npm_sandbox"][0][1], _CREATED_PACK)
         self.assertEqual(calls["gate_opencode_surface"][0][0], _CREATED_PACK)
+        self.assertEqual(calls["gate_marketplace_identity"][0][0], _CREATED_PACK)
         self.assertEqual(results[5]["name"], "gate_opencode_surface")
 
     def test_does_not_short_circuit_on_early_failure(self):
-        """All 6 gates run even when gate 1 fails -- full picture, per AC-2."""
+        """All gates run even when gate 1 fails -- full picture, per AC-2."""
         call_order = []
         gates = self._recording_gates(
             call_order, status_of=lambda name: "FAIL" if name == "gate_pre_publish_validate" else "PASS"

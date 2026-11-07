@@ -198,6 +198,7 @@ import re
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 from ..tools.stage_decomposer import StageDecomposer
+from .canonical_path import native_path
 
 # The real, on-disk directory containing THIS file, with every symlink in the
 # chain resolved -- so the package root below is the root of whichever real
@@ -295,6 +296,7 @@ def is_trusted_gaia_binary(token: str) -> bool:
     being its declared ``gaia`` bin entry. Fails closed on every doubt,
     including when this module's own package name could not be established.
     """
+    token = native_path(token) if token else token
     if not token or not os.path.isabs(token):
         return False
     if TRUSTED_PACKAGE_NAME is None:
@@ -312,7 +314,7 @@ def is_trusted_gaia_binary(token: str) -> bool:
         if manifest.get("name") != TRUSTED_PACKAGE_NAME:
             return False
         declared = _declared_gaia_bin(package_root, manifest)
-        return declared is not None and declared == real
+        return declared is not None and os.path.normcase(declared) == os.path.normcase(real)
     except OSError:
         return False
 

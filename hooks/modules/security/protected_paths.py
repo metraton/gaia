@@ -25,9 +25,12 @@ replacing a live install still requires consent.
 THE DERIVATION. Two lanes, both install-specific by construction and judged on
 a path's literal, absolute and symlink-resolved forms. ``_shape_hit`` matches a
 ``hooks`` tree under ``.claude``. ``_install_root`` protects EVERYTHING inside
-an install root -- the ``@jaguilar87/gaia`` package store or a dev-plugin
-cache entry -- because the plain ``gaia`` CLI imports ``bin/`` and ``gaia/``
-from there, so a planted module or ``.pth`` is code the next call runs.
+an install root -- a directory whose package.json names ``@jaguilar87/gaia``
+and that holds no ``.git``, whichever channel put it there -- because the plain
+``gaia`` CLI imports ``bin/`` and ``gaia/`` from there, so a planted module or
+``.pth`` is code the next call runs. The Bash guard refuses a write to the
+``.claude`` lanes outright and asks a signature for one that changes an install
+(``install_roots_ignored`` tells the two apart).
 
 ``declared_hook_tree_roots()`` resolves checkout roots from the workspace
 registry for a DIFFERENT caller: ``adapters/subagent_stop_core.py`` uses it to
@@ -46,10 +49,12 @@ Public API:
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 from .canonical_path import canonical_path, native_path
 from .sensitive_paths import expand_home
@@ -80,6 +85,8 @@ _PROTECTED_SHORT_NAMES = (_HARNESS_DIR, "settings.json", "settings.local.json")
 # registry read and the marker stat would otherwise repeat per call.
 _declared_roots_cache: Optional[Tuple[str, ...]] = None
 _marker_cache: Dict[str, bool] = {}
+
+_INSTALL_ROOTS_JUDGED: contextvars.ContextVar[bool] = contextvars.ContextVar("install_roots_judged", default=True)
 
 
 def reset_caches() -> None:
@@ -176,33 +183,74 @@ def _dev_plugin_caches() -> Tuple[Path, ...]:
     return (container, container.resolve())
 
 
+def _declares_gaia(directory: Path) -> bool:
+    """True iff `directory` holds a package.json naming Gaia's package and no ``.git``: a checkout is never an install."""
+    try:
+        with open(directory / "package.json", encoding="utf-8") as manifest:
+            named = json.load(manifest).get("name") == _PACKAGE_NAME
+    except (OSError, ValueError, AttributeError):
+        return False
+    return named and not os.path.lexists(directory / ".git")
+
+
 def _install_root(path: Path) -> Optional[Path]:
-    """The installed Gaia root `path` is or lies inside, or None."""
+    """The installed Gaia root `path` is or lies inside, or None.
+
+    Every channel lays the same package.json out, so the nearest ancestor that
+    declares Gaia is the root wherever the channel put it: the Claude Code
+    marketplace cache, the dev-plugin cache, npm local or global. The scope and
+    dev-plugin shapes also hold a root that does not exist yet.
+    """
     parts = path.parts
     for index in range(len(parts) - 1):
-        if parts[index] == _PACKAGE_SCOPE_DIR and parts[index + 1] == _PACKAGE_DIR:
+        if os.path.normcase(parts[index]) == _PACKAGE_SCOPE_DIR and os.path.normcase(parts[index + 1]) == _PACKAGE_DIR:
             return Path(*parts[:index + 2])
     for container in _dev_plugin_caches():
         if container in path.parents:
             return Path(*parts[:len(container.parts) + 1])
-    return None
+    return next((d for d in (path, *path.parents) if _declares_gaia(d)), None)
+
+
+@contextlib.contextmanager
+def install_roots_ignored() -> Iterator[None]:
+    """Judge protection as if no install root existed, to tell a harness write from an install change."""
+    token = _INSTALL_ROOTS_JUDGED.set(False)
+    try:
+        yield
+    finally:
+        _INSTALL_ROOTS_JUDGED.reset(token)
 
 
 def _install_root_hit(path: Path) -> bool:
-    root = _install_root(path)
+    root = _install_root(path) if _INSTALL_ROOTS_JUDGED.get() else None
     if root is None:
         return False
     inside = path.relative_to(root).parts
     return not (inside[:1] == (_HOOKS_DIR,) and path.suffix == ".md")
 
 
+def _live_install_containers() -> Tuple[Path, ...]:
+    """Up to three directories above the install this hook runs from, never the home folder or above it."""
+    from .mutative_verbs import _HOOK_ROOT, _hook_root_is_install
+
+    if not _hook_root_is_install():
+        return ()
+    home = Path(os.path.abspath(os.path.expanduser("~")))
+    above_home = {home, *home.parents}
+    return tuple(p for p in _HOOK_ROOT.parents[:3] if p not in above_home)
+
+
 def is_install_root_container(path_str: str) -> bool:
-    """True iff `path_str` is a package scope, node_modules or Gaia data directory holding an install root."""
+    """True iff `path_str` is a package scope, node_modules, plugin cache or Gaia data directory holding an install root."""
+    if not _INSTALL_ROOTS_JUDGED.get():
+        return False
     path = Path(os.path.abspath(os.path.expanduser(path_str)))
     for container in _dev_plugin_caches():
         if path in (container, container.parent, container.parent.parent):
             return True
-    if path.name == _PACKAGE_SCOPE_DIR:
+    if path in _live_install_containers() or Path(os.path.realpath(path)) in _live_install_containers():
+        return True
+    if os.path.normcase(path.name) == _PACKAGE_SCOPE_DIR:
         return (path / _PACKAGE_DIR).is_dir()
     return (path / _PACKAGE_SCOPE_DIR / _PACKAGE_DIR).is_dir()
 

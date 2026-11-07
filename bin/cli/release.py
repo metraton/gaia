@@ -621,6 +621,65 @@ def gate_opencode_surface(pack: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "status": "FAIL" if problems else "PASS", "detail": detail, "duration_ms": _now_ms() - t0}
 
 
+_MARKETPLACE_PROBE = """
+import json, sys
+root = sys.argv[1]
+sys.path[:0] = [root + "/hooks", root]
+from modules.tools.bash_validator import BashValidator
+verdicts = {}
+for agent_type, payload in (("gaia-orchestrator", {}), ("developer", {"agent_id": "a0000000000000000"})):
+    payload = {"session_id": "release-check", "agent_type": agent_type, **payload}
+    result = BashValidator().validate(
+        root + "/bin/gaia --version", is_subagent=bool(payload.get("agent_id")),
+        session_id="release-check", agent_type=agent_type, hook_payload=payload, cwd=root,
+    )
+    verdicts[agent_type] = {"allowed": result.allowed, "reason": result.reason}
+print(json.dumps(verdicts))
+"""
+
+
+def gate_marketplace_identity(pack: dict[str, Any], *, timeout: int = 120) -> dict[str, Any]:
+    """Gate 7: the tarball laid out as the Claude Code marketplace cache must run its own `bin/gaia` free.
+
+    5.7.0 shipped with the hook unable to recognise that layout as an install, so
+    every by-path `gaia` call asked a signature; this replays the installed hook
+    on its own `cli=` path, for the orchestrator and for a subagent.
+    """
+    t0 = _now_ms()
+    name = "marketplace:identity"
+    if pack["action"] == "error":
+        return {"name": name, "status": "FAIL", "detail": f"npm pack failed: {pack['details']}", "duration_ms": _now_ms() - t0}
+
+    with tempfile.TemporaryDirectory(prefix="gaia-release-check-marketplace-") as tmp:
+        home = Path(tmp).resolve()
+        root = home / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / str(pack["version"])
+        try:
+            with tarfile.open(pack["tarball"]) as archive:
+                archive.extractall(home / "unpacked", filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            return {"name": name, "status": "FAIL", "detail": f"cannot extract {pack['tarball']}: {exc}", "duration_ms": _now_ms() - t0}
+        root.parent.mkdir(parents=True)
+        shutil.move(str(home / "unpacked" / "package"), str(root))
+        env = {**os.environ, "GAIA_DATA_DIR": str(home / "gaia-data")}
+        env.pop("GAIA_DB", None)
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        rc, out, err = _run([sys.executable, "-c", _MARKETPLACE_PROBE, str(root)], cwd=home, timeout=timeout, env=env)
+
+    try:
+        verdicts = json.loads(out.strip().splitlines()[-1]) if rc == 0 else None
+    except (ValueError, IndexError):
+        verdicts = None
+    if verdicts is None:
+        detail = f"the probe exited {rc}: {(out + err).strip()[-_DETAIL_TAIL:]}"
+        return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": _now_ms() - t0}
+    refused = {role: v["reason"] for role, v in verdicts.items() if not v["allowed"]}
+    detail = (
+        "; ".join(f"{role}: `<cache>/bin/gaia --version` refused -- {reason}" for role, reason in refused.items())
+        or "`<cache>/bin/gaia --version` runs free for the orchestrator and a subagent"
+    )
+    return {"name": name, "status": "FAIL" if refused else "PASS", "detail": detail, "duration_ms": _now_ms() - t0}
+
+
 def _opencode_surface_problems(package: Path, workspace: Path) -> list[str]:
     """Wire *package* into *workspace* as `gaia install --channel opencode` does and name what does not resolve.
 
@@ -821,6 +880,8 @@ def step_sandbox_install(repo_root: Path, *, timeout: int = 600) -> dict[str, An
     with tempfile.TemporaryDirectory(prefix="gaia-release-publish-pack-") as tmp:
         pack = _pack_helpers.pack_tarball(repo_root, dest_dir=Path(tmp))
         result = gate_npm_sandbox(repo_root, pack, timeout=timeout)
+        if result["status"] == "PASS":
+            result = gate_marketplace_identity(pack)
     return {**result, "name": name, "duration_ms": _now_ms() - t0}
 
 
@@ -1337,6 +1398,7 @@ def run_release_check(
             gate_tests(repo_root, local_suite=local_suite, gh=gh),
             gate_convergence(repo_root),
             gate_opencode_surface(pack),
+            gate_marketplace_identity(pack),
         ]
     return results
 

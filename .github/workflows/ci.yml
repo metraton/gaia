@@ -400,7 +400,7 @@ jobs:
       - name: Security probes on Windows
         run: |
           pip install pytest==8.3.5 pyyaml pytest-xdist
-          python -m pytest -q --tb=short tests/hooks/adapters/test_shell_channel_gate.py tests/hooks/modules/security/test_windows_path_spellings.py tests/hooks/modules/security/test_windows_executable_identity.py tests/hooks/adapters/test_powershell_command_positions.py
+          python -m pytest -q --tb=short tests/hooks/adapters/test_shell_channel_gate.py tests/hooks/modules/security/test_windows_path_spellings.py tests/hooks/modules/security/test_windows_executable_identity.py tests/hooks/adapters/test_powershell_command_positions.py tests/hooks/modules/security/test_install_channel_identity.py
 
       # AC-4 -- `gaia install` must exit 0 on Windows. Exercises the
       # cross-platform bootstrap (no sqlite3 CLI, no bash), the forward-slash

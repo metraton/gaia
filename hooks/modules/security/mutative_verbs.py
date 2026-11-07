@@ -32,7 +32,7 @@ except ImportError:
     tomllib = None
 
 from .approval_messages import build_t3_approval_instructions
-from .canonical_path import is_launcher, program_identity
+from .canonical_path import is_launcher, native_path, program_identity
 from .cli_aliases import as_wrapped_cli, declared_wrapper
 from .execution_scan import scan_execution
 from .flag_classifiers import AWK_PROGRAMS
@@ -5919,8 +5919,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     base_cmd = semantics.base_cmd
     family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
 
-    if base_cmd == "gaia" and "/" in tokens[0] and not _gaia_shipped_script(
-        Path(cwd or Path.cwd(), os.path.expanduser(tokens[0]))
+    if base_cmd == "gaia" and any(sep in tokens[0] for sep in "/\\") and not _gaia_shipped_script(
+        Path(cwd or Path.cwd(), os.path.expanduser(native_path(tokens[0])))
     ):
         return MutativeResult(
             is_mutative=True,
@@ -7707,7 +7707,7 @@ def _hook_root_is_install() -> bool:
 
 def _gaia_shipped_script(script: Path) -> bool:
     """True when *script* is a file of the installed Gaia this hook runs from; a checkout's copy, Gaia's own source included, is judged by content."""
-    real = Path(os.path.realpath(script))
+    real = Path(os.path.realpath(native_path(str(script))))
     return real.is_file() and real.is_relative_to(_HOOK_ROOT) and _hook_root_is_install()
 
 
