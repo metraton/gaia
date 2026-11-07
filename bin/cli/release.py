@@ -623,15 +623,15 @@ def gate_opencode_surface(pack: dict[str, Any]) -> dict[str, Any]:
 
 _MARKETPLACE_PROBE = """
 import json, sys
-root = sys.argv[1]
+root, workspace = sys.argv[1], sys.argv[2]
 sys.path[:0] = [root + "/hooks", root]
 from modules.tools.bash_validator import BashValidator
 verdicts = {}
 for agent_type, payload in (("gaia-orchestrator", {}), ("developer", {"agent_id": "a0000000000000000"})):
     payload = {"session_id": "release-check", "agent_type": agent_type, **payload}
     result = BashValidator().validate(
-        root + "/bin/gaia --version", is_subagent=bool(payload.get("agent_id")),
-        session_id="release-check", agent_type=agent_type, hook_payload=payload, cwd=root,
+        root.replace("\\\\", "/") + "/bin/gaia --version", is_subagent=bool(payload.get("agent_id")),
+        session_id="release-check", agent_type=agent_type, hook_payload=payload, cwd=workspace,
     )
     verdicts[agent_type] = {"allowed": result.allowed, "reason": result.reason}
 print(json.dumps(verdicts))
@@ -655,10 +655,14 @@ def gate_marketplace_identity(pack: dict[str, Any], *, timeout: int = 120) -> di
             return {"name": name, "status": "FAIL", "detail": f"cannot extract {pack['tarball']}: {exc}", "duration_ms": _now_ms() - t0}
         root.parent.mkdir(parents=True)
         shutil.move(str(home / "unpacked" / "package"), str(root))
+        workspace = home / "workspace"
+        workspace.mkdir()
         env = {**os.environ, "GAIA_DATA_DIR": str(home / "gaia-data")}
         env.pop("GAIA_DB", None)
         env.pop("CLAUDE_PLUGIN_ROOT", None)
-        rc, out, err = _run([sys.executable, "-c", _MARKETPLACE_PROBE, str(root)], cwd=home, timeout=timeout, env=env)
+        rc, out, err = _run(
+            [sys.executable, "-c", _MARKETPLACE_PROBE, str(root), str(workspace)], cwd=workspace, timeout=timeout, env=env,
+        )
 
     try:
         verdicts = json.loads(out.strip().splitlines()[-1]) if rc == 0 else None
