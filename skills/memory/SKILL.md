@@ -100,7 +100,7 @@ Gaia delivers by kind and owner; no row is marked for a reader.
 | Where | Who reads it | What it carries |
 |---|---|---|
 | `## User memory`, at birth | the orchestrator only | the user's live facts and preferences, grouped by kind, conversation preferences first, each line its title, `surface=` and `until=` when it has them, and `ref=memory:user/<slug>` |
-| `~ Your conversation preferences:`, beside every prompt | the orchestrator only | the titles of up to three conversation preferences within 400 characters, else their count and coordinates |
+| `~ Your conversation preferences:`, beside every prompt | the orchestrator only | the titles of the first three conversation preferences in full, within 540 characters; past three rows, the count of the rest with their coordinates |
 | `## Environment`, at birth and in every kernel | everyone | one `tool=<binary>` line per user tool whose binary is on PATH, with `replaces=` and its ref; a kernel carries at most five |
 | `# Scope memory`, in a kernel | a dispatched agent | the preferences, facts and lessons of its workspace > group > project chain, each line marked `scope=` |
 | The project card, `gaia context project <name>` | the orchestrator, once the project is named | the project's rows indexed by kind |
