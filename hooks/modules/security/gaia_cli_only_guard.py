@@ -283,6 +283,32 @@ def _declared_gaia_bin(package_root: str, manifest: Dict[str, Any]) -> Optional[
     return os.path.realpath(os.path.join(package_root, bin_rel))
 
 
+_LAUNCHER_NAMES = frozenset({"gaia.cmd", "gaia.ps1"})
+_LAUNCHER_MAX_BYTES = 16384
+_LAUNCHER_REF = re.compile(r"""(?:%dp0%|\$basedir)[\\/]+([^"'\s%$]+)""", re.IGNORECASE)
+_LAUNCHER_INTERPRETER = re.compile(r"(?:python3?|node|pwsh|sh)(?:\.exe)?", re.IGNORECASE)
+
+
+def launcher_target(path: str) -> Optional[str]:
+    """Realpath of the one script an npm cmd-shim launcher (``gaia.cmd``, ``gaia.ps1``, ``gaia``) names beside its interpreter, or None."""
+    if os.path.basename(path).lower() not in _LAUNCHER_NAMES:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read(_LAUNCHER_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(text) > _LAUNCHER_MAX_BYTES:
+        return None
+    folder = os.path.dirname(path)
+    scripts = {
+        os.path.normcase(os.path.realpath(os.path.join(folder, *re.split(r"[\\/]+", ref))))
+        for ref in _LAUNCHER_REF.findall(text)
+        if not _LAUNCHER_INTERPRETER.fullmatch(ref)
+    }
+    return scripts.pop() if len(scripts) == 1 else None
+
+
 def is_trusted_gaia_binary(token: str) -> bool:
     """Return True iff *token* is, by package provenance, the trusted gaia CLI.
 
@@ -303,6 +329,9 @@ def is_trusted_gaia_binary(token: str) -> bool:
         return False
     try:
         real = os.path.realpath(token)
+        if not os.path.isfile(real):
+            return False
+        real = launcher_target(real) or real
         if not os.path.isfile(real):
             return False
         package_root = _find_declaring_package_root(real)

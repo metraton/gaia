@@ -132,9 +132,35 @@ def record_install(workspace: Path, captured: dict[str, Any], *, channel: str = 
     return path
 
 
+def declared_dependency_spec(workspace: Path) -> str | None:
+    """The @jaguilar87/gaia spec *workspace*'s package.json declares, or None; ``file:``/``link:`` marks a dev install."""
+    try:
+        manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for key in ("dependencies", "devDependencies", "optionalDependencies"):
+        deps = manifest.get(key) if isinstance(manifest, dict) else None
+        if isinstance(deps, dict) and isinstance(deps.get("@jaguilar87/gaia"), str):
+            return deps["@jaguilar87/gaia"]
+    return None
+
+
+def retire_package_record(workspace: Path) -> Path | None:
+    """Remove the `gaia dev` record once *workspace* declares no local artifact (a published build replaced it); returns its path."""
+    spec = declared_dependency_spec(workspace)
+    marker = provenance_path(workspace.resolve())
+    if (spec and spec.startswith(_DEV_SPEC_PREFIXES)) or not (marker.exists() or marker.is_symlink()):
+        return None
+    marker.unlink()
+    return marker
+
+
+_DEV_SPEC_PREFIXES = ("file:", "link:")
+
+
 def _dependency_spec_drift(workspace: Path, dependency_spec: str | None, expected: Path) -> list[str]:
     """Diagnostics when the consumer no longer declares the recorded local artifact."""
-    if not dependency_spec or not dependency_spec.startswith(("file:", "link:")):
+    if not dependency_spec or not dependency_spec.startswith(_DEV_SPEC_PREFIXES):
         return ["installed dependency spec diverged"]
     try:
         if (workspace / dependency_spec.split(":", 1)[1]).resolve() != expected:

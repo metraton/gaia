@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
+from ..security import mutative_verbs as _mutative_verbs
 from ..security.mutative_verbs import (
     _peel_leading_command_wrappers,
     account_path_redirect_target,
@@ -568,7 +569,7 @@ class BashValidator:
             if is_bare_gaia_token:
                 if resolved_path is None:
                     which_result = shutil.which("gaia") or ""
-                    resolved_path = which_result if os.path.isabs(which_result) else ""
+                    resolved_path = which_result if os.path.isabs(which_result) else _own_install_cli()
                 if resolved_path:
                     text = resolved_path + text[4:]
                     rewrote_any = True
@@ -2663,6 +2664,11 @@ def _build_sealed_payload(
         operation=f"{category} command intercepted: {verb}",
         risk_level="high" if category.upper() == "DESTRUCTIVE" else "medium",
     )
+
+
+def _own_install_cli() -> str:
+    cli = _mutative_verbs._HOOK_ROOT / "bin" / "gaia"
+    return str(cli) if cli.is_file() and _mutative_verbs._hook_root_is_install() else ""
 
 
 def _granted_result(command: str, *, session_id: str, agent_type: str, cwd: str | None) -> BashValidationResult | None:

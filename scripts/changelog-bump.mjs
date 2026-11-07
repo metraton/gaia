@@ -75,7 +75,7 @@ export function bumpChangelogText(text, version, today) {
   }
 
   const isPrereleaseOfVersion = (s) => sectionVersion(s)?.startsWith(`${version}-`) ?? false;
-  const folds = (s) => isUnreleased(sectionVersion(s)) || isPrereleaseOfVersion(s);
+  const folds = (s) => isUnreleased(sectionVersion(s)) || isPrereleaseOfVersion(s) || sectionVersion(s) === version;
   const kept = sections.filter((s) => !folds(s));
   const anchor = kept.findIndex((s) => sectionVersion(s) !== null);
   kept.splice(anchor === -1 ? kept.length : anchor, 0,
