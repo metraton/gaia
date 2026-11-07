@@ -331,7 +331,7 @@ class TestReleaseCheckReusesCiVerdict(unittest.TestCase):
             stack.enter_context(patch("cli.release.step_node_deps", return_value=_PASS))
             for gate in (
                 "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
-                "gate_convergence", "gate_opencode_surface",
+                "gate_convergence", "gate_opencode_surface", "gate_marketplace_identity",
             ):
                 stack.enter_context(patch(f"cli.release.{gate}", return_value=_PASS))
             npm_test = stack.enter_context(patch("cli.release.gate_npm_test", return_value=_SUITE_PASS))

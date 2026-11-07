@@ -642,12 +642,12 @@ def gate_marketplace_identity(pack: dict[str, Any], *, timeout: int = 120) -> di
     """Gate 7: the tarball laid out as the marketplace cache runs its own `bin/gaia --version` free for the orchestrator and a subagent."""
     t0 = _now_ms()
     name = "marketplace:identity"
-    if pack["action"] == "error":
-        return {"name": name, "status": "FAIL", "detail": f"npm pack failed: {pack['details']}", "duration_ms": _now_ms() - t0}
+    if pack.get("action") == "error":
+        return {"name": name, "status": "FAIL", "detail": f"npm pack failed: {pack.get('details')}", "duration_ms": _now_ms() - t0}
 
     with tempfile.TemporaryDirectory(prefix="gaia-release-check-marketplace-") as tmp:
         home = Path(tmp).resolve()
-        root = home / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / str(pack["version"])
+        root = home / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / str(pack.get("version") or "0.0.0")
         try:
             with tarfile.open(pack["tarball"]) as archive:
                 archive.extractall(home / "unpacked", filter="data")

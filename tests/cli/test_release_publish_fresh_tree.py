@@ -55,6 +55,7 @@ def _publish(root, *, npm_ci=(0, "", ""), sandbox=(0, "RESULT: PASS", ""), statu
     with patch("cli.release._run", side_effect=fake_run), \
          patch("cli.release.preflight_publish", return_value=_PREFLIGHT), \
          patch("cli.release.gate_tests", return_value=_TESTS), \
+         patch("cli.release.gate_marketplace_identity", return_value={"name": "marketplace:identity", "status": "PASS"}), \
          patch("cli._pack_helpers.pack_tarball", return_value=packed):
         results = release.run_release_publish(root, "5.5.0-rc.5")
     return results, calls
