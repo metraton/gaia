@@ -1,7 +1,6 @@
 """A stable is promoted only from a published RC that passed the live smoke, and `rc` names the next candidate."""
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,7 +85,6 @@ def test_rc_names_the_next_candidate(tmp_path, current, tagged, expected):
     assert release.resolve_publish_version(tmp_path, "rc") == (expected, None)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="the changelog bump is a node module")
 def test_a_stable_folds_its_own_section_and_its_candidates_into_one(tmp_path):
     changelog = (
         "# Changelog\n\n## [Unreleased]\n\n## [5.7.2-rc.1] - 2026-11-07\n\n"
