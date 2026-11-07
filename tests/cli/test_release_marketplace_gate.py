@@ -10,7 +10,7 @@ if str(_REPO_ROOT / "bin") not in sys.path:
 
 from cli import release  # noqa: E402
 
-_PACKED = ("hooks", "gaia", "bin", "config", "package.json")
+_PACKED = ("hooks", "gaia", "bin", "config", "opencode", "agents", "skills", "package.json")
 
 
 def _skip_caches(member: tarfile.TarInfo):
