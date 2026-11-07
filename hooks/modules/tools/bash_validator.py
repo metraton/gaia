@@ -114,6 +114,7 @@ _MEMORY_GUARD_RULES = {
 from ..security.contract_ownership_guard import check as check_contract_ownership
 from ..security.protected_path_guard import (
     check as check_protected_path_write,
+    install_root_change,
     unprovable_write_target,
 )
 from ..security.shell_write_guard import check as check_shell_write, system_path_target
@@ -1144,6 +1145,23 @@ class BashValidator:
                 agent_type=agent_type,
                 cwd=cwd,
                 rule="sign.system-path",
+            )
+
+        changed_install = install_root_change(write_guard_scope, cwd)
+        if changed_install:
+            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
+                command,
+                verb="install-root-change",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+                cwd=cwd,
+                guidance=(
+                    f"It changes the installed Gaia the host runs ({changed_install}); name that "
+                    f"install in --does. Changing Gaia itself is an edit to its source, propagated "
+                    f"by `gaia install` or `gaia dev`."
+                ),
             )
 
         unprovable_target = unprovable_write_target(write_guard_scope, cwd)

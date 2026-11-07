@@ -122,13 +122,13 @@ class TestInstallRootData:
         assert protected_path_guard.check(command)[0] is True
 
     @pytest.mark.parametrize("name", sorted(REAL_INSTALL_ROOT_WRITES))
-    def test_a_real_write_beside_it_is_still_refused(self, install, name):
+    def test_a_real_write_beside_it_still_asks_a_signature(self, install, name):
         verdict, names = install
-        assert verdict(REAL_INSTALL_ROOT_WRITES[name].format(**names)) == "floor.protected-path"
+        assert verdict(REAL_INSTALL_ROOT_WRITES[name].format(**names)) == "SIGNED"
 
     def test_a_group_that_is_not_a_data_store_still_names_the_root(self, install):
         _, names = install
-        assert protected_path_guard.check("gaia worktree create --repo {I} --project p".format(**names))[0] is False
+        assert protected_path_guard.install_root_change("gaia worktree create --repo {I} --project p".format(**names))
 
 
 class TestHeredocData:

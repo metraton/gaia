@@ -36,6 +36,7 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from .canonical_path import native_path
 from .shell_substitution import _heredoc_body_span, _read_heredoc_opener
 
 _ECHO_RECEIVER = [("cat", False)]
@@ -53,10 +54,11 @@ def is_gaia_cli(word: str) -> bool:
 
     if word == "gaia":
         return True
+    native = native_path(word)
     return (
-        os.path.isabs(word)
-        and os.path.realpath(word) == str(_HOOK_ROOT / "bin" / "gaia")
-        and _gaia_shipped_script(Path(word))
+        os.path.isabs(native)
+        and os.path.normcase(os.path.realpath(native)) == os.path.normcase(str(_HOOK_ROOT / "bin" / "gaia"))
+        and _gaia_shipped_script(Path(native))
     )
 
 

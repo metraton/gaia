@@ -47,8 +47,8 @@ path reconstructed by variable interpolation or read from a file
 literal token and is not caught here. The literal-token slice is the bounded,
 low-false-positive portion that is closed.
 
-A line naming an installed Gaia root, or running inside one, must be all known
-readers (``_names_install_root_unread``); a hardlink made earlier is a known limit.
+A write into an installed Gaia root, or a line naming one that is not all known readers,
+asks a signature (``install_root_change``) instead of this refusal; a hardlink made earlier is a known limit.
 
 Public API:
     targets_protected_path(command: str, cwd: str | None = None) -> str | None
@@ -69,6 +69,7 @@ from .canonical_path import command_name
 from .data_heredoc import _literal_words, is_gaia_cli
 from .mutative_verbs import UNKNOWN_CWD, cwd_after_component, detect_mutative_command
 from .protected_paths import (
+    install_roots_ignored,
     is_install_root_container,
     is_install_root_path,
     is_protected_hook_path,
@@ -720,7 +721,14 @@ def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]
         - (True, None)  if command does not write the protected tree
         - (False, msg)  if command writes into the protected .claude/ tree
     """
-    hit = targets_protected_path(command, cwd)
+    with install_roots_ignored():
+        hit = targets_protected_path(command, cwd)
     if hit is not None:
         return False, rejection_message(hit)
     return True, None
+
+
+def install_root_change(command: str, cwd: Optional[str] = None) -> Optional[str]:
+    """The installed Gaia path `command` changes or runs a non-read in, when no harness write refuses it first."""
+    hit = targets_protected_path(command, cwd)
+    return hit.removesuffix(_NOT_READ_ONLY) if hit is not None else None

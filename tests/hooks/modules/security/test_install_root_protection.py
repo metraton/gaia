@@ -24,6 +24,13 @@ def _gaia_tree(root: Path) -> Path:
     return root
 
 
+def _guard(command, cwd=None):
+    allowed, reason = protected_path_guard.check(command, cwd=cwd)
+    if allowed and protected_path_guard.install_root_change(command, cwd) is not None:
+        return False, "install root change"
+    return allowed, reason
+
+
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
@@ -87,25 +94,25 @@ class TestShellSurface:
     @pytest.mark.parametrize("relative", PLANTED)
     def test_every_shell_writer_is_refused(self, install_root, relative):
         target = install_root / relative
-        allowed = [form for form in _shell_forms(target) if protected_path_guard.check(form)[0]]
+        allowed = [form for form in _shell_forms(target) if _guard(form)[0]]
         assert allowed == []
 
     @pytest.mark.parametrize("relative", PLANTED)
     def test_relative_writes_anchor_at_the_cwd(self, install_root, relative):
-        assert protected_path_guard.check(f"echo x > {relative}", cwd=str(install_root))[0] is False
-        assert protected_path_guard.check(f"cd {install_root} && cp /tmp/src {relative}")[0] is False
+        assert _guard(f"echo x > {relative}", cwd=str(install_root))[0] is False
+        assert _guard(f"cd {install_root} && cp /tmp/src {relative}")[0] is False
 
     def test_tar_without_a_directory_extracts_into_the_cwd(self, install_root):
-        assert protected_path_guard.check("tar -xf /tmp/src.tar", cwd=str(install_root / "bin"))[0] is False
+        assert _guard("tar -xf /tmp/src.tar", cwd=str(install_root / "bin"))[0] is False
 
     @pytest.mark.parametrize("relative", PLANTED)
     def test_development_checkout_stays_writable(self, dev_checkout, relative):
         target = dev_checkout / relative
-        refused = [form for form in _shell_forms(target) if not protected_path_guard.check(form)[0]]
+        refused = [form for form in _shell_forms(target) if not _guard(form)[0]]
         assert refused == []
 
     def test_an_interpreter_naming_install_code_is_not_provably_read_only(self, install_root):
-        assert protected_path_guard.check(f"python3 -c \"print(open('{install_root / 'bin' / 'json.py'}').read())\"")[0] is False
+        assert _guard(f"python3 -c \"print(open('{install_root / 'bin' / 'json.py'}').read())\"")[0] is False
 
     @pytest.mark.parametrize("form", [
         "cat {I}/bin/json.py",
@@ -117,7 +124,7 @@ class TestShellSurface:
         "{I}/bin/gaia doctor",
     ])
     def test_provable_reads_and_running_installed_code_pass(self, install_root, form):
-        assert protected_path_guard.check(form.format(I=install_root))[0] is True
+        assert _guard(form.format(I=install_root))[0] is True
 
     @pytest.mark.parametrize("form", [
         "X={I}; ls $X/bin",
@@ -128,11 +135,11 @@ class TestShellSurface:
         "touch {T}/{{a,b}}.txt",
     ])
     def test_variables_and_patterns_away_from_a_root_pass(self, install_root, tmp_path, form):
-        assert protected_path_guard.check(form.format(I=install_root, T=tmp_path / "elsewhere"))[0] is True
+        assert _guard(form.format(I=install_root, T=tmp_path / "elsewhere"))[0] is True
 
     @pytest.mark.parametrize("form", ["npm install -g @jaguilar87/gaia", "npm install @jaguilar87/gaia@5.7.0"])
     def test_a_package_name_is_not_an_install_root(self, tmp_path, form):
-        assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
+        assert _guard(form, cwd=str(tmp_path))[0] is True
 
     @pytest.mark.parametrize("form", [
         "cd {I} && python3 -c \"open('bin/x.py','w').write('x')\"",
@@ -143,11 +150,11 @@ class TestShellSurface:
         assert protected_path_guard.targets_protected_path(form.format(I=install_root), str(install_root.parent)) is not None
 
     def test_a_relative_interpreter_write_after_a_computed_cd_is_refused(self, tmp_path):
-        reason = protected_path_guard.check("cd \"$X\" && python3 -c \"open('bin/x.py','w')\"", cwd=str(tmp_path))[1]
+        reason = _guard("cd \"$X\" && python3 -c \"open('bin/x.py','w')\"", cwd=str(tmp_path))[1]
         assert reason is not None and "cannot place" in reason
 
     def test_development_checkout_interpreter_write_after_cd_passes(self, dev_checkout):
-        assert protected_path_guard.check(f"cd {dev_checkout} && python3 -c \"open('bin/x.py','w')\"")[0] is True
+        assert _guard(f"cd {dev_checkout} && python3 -c \"open('bin/x.py','w')\"")[0] is True
 
 
 class TestFileToolSurface:
@@ -303,7 +310,7 @@ class TestVariableWriteTargets:
     ])
     def test_an_unresolvable_write_target_is_unprovable(self, tmp_path, form):
         assert protected_path_guard.unprovable_write_target(form, str(tmp_path)) is not None
-        assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
+        assert _guard(form, cwd=str(tmp_path))[0] is True
 
     @pytest.mark.parametrize("form", [
         "echo x > $(mktemp -d)/x", "cp /tmp/f \"$(date +%s)/x\"", "touch `pwd`/x",
@@ -313,7 +320,7 @@ class TestVariableWriteTargets:
     ])
     def test_a_computed_write_target_is_unprovable(self, tmp_path, form):
         assert protected_path_guard.unprovable_write_target(form, str(tmp_path)) is not None
-        assert protected_path_guard.check(form, cwd=str(tmp_path))[0] is True
+        assert _guard(form, cwd=str(tmp_path))[0] is True
 
     @pytest.mark.parametrize("form", [
         "echo x > $(echo {I})/bin/x",
@@ -322,7 +329,7 @@ class TestVariableWriteTargets:
         "A=({I}/bin/e.py); echo x > ${{A[0]}}",
     ])
     def test_a_computed_target_whose_substitution_names_a_root_is_refused(self, install_root, form):
-        assert protected_path_guard.check(form.format(I=install_root))[0] is False
+        assert _guard(form.format(I=install_root))[0] is False
 
     def test_a_computed_target_asks_through_the_validator(self, subagent, tmp_path):
         from modules.tools.bash_validator import BashValidator
@@ -347,7 +354,7 @@ class TestVariableWriteTargets:
     def test_a_well_known_variable_reaching_an_install_root_is_refused(self, tmp_path):
         _gaia_tree(tmp_path / "data" / "cache" / "dev-plugin" / "ws")
         command = "touch $GAIA_DATA_DIR/cache/dev-plugin/ws/bin/e.py"
-        assert protected_path_guard.check(command, cwd=str(tmp_path))[0] is False
+        assert _guard(command, cwd=str(tmp_path))[0] is False
 
     def test_an_unprovable_target_asks_instead_of_refusing(self, subagent, tmp_path):
         from modules.tools.bash_validator import BashValidator
@@ -364,7 +371,7 @@ class TestShellAsSubagent:
     """The verifier's probes, run through BashValidator with a subagent's identity."""
 
     @pytest.mark.parametrize("name", sorted(SHELL_PROBES))
-    def test_install_root_shell_writes_are_refused_categorically(self, subagent, install_root, tmp_path, name):
+    def test_install_root_shell_writes_never_run_free(self, subagent, install_root, tmp_path, name):
         from modules.tools.bash_validator import BashValidator
 
         scratch = tmp_path / "scratch"
@@ -379,4 +386,4 @@ class TestShellAsSubagent:
             hook_payload={"cwd": str(tmp_path), "agent_id": SUBAGENT_ID, "agent_type": "developer"},
             cwd=str(tmp_path),
         )
-        assert not result.allowed and "PROTECTED_PATH" in result.reason
+        assert not result.allowed, result.reason

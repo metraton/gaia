@@ -20,7 +20,7 @@ from cli import release  # noqa: E402
 
 _GATES = (
     "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
-    "gate_tests", "gate_convergence", "gate_opencode_surface",
+    "gate_tests", "gate_convergence", "gate_opencode_surface", "gate_marketplace_identity",
 )
 
 

@@ -126,4 +126,4 @@ def test_a_credential_a_gaia_call_reads_is_a_secret_read(probe, name):
 @pytest.mark.parametrize("name", sorted(INSTALL_ROOT_WRITES))
 def test_an_untrusted_gaia_naming_an_install_root_is_still_a_write(probe, name):
     verdict, names = probe
-    assert verdict(INSTALL_ROOT_WRITES[name].format(**names)) == "floor.protected-path"
+    assert verdict(INSTALL_ROOT_WRITES[name].format(**names)) == "SIGNED"

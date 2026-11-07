@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.1] - 2026-11-07
+
+### Fixed
+
+- **The installed `gaia` CLI runs free again from every channel.** 5.7.0 recognised an install only under `node_modules/@jaguilar87/gaia` or the dev-plugin cache, so with the Claude Code marketplace plugin every call to its `bin/gaia` by path, `gaia --version` included, asked for a signature as `gaia-by-path`, and the orchestrator, which may only call Gaia by absolute path, could run nothing. An install is now any directory whose `package.json` names `@jaguilar87/gaia` and holds no `.git`, so the marketplace cache (`~/.claude/plugins/cache/<marketplace>/gaia/<version>`), the dev-plugin cache and npm local or global installs are recognised alike. The identity check also reads Windows spellings of the path: a Git Bash drive (`/c/Users/...`), backslashes and any letter case, in the classifier, the heredoc data lane and the orchestrator's CLI guard.
+- **A change inside an installed Gaia asks for a signature instead of being refused.** A Bash command that writes into an install, or names one or runs inside one without being a plain read, now asks for a signature that names the install it changes. Running or reading the install stays free. A write to a `.claude` hook tree or `.claude` settings file is still refused outright.
+
+### Added
+
+- **`gaia release check` lays the packed plugin out as the marketplace cache** (`marketplace:identity`) and fails unless the installed hook runs that copy's own `bin/gaia --version` free for the orchestrator and for a subagent. `gaia release publish` runs the same check after the sandbox install.
+
 ## [5.7.0] - 2026-11-07
 
 ### Upgrading from 5.6
