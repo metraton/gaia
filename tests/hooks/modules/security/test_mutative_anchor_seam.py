@@ -241,6 +241,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("context", "prune-workspaces"),
             ("context", "relocate"),
             ("release", "check"),
+            ("release", "smoke"),
             ("workspace", "retire"),
             ("workspace", "curate"),
             ("memory", "add"),

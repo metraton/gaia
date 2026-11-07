@@ -189,9 +189,9 @@ def _seed(channel: Channel, workspace: Path, env: dict[str, str]) -> tuple[dict[
                   "--surface=conversation", f"--description={PREFERENCE_TITLE}", "--body=Seeded by the release smoke.")
     if rc != 0:
         return None, [f"seeding the conversation preference failed (exit {rc}): {_tail(out)}"]
-    rc, out = cli("approvals", "request-set", "--command", "git push --force origin main", "--cwd", str(workspace),
-                  "--what", "Release smoke request", "--question", "Run the smoke push?", "--does", "Force-pushes main",
-                  "--impact", "Rewrites main", "--verification", "Nothing runs", "--shared-state", "None",
+    rc, out = cli("approvals", "request-set", "--command", "kubectl delete pod release-smoke", "--cwd", str(workspace),
+                  "--what", "Release smoke request", "--question", "Delete the smoke pod?", "--does", "Deletes a pod",
+                  "--impact", "The pod is gone", "--verification", "Nothing runs", "--shared-state", "None",
                   "--rollback", "Nothing to undo", "--agent-id", SUBAGENT_ID, "--session-id", "release-smoke", "--json")
     approval_id = _json_field(out, "approval_id") if rc == 0 else None
     if not approval_id:
