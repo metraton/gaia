@@ -630,7 +630,7 @@ verdicts = {}
 for agent_type, payload in (("gaia-orchestrator", {}), ("developer", {"agent_id": "a0000000000000000"})):
     payload = {"session_id": "release-check", "agent_type": agent_type, **payload}
     result = BashValidator().validate(
-        root + "/bin/gaia --version", is_subagent=bool(payload.get("agent_id")),
+        root.replace("\\\\", "/") + "/bin/gaia --version", is_subagent=bool(payload.get("agent_id")),
         session_id="release-check", agent_type=agent_type, hook_payload=payload, cwd=workspace,
     )
     verdicts[agent_type] = {"allowed": result.allowed, "reason": result.reason}
