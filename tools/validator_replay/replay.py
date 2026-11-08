@@ -132,7 +132,8 @@ def check_caps(result: dict, caps: dict, declared: dict) -> List[str]:
     reviews = declared.get("reviews", {})
     allowed = set(declared.get("truth_rows", []))
     changes = result["changes"]
-    asking = [c for c in changes if c["corpus"] == "history" and c["old"] == "FREE" and c["new"] != "FREE"]
+    asking = [c for c in changes if c["corpus"] == "history" and c["old"] == "FREE" and c["new"] != "FREE"
+              and not (reviews.get(c["key"]) or reviews.get(c["command"]))]
     measured = {
         "history_newly_asking_max_count": len(asking),
         "history_newly_asking_max_fraction": len(asking) / max(result["sizes"]["history"], 1),

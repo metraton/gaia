@@ -81,12 +81,22 @@ instruction to use one and record the refusal, as rule 6 below does for writes.
    under the canonical Gaia scratch directory (`~/.gaia/scratch`, printed by
    `gaia paths`; a `GAIA_DATA_DIR` override relocates it), never into a
    workspace or client repository tree. Only the actual deliverable (the code
-   change, the config, the report the task asked for) belongs in-repo. Name it
+   change, the config) belongs in-repo. A report the user asked for and the
+   body file of a pull request (`--body-file`) also go in scratch, under the
+   same name, because neither is a change to the repository. A subagent's
+   `mkdir` or `touch` in the home folder outside scratch and every git
+   worktree asks for a signature (verb `stranded-creation`), since nothing
+   reclaims it; sign only for a deliverable that must live there. Name it
    after the current turn's `contract_id` (the `# Your Contract` value, shape
    `<agent_id>.<token>`) -- the bare id as the entry name, or that id plus one
    trailing extension (`<contract_id>.json`) -- never a free-form or
    task-derived name: that is the identifier Gaia's own retention rule reads
-   back to attribute and reclaim the entry once the contract closes. A file
+   back to attribute the entry to its turn and reclaim it once the contract
+   closes. An entry no turn owns is reclaimed anyway after 7 untouched days
+   (`GAIA_FS_RETENTION_STALE_DAYS`), and so is one whose paused owner's session
+   can no longer be read; tmp folders are attributed and collected the same
+   way, and a scratch database `<contract_id>.db` keeps its backups beside it
+   in `<contract_id>.backups`. A file
    worth keeping as proof of what was done is deposited as evidence through
    the contract's evidence clause (`agent-contract-handoff`), not left sitting
    in scratch or committed as a side effect. Temporaries a tool creates on its
@@ -164,6 +174,27 @@ shows the gate where it reads and writes runs free; reach for these first
   cases `cp-into-own-entry`, `mv-in-own-entry`, `rm-in-own-entry`). The
   relief covers only that entry; another agent's entry or a shared scratch
   folder signs (`hooks/modules/security/mutative_verbs.py::_owned_by`).
+- `chmod <mode> <path>` inside your own scratch entry or worktree, and `rm`
+  inside your own worktree (`mutative_verbs.py::_owned_local_work_root`: a
+  worktree counts when its lock records your agent)
+  (`tests/hooks/modules/security/test_validator_572_real_shape.py::test_validator_572_verdicts_under_the_real_payload`,
+  cases `chmod-own-scratch`, `chmod-own-worktree`, `rm-own-worktree`).
+  Another agent's worktree, the worktree root and `chmod --reference` sign.
+- Run Gaia's own tests, a test file that imports the `gaia` package included:
+  `uv --directory /abs/repo run pytest tests/x.py`, or from outside the repo
+  `PYTHONPATH=/abs/repo pytest --rootdir /abs/repo /abs/repo/tests/x.py`
+  (cases `uv-directory-pytest-gaia-test`, `pytest-rootdir-pythonpath-from-outside`).
+  Only a bare `pytest` anchors at `--rootdir`; `python3 -m pytest` puts its
+  starting folder on `sys.path`, so it anchors only at the repository it starts in.
+- Inspect the host's persisted tool output (`~/.claude/projects/*/tool-results`)
+  with `grep`, `rg`, `head`, `tail`, `cat`, `wc` or the Read tool. Copying it out
+  or handing it to a program as input (`jq`, a script) is refused; regenerate
+  the data into your scratch entry instead (cases `grep-inspects-host-tool-output`,
+  `jq-transforms-host-tool-output`).
+- Request a signature in natural words: `gaia approvals request`,
+  `request-set` and `request-file-write` store their words, so a path inside an
+  installed Gaia named in a phrase or in `--command` is data (case
+  `request-set-names-install-path`).
 - Keep a Python probe's argv literal: names bound once to literals and passed
   to `subprocess.run` are judged as the command they spell
   (`tests/hooks/modules/security/test_script_file_readonly_subprocess.py::test_argv_names_bound_once_to_literals_run_free`).

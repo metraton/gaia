@@ -47,7 +47,7 @@ __init__.py      package marker
 
 **Caps** (`caps.json`, read by `replay.py::check_caps`; a value above its cap is a violation):
 
-- `history_newly_asking_max_count` and `history_newly_asking_max_fraction`: history commands that were `FREE` and now ask, counted and as a share of the history corpus.
+- `history_newly_asking_max_count` and `history_newly_asking_max_fraction`: history commands that were `FREE` and now ask, counted and as a share of the history corpus. A command whose key or exact text has an entry under `reviews` is an intended change and is left out.
 - `pinned_changes_max_outside_declared`: changes to a truth row or a curated case (`replay.py::PINNED`) whose key the declared file does not list under `truth_rows`.
 - `loosened_unreviewed_max`: changes that move to `FREE`, or out of `BLOCKED`, with no entry under `reviews` for their key or their exact command.
 - `new_errors_max`: units that classified on the old side and fail on the new one. A `timeout` is not counted.
@@ -56,7 +56,7 @@ __init__.py      package marker
 
 - `task`: the task number.
 - `truth_rows`: the keys of the truth rows and curated cases the change is meant to move.
-- `reviews`: a key or an exact command, mapped to the sentence of review that accepts its loosening.
+- `reviews`: a key or an exact command, mapped to the sentence of review that accepts its loosening, or a history command's new ask.
 - `justification`: the run it was measured on and the changes by class.
 
 Add one per validator change and pass it with `GAIA_REPLAY_DECLARED`.

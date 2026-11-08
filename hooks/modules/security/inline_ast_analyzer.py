@@ -71,11 +71,12 @@ from __future__ import annotations
 import ast
 import io
 import logging
+import os
 import re
 import sys
 import tokenize
 from dataclasses import dataclass
-from typing import Callable, Dict, FrozenSet, Optional, Set, Tuple
+from typing import Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 
 logger = logging.getLogger(__name__)
@@ -539,6 +540,7 @@ def _urlopen_is_read(call: ast.Call, provenance: _RequestProvenance) -> bool:
 def analyze_python_inline(
     code: str,
     argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]] = None,
+    write_is_local: Optional[Callable[[str], bool]] = None,
 ) -> InlineAstResult:
     """Classify a Python inline-code payload by invocation, not mention.
 
@@ -563,7 +565,7 @@ def analyze_python_inline(
     if trees is None:
         return InlineAstResult(parse_failed=True)
     for tree in trees:
-        result = _analyze_tree(tree, argv_is_mutative)
+        result = _analyze_tree(tree, argv_is_mutative, write_is_local)
         if result.is_dangerous:
             return result
     return InlineAstResult()
@@ -591,6 +593,7 @@ def _python_views(code: str) -> Optional[Tuple[ast.Module, ...]]:
 
 def _analyze_tree(
     tree: ast.Module, argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]],
+    write_is_local: Optional[Callable[[str], bool]] = None,
 ) -> InlineAstResult:
     alias_map = _AliasResolver()
     alias_map.collect(tree)
@@ -601,6 +604,7 @@ def _analyze_tree(
         )
     provenance = _RequestProvenance(tree, alias_map)
     bindings = _argv_bindings(tree, alias_map)
+    single = _single_bindings(tree) if write_is_local is not None else {}
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -636,6 +640,8 @@ def _analyze_tree(
         match = _DANGEROUS_BY_DOTTED.get(dotted)
         if match is not None:
             _, label, category = match
+            if _writes_only_local_work(node, dotted, category, alias_map, single, write_is_local):
+                continue
             result = _build_open_aware_result(node, dotted, label, category)
             if result.is_dangerous:
                 return result
@@ -646,6 +652,8 @@ def _analyze_tree(
             mod_leaves = _DANGEROUS_LEAVES_BY_MODULE.get(mod)
             if mod_leaves and leaf in mod_leaves:
                 label, category = mod_leaves[leaf]
+                if _writes_only_local_work(node, dotted, category, alias_map, single, write_is_local):
+                    continue
                 result = _build_open_aware_result(node, dotted, label, category)
                 if result.is_dangerous:
                     return result
@@ -755,23 +763,63 @@ _RUNTIME_NAME_CALLS: FrozenSet[str] = frozenset({"getattr", "setattr", "delattr"
 
 def parse_finds_no_effect(
     code: str, argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]] = None,
+    write_is_local: Optional[Callable[[str], bool]] = None,
 ) -> bool:
     """True when ``code`` parses and neither the catalog nor the uncatalogued-effect screen finds an effect."""
     if not code or not code.strip():
         return False
     trees = _python_views(code)
-    if trees is None or analyze_python_inline(code, argv_is_mutative).is_dangerous:
+    if trees is None or analyze_python_inline(code, argv_is_mutative, write_is_local).is_dangerous:
         return False
-    return not any(uncatalogued_effect(tree) for tree in trees)
+    return not any(uncatalogued_effect(tree, write_is_local) for tree in trees)
 
 
-def uncatalogued_effect(tree: ast.AST) -> str:
+_LOCAL_HANDLE_OPENERS: FrozenSet[str] = frozenset({"open", "io.open", "codecs.open", "pathlib.Path.open"})
+
+
+def _local_handles(tree: ast.AST, alias_map: "_AliasResolver", single: Dict[str, ast.AST],
+                   write_is_local: Callable[[str], bool]) -> Set[str]:
+    bound: Dict[str, List[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.withitem) and isinstance(node.optional_vars, ast.Name):
+            bound.setdefault(node.optional_vars.id, []).append(node.context_expr)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            bound.setdefault(node.targets[0].id, []).append(node.value)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.setdefault(node.id, [])
+    local = set()
+    for name, values in bound.items():
+        stores = sum(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store) for n in ast.walk(tree))
+        if values and len(values) == stores and all(
+                isinstance(value, ast.Call) and alias_map.resolve_call(value.func) in _LOCAL_HANDLE_OPENERS
+                and _writes_only_local_work(value, alias_map.resolve_call(value.func), "FILE_WRITE",
+                                            alias_map, single, write_is_local)
+                for value in values):
+            local.add(name)
+    return local
+
+
+def _effect_on_local_work(node: ast.Call, dotted: str, alias_map: "_AliasResolver", single: Dict[str, ast.AST],
+                          handles: Set[str], write_is_local: Optional[Callable[[str], bool]]) -> bool:
+    if write_is_local is None or not isinstance(node.func, ast.Attribute):
+        return False
+    receiver = node.func.value
+    if isinstance(receiver, ast.Name) and receiver.id in handles:
+        return True
+    if dotted.split(".")[0] in ("os", "shutil"):
+        return _writes_only_local_work(node, dotted, "FILE_WRITE", alias_map, single, write_is_local)
+    path = _static_path(receiver, alias_map, single)
+    return path is not None and os.path.isabs(path) and write_is_local(path)
+
+
+def uncatalogued_effect(tree: ast.AST, write_is_local: Optional[Callable[[str], bool]] = None) -> str:
     """The first uncatalogued effect in *tree* (``module``, ``call``, ``sql``, ``write``, ``env`` or ``path``), or ""."""
     alias_map = _AliasResolver()
     alias_map.collect(tree)
     if _environment_reaches_a_process(tree, alias_map):
         return "env"
     bindings = _single_bindings(tree)
+    handles = _local_handles(tree, alias_map, bindings, write_is_local) if write_is_local else set()
     sql = _ReadOnlyChecker()
     receivers = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     receivers |= {
@@ -817,6 +865,8 @@ def uncatalogued_effect(tree: ast.AST) -> str:
                 return "path"
         leaf = node.func.attr if isinstance(node.func, ast.Attribute) else dotted.rpartition(".")[2]
         if alias_map.getattr_name(node) is not None and alias_map.resolve_call(node.args[0]) is not None:
+            continue
+        if leaf in _EFFECT_METHODS and _effect_on_local_work(node, dotted, alias_map, bindings, handles, write_is_local):
             continue
         if leaf in _RUNTIME_NAME_CALLS or (leaf in _EFFECT_METHODS and dotted not in _STDIO_WRITERS):
             return "call"
@@ -1092,6 +1142,59 @@ def _is_path_value(node: ast.AST, alias_map: "_AliasResolver") -> bool:
 
 def _names_home(node: ast.AST) -> bool:
     return _is_str_literal(node) and node.value in _HOME_VARIABLES
+
+
+_LOCAL_WORK_CATEGORIES: FrozenSet[str] = frozenset({"FILE_WRITE", "FILE_MUTATION"})
+_STATIC_JOINERS: FrozenSet[str] = frozenset({
+    "os.path.join", "os.fspath", "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath",
+})
+
+
+def _static_path(node: ast.AST, alias_map: "_AliasResolver", single: Dict[str, ast.AST], depth: int = 0) -> Optional[str]:
+    """The path *node* always evaluates to, computed from literals, names bound once, joins and ``~``; else None."""
+    if depth > 8:
+        return None
+    if _is_str_literal(node):
+        return node.value
+    if isinstance(node, ast.JoinedStr) and all(_is_str_literal(value) for value in node.values):
+        return "".join(value.value for value in node.values)
+    if isinstance(node, ast.Name) and node.id in single:
+        return _static_path(single[node.id], alias_map, single, depth + 1)
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        inner = _static_path(node.value, alias_map, single, depth + 1)
+        return None if inner is None else os.path.dirname(inner.rstrip("/"))
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        parts = [_static_path(side, alias_map, single, depth + 1) for side in (node.left, node.right)]
+        return None if None in parts else os.path.join(*parts)
+    if not isinstance(node, ast.Call) or node.keywords:
+        return None
+    dotted = alias_map.resolve_call(node.func)
+    if dotted == "pathlib.Path.home" and not node.args:
+        return os.path.expanduser("~")
+    method = node.func.attr if isinstance(node.func, ast.Attribute) and dotted not in _STATIC_JOINERS else None
+    if method in ("joinpath", "expanduser"):
+        parts = [_static_path(arg, alias_map, single, depth + 1) for arg in (node.func.value, *node.args)]
+    elif dotted in _STATIC_JOINERS or dotted == "os.path.expanduser":
+        parts = [_static_path(arg, alias_map, single, depth + 1) for arg in node.args]
+    else:
+        return None
+    if not parts or None in parts:
+        return None
+    return os.path.expanduser(os.path.join(*parts))
+
+
+def _writes_only_local_work(
+    node: ast.Call, dotted: str, category: str, alias_map: "_AliasResolver",
+    single: Dict[str, ast.AST], write_is_local: Optional[Callable[[str], bool]],
+) -> bool:
+    if write_is_local is None or category not in _LOCAL_WORK_CATEGORIES:
+        return False
+    if dotted.startswith("pathlib.") and isinstance(node.func, ast.Attribute):
+        nodes = [node.func.value]
+    else:
+        nodes = _path_arguments(node, dotted) or node.args[:1]
+    paths = [_static_path(each, alias_map, single) for each in nodes]
+    return bool(paths) and all(p is not None and os.path.isabs(p) and write_is_local(p) for p in paths)
 
 
 def runs_code_string(code: str) -> bool:
