@@ -13,6 +13,8 @@ RULE = "floor.host-tool-output"
 _SPOOL = re.compile(r"(?:^|/)\.claude/projects/(?:[^/\s'\"]+/)+tool-results(?:/|$)")
 _ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
 _OUTPUT_REDIRECT = re.compile(r"^(?:1?|&)>>?(.*)$")
+_SED_ADDRESS = r"(?:\d+|\$|/[^/]*/)"
+_SED_PRINT = re.compile(rf"\s*(?:{_SED_ADDRESS}(?:\s*,\s*{_SED_ADDRESS})?)?\s*p\s*")
 _INSPECTORS = frozenset({
     "grep", "egrep", "fgrep", "rg", "head", "tail", "cat", "wc", "less", "more", "ls", "stat", "file", "cd",
     "cut", "sort", "uniq", "nl", "tr", "column", "fold",
@@ -54,18 +56,44 @@ def _writes_stdout(words: List[str]) -> bool:
     return False
 
 
+def _sed_only_prints(words: List[str]) -> bool:
+    """True for ``sed -n`` whose every script command prints an address or range, and nothing else."""
+    quiet, scripts, operands = False, [], []
+    arguments = iter(words[1:])
+    for word in arguments:
+        if word in ("-e", "--expression"):
+            scripts.append(next(arguments, ""))
+        elif word.startswith("--expression="):
+            scripts.append(word.split("=", 1)[1])
+        elif word in ("--quiet", "--silent"):
+            quiet = True
+        elif re.fullmatch(r"-[nEr]+", word):
+            quiet = quiet or "n" in word
+        elif word == "--regexp-extended":
+            continue
+        elif word.startswith("-"):
+            return False
+        else:
+            operands.append(word)
+    if not scripts and operands:
+        scripts.append(operands.pop(0))
+    parts = [part for script in scripts for part in re.split(r"[;\n]", script) if part.strip()]
+    return quiet and bool(parts) and all(_SED_PRINT.fullmatch(part) for part in parts)
+
+
 def misused_spool(command: str, cwd: Optional[str] = None, depth: int = 0) -> Optional[str]:
     """The tool-output path *command* copies or feeds to a program; inspecting it with a reader is not a use."""
     from ..tools.shell_parser import parse_command
 
     named = cwd if cwd and _SPOOL.search(os.path.abspath(cwd) + "/") else None
-    programs, redirected = [], False
+    inspections, redirected = [], False
     for component in parse_command(command or ""):
         words = _words(component.strip())
         if not words:
             continue
         program = command_name(words[0])
-        programs.append(program)
+        inspects = program in _INSPECTORS or (program == "sed" and _sed_only_prints(words))
+        inspections.append(inspects)
         redirected = redirected or _writes_stdout(words)
         for word in words[1:]:
             if not _names_spool(word):
@@ -75,10 +103,10 @@ def misused_spool(command: str, cwd: Optional[str] = None, depth: int = 0) -> Op
                 if hit:
                     return hit
                 continue
-            if program not in _INSPECTORS:
+            if not inspects:
                 return word
             named = named or word
-    if named and (redirected or any(program not in _INSPECTORS for program in programs)):
+    if named and (redirected or not all(inspections)):
         return named
     return None
 
