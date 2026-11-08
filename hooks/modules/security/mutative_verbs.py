@@ -2968,10 +2968,50 @@ def _rm_scratch_confined_targets(tokens: tuple, caller: "Optional[LocalWorkCalle
         if ".." in token:
             return None
         real = _resolve_local_work_path(token, caller.cwd if caller else None)
-        if real is None or not _owned_by(_scratch_entry(real), caller) or _shares_inode(real):
+        if real is None or _owned_local_work_root(real, caller) is None or _shares_inode(real):
             return None
         resolved.append(real)
     return tuple(resolved)
+
+
+def _owned_local_work_root(real: str, caller: "Optional[LocalWorkCaller]") -> "str | None":
+    """The caller's own scratch entry or managed worktree holding *real*: a worktree counts only when its recorded agent is the caller."""
+    root = _local_work_root(real, caller)
+    if root is None or _scratch_entry(real) is not None:
+        return root
+    try:
+        from gaia.worktree import read_worktree_metadata
+        metadata = read_worktree_metadata(root)
+    except Exception:
+        return None
+    return root if metadata is not None and caller is not None and metadata.agent_id == caller.agent_id else None
+
+
+_CHMOD_LOCAL_WORK_SHORT_FLAGS: FrozenSet[str] = frozenset("Rvcf")
+_CHMOD_LOCAL_WORK_LONG_FLAGS: FrozenSet[str] = frozenset({
+    "--recursive", "--verbose", "--changes", "--silent", "--quiet",
+})
+
+
+def _chmod_local_work_targets(tokens: tuple, caller: LocalWorkCaller) -> "Tuple[str, ...] | None":
+    """Return the files a ``chmod <mode> <path>...`` changes when every one is the caller's own scratch or worktree."""
+    import os
+    parsed = _local_work_operands(tokens, _CHMOD_LOCAL_WORK_SHORT_FLAGS, _CHMOD_LOCAL_WORK_LONG_FLAGS)
+    if parsed is None:
+        return None
+    (_mode, *targets), used = parsed
+    recursive = bool(used & {"R", "--recursive"})
+    changed = []
+    for target in targets:
+        if ".." in target.split(os.sep):
+            return None
+        real = _resolve_local_work_path(target, caller.cwd)
+        if real is None or _owned_local_work_root(real, caller) is None or _shares_inode(real):
+            return None
+        if recursive and os.path.isdir(real) and (_tree_shares_inode(real) or _tree_carries_git(real)):
+            return None
+        changed.append(real)
+    return tuple(changed)
 
 
 _LOCAL_WORK_UNRESOLVED_CHARS: FrozenSet[str] = frozenset("*?[]{}$`")
@@ -3214,7 +3254,7 @@ _PLANTS_NO_LINK: FrozenSet[str] = frozenset({
     "tail", "grep", "diff", "file", "du", "df", "realpath", "readlink",
     "basename", "dirname", "sleep", "date", "sha256sum", "md5sum",
 })
-_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar", "rm", "rmdir", "git"})
+_LOCAL_WORK_RELIEF_COMMANDS: FrozenSet[str] = frozenset({"mv", "cp", "tar", "rm", "rmdir", "git", "chmod"})
 
 
 def chain_withdraws_local_work_relief(components: List[str]) -> List[str]:
@@ -6071,6 +6111,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     ),
                 )
 
+        if base_cmd == "chmod" and caller is not None and _chmod_local_work_targets(tuple(tokens), caller):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb=base_cmd,
+                cli_family="system",
+                confidence="high",
+                reason="chmod changing modes only inside the caller's own scratch entry or worktree",
+            )
+
         return MutativeResult(
             is_mutative=True,
             category=alias_category,
@@ -6235,7 +6285,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # token) is still inspected.  Returns None when the command is not a
     # recognized script-file shape, so detection continues normally.
     script_result = _check_script_file(
-        command, base_cmd, family, semantics, cwd=cwd, _depth=_depth,
+        command, base_cmd, family, semantics, cwd=cwd, _depth=_depth, caller=caller,
     )
     if script_result is not None:
         return script_result
@@ -9497,6 +9547,18 @@ def _repository_top(directory: Path) -> "Optional[Path]":
     return Path(os.path.realpath(top)) if top else None
 
 
+def _pytest_repository(base: Path, options: "List[Tuple[str, Optional[str]]]", bare: bool) -> "Optional[Path]":
+    """The repository a pytest run starts in, else the one a bare ``pytest``'s absolute ``--rootdir`` names."""
+    top = _repository_top(base)
+    if top is not None or not bare:
+        return top
+    rootdir = next((value for name, value in reversed(options) if name == "--rootdir"), None)
+    if not rootdir or any(char in rootdir for char in "$`") or not os.path.isabs(os.path.expanduser(rootdir)):
+        return None
+    directory = Path(os.path.realpath(os.path.expanduser(rootdir)))
+    return _repository_top(directory) if directory.is_dir() else None
+
+
 def _inside_repository(top: "Optional[Path]", base: Path, value: "Optional[str]") -> "Optional[Path]":
     if top is None or not value or any(char in value for char in "$`"):
         return None
@@ -9652,8 +9714,8 @@ def _check_pytest_run(
     if args is None:
         return None
     base = Path(cwd or Path.cwd())
-    top = _repository_top(base)
     options, positionals, known = _pytest_options(args)
+    top = _pytest_repository(base, options, base_cmd in _PYTEST_PROGRAMS)
     effect = _pytest_outside_effect(options, top, base)
     if effect is not None:
         return effect
@@ -9740,14 +9802,21 @@ def runs_under_injected_environment(
         return None
     programs = set()
     runs_pytest = False
+    pytest_top: "Optional[Path]" = None
     for reading in _peel_wrapper_readings(command)[0]:
         try:
             words = shlex.split(reading)
         except ValueError:
             continue
         if words:
-            programs.add(program_identity(words[0]).lower())
-            runs_pytest = runs_pytest or _pytest_arguments(program_identity(words[0]).lower(), words[1:]) is not None
+            program = program_identity(words[0]).lower()
+            programs.add(program)
+            pytest_args = _pytest_arguments(program, words[1:])
+            if pytest_args is not None and not runs_pytest:
+                runs_pytest = True
+                pytest_top = _pytest_repository(
+                    Path(cwd or Path.cwd()), _pytest_options(pytest_args)[0], program in _PYTEST_PROGRAMS,
+                )
     for program, name, value in assignments:
         pattern = _CODE_INJECTING_ENVIRONMENT[program][0]
         reached = any(pattern.fullmatch(candidate) for candidate in programs) or (
@@ -9770,15 +9839,15 @@ def runs_under_injected_environment(
             if _node_options_load_code(value):
                 return _foreign_code_result(f"NODE_OPTIONS={value} preloads code into node")
         elif name != "PYTHONPATH" or (
-            _pythonpath_is_writable(value, cwd) and not (runs_pytest and _pythonpath_in_repository(value, cwd))
+            _pythonpath_is_writable(value, cwd)
+            and not (runs_pytest and _pythonpath_in_repository(value, cwd, pytest_top))
         ):
             return _foreign_code_result(f"{name} makes {program} load {value}")
     return None
 
 
-def _pythonpath_in_repository(value: str, cwd: "Optional[str]") -> bool:
+def _pythonpath_in_repository(value: str, cwd: "Optional[str]", top: "Optional[Path]") -> bool:
     base = Path(cwd or Path.cwd())
-    top = _repository_top(base)
     return all(_inside_repository(top, base, entry) is not None for entry in value.split(os.pathsep))
 
 
@@ -9995,9 +10064,23 @@ def _check_script_by_shebang(
     return detect_mutative_command(f"{interpreter} {command.strip()}", cwd=cwd, _depth=_depth + 1)
 
 
+def _local_work_writer(caller: "Optional[LocalWorkCaller]") -> "Optional[Callable[[str], bool]]":
+    if caller is None or not caller.agent_id:
+        return None
+
+    def accepts(path: str) -> bool:
+        real = _resolve_local_work_path(path, None, follow_last=False)
+        return (
+            real is not None and not _shares_inode(real)
+            and _owned_local_work_root(real, caller) is not None
+            and _durable_store_under_scratch_targets((real,)) is None
+        )
+    return accepts
+
+
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
-    cwd: "Optional[str]" = None, _depth: int = 0,
+    cwd: "Optional[str]" = None, _depth: int = 0, caller: "Optional[LocalWorkCaller]" = None,
 ) -> "Optional[MutativeResult]":
     """Classify ``<interpreter> <file>`` / ``./script`` by the file's content.
 
@@ -10133,7 +10216,9 @@ def _check_script_file(
         def argv_is_mutative(argv: Tuple[str, ...]) -> bool:
             return _argv_command_is_mutative(argv, cwd=cwd, _depth=_depth + 1)
 
-        ast_result = _analyze_python_inline(content, argv_is_mutative=argv_is_mutative)
+        ast_result = _analyze_python_inline(
+            content, argv_is_mutative=argv_is_mutative, write_is_local=_local_work_writer(caller),
+        )
         if ast_result.is_dangerous:
             return MutativeResult(
                 is_mutative=True,
@@ -10164,7 +10249,7 @@ def _check_script_file(
                 reason=f"Python script '{script_path}' hands a string to eval/exec/compile",
                 rule="sign.foreign-code",
             )
-        if not _parse_finds_no_effect(content, argv_is_mutative):
+        if not _parse_finds_no_effect(content, argv_is_mutative, write_is_local=_local_work_writer(caller)):
             return _uncatalogued_python_effect(family, f"Python script '{script_path}'")
         return MutativeResult(
             is_mutative=False,

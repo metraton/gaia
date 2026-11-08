@@ -52,6 +52,7 @@ REMEDIATION: Dict[str, str] = {
     "floor.kubectl-secret-output": "Read the secret's metadata without its data, or ask the user for the value.",
     "floor.cloud-pipe": "Run the cloud command on its own and read its output, with no pipe, redirect or chain.",
     "floor.secret-read": "Leave the secret where it is and ask the user for the value or for a scoped credential.",
+    "floor.host-tool-output": "Regenerate the data from its source into ~/.gaia/scratch/<contract_id>, or open the spool with the Read tool.",
     "floor.commit-message": "Rewrite the commit message as the error describes and commit again.",
     "floor.clear-secret": "Move the secret out of the command line into a variable or file the command reads, then run it again.",
     "floor.no-requester": "Run the command from a dispatched turn whose host event names its agent, so the request can be bound to it.",

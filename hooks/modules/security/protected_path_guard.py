@@ -614,15 +614,21 @@ def _component_writes_protected_path(component: str, cwd: Optional[str] = None) 
 
 
 _DATA_STORE_GROUPS = frozenset({"contract", "memory"})
+_STORED_REQUEST_VERBS = frozenset({"request", "request-set", "request-file-write"})
 
 
 def _stores_its_words(command: str) -> bool:
-    """True when the line is one plain ``gaia contract|memory`` call: its words go to gaia.db, never to a path."""
+    """True when the line is one plain ``gaia contract|memory`` call or approval request: its words go to gaia.db, never to a path."""
     words = None if "\n" in command or "\r" in command else _literal_words(command.strip())
     if not words or words[0][1] or not is_gaia_cli(words[0][0]):
         return False
-    group = next(((word, quoted) for word, quoted in words[1:] if not word.startswith("-")), ("", True))
-    return not group[1] and group[0] in _DATA_STORE_GROUPS
+    positionals = [(word, quoted) for word, quoted in words[1:] if not word.startswith("-")][:2]
+    if not positionals or positionals[0][1]:
+        return False
+    if positionals[0][0] in _DATA_STORE_GROUPS:
+        return True
+    return (positionals[0][0] == "approvals" and len(positionals) == 2
+            and not positionals[1][1] and positionals[1][0] in _STORED_REQUEST_VERBS)
 
 
 def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[str]:
