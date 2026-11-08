@@ -76,7 +76,7 @@ def test_an_rc_from_a_deleted_release_branch_is_fetched_and_promoted(repo, tmp_p
     _git(repo, "push", "origin", "HEAD:refs/heads/release/5.7.3", "refs/tags/v5.7.3-rc.1")
     _git(repo, "push", "origin", ":refs/heads/release/5.7.3")
     clone = tmp_path / "promote"
-    subprocess.run(["git", "clone", "--no-tags", str(tmp_path / "origin.git"), str(clone)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "--no-tags", "--branch", "main", str(tmp_path / "origin.git"), str(clone)], check=True, capture_output=True)
     (clone / "main.py").write_text("print('rc.1 of 5.7.3')\n")
     (clone / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.7.3"}))
     _git(clone, "commit", "-am", "squash-merge release/5.7.3 and bump")
