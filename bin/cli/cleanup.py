@@ -151,12 +151,14 @@ RETENTION_POLICY = [
         "type": "turn-scoped",
         "dir_fn": _lazy_scratch_dir,
         "label": "Scratch (closed-turn working files)",
+        "stale": True,
     },
     {
         "key": "tmp",
         "type": "turn-scoped",
         "dir_fn": _lazy_tmp_dir,
         "label": "Tmp (closed-turn temp files)",
+        "stale": True,
     },
     {
         "key": "cache",
@@ -213,6 +215,15 @@ def _fs_retention_grace_hours():
     except ImportError:
         return None
     return resolve_grace_hours()
+
+
+def _fs_retention_stale_days():
+    """The untouched window the scratch and tmp rules apply to entries with no readable owner, or None."""
+    try:
+        from gaia.retention.fs_rules import resolve_stale_days
+    except ImportError:
+        return None
+    return resolve_stale_days()
 
 
 def _matches_pattern(filename: str, pattern: str) -> bool:
@@ -298,7 +309,7 @@ def _prune_contract_drafts(pattern: str, label: str, dry_run: bool) -> list:
     return actions
 
 
-def _prune_turn_scoped(root: Optional[Path], label: str, dry_run: bool) -> list:
+def _prune_turn_scoped(root: Optional[Path], label: str, dry_run: bool, stale: bool = False) -> list:
     """Prune closed-owner entries under a Gaia-owned ephemeral directory.
 
     Shared by the scratch/tmp/cache rules: selection is entirely delegated
@@ -310,11 +321,13 @@ def _prune_turn_scoped(root: Optional[Path], label: str, dry_run: bool) -> list:
     if root is None:
         return []
     try:
-        from gaia.retention.fs_rules import collectable_turn_scoped
+        from gaia.retention.fs_rules import collectable_turn_scoped, resolve_stale_days
     except ImportError:
         return []
     try:
-        selected = collectable_turn_scoped(root, label=label)
+        selected = collectable_turn_scoped(
+            root, label=label, stale_days=resolve_stale_days() if stale else None
+        )
     except Exception:  # noqa: BLE001 -- retention must never abort cleanup
         return []
 
@@ -590,7 +603,7 @@ def _apply_retention_policy(root: Path, dry_run: bool) -> list:
             )
         elif ptype == "turn-scoped":
             all_actions.extend(
-                _prune_turn_scoped(policy["dir_fn"](), policy["label"], dry_run)
+                _prune_turn_scoped(policy["dir_fn"](), policy["label"], dry_run, policy.get("stale", False))
             )
         elif ptype == "rejected-turns":
             all_actions.extend(
@@ -1127,6 +1140,7 @@ def cmd_cleanup(args) -> int:
         "contract_drafts_days": _contract_drafts_max_days(),
         "contract_drafts_grace_hours": _contract_drafts_grace_hours(),
         "fs_retention_grace_hours": _fs_retention_grace_hours(),
+        "fs_retention_stale_days": _fs_retention_stale_days(),
     }
 
     if prune_only:
@@ -1141,9 +1155,10 @@ def cmd_cleanup(args) -> int:
             print("  Anomaly flag:         1 hour TTL")
             print(f"  Contract drafts:     {_contract_drafts_max_days()} days,"
                   f" or spent + quiet {_contract_drafts_grace_hours()}h")
-            # These rules have no day count: an entry goes once its owner is terminal and quiet for the grace window.
-            print(f"  Scratch/tmp/cache:   owning contract terminal,"
-                  f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
+            print(f"  Scratch/tmp/cache:   owning contract terminal (or paused, session dead),"
+                  f" quiet {_fs_retention_grace_hours()}h")
+            print(f"  Scratch/tmp:         no owner on record, or paused with an unreadable"
+                  f" session: untouched {_fs_retention_stale_days()} days, no open file")
             print(f"  Rejected turns:      owning session terminal,"
                   f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
             # Worktrees: owner is the worktree's own contract/session, judged by worktree_collect_reason.

@@ -172,7 +172,7 @@ def test_unreadable_db_never_falls_back_to_age(fs_rules, monkeypatch, tmp_path):
     selected = fs_rules.collectable_turn_scoped(root, grace_hours=24)
 
     assert selected == []
-    assert fs_rules._closed_contract_ids({contract_id}) == set()
+    assert fs_rules._contract_states({contract_id}) is None
 
 
 # ---------------------------------------------------------------------------
