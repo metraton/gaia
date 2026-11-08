@@ -30,7 +30,7 @@ def _unwritable(proposal: dict) -> Optional[str]:
     if proposal.get("operation") != "create":
         return None
     from gaia.store.memory_placement import MEMORY_KINDS, placement_refusal
-    from gaia.store.writer import VALID_MEMORY_TYPES, _validate_curated_slug
+    from gaia.store.writer import HOST_SCOPED_INITIATIVES, VALID_MEMORY_TYPES, _validate_curated_slug
 
     create = proposal.get("create") or {}
     slug, mem_type = str(create.get("slug") or ""), create.get("type")
@@ -45,8 +45,13 @@ def _unwritable(proposal: dict) -> Optional[str]:
         _validate_curated_slug(slug, mem_type)
     except ValueError as exc:
         return str(exc)
-    # Accepting writes a non-user proposal onto its contract's project.
-    owner = "user" if mem_type == "user" else "project"
+    # Accepting writes a non-user proposal onto its contract's project, or onto gaia under a host initiative.
+    if mem_type == "user":
+        owner = "user"
+    elif create.get("initiative") in HOST_SCOPED_INITIATIVES:
+        owner = "gaia"
+    else:
+        owner = "project"
     return placement_refusal(owner, kind, create.get("until"))
 
 

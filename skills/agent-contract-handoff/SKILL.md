@@ -243,7 +243,9 @@ minted, `approval_id`, copied verbatim from the request's output.
   the line against `conclusion` in `agent-protocol`.
 - `memory_delta`: the one memory proposal channel, never write authority --
   `{"version": 1, "proposals": [...]}`, each proposal an `operation` and its
-  object (`create`, `append`, `reclassify`, `link`).
+  object (`create`, `append`, `reclassify`, `link`). A non-user `create` lands
+  on the contract's project; a Gaia defect or lesson carries
+  `"initiative": "gaia_system"` and lands on owner gaia.
 - `update_contracts`: `{contract, payload}` entries, a proposal for any
   section and never write authority: project context is written by the
   orchestrator alone. SubagentStop writes nothing for them, whatever
