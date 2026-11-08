@@ -66,6 +66,24 @@ def test_code_changed_after_the_rc_is_refused(repo):
     assert "main.py" in release._check_promoted_from_rc(repo, "5.7.2")
 
 
+def test_an_rc_from_a_deleted_release_branch_is_fetched_and_promoted(repo, tmp_path):
+    """The RC commit lives only behind its tag (release branch merged by squash and deleted), absent from the clone."""
+    _git(repo, "checkout", "-b", "release/5.7.3")
+    (repo / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.7.3-rc.1"}))
+    (repo / "main.py").write_text("print('rc.1 of 5.7.3')\n")
+    _git(repo, "commit", "-am", "rc")
+    _git(repo, "tag", "-a", "v5.7.3-rc.1", "-m", "rc")
+    _git(repo, "push", "origin", "HEAD:refs/heads/release/5.7.3", "refs/tags/v5.7.3-rc.1")
+    _git(repo, "push", "origin", ":refs/heads/release/5.7.3")
+    clone = tmp_path / "promote"
+    subprocess.run(["git", "clone", "--no-tags", "--branch", "main", str(tmp_path / "origin.git"), str(clone)], check=True, capture_output=True)
+    (clone / "main.py").write_text("print('rc.1 of 5.7.3')\n")
+    (clone / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.7.3"}))
+    _git(clone, "commit", "-am", "squash-merge release/5.7.3 and bump")
+    _record("5.7.3-rc.1")
+    assert release._check_promoted_from_rc(clone, "5.7.3") is None
+
+
 def test_a_prerelease_needs_no_rc(repo):
     assert release._check_promoted_from_rc(repo, "5.7.3-rc.1") is None
 

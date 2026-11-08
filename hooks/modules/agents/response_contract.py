@@ -388,7 +388,7 @@ def _free_shape_create(entry: dict) -> Optional[Dict[str, Any]]:
     slug = entry.get("slug") or entry.get("name")
     if slug:
         create["slug"] = str(slug)
-    for key in ("type", "kind"):
+    for key in ("type", "kind", "class", "initiative"):
         if entry.get(key):
             create[key] = str(entry[key])
     return {"operation": "create", "create": create}

@@ -16,10 +16,12 @@ Gaia ships as one tree reaching an install folder through two surfaces -- npm/pn
 ├─ Already installed in an install folder (npm/pnpm), edited source? -> live
 ├─ Proving the npm tarball before a release?                        -> npm-sandbox
 ├─ Proving the npm tarball as a plugin before a release?           -> plugin
+├─ Proving every install channel runs the session smoke set,
+│  on a tarball or on an RC installed from its tag?                -> smoke
 └─ Confirming a version already published to npm?                   -> registry
 ```
 
-If the user does not name a mode, ask: "Which mode -- live, npm-sandbox, plugin, or registry?"
+If the user does not name a mode, ask: "Which mode -- live, npm-sandbox, plugin, smoke, or registry?"
 
 ## Mode: live
 
@@ -38,6 +40,13 @@ Primary path: `gaia release check` runs this gate (as gate 2, `gaia:verify-insta
 Validates the Claude Code plugin surface -- the exact npm tarball, extracted, with its root mounted as a plugin. This is the only mode that exercises the root `plugin.json` (metadata-only) / `hooks/hooks.json`, the packaged agents/skills, and `bin/gaia` on PATH; the npm surface never touches any of it.
 
 Primary path: `gaia release check` runs this gate (as gate 3, `gaia:plugin-dryrun`) inside the full Layer 2 sequence, and SKIPs it gracefully when the `claude` binary is absent. To run just this surface, `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`, what `gaia release check` wraps) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root `plugin.json` present with NO inline `hooks` block, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real install folder and spawns no session; the temps are trap-cleaned. Add `gaia release check --functional` (or `npm run gaia:plugin-dryrun -- --functional`) for an optional live functional probe that starts the host on the extracted plugin (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 gate 3 calls. Do NOT publish or install to the real registry to run this.
+
+## Mode: smoke
+
+Validates that the hooks each install channel loads let the session smoke set run free -- `--version`, `now`, `doctor`, `memory show`, `approvals question`, and a subagent's `contract finalize` -- by path and as a bare `gaia`, as orchestrator and as subagent (`bin/cli/_install_smoke.py`). Two forms:
+
+- **On a tarball (`install:smoke`).** `gaia release smoke --tarball <tgz>` (or no flag, to pack this tree) lays the tarball out as the marketplace cache, a workspace's `node_modules`, the npm global prefix and a dev-plugin entry in a throwaway home. This is gate 7 of `gaia release check`, and `gaia release publish` runs it on the bumped tree.
+- **Live on an RC (`--live`).** Install the RC the way a tester does -- npm `@jaguilar87/gaia@x.y.z-rc.N`, and the plugin from the RC's ref: `claude plugin marketplace remove gaia-marketplace`, `claude plugin marketplace add metraton/gaia#vx.y.z-rc.N`, `claude plugin install gaia@gaia-marketplace` (an RC lives on its release branch, never on `main`, so the default marketplace never serves it). Then `gaia release smoke --live --version x.y.z-rc.N --workspace <install-folder>` drives those installed copies, both channels required, and records the pass in `release-smoke/<rc>.json` under the state directory. A stable publish is refused without that record (`_check_promoted_from_rc`, `gaia-release` Layer 3).
 
 ## Mode: registry
 
@@ -105,7 +114,7 @@ this convergence; there is no `--from` flag -- the command IS the origin.
 Every mode ends with a structured result:
 
 ```
-Mode:     <live | npm-sandbox | plugin | registry>
+Mode:     <live | npm-sandbox | plugin | smoke | registry>
 Surface:  <npm/pnpm | plugin>
 Version:  <version installed, or "symlinked source" for live>
 Doctor:   PASS | FAIL

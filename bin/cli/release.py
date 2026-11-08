@@ -856,6 +856,9 @@ def _check_promoted_from_rc(repo_root: Path, version: str, *, timeout: int = 30)
         )
     changed = _git_out(repo_root, ["diff", "--name-only", commit, "HEAD"], timeout=timeout)
     if changed is None:
+        _git_out(repo_root, ["fetch", "--no-tags", _PUSH_REMOTE, f"refs/tags/v{candidate}"], timeout=timeout)
+        changed = _git_out(repo_root, ["diff", "--name-only", commit, "HEAD"], timeout=timeout)
+    if changed is None:
         return f"cannot compare HEAD with RC {candidate} ({commit[:12]}); fetch its tag and re-run"
     drift = [path for path in changed.splitlines() if path not in _VERSION_SOURCES]
     if drift:
@@ -1260,17 +1263,24 @@ def _is_prerelease(version: str) -> bool:
     return any(marker in version for marker in ("-rc.", "-beta.", "-alpha."))
 
 
-def _check_stable_from_main(version: str, push_branch: str | None) -> str | None:
-    """Return an actionable error when a STABLE *version* would be pushed to an
-    origin branch other than ``main``; None for a pre-release to any branch or
-    a stable to ``main``.
+def _check_release_branch(version: str, push_branch: str | None) -> str | None:
+    """Why *version* may not be pushed to *push_branch* -- a stable anywhere but
+    ``main``, a pre-release to ``main`` -- or None.
 
-    A stable release reaches `latest` for every channel, so it ships only what
-    main holds. The check reads the push target, not the local branch name:
-    step 7 fast-forwards exactly that branch, so a stable passes only when what
-    it pushes lands on main. There is no escape flag.
+    A stable reaches `latest` everywhere, so it ships only what main holds; the
+    marketplace serves main (`source: "."`, no ref) to every plugin user, so an
+    RC there reaches all of them. Reads the push target step 7 fast-forwards.
     """
-    if _is_prerelease(version) or push_branch == "main":
+    if _is_prerelease(version):
+        if push_branch != "main":
+            return None
+        return (
+            f"pre-release {version} cannot be published to main: the marketplace serves "
+            f"main to every plugin user, so the RC would reach all of them. Publish it "
+            f"from a release branch (`--branch release/<x.y.z>`, pushed first); testers "
+            f"install it from its tag."
+        )
+    if push_branch == "main":
         return None
     shown = push_branch or "an origin branch that could not be resolved"
     return (
@@ -1318,7 +1328,7 @@ def preflight_publish(
       2. tag ``v<version>`` does not already exist (local or remote);
       3. pytest-xdist is importable (`npm test` uses `-n auto`);
       4. the push target resolves and HEAD fast-forwards it;
-      5. a stable version pushes to ``main`` (a pre-release to any branch);
+      5. a stable version pushes to ``main``, a pre-release to any other branch;
       6. a stable version is promoted from a published, live-smoked RC.
     """
     t0 = _now_ms()
@@ -1331,7 +1341,7 @@ def preflight_publish(
             _check_tag_absent(repo_root, version, timeout=timeout),
             _check_xdist_importable(),
             branch_error or _check_push_fast_forward(repo_root, push_branch, timeout=timeout),
-            _check_stable_from_main(version, push_branch),
+            _check_release_branch(version, push_branch),
             _check_promoted_from_rc(repo_root, version, timeout=timeout),
         )
         if p
@@ -1657,7 +1667,8 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "preconditions gate runs first: push access for the --gh account, tag\n"
             "v<version> absent, pytest-xdist importable, and a fast-forward push to\n"
             "the origin branch (--branch) -- a stable version (no -rc/-beta/-alpha)\n"
-            "publishes only to main; a pre-release to any branch:\n"
+            "publishes only to main, a pre-release only to another branch (a release\n"
+            "branch: main is what every marketplace user receives):\n"
             "  1. node deps                  -- npm ci --ignore-scripts from\n"
             "                                    package-lock.json when a declared\n"
             "                                    dependency is missing (fresh worktree)\n"
@@ -1821,6 +1832,9 @@ def cmd_release_publish(args: argparse.Namespace) -> int:
     if dry_run:
         push_branch, branch_error = resolve_push_branch(root, branch)
         push_target = f"{_PUSH_REMOTE}/{push_branch}" if push_branch else f"unresolved: {branch_error}"
+        refusal = push_branch and _check_release_branch(version, push_branch)
+        if refusal:
+            push_target += f" -- REFUSED: {refusal}"
         plan = build_publish_plan(version, local_suite=local_suite, gh=gh, push_branch=push_branch)
         _report_publish_plan(version, plan, push_target=push_target, account=_gh_login(root, gh), quiet=quiet)
         return 0
