@@ -27,6 +27,8 @@ That precedence settles claims about existing behavior, not the quality or permi
 of that behavior. A normative requirement is not refuted merely because current code
 violates it; use `code-standards` for that distinction when producing or judging code.
 
+Output the host persisted from a tool call (`~/.claude/projects/*/tool-results/`) is read-only evidence of what that call printed: never a data source a script reads, never an artifact you copy. Data you need as a file is regenerated from its source into your scratch entry.
+
 ## 4. Local and reversible work just happens; what goes out into the world is asked once, and you run it
 
 Commits, files and branches need no signature; operations that leave the local

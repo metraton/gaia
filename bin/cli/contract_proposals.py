@@ -78,6 +78,8 @@ def _resolve_project(reference: str) -> Optional[dict]:
 
 
 def _accept_memory(item: dict, owner: Optional[dict], workspace: Optional[str]) -> tuple:
+    from gaia.store.writer import HOST_SCOPED_INITIATIVES
+
     payload = item["payload"]
     if payload.get("operation") != "create":
         return False, (f"operation {payload.get('operation')!r} is applied with "
@@ -91,7 +93,9 @@ def _accept_memory(item: dict, owner: Optional[dict], workspace: Optional[str]) 
     for field in ("kind", "class", "until", "binary", "replaces"):
         if create.get(field):
             argv += [f"--{field}", create[field]]
-    if mem_type != "user":
+    if create.get("initiative") and mem_type != "user":
+        argv += ["--initiative", create["initiative"]]
+    if mem_type != "user" and create.get("initiative") not in HOST_SCOPED_INITIATIVES:
         if owner is None:
             return False, "the proposal has no project: pass --project <identity or name>"
         argv += ["--project-ref", owner["identity"], "--workspace", workspace or owner["workspace"]]

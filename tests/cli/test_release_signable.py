@@ -265,10 +265,26 @@ def test_unresolvable_push_target_names_the_branch_option(worktree_clone):
 
 
 def test_stable_requires_the_push_target_to_be_main():
-    assert release._check_stable_from_main("5.5.0", "main") is None
-    assert release._check_stable_from_main("5.5.0-rc.4", "feat/accumulating") is None
-    err = release._check_stable_from_main("5.5.0", "feat/accumulating")
+    assert release._check_release_branch("5.5.0", "main") is None
+    assert release._check_release_branch("5.5.0-rc.4", "feat/accumulating") is None
+    err = release._check_release_branch("5.5.0", "feat/accumulating")
     assert err is not None and "main" in err and "feat/accumulating" in err
+
+
+@pytest.mark.parametrize("version", ["5.7.2-rc.2", "5.8.0-beta.1", "5.8.0-alpha.1"])
+def test_a_prerelease_is_refused_on_main(version):
+    err = release._check_release_branch(version, "main")
+    assert err is not None and "release branch" in err
+
+
+def test_a_prerelease_to_main_stops_the_publish_before_any_step(monkeypatch):
+    for check in ("_check_gh_push_permission", "_check_tag_absent", "_check_xdist_importable",
+                  "_check_push_fast_forward", "_check_promoted_from_rc"):
+        monkeypatch.setattr(release, check, lambda *a, **k: None)
+    monkeypatch.setattr(release, "step_node_deps", lambda *a, **k: pytest.fail("a step ran"))
+    results = release.run_release_publish(Path("/nonexistent"), "5.7.2-rc.2", branch="main")
+    assert [r["status"] for r in results] == ["FAIL"]
+    assert "cannot be published to main" in results[0]["detail"]
 
 
 # ---------------------------------------------------------------------------
