@@ -856,7 +856,6 @@ def _check_promoted_from_rc(repo_root: Path, version: str, *, timeout: int = 30)
         )
     changed = _git_out(repo_root, ["diff", "--name-only", commit, "HEAD"], timeout=timeout)
     if changed is None:
-        # An RC lives on a release branch, so its commit may be absent here; fetch it without writing a ref.
         _git_out(repo_root, ["fetch", "--no-tags", _PUSH_REMOTE, f"refs/tags/v{candidate}"], timeout=timeout)
         changed = _git_out(repo_root, ["diff", "--name-only", commit, "HEAD"], timeout=timeout)
     if changed is None:
@@ -1265,17 +1264,12 @@ def _is_prerelease(version: str) -> bool:
 
 
 def _check_release_branch(version: str, push_branch: str | None) -> str | None:
-    """Return an actionable error when *version* would be pushed to the wrong
-    origin branch -- a stable anywhere but ``main``, a pre-release to ``main``;
-    None otherwise.
+    """Why *version* may not be pushed to *push_branch* -- a stable anywhere but
+    ``main``, a pre-release to ``main`` -- or None.
 
-    A stable reaches `latest` for every channel, so it ships only what main
-    holds. A pre-release never lands on main: the marketplace entry is
-    `source: "."` with no ref, so main is what every plugin user receives on
-    `claude plugin update`, and an RC there reaches all of them. An RC is
-    pushed to a release branch and installed from its tag. The check reads the
-    push target, not the local branch name, since step 7 fast-forwards exactly
-    that branch. There is no escape flag.
+    A stable reaches `latest` everywhere, so it ships only what main holds; the
+    marketplace serves main (`source: "."`, no ref) to every plugin user, so an
+    RC there reaches all of them. Reads the push target step 7 fast-forwards.
     """
     if _is_prerelease(version):
         if push_branch != "main":

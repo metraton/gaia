@@ -1,7 +1,6 @@
 name: CI
 
 on:
-  # release/** carries the RCs, which never land on main and still need a CI verdict.
   push:
     branches: [main, "release/**"]
   pull_request:
