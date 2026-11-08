@@ -120,6 +120,8 @@ from ..security.protected_path_guard import (
     unprovable_write_target,
 )
 from ..security.shell_write_guard import check as check_shell_write, system_path_target
+from ..security.host_output_guard import RULE as HOST_OUTPUT_RULE, check as check_host_tool_output
+from ..security.creation_place_guard import GUIDANCE as STRANDED_GUIDANCE, stranded_creation
 from ..security.privilege_guard import privilege_verdict
 from ..security.sensitive_read_guard import check as check_sensitive_read, remote_copy_destination
 from ..security.publish_attribution_guard import check as check_publish_attribution
@@ -1121,6 +1123,26 @@ class BashValidator:
                 tier=SecurityTier.T3_BLOCKED,
                 reason=sensitive_reason,
                 rule="floor.secret-read",
+            )
+
+        refusal = check_host_tool_output(write_guard_scope, cwd, is_subagent)
+        if refusal:
+            logger.warning("BLOCKED host tool output read: %s", command[:120])
+            return BashValidationResult(
+                allowed=False, tier=SecurityTier.T3_BLOCKED, reason=refusal, rule=HOST_OUTPUT_RULE,
+            )
+
+        stranded = stranded_creation(write_guard_scope, cwd, is_subagent)
+        if stranded:
+            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
+                command,
+                verb="stranded-creation",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+                cwd=cwd,
+                guidance=STRANDED_GUIDANCE.format(path=stranded),
             )
 
         # A redirect onto an account path is decided here as T3, before the

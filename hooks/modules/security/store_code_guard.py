@@ -48,6 +48,7 @@ _PLAIN_ENCODINGS = frozenset({
 _MODELLED_FLAGS = frozenset("IEsSBuObqvdPRVh")
 _INERT_X_OPTIONS = frozenset({"utf8", "utf8=0", "utf8=1", "dev"})
 _LANE_MODULES = frozenset({"pytest", "pip"})
+_PYTEST_PROGRAMS = frozenset({"pytest", "py.test"})
 _REDIRECT = re.compile(r"^\d*(?:>>?|<>|>&|&>>?|<&)")
 _HEREDOC_OPENER = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
 _MAX_FILES = 200
@@ -502,7 +503,9 @@ def _runner_tail(tokens: List[str]) -> Optional[Tuple[List[str], Optional[str]]]
     start = tokens.index("run") + 1
     for index in range(start, len(tokens)):
         token = tokens[index]
-        if _PYTHON.match(os.path.basename(token)):
+        if os.path.basename(token) in _PYTEST_PROGRAMS:
+            tail = ["python3", "-m", "pytest", *tokens[index + 1:]]
+        elif _PYTHON.match(os.path.basename(token)):
             tail = tokens[index:]
         elif token.endswith(".py"):
             tail = ["python3", *tokens[index:]]
