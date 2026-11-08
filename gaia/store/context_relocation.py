@@ -103,7 +103,9 @@ def plan_relocation(con: sqlite3.Connection, manifest: dict) -> dict:
 
 
 def _backup(con: sqlite3.Connection, db_file: Path) -> Path:
-    backup_dir = db_file.parent / "backups"
+    from gaia.paths.resolver import db_backup_dir
+
+    backup_dir = db_backup_dir(db_file)
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     target = backup_dir / f"{db_file.stem}-pre-context-relocate-{stamp}.db"

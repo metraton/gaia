@@ -250,6 +250,15 @@ def _stamp(
     )
 
 
+def _backup_dir() -> Path:
+    """The folder gaia/paths/resolver.py::db_backup_dir names for GAIA_DB, resolved with the stdlib alone."""
+    data = os.environ.get("GAIA_DATA_DIR")
+    scratch = (Path(data).resolve() if data else Path.home() / ".gaia") / "scratch"
+    if GAIA_DB.parent.resolve() == scratch.resolve():
+        return GAIA_DB.parent / f"{GAIA_DB.stem}.backups"
+    return GAIA_DB.parent / "backups"
+
+
 def _backup(
     con: sqlite3.Connection, ledger: int, now: datetime, census: dict[str, int]
 ) -> Path:
@@ -260,7 +269,7 @@ def _backup(
     Only the newest BACKUPS_KEPT compressed pre-migration backups are kept.
     Stdlib only: the engine runs without the gaia package beside it.
     """
-    backup_dir = GAIA_DB.parent / "backups"
+    backup_dir = _backup_dir()
     target = backup_dir / (
         f"{GAIA_DB.stem}-v{ledger}-pre-migrate-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db.gz"
     )
@@ -442,7 +451,7 @@ def _plan(expected: int) -> int:
                 f"  {verdict.migration:<15} reaches data: {reach.verb} on "
                 f"`{reach.table}` ({reach.rows} rows)"
             )
-    print(f"backup: written to {GAIA_DB.parent / 'backups'} before anything changes")
+    print(f"backup: written to {_backup_dir()} before anything changes")
     if any(v.reaches for v in verdicts):
         print(
             "consent: required once for the whole chain -> "

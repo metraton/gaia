@@ -323,7 +323,7 @@ def test_attack_cut_agent_born_row_never_left_dispatched(fs_rules):
     _seed_rows([(contract_id, "s-cut", "DISPATCHED", "never_finalized")])
 
     assert fs_rules.collectable_turn_scoped(scratch_dir()) == []
-    assert fs_rules._closed_contract_ids({contract_id}) == set()
+    assert fs_rules._contract_states({contract_id}) == {contract_id: "DISPATCHED"}
     assert entry.exists()
 
 
@@ -652,7 +652,7 @@ def test_corrupt_db_is_openable_which_is_what_makes_it_distinct(fs_rules):
         con.execute("select contract_id from agent_contract_handoffs").fetchall()
     con.close()
 
-    assert fs_rules._closed_contract_ids({f"{AGENT_A}.8aaaaa"}) == set()
+    assert fs_rules._contract_states({f"{AGENT_A}.8aaaaa"}) is None
     assert fs_rules._closed_turn_sessions({"any-session"}) == set()
 
 

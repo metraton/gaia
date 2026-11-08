@@ -356,8 +356,9 @@ BACKUPS_KEPT = 3
 def _backup(con: sqlite3.Connection, db_file: Path, label: str) -> Path:
     """Write a verified gzip copy of the database before a workspace change; keep the newest BACKUPS_KEPT."""
     from gaia.paths.backup import prune_newest, write_verified_gzip
+    from gaia.paths.resolver import db_backup_dir
 
-    backup_dir = db_file.parent / "backups"
+    backup_dir = db_backup_dir(db_file)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     target = backup_dir / f"{db_file.stem}-pre-workspace-{label}-{stamp}.db.gz"
     write_verified_gzip(con, target)
@@ -375,8 +376,10 @@ def write_declare_ledger(
     missing_since_previous: str | None,
 ) -> Path:
     """Record the retire alias a declaration of ``name`` dropped; :func:`undo_retire` reads it back."""
+    from gaia.paths.resolver import db_backup_dir
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup_dir = db_file.parent / "backups"
+    backup_dir = db_backup_dir(db_file)
     backup_dir.mkdir(parents=True, exist_ok=True)
     path = backup_dir / f"{db_file.stem}-workspace-declare-{_safe(name)}-{stamp}-ledger.json"
     path.write_text(json.dumps({
@@ -401,7 +404,9 @@ _LEDGER_STAMP = re.compile(r"\d{8}T\d{12}Z")
 def latest_ledger(db_file: Path, name: str) -> Path | None:
     """The newest retire or declare ledger whose source or target is ``name``."""
     newest: tuple[str, Path] | None = None
-    for path in (db_file.parent / "backups").glob("*-ledger.json"):
+    from gaia.paths.resolver import db_backup_dir
+
+    for path in db_backup_dir(db_file).glob("*-ledger.json"):
         stamp = _LEDGER_STAMP.search(path.name)
         try:
             ledger = json.loads(path.read_text(encoding="utf-8"))
