@@ -1132,19 +1132,6 @@ class BashValidator:
                 allowed=False, tier=SecurityTier.T3_BLOCKED, reason=refusal, rule=HOST_OUTPUT_RULE,
             )
 
-        stranded = stranded_creation(write_guard_scope, cwd, is_subagent)
-        if stranded:
-            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
-                command,
-                verb="stranded-creation",
-                category="MUTATIVE",
-                has_orchestrator_above=is_subagent,
-                session_id=session_id,
-                agent_type=agent_type,
-                cwd=cwd,
-                guidance=STRANDED_GUIDANCE.format(path=stranded),
-            )
-
         # A redirect onto an account path is decided here as T3, before the
         # sanitizer strips the redirect and before the cloud-pipe phase refuses
         # a redirect as a channel with no way to consent.
@@ -1187,6 +1174,19 @@ class BashValidator:
                     f"install in --does. Changing Gaia itself is an edit to its source, propagated "
                     f"by `gaia install` or `gaia dev`."
                 ),
+            )
+
+        stranded = stranded_creation(write_guard_scope, cwd, is_subagent)
+        if stranded:
+            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
+                command,
+                verb="stranded-creation",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+                cwd=cwd,
+                guidance=STRANDED_GUIDANCE.format(path=stranded),
             )
 
         unprovable_target = unprovable_write_target(write_guard_scope, cwd)

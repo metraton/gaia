@@ -440,6 +440,7 @@ REFUSAL_SITES = {
     "validate::secret_violation.reason": ["floor-kubectl-secret-output"],
     "validate::read_permission_reason(pipe_block)": ["floor-cloud-pipe"],
     "validate::sensitive_reason": ["floor-secret-read-ssh-key"],
+    "validate::refusal": ["floor-host-tool-output-jq"],
     "_detect_indirect_execution::Indirect execution of blocked command de": ["floor-indirect-blocked-in-wrapper", "floor-indirect-blocked-in-inline"],
     "_detect_indirect_execution::deny_msg": ["floor-shell-wrapper-bash-c", "floor-shell-wrapper-eval"],
     "_phase4_check_composition::Dangerous pipe composition blocked: {res": ["seed-continue-curl-pipe-sh"],
