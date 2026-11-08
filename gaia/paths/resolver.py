@@ -292,6 +292,22 @@ def dispatch_tmp_dir(owner: str) -> Path:
     return tmp_dir() / hashlib.sha256(owner.encode()).hexdigest()[:12]
 
 
+def db_backup_dir(db_file: Path) -> Path:
+    """Return the folder that holds the backups Gaia writes of *db_file*.
+
+    A copy sitting directly under ``scratch_dir()`` (``<contract_id>.db``) keeps
+    its backups in ``<contract_id>.backups`` beside it, an entry retention
+    attributes to the same contract and reclaims with it; every other database,
+    the live one included, keeps ``backups/`` beside it.
+    ``scripts/bootstrap_database.py`` is stdlib-only and repeats this rule in
+    ``_backup_dir``; the two must agree or a migration backup of a scratch copy
+    lands in a folder no rule reclaims.
+    """
+    if db_file.parent.resolve() == scratch_dir().resolve():
+        return db_file.parent / f"{db_file.stem}.backups"
+    return db_file.parent / "backups"
+
+
 def rejected_turns_dir() -> Path:
     """Return the path where rejected-turn text is preserved.
 

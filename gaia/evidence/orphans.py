@@ -18,7 +18,7 @@ canonical connection ``fs_rules`` and ``liveness`` import instead of each
 defining their own): when gaia.db cannot be read (no file, locked, missing
 table), ``find_orphan_blobs()`` returns an empty list. Absence of evidence
 can only mean "cannot confirm any orphan here," never "every file must be
-one" -- the same posture ``gaia.retention.fs_rules._closed_contract_ids``
+one" -- the same posture ``gaia.retention.fs_rules._contract_states``
 uses for its own DB-backed checks.
 
 Public API::

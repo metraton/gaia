@@ -49,6 +49,15 @@ def resolve_grace_hours() -> int:
     return _resolve_env_int(GRACE_HOURS_ENV, DEFAULT_GRACE_HOURS)
 
 
+DEFAULT_STALE_DAYS = 7
+STALE_DAYS_ENV = "GAIA_FS_RETENTION_STALE_DAYS"
+
+
+def resolve_stale_days() -> int:
+    """Days an entry with no state to consult must sit untouched before it is collectible."""
+    return _resolve_env_int(STALE_DAYS_ENV, DEFAULT_STALE_DAYS)
+
+
 def _ro_db_connect():
     """Open a strictly read-only, never-create connection to gaia.db.
 
