@@ -457,11 +457,13 @@ PASSTHROUGH_SITES = {
 }
 UNCOVERED_SITES = {
     "_validate_single_command::Command blocked by flag classifier: {fla": "reachable only for a force push, which the earlier floor refuses today and AC-2 moves to signed",
-    "_validate_single_command::_uncorrelated_set_denial(pending_set, se": "store failure path; needs an injected database failure",
+    "_granted_result::_uncorrelated_set_denial(pending_set, se": "store failure path; needs an injected database failure",
     "decide_t3_outcome::T3 degraded-block: approval persistence ": "store failure path: approval persistence failed; needs an injected database failure",
-    "_validate_single_command::COMMAND_SET persistence failed closed: {": "store failure path; needs an injected database failure",
-    "_validate_single_command::COMMAND_SET persistence failed closed: {#2": "store failure path; needs an injected database failure",
-    "_validate_single_command::COMMAND_SET persistence failed closed: {#3": "store failure path; needs an injected database failure",
+    "_granted_result::COMMAND_SET persistence failed closed: {": "store failure path; needs an injected database failure",
+    "_approved_signature_denial::reason": (
+        "names a set already approved and not consumed, so nothing is left to sign; "
+        "test_guard_lane_command_set.py drives it, a truth row cannot hold the approval"
+    ),
     "_match_signed_pipeline::COMMAND_SET persistence failed closed: {": "store failure path; needs an injected database failure",
 }
 

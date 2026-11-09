@@ -453,7 +453,7 @@ jobs:
       # (POSIX bakes `python3`; Windows must resolve `python`), and then drive
       # gaia.ps1 IN THE MIDDLE OF A PIPELINE inside a child pwsh -- the child so
       # the launcher's trailing `exit` cannot terminate this step early -- and
-      # require exit 0 with a `gaia <version>` line. `--version` needs no DB and
+      # require exit 0, a lone `gaia <version>` line and an empty stderr. `--version` needs no DB and
       # no workspace, so this isolates the pipeability + python-token surface.
       - name: RC-2 launcher-generated -- gaia.cmd/gaia.ps1 emitted + ps1 pipeable
         env:
@@ -475,9 +475,12 @@ jobs:
           # Pipeability: run gaia.ps1 in the MIDDLE of a pipeline, in a child pwsh
           # (its trailing `exit` must not kill this step). Require exit 0.
           $probe = "& '$ps1' --version | Out-String"
-          $out = (pwsh -NoProfile -Command $probe | Out-String).Trim()
+          $errFile = Join-Path $env:RUNNER_TEMP "gaia-version-stderr.txt"
+          $out = (pwsh -NoProfile -Command $probe 2> $errFile | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) { Write-Error "gaia.ps1 not pipeable (exit $LASTEXITCODE): $out"; exit 1 }
-          if ($out -notmatch '^gaia ') { Write-Error "gaia.ps1 ran in a pipeline but output was unexpected: '$out'"; exit 1 }
+          $err = (Get-Content -LiteralPath $errFile -Raw)
+          if ($err) { Write-Error "gaia --version wrote to stderr: $err"; exit 1 }
+          if ($out -notmatch '^gaia \S+$') { Write-Error "gaia.ps1 ran in a pipeline but output was unexpected: '$out'"; exit 1 }
           Write-Host "gaia.ps1 pipeable OK -> $out"
           exit 0
 

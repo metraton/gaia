@@ -17,7 +17,7 @@ Ask Jorge: "What happened recently that surprised you or changed how you think a
 
 ### 2. Build the brief
 
-Before writing a single paragraph, define: title, audience, core thesis (one sentence), and format. Jorge's natural format is **Strategic Insight** -- personal experience analyzed through a technical lens, ending with a transferable lesson.
+Before writing a single paragraph, define: title, audience, core thesis (one sentence), and format. The author's usual format, when they have one, is in their preference rows; ask when none is there.
 
 The audience is engineers, solution architects, AI practitioners, and tech leaders. They do not need hand-holding but they appreciate honesty about what did not work.
 
@@ -25,7 +25,7 @@ The audience is engineers, solution architects, AI practitioners, and tech leade
 
 Write the first draft in Markdown at `<workspace>/<slug>.md`. Work section by section -- do not dump an entire draft and ask "what do you think?" Each section should be reviewed before moving to the next.
 
-**Article structure** (not rigid, but this is Jorge's natural flow):
+**Article structure** (a default, not rigid):
 - Opening story -- what happened, told personally
 - The problem -- what was broken or surprising
 - Investigation -- what you looked into and found

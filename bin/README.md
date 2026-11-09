@@ -11,7 +11,7 @@ User runs: gaia <subcommand> [args]
         |
 bin/gaia (Python entry point) loads the dispatcher
         |
-bin/gaia imports the bin/cli/<name>.py named by the first argument (every module for --help, no argument or an unknown name) and keeps those that define register()
+bin/gaia imports the bin/cli/<name>.py named by the first argument as `cli.<name>` (every module but the `_`-prefixed helpers for --help, no argument or an unknown name) and keeps those that define register()
         |
 Each module's register(subparsers) attaches its argparse + cmd_<name>() handler
         |

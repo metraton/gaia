@@ -71,6 +71,16 @@ class TestPredicate:
     def test_other_cache_entries_are_not_install_roots(self, tmp_path):
         assert protected_paths.is_protected_hook_path(str(tmp_path / "data" / "cache" / "other" / "x.py")) is False
 
+    def test_a_package_manager_cache_is_not_an_install_container(self, tmp_path):
+        cache = tmp_path / ".bun" / "install" / "cache"
+        (cache / "@jaguilar87" / "gaia").mkdir(parents=True)
+        (cache / "@jaguilar87" / "gaia" / "@T@6e71@@@1").symlink_to(_gaia_tree(cache / "@T@6e71@@@1"))
+        store = _gaia_tree(tmp_path / "proj" / "node_modules" / "@jaguilar87" / "gaia").parent.parent
+        assert protected_paths.is_install_root_container(str(cache)) is False
+        assert protected_paths.is_install_root_container(str(cache / "@jaguilar87")) is False
+        assert protected_paths.is_install_root_container(str(store)) is True
+        assert protected_paths.is_install_root_container(str(store / "@jaguilar87")) is True
+
 
 def _shell_forms(target: Path):
     return [

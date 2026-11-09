@@ -303,6 +303,7 @@ def validate_request_set(
     from modules.security.mutative_verbs import detect_mutative_command
     from modules.security.protected_path_guard import check as check_protected
     from modules.security.sensitive_read_guard import check as check_sensitive_read
+    from modules.security.signing_guards import signing_guard
 
     normalized: list[dict] = []
     for index, raw in enumerate(commands):
@@ -348,7 +349,7 @@ def validate_request_set(
                 raise CommandSetValidationError(
                     f"command[{index}] assignment substitution $({body}) must be a read-only command"
                 )
-        is_t3 = False
+        is_t3 = signing_guard(raw, stage_cwd, is_subagent=True) is not None
         for position, stage in enumerate(stages):
             stage = assignments + stage if position == 0 else stage
             flag = classify_by_flags(stage)

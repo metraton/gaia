@@ -156,12 +156,17 @@ def _environment(home: Path, data_dir: Path) -> dict[str, str]:
 
 
 def _run(argv: list[str], *, cwd: Path, env: dict[str, str], stdin: str | None = None) -> tuple[int, str]:
+    rc, out, err = _run_split(argv, cwd=cwd, env=env, stdin=stdin)
+    return rc, out + err
+
+
+def _run_split(argv: list[str], *, cwd: Path, env: dict[str, str], stdin: str | None = None) -> tuple[int, str, str]:
     try:
         done = subprocess.run(argv, cwd=cwd, env=env, input=stdin, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return -1, str(exc)
-    return done.returncode, (done.stdout or "") + (done.stderr or "")
+        return -1, "", str(exc)
+    return done.returncode, done.stdout or "", done.stderr or ""
 
 
 def _tail(text: str, size: int = 600) -> str:
@@ -242,6 +247,9 @@ def _drive(channel: Channel, workspace: Path, env: dict[str, str], seeds: dict[s
     if tarball is not None and channel.name == "npm-local":
         problems += _switch_from_dev(channel, workspace, env, tarball, version)
     for args in session:
+        if args == ["--version"]:
+            problems += _version_problems(channel, workspace, env, version)
+            continue
         argv = ["doctor", "--json", "--workspace", str(workspace)] if args == ["doctor"] else args
         rc, out = _run([*channel.run, *argv], cwd=workspace, env=env)
         if args == ["doctor"]:
@@ -255,6 +263,15 @@ def _drive(channel: Channel, workspace: Path, env: dict[str, str], seeds: dict[s
     if PREFERENCE_TITLE not in out:
         problems.append(f"the prompt hook (exit {rc}) did not name the seeded conversation preference: {_tail(out)}")
     return problems
+
+
+def _version_problems(channel: Channel, workspace: Path, env: dict[str, str], version: str) -> list[str]:
+    """`gaia --version` loads every plugin, so any stderr there is a CLI that fails before the user's command runs."""
+    rc, out, err = _run_split([*channel.run, "--version"], cwd=workspace, env=env)
+    if rc == 0 and out.splitlines() == [f"gaia {version}"] and not err:
+        return []
+    return [f"`gaia --version` must exit 0 printing only `gaia {version}`; exit {rc}, "
+            f"stdout: {_tail(out, 200)!r}, stderr: {_tail(err, 300)!r}"]
 
 
 def _refusals(channel: Channel, workspace: Path, env: dict[str, str], commands: list[str]) -> list[str]:

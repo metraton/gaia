@@ -242,8 +242,8 @@ def is_install_root_container(path_str: str) -> bool:
     if path in _live_install_containers() or Path(os.path.realpath(path)) in _live_install_containers():
         return True
     if os.path.normcase(path.name) == _PACKAGE_SCOPE_DIR:
-        return (path / _PACKAGE_DIR).is_dir()
-    return (path / _PACKAGE_SCOPE_DIR / _PACKAGE_DIR).is_dir()
+        return _declares_gaia(path / _PACKAGE_DIR)
+    return _declares_gaia(path / _PACKAGE_SCOPE_DIR / _PACKAGE_DIR)
 
 
 def is_install_root_path(path_str: str) -> bool:

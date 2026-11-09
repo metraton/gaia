@@ -58,7 +58,6 @@ from ..security.kubectl_secret_output import check_kubectl_secret_output
 from ..security import mutative_verbs as _mutative_verbs
 from ..security.mutative_verbs import (
     _peel_leading_command_wrappers,
-    account_path_redirect_target,
     detect_mutative_command,
     build_t3_block_response,
     LocalWorkCaller,
@@ -99,7 +98,7 @@ from ..security.program_heredoc import heredoc_program
 from ..security.shell_substitution import (
     _read_heredoc_opener, extract_substitutions, extract_substitutions_truncated,
 )
-from ..security.gaia_db_write_guard import check as check_gaia_db_write, sqlite_unproven_effect
+from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
 from ..security.memory_skill_guard import check as check_memory_skill_loaded
@@ -114,16 +113,12 @@ _MEMORY_GUARD_RULES = {
     COMPUTED_WORDS_REJECTION: "floor.computed-gaia-words",
 }
 from ..security.contract_ownership_guard import check as check_contract_ownership
-from ..security.protected_path_guard import (
-    check as check_protected_path_write,
-    install_root_change,
-    unprovable_write_target,
-)
-from ..security.shell_write_guard import check as check_shell_write, system_path_target
+from ..security.protected_path_guard import check as check_protected_path_write
+from ..security.shell_write_guard import check as check_shell_write
 from ..security.host_output_guard import RULE as HOST_OUTPUT_RULE, check as check_host_tool_output
-from ..security.creation_place_guard import GUIDANCE as STRANDED_GUIDANCE, stranded_creation
+from ..security.signing_guards import signing_guard
 from ..security.privilege_guard import privilege_verdict
-from ..security.sensitive_read_guard import check as check_sensitive_read, remote_copy_destination
+from ..security.sensitive_read_guard import check as check_sensitive_read
 from ..security.publish_attribution_guard import check as check_publish_attribution
 from ..security.comment_push_gate import check as check_comment_push
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
@@ -137,7 +132,6 @@ from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
     fed_unknown_program,
-    redirected_into_sender,
     redirected_into_unknown,
     CompositionDecision,
 )
@@ -1132,98 +1126,22 @@ class BashValidator:
                 allowed=False, tier=SecurityTier.T3_BLOCKED, reason=refusal, rule=HOST_OUTPUT_RULE,
             )
 
-        # A redirect onto an account path is decided here as T3, before the
-        # sanitizer strips the redirect and before the cloud-pipe phase refuses
-        # a redirect as a channel with no way to consent.
-        account_write_target = account_path_redirect_target(write_guard_scope)
-        if account_write_target:
-            return decide_t3_outcome(
+        # Decided before the sanitizer strips the redirect or `< file` a lane rests on.
+        guarded = signing_guard(command, cwd, is_subagent)
+        if guarded is not None:
+            return _granted_result(
+                command, session_id=session_id, agent_type=agent_type, cwd=cwd,
+                tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
+            ) or decide_t3_outcome(
                 command,
-                verb="account-path-write",
-                category="MUTATIVE",
-                has_orchestrator_above=is_subagent,
-                session_id=session_id,
-                agent_type=agent_type,
-            )
-
-        # Decided before the sanitizer strips the redirect, so the grant is looked up here too.
-        if system_path_target(write_guard_scope, cwd):
-            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
-                command,
-                verb="system-path-write",
+                verb=guarded.verb,
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
                 session_id=session_id,
                 agent_type=agent_type,
                 cwd=cwd,
-                rule="sign.system-path",
-            )
-
-        changed_install = install_root_change(write_guard_scope, cwd)
-        if changed_install:
-            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
-                command,
-                verb="install-root-change",
-                category="MUTATIVE",
-                has_orchestrator_above=is_subagent,
-                session_id=session_id,
-                agent_type=agent_type,
-                cwd=cwd,
-                guidance=(
-                    f"It changes the installed Gaia the host runs ({changed_install}); name that "
-                    f"install in --does. Changing Gaia itself is an edit to its source, propagated "
-                    f"by `gaia install` or `gaia dev`."
-                ),
-            )
-
-        stranded = stranded_creation(write_guard_scope, cwd, is_subagent)
-        if stranded:
-            return _granted_result(command, session_id=session_id, agent_type=agent_type, cwd=cwd) or decide_t3_outcome(
-                command,
-                verb="stranded-creation",
-                category="MUTATIVE",
-                has_orchestrator_above=is_subagent,
-                session_id=session_id,
-                agent_type=agent_type,
-                cwd=cwd,
-                guidance=STRANDED_GUIDANCE.format(path=stranded),
-            )
-
-        unprovable_target = unprovable_write_target(write_guard_scope, cwd)
-        if unprovable_target:
-            return decide_t3_outcome(
-                command,
-                verb="unprovable-write-target",
-                category="MUTATIVE",
-                has_orchestrator_above=is_subagent,
-                session_id=session_id,
-                agent_type=agent_type,
-            )
-
-        sqlite_guidance = sqlite_unproven_effect(write_guard_scope, cwd)
-        if sqlite_guidance:
-            return decide_t3_outcome(
-                command,
-                verb="sqlite-reach",
-                category="MUTATIVE",
-                has_orchestrator_above=is_subagent,
-                session_id=session_id,
-                agent_type=agent_type,
-                guidance=sqlite_guidance,
-            )
-
-        # A file fed by redirect into a sender, or copied to another host, leaves the
-        # machine; decided before the sanitizer, which strips the `< file` it rests on.
-        redirect_sender = (redirected_into_sender(write_guard_scope)
-                           or remote_copy_destination(write_guard_scope))
-        if redirect_sender:
-            return decide_t3_outcome(
-                command,
-                verb="egress",
-                category="MUTATIVE",
-                has_orchestrator_above=is_subagent,
-                session_id=session_id,
-                agent_type=agent_type,
+                guidance=guarded.guidance,
+                rule=guarded.rule,
             )
         fed_unknown = redirected_into_unknown(write_guard_scope)
 
@@ -1602,121 +1520,27 @@ class BashValidator:
         result = detect_mutative_command(command, cwd=cwd, caller=caller)
         result = privilege_verdict(command, result) or production_target_verdict(command, result, cwd=cwd) or result
         if result.is_mutative:
-            from gaia.store.writer import find_pending_plan_command
-            if not session_id or not tool_use_id:
-                try:
-                    pending_set = find_pending_plan_command(command)
-                except Exception as exc:
-                    return BashValidationResult(
-                        allowed=False, tier=SecurityTier.T3_BLOCKED,
-                        reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
-                    )
-                if pending_set is not None:
-                    _record_plan_command_denial(
-                        pending_set, "adapter_lacks_correlation",
-                        session_id=session_id, tool_use_id=tool_use_id,
-                        agent_type=agent_type,
-                    )
-                    return BashValidationResult(
-                        allowed=False, tier=SecurityTier.T3_BLOCKED,
-                        reason=_uncorrelated_set_denial(
-                            pending_set, session_id=session_id, tool_use_id=tool_use_id,
-                        ),
-                    )
-            try:
-                from gaia.approvals.core import match_command
-                cs_match = match_command(
-                    command, cwd=cwd or os.getcwd(), session_id=session_id,
-                    agent_id=agent_type or None, tool_use_id=tool_use_id,
-                )
-            except Exception as exc:
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
-                )
-            if cs_match is not None:
-                return BashValidationResult(
-                    allowed=True, tier=SecurityTier.T3_BLOCKED,
-                    reason="Ordered COMMAND_SET command reserved",
-                    consumed_approval_id=cs_match["approval_id"],
-                    command_set_reservation=cs_match,
-                )
-
-            from gaia.approvals.core import grant_lookup_filter
-            grant = check_approval_grant(
-                command, session_id=session_id,
-                requester=grant_lookup_filter(
-                    cwd=cwd or os.getcwd(), session_id=session_id, agent_id=agent_type,
-                ),
+            granted = _granted_result(
+                command, session_id=session_id, agent_type=agent_type, cwd=cwd, tool_use_id=tool_use_id,
             )
-            if grant is not None:
-                # Consume the DB semantic grant immediately (replay protection):
-                # a consumed grant will not match on a second attempt within the
-                # TTL window.
-                db_approval_id = getattr(grant, "_db_approval_id", None)
-                if db_approval_id:
-                    try:
-                        from gaia.store.writer import consume_db_semantic_grant
-                        consumed = consume_db_semantic_grant(db_approval_id)
-                        if consumed:
-                            logger.info(
-                                "DB semantic grant consumed (replay protection): "
-                                "approval_id=%s, command='%s'",
-                                db_approval_id[:16], command[:80],
-                            )
-                        else:
-                            logger.warning(
-                                "DB semantic grant consume returned False "
-                                "(may already be consumed): approval_id=%s",
-                                db_approval_id[:16],
-                            )
-                    except Exception as _cg_err:
-                        logger.warning(
-                            "DB semantic grant consume failed (non-fatal): %s", _cg_err
-                        )
-
-                if grant.confirmed:
-                    logger.info(
-                        "T3 command allowed via confirmed grant: %s (scope='%s')",
-                        command[:80], grant.approved_scope,
-                    )
-                    return BashValidationResult(
-                        allowed=True,
-                        tier=SecurityTier.T3_BLOCKED,
-                        reason="Grant confirmed",
-                        consumed_approval_id=db_approval_id,
-                    )
-                else:
-                    # Granted but not yet confirmed: let it through; PostToolUse
-                    # confirms the grant after successful execution.
-                    logger.info(
-                        "T3 command passthrough via active grant: %s (scope='%s')",
-                        command[:80], grant.approved_scope,
-                    )
-                    return BashValidationResult(
-                        allowed=True,
-                        tier=SecurityTier.T3_BLOCKED,
-                        reason="Grant active, pending confirmation",
-                        consumed_approval_id=db_approval_id,
-                    )
-            else:
-                _record_plan_command_denial(
-                    _plan_grant_for_denial(command), "plan_command_not_reserved",
-                    session_id=session_id, tool_use_id=tool_use_id,
-                    agent_type=agent_type,
-                )
-                return decide_t3_outcome(
-                    command,
-                    verb=result.verb,
-                    category=result.category,
-                    has_orchestrator_above=is_subagent,
-                    session_id=session_id,
-                    agent_type=agent_type,
-                    guidance=result.guidance,
-                    cwd=cwd,
-                    rule=result.rule,
-                )
+            if granted is not None:
+                return granted
+            _record_plan_command_denial(
+                _plan_grant_for_denial(command), "plan_command_not_reserved",
+                session_id=session_id, tool_use_id=tool_use_id,
+                agent_type=agent_type,
+            )
+            return decide_t3_outcome(
+                command,
+                verb=result.verb,
+                category=result.category,
+                has_orchestrator_above=is_subagent,
+                session_id=session_id,
+                agent_type=agent_type,
+                guidance=result.guidance,
+                cwd=cwd,
+                rule=result.rule,
+            )
 
         # Flag-dependent mutations a verb scan misses ("sed" has no mutative verb,
         # "sed -i" is). Git is excluded from the MUTATIVE path, since
@@ -1736,88 +1560,12 @@ class BashValidator:
                 if flag_result.command_family.startswith("git_"):
                     pass  # Fall through to safe-by-elimination
                 else:
-                    # A flag-classified command (`curl -X POST`) consults the same
-                    # grants as the mutative-verb branch above, or an approved
-                    # grant would never be honoured on retry.
-                    try:
-                        from gaia.approvals.core import match_command
-                        cs_match = match_command(
-                            command, cwd=cwd or os.getcwd(), session_id=session_id,
-                            agent_id=agent_type or None, tool_use_id=tool_use_id,
-                        )
-                    except Exception as exc:
-                        return BashValidationResult(
-                            allowed=False,
-                            tier=SecurityTier.T3_BLOCKED,
-                            reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
-                        )
-                    if cs_match is not None:
-                        return BashValidationResult(
-                            allowed=True, tier=SecurityTier.T3_BLOCKED,
-                            reason="Ordered COMMAND_SET command reserved",
-                            consumed_approval_id=cs_match["approval_id"],
-                            command_set_reservation=cs_match,
-                        )
-
-                    from gaia.approvals.core import grant_lookup_filter
-                    grant = check_approval_grant(
-                        command, session_id=session_id,
-                        requester=grant_lookup_filter(
-                            cwd=cwd or os.getcwd(), session_id=session_id,
-                            agent_id=agent_type,
-                        ),
+                    granted = _granted_result(
+                        command, session_id=session_id, agent_type=agent_type, cwd=cwd,
+                        tool_use_id=tool_use_id,
                     )
-                    if grant is not None:
-                        # Consume the DB semantic grant immediately (replay
-                        # protection) -- identical to the verb branch.
-                        db_approval_id = getattr(grant, "_db_approval_id", None)
-                        if db_approval_id:
-                            try:
-                                from gaia.store.writer import consume_db_semantic_grant
-                                consumed = consume_db_semantic_grant(db_approval_id)
-                                if consumed:
-                                    logger.info(
-                                        "DB semantic grant consumed (replay "
-                                        "protection): approval_id=%s, command='%s'",
-                                        db_approval_id[:16], command[:80],
-                                    )
-                                else:
-                                    logger.warning(
-                                        "DB semantic grant consume returned False "
-                                        "(may already be consumed): approval_id=%s",
-                                        db_approval_id[:16],
-                                    )
-                            except Exception as _cg_err:
-                                logger.warning(
-                                    "DB semantic grant consume failed (non-fatal): %s",
-                                    _cg_err,
-                                )
-
-                        if grant.confirmed:
-                            logger.info(
-                                "T3 flag-path command allowed via confirmed grant: "
-                                "%s (scope='%s')",
-                                command[:80], grant.approved_scope,
-                            )
-                            return BashValidationResult(
-                                allowed=True,
-                                tier=SecurityTier.T3_BLOCKED,
-                                reason="Grant confirmed",
-                                consumed_approval_id=db_approval_id,
-                            )
-                        else:
-                            logger.info(
-                                "T3 flag-path command passthrough via active grant: "
-                                "%s (scope='%s')",
-                                command[:80], grant.approved_scope,
-                            )
-                            return BashValidationResult(
-                                allowed=True,
-                                tier=SecurityTier.T3_BLOCKED,
-                                reason="Grant active, pending confirmation",
-                                consumed_approval_id=db_approval_id,
-                            )
-
+                    if granted is not None:
+                        return granted
                     return decide_t3_outcome(
                         command,
                         verb=flag_result.matched_pattern or flag_result.command_family,
@@ -2695,9 +2443,46 @@ def _own_install_cli() -> str:
     return str(cli) if cli.is_file() and _mutative_verbs._hook_root_is_install() else ""
 
 
-def _granted_result(command: str, *, session_id: str, agent_type: str, cwd: str | None) -> BashValidationResult | None:
-    """The pass a live grant gives *command*, consuming it, for a signature decided outside the verb scan; else None."""
-    from gaia.approvals.core import grant_lookup_filter
+def _granted_result(
+    command: str, *, session_id: str, agent_type: str, cwd: str | None, tool_use_id: str,
+) -> BashValidationResult | None:
+    """The one grant lookup every signing lane runs: a reserved set item, else a consumed single grant, else None.
+
+    A refusal is returned instead when the store fails or a signed set item arrives without host correlation.
+    """
+    refusal = _categorical_refusal(command, cwd)
+    if refusal is not None:
+        return refusal
+    from gaia.approvals.core import grant_lookup_filter, match_command
+    from gaia.store.writer import find_pending_plan_command
+
+    try:
+        pending_set = None if session_id and tool_use_id else find_pending_plan_command(command)
+        if pending_set is not None:
+            _record_plan_command_denial(
+                pending_set, "adapter_lacks_correlation",
+                session_id=session_id, tool_use_id=tool_use_id, agent_type=agent_type,
+            )
+            return BashValidationResult(
+                allowed=False, tier=SecurityTier.T3_BLOCKED,
+                reason=_uncorrelated_set_denial(pending_set, session_id=session_id, tool_use_id=tool_use_id),
+            )
+        reserved = match_command(
+            command, cwd=cwd or os.getcwd(), session_id=session_id,
+            agent_id=agent_type or None, tool_use_id=tool_use_id,
+        )
+    except Exception as exc:
+        return BashValidationResult(
+            allowed=False, tier=SecurityTier.T3_BLOCKED,
+            reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
+        )
+    if reserved is not None:
+        return BashValidationResult(
+            allowed=True, tier=SecurityTier.T3_BLOCKED,
+            reason="Ordered COMMAND_SET command reserved",
+            consumed_approval_id=reserved["approval_id"],
+            command_set_reservation=reserved,
+        )
 
     grant = check_approval_grant(
         command, session_id=session_id,
@@ -2716,6 +2501,32 @@ def _granted_result(command: str, *, session_id: str, agent_type: str, cwd: str 
         allowed=True, tier=SecurityTier.T3_BLOCKED,
         reason="Grant confirmed" if grant.confirmed else "Grant active, pending confirmation",
         consumed_approval_id=approval_id,
+    )
+
+
+def _approved_signature_denial(command: str, session_id: str, agent_type: str) -> BashValidationResult | None:
+    """The denial naming a live, approved set that still holds *command* for this requester, else None."""
+    try:
+        from gaia.store.writer import find_unconsumed_plan_item
+
+        held = find_unconsumed_plan_item(command, session_id=session_id, agent_id=agent_type)
+    except Exception as exc:
+        logger.warning("approved-signature probe failed (non-fatal): %s", exc)
+        return None
+    if held is None:
+        return None
+    approval_id = held["approval_id"]
+    where = f" in {held['cwd']}" if held.get("cwd") else ""
+    reason = (
+        f"T3 command denied: {approval_id} is approved and already signs this exact command as "
+        f"item [{held['index']}]; the next item it runs is [{held['next_index']}]. Nothing was "
+        f"consumed and no new request was sealed: run the byte-identical command alone, in its "
+        f"turn{where}, from a call whose host event carries a session_id and a tool_use_id. "
+        f"Do not request it again."
+    )
+    return BashValidationResult(
+        allowed=False, tier=SecurityTier.T3_BLOCKED, reason=reason,
+        block_response=build_hook_permission_response("deny", reason),
     )
 
 
@@ -2839,6 +2650,9 @@ def decide_t3_outcome(
     # fingerprint dedup in insert_requested; the singular probe would match a
     # leftover pending of one sub-command and degrade the chain to one grant.
     if not is_chain_command_set:
+        approved = _approved_signature_denial(command, session_id, agent_type)
+        if approved is not None:
+            return approved
         # A pending plan-first COMMAND_SET carrying this exact command is named
         # ahead of the singular probe: only the set's id routes the user's reply
         # into the reservation lane, and a singular id would strand the set.
