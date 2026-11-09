@@ -6,7 +6,8 @@ row:
 
   * ``# Your Contract``  -- identity, goal, role/surface, the project the
     dispatch ran from (``dispatch_project``) with the workflow that
-    project declared in its ``project_identity`` entry, section scope, and
+    project declared in its ``project_identity`` entry and the date that
+    entry's row was last written, section scope, and
     (for a plan-task-bound turn) the task's acceptance gates. DATA ONLY: the
     block carries no instructions; the pedagogy lives in the agent-protocol
     skill, which documents every field.
@@ -29,7 +30,9 @@ row:
     (``gaia.store.reader.scope_memory_rows`` rendered by
     ``modules.context.user_sections``). The user's own rows never reach a
     kernel: the preferences that touch this output travel in the goal.
-    Omitted entirely when no row is selected -- never an empty heading.
+    Omitted entirely when no row is selected -- never an empty heading. It is
+    sized last, in the room every other block leaves, and a cut ends in
+    ``+N more`` and the command that lists the rest.
   * ``# Environment``    -- the session's environment line (OS, host, gaia CLI
     path, tools on PATH) and up to ``KERNEL_TOOL_LINES`` of the user's
     ``tool=`` lines.
@@ -94,6 +97,8 @@ def _section_pointer(section: str, workspace: str, project: str) -> str:
 
 
 KERNEL_BUDGET = CONTEXT_BUDGET
+# Held back for scope memory so a cut section still fits its heading and its "+N more" line.
+SCOPE_MEMORY_FLOOR = 240
 # Inlined skill bodies cannot fit KERNEL_BUDGET: security-tiers alone is over 50,000.
 SKILLS_BLOCK_BUDGET = 4_000
 _SKILLS_PREAMBLE = (
@@ -253,11 +258,12 @@ def _acceptance_lines(plan_task_id: int, db_path=None) -> list:
 
 
 def _declared_workflow(workspace: str, dispatch_project: str, db_path=None) -> str:
-    """The workflow the dispatch's project declared, as one data line, or "" when it declared none.
+    """The ``workflow (as of <date>):`` line of the dispatch's project, or "" when it declared none.
 
     A mapping renders its scalar values as ``key=value`` pairs in stored order,
     a string renders as written; whitespace runs collapse so the value stays one
-    line, and anything else declares nothing renderable.
+    line, and anything else declares nothing renderable. The date is the day the
+    ``project_identity`` row holding the declaration was last written.
     """
     try:
         from ..core.paths import ensure_package_root_importable
@@ -271,14 +277,32 @@ def _declared_workflow(workspace: str, dispatch_project: str, db_path=None) -> s
         logger.debug("declared workflow read failed (non-fatal)", exc_info=True)
         return ""
     declared = (entry or {}).get(DECLARED_WORKFLOW_KEY)
-    if isinstance(declared, str):
-        return " ".join(declared.split())
     if isinstance(declared, dict):
-        return ", ".join(
+        declared = ", ".join(
             f"{key}={' '.join(str(value).split())}" for key, value in declared.items()
             if isinstance(value, (str, int, float)) and str(value).strip()
         )
-    return ""
+    if not isinstance(declared, str) or not declared.strip():
+        return ""
+    written = _project_identity_written(workspace, dispatch_project, db_path) or "unknown date"
+    return f"  workflow (as of {written}): {' '.join(declared.split())}"
+
+
+def _project_identity_written(workspace: str, dispatch_project: str, db_path=None) -> str:
+    """The day (``YYYY-MM-DD``) the dispatch project's ``project_identity`` row was last written, or ""."""
+    try:
+        from gaia.store.project_context import project_sections, resolve_project
+
+        con = _connect(db_path)
+        try:
+            project = resolve_project(con, dispatch_project, workspace or None)
+            stored = project_sections(con, project).get("project_identity") if project else None
+        finally:
+            con.close()
+    except Exception:
+        logger.debug("project_identity date read failed (non-fatal)", exc_info=True)
+        return ""
+    return str((stored or {}).get("updated_at") or "")[:10]
 
 
 def build_dispatch_kernel(
@@ -328,7 +352,7 @@ def build_dispatch_kernel(
             str(row.get("workspace") or ""), dispatch_project, db_path=db_path,
         )
         if workflow:
-            parts.append(f"  workflow: {workflow}")
+            parts.append(workflow)
 
     plan_task_id = row.get("plan_task_id")
     if plan_task_id is not None:
@@ -442,6 +466,11 @@ def build_cli_block(
     return "\n".join(lines)
 
 
+def _cli_tail(cli: str) -> str:
+    """``# Your CLI`` cut to the count of its other lines and the verb that prints them."""
+    return f"{CLI_HEADING}\n\n+{len(cli.splitlines()) - 3} more — `gaia --help`"
+
+
 def _record_kernel_telemetry(
     rows: list, *, db_path=None,
 ) -> None:
@@ -509,9 +538,13 @@ def _scope_chain(row: Mapping[str, Any], *, db_path=None) -> tuple:
 
 
 def build_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars: Optional[int] = None) -> str:
-    """Render ``# Scope memory: <chain>`` -- the preferences, facts and lessons of the dispatch's workspace, group and project -- within ``max_chars`` when given, or "" for an empty scope.
+    """Render ``# Scope memory: <chain>`` -- the preferences, facts and lessons of the dispatch's workspace, group and project -- or "" for an empty scope.
 
-    A read that fails is logged and rendered as the one line
+    Over ``max_chars`` it drops rows from the end of the section -- lessons,
+    then facts, then preferences, the stalest of a kind first -- and closes with
+    ``+N more`` and the command that lists them; that line is kept whatever the
+    room. Only the rows it carries count a kernel access. A read that fails is
+    logged and rendered as the one line
     ``scope memory unavailable: <error class>``, never as an empty scope.
     """
     try:
@@ -521,23 +554,43 @@ def build_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars
         return f"scope memory unavailable: {type(exc).__name__}"
 
 
+def _choice(values) -> str:
+    """One distinct value as a shell word, several as ``<a|b>``."""
+    distinct = list(dict.fromkeys(values))
+    return shlex.quote(distinct[0]) if len(distinct) == 1 else f"<{'|'.join(distinct)}>"
+
+
+def _scope_memory_tail(omitted: list) -> str:
+    """``+N more`` and the ``gaia memory list`` call that lists the rows in ``omitted``."""
+    kinds = _choice(row["kind"] for row in omitted)
+    workspaces = _choice(row["workspace"] for row in omitted)
+    return f"+{len(omitted)} more — `gaia memory list --class anchor --kind {kinds} --workspace {workspaces}`"
+
+
 def _scope_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars: Optional[int] = None) -> str:
     from gaia.store.reader import scope_memory_rows
 
-    from .user_sections import render_scope_section
+    from .user_sections import KIND_ORDER, render_scope_section
 
     label, workspace, group_key, project_key = _scope_chain(row or {}, db_path=db_path)
-    rows = scope_memory_rows(workspace, group_key, project_key, db_path)
-    section = render_scope_section(label, rows)
-    while rows and max_chars is not None and len(section) > max_chars:
-        rows.pop()
-        section = render_scope_section(label, rows)
-    if not section:
-        return ""
-    _record_kernel_telemetry(
-        [(r["workspace"], r["name"]) for r in rows], db_path=db_path,
+    rows = sorted(
+        scope_memory_rows(workspace, group_key, project_key, db_path),
+        key=lambda scope_row: KIND_ORDER.index(scope_row["kind"]),
     )
-    return section
+    if not rows:
+        return ""
+
+    def section(kept: int) -> str:
+        head = render_scope_section(label, rows[:kept]) or f"{MEMORY_HEADING}: {label}"
+        return head if kept == len(rows) else f"{head}\n{_scope_memory_tail(rows[kept:])}"
+
+    kept = len(rows)
+    while kept and max_chars is not None and len(section(kept)) > max_chars:
+        kept -= 1
+    _record_kernel_telemetry(
+        [(r["workspace"], r["name"]) for r in rows[:kept]], db_path=db_path,
+    )
+    return section(kept)
 
 
 def _project_note_line(name: str, description: str) -> str:
@@ -676,7 +729,7 @@ def build_group_context_block(group: str, members: list, *, max_chars: int) -> s
 
 
 def build_project_context_block(workspace: str, project: str, sections: list, *, max_chars: int) -> str:
-    """Render ``# Project context`` as whole sections, then pointers, then one count line that ignores ``max_chars``."""
+    """Render ``# Project context`` as whole sections, then pointers, then one line naming the sections that ignores ``max_chars``."""
     if not sections:
         return ""
     texts = [json.dumps(payload, ensure_ascii=False) for _, payload in sections]
@@ -688,8 +741,9 @@ def build_project_context_block(workspace: str, project: str, sections: list, *,
     spare = max_chars - len("\n".join(head + pointers))
     if spare < 0:
         count = f"{len(sections)} section{'s' if len(sections) > 1 else ''}"
+        names = ", ".join(name for name, _ in sections)
         return "\n".join(
-            head + [f"{count} — " + _section_pointer("<s>", workspace, project)]
+            head + [f"{count}: {names} — " + _section_pointer("<s>", workspace, project)]
         )
     lines = list(pointers)
     for index, ((name, _), text) in enumerate(zip(sections, texts)):
@@ -704,17 +758,23 @@ KERNEL_TOOL_LINES = 5
 
 
 def build_environment_block(db_path=None) -> str:
-    """Render ``# Environment``: the session's environment line, then up to ``KERNEL_TOOL_LINES`` detected user tools; "" when empty."""
+    """Render ``# Environment``: the session's environment line, then up to ``KERNEL_TOOL_LINES`` detected user tools and the count of the rest; "" when empty."""
     try:
         from gaia.store.reader import user_tool_rows
+        from gaia.store.writer import USER_WORKSPACE
 
         from ..session.session_manifest import build_environment_line
 
         line = build_environment_line(db_path=db_path)
-        tools = tool_lines(user_tool_rows(db_path), cap=KERNEL_TOOL_LINES)
+        detected = tool_lines(user_tool_rows(db_path))
     except Exception:
         logger.debug("environment line failed (non-fatal)", exc_info=True)
         return ""
+    tools = detected[:KERNEL_TOOL_LINES]
+    if len(detected) > len(tools):
+        tools.append(
+            f"+{len(detected) - len(tools)} more — `gaia memory list --workspace {USER_WORKSPACE} --kind tool`"
+        )
     body = "\n".join([line, *tools] if line else tools)
     return f"{ENVIRONMENT_HEADING}\n\n{body}" if body else ""
 
@@ -731,18 +791,24 @@ def build_kernel_context(
     db_path=None,
     with_skills: bool = False,
 ) -> Optional[str]:
-    """The kernel payload within ``KERNEL_BUDGET``, shrunk in the order hooks/README.md names; None without a contract block."""
+    """The kernel payload within ``KERNEL_BUDGET``; None without a contract block.
+
+    The contract, standing notes, environment, CLI index and skills are sized
+    first, the project context against the room they leave, and the scope
+    memory last against what is left. Only when those blocks alone leave less
+    than ``SCOPE_MEMORY_FLOOR`` do the CLI index, the skill descriptions and
+    the notes shrink, in that order.
+    """
     kernel = build_dispatch_kernel(row, db_path=db_path, agent_name=agent_name)
     if not kernel:
         return None
     workspace = str(row.get("workspace") or "")
-    memory_size = len(build_memory_block(row, db_path=db_path))
     notes = build_project_notes_block(row, db_path=db_path)
     environment = build_environment_block(db_path=db_path)
     cli = build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace)
     skills = build_skills_block(agent_name, agents_dir=agents_dir) if with_skills else ""
     project, sections = _readable_project_sections(row, db_path=db_path)
-    context_room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 4 - memory_size
+    context_room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 4 - SCOPE_MEMORY_FLOOR
     context = build_project_context_block(
         project.get("workspace", ""), project.get("identity", ""), sections, max_chars=context_room,
     ) or build_group_context_block(
@@ -750,15 +816,14 @@ def build_kernel_context(
         max_chars=context_room,
     )
 
-    def over() -> bool:
-        return len(_joined(kernel, context, notes, environment, cli, skills)) + 2 + memory_size > KERNEL_BUDGET
+    def memory_room() -> int:
+        return KERNEL_BUDGET - len(_joined(kernel, context, notes, environment, cli, skills)) - 2
 
-    if over():
-        cli = f"{CLI_HEADING}\n\n{_CLI_BASE_LINES[-1]}"
-    if over() and skills:
+    if memory_room() < SCOPE_MEMORY_FLOOR:
+        cli = _cli_tail(cli)
+    if memory_room() < SCOPE_MEMORY_FLOOR and skills:
         skills = build_skills_block(agent_name, agents_dir=agents_dir, names_only=True)
-    if over() and notes:
+    if memory_room() < SCOPE_MEMORY_FLOOR and notes:
         notes = build_project_notes_block(row, db_path=db_path, max_chars=0)
-    room = KERNEL_BUDGET - len(_joined(kernel, context, notes, environment, cli, skills)) - 2
-    memory = build_memory_block(row, db_path=db_path, max_chars=room)
+    memory = build_memory_block(row, db_path=db_path, max_chars=memory_room())
     return _joined(kernel, memory, context, notes, environment, cli, skills)
