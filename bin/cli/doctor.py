@@ -764,7 +764,7 @@ def _path_first_fix(directory: Path) -> str:
 
 @register_check("PATH gaia", order=28)
 def check_path_gaia() -> dict:
-    """Report the `gaia` that wins on PATH and warn when it runs a different Gaia version than this doctor.
+    """Report the `gaia` that wins on PATH and warn when it runs a plugin version Claude Code no longer records, or a different Gaia version than this doctor.
 
     A source checkout beside its installed copy at the same version is the
     normal `gaia dev` state and is only info: a warning there would fire on
@@ -772,11 +772,20 @@ def check_path_gaia() -> dict:
     Source parity check's to report.
     """
     from cli._converge import _package_version, launcher_package  # noqa: PLC0415
+    from gaia.path_launcher import stale_install  # noqa: PLC0415
 
     winner = shutil.which("gaia")
     if not winner:
         return _result("PATH gaia", "info", "no `gaia` on PATH", "Run `gaia install --path` from your workspace")
     package, here = launcher_package(Path(winner)), _package_root()
+    current = stale_install(package) if package is not None else None
+    if current is not None:
+        python = "python" if sys.platform == "win32" else "python3"
+        fix = (f"Start a Claude Code session, which moves the launcher to the current install, or run "
+               f"{python} {command_arg(str(current[0] / 'bin' / 'gaia'))} install --path from your workspace"
+               if current else "Reinstall the Gaia plugin in Claude Code, then start a session")
+        return _result("PATH gaia", "warning", f"`gaia` on PATH is {winner}, which runs {package}, "
+                       "a version Claude Code no longer records as installed", fix)
     if package is not None and package.resolve() == here.resolve():
         return _result("PATH gaia", "pass", f"`gaia` on PATH is {winner} (this package)")
     version = _package_version(package)
