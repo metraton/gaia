@@ -1928,6 +1928,12 @@ def cmd_finalize(args) -> int:
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
+    from gaia.store.proposals import refusal_message
+
+    refusal = refusal_message(envelope)
+    if refusal:
+        _print_error(refusal, as_json)
+        return 1
 
     from gaia.contract.tool_record import stamp_harness_fields
 

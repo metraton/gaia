@@ -418,11 +418,14 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "backstop",
     "binding_rejection",
     "born_at_dispatch",
+    "capture_key_space",
+    "capture_source",
     "conclusion_alias",
     "content_checks",
     "continues_contract_id",
     "degraded",
     "dispatch_closed_at_subagent_stop",
+    "draft_ambiguity",
     "fallback",
     "harness_record",
     "reaped",
@@ -430,6 +433,7 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "reconstructed_from_finalized_draft",
     "salvaged",
     "superseded_by_contract_id",
+    "update_contracts_refused",
     "worktree_scope",
 )
 
