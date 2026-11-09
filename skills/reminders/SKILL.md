@@ -56,7 +56,7 @@ With no pointer the headline has to carry everything.
 
 ## When something is due
 
-Give the user three ways out, in their words.
+At session start or after a compaction, name what is due once, briefly. Mid-session the `🔔` line repeats on every prompt while anything stays due: raise a reminder only when it touches the topic at hand or at a natural pause, one at a time, never the whole list mid-topic and never every turn. When you raise one, give the user three ways out, in their words.
 
 - **Do it now.** Follow the pointer: load the skill, read the memory with `gaia memory show <slug> --workspace <w>`, or bring the project with `gaia context project <name>`. Work in a domain goes to the specialist the procedure names. With the user present, anything that needs approval asks for it.
 - **Later.** `gaia notifications snooze <id> --for 2h`, or `--until <local time>`. It hides until then.
