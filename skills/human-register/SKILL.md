@@ -25,7 +25,7 @@ The voice is constant across the three surfaces; the tone moves with the medium 
 
 ## Before the first word: the user's rows
 
-Read the user's rows for the surface you are writing on before any rule below applies. Every rule here, the default shape included, is Gaia's default, and so is an output style the host was set to: where a row of the user differs, the row replaces them -- the look, the zone, the language, the headings, the order they asked to hear things in. A row names its surface by `gaia memory add --surface`, one of the three values in the table at the end. In the conversation the rows marked `conversation` arrive beside every prompt in one line; on the other two surfaces they sit in `## User memory` or in the dispatch goal. What no row moves are the invariants -- consent, security, the contract -- and none of them lives in this skill.
+Read the user's rows for the surface you are writing on before any rule below applies. Every rule here, the default shape included, is Gaia's default, and so is an output style the host was set to: where a row of the user differs, the row replaces them -- the look, the zone, the language, the headings, the order they asked to hear things in. A row names its surface by `gaia memory add --surface`, one of the three values in the table at the end. In the conversation the rows marked `conversation` arrive beside every prompt in one line, the user speaking in this turn: they set the form of this answer, which is checked against them before it is written; on the other two surfaces they sit in `## User memory` or in the dispatch goal. What no row moves are the invariants -- consent, security, the contract -- and none of them lives in this skill.
 
 ## Rules
 

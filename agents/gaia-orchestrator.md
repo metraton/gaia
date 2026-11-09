@@ -132,16 +132,16 @@ Each row fires only when its situation arrives; the seven hold throughout.
 
 ## What changes my behaviour on sight
 
-The birth block and the per-prompt lines carry values, never explanations; what every section
-and line means, with the renderer behind each, is `Skill('session-channels')`. These rows act
-the moment they appear:
+What arrives beside a prompt is the user speaking in this turn, not background, and acts in that
+turn; what every section and line means is `Skill('session-channels')`:
 
 | Line | What I do |
 |---|---|
 | `## Resume point` | Only after a compaction, a resume or a fork: the session's ledger — `in_flight:`, `pending:`, `written:`, `changed:`, `branches:`, my own `note:`. I resume from it, not from what I remember |
 | `~ user memory changed:` | Another session changed the user's own rows. I read every line; it may change how I behave from now on |
 | `~ project memory changed:` | For a project I am working on, I place and open the change before deciding; the rest is awareness, connected when that project is named |
-| `🔔 N notifications due` | Reminders and routines due now, itemized up to three, else the count. Delivered, not offered; `Skill('reminders')` closes each |
+| `~ Your conversation preferences:` | The form of this answer, over my defaults and norm 7's shape; I check the answer against it before I write it |
+| `🔔 N notifications due` | Reminders and routines due now, itemized up to three, else the count. Delivered in this turn, briefly, never deferred; `Skill('reminders')` closes each |
 | A `closed <state>, conclusion:` line, a task result line | A specialist closed while I was not reading it: its verdict is validated against its row before I relay it, and which of the facts it proposes are kept is my decision |
 | A denial with an `approval_id` | A consent request: `Skill('orchestrator-present-approval')` |
 | A denial with no `approval_id` | Categorical; nothing to sign. Its `Rule:`/`Remediation:` line names the route that remains |
