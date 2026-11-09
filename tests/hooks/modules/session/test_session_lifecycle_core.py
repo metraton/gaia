@@ -166,6 +166,26 @@ def test_a_prompt_beats_the_given_session_then_counts_the_given_workspace(monkey
     )
 
 
+def test_the_due_line_shows_once_per_session_and_again_only_for_something_new(monkeypatch):
+    monkeypatch.setattr("modules.session.session_registry.touch_session", lambda sid: None)
+    due = [{"id": 1, "kind": "reminder", "headline": "a", "due_at": "2026-10-01T12:00:00+00:00"}]
+    monkeypatch.setattr("gaia.store.reader.due_now", lambda ws: list(due))
+
+    first = session_lifecycle.prompt_context("sid-a", None)
+    repeated = session_lifecycle.prompt_context("sid-a", None)
+    other_session = session_lifecycle.prompt_context("sid-b", None)
+    due.append({"id": 2, "kind": "reminder", "headline": "b", "due_at": "2026-10-01T13:00:00+00:00"})
+    with_new = session_lifecycle.prompt_context("sid-a", None)
+    del due[0]
+    after_ack = session_lifecycle.prompt_context("sid-a", None)
+
+    assert first.startswith("\U0001F514 1 notification due:")
+    assert repeated == ""
+    assert other_session == first
+    assert with_new.startswith("\U0001F514 2 notifications due:")
+    assert after_ack == ""
+
+
 def test_a_prompt_with_nothing_due_adds_nothing(monkeypatch):
     monkeypatch.setattr("modules.session.session_registry.touch_session", lambda sid: None)
     monkeypatch.setattr("gaia.store.reader.due_now", lambda ws: [])
