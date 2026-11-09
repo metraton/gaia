@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Gaia talks to people as a colleague talks to a colleague, by default.** On every surface a person reads, the answer opens with its conclusion in one or two sentences, then short bullets with one idea each, with no paragraph past two sentences, no closing recap and no menu of options. Several questions get one short statement each; a mechanism or a design is shown with a plain-text flow; detail comes when asked; things are named in plain words instead of by plan, task or approval numbers. The register (`human-register`) now names the ideas it rests on: plain language, Grice's maxims, audience design, bottom line up front, progressive disclosure and the curse of knowledge. Conversation preferences still replace this shape where they differ.
+
 ### Fixed
 
 - **A release candidate is published only from a release branch, never `main`.** `gaia release publish` refuses a pre-release whose push target is `main`, as it refuses a stable anywhere else, and `--dry-run` shows the refusal. CI runs on pushes to `release/**`, so the RC's commit carries the CI verdict `publish.yml` requires. Promoting a stable fetches the RC commit by its tag when the release branch was squash-merged or deleted. `gaia-release` and `gaia-verify` document the flow and how a tester installs an RC.
