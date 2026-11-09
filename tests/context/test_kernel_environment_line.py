@@ -203,7 +203,7 @@ def test_kernel_places_the_line_after_scope_memory_and_before_the_cli_index(env,
         agent_name="developer", agents_dir=tmp_path / "agents", db_path=env,
     )
 
-    user = kernel.index(kernel_builder.MEMORY_HEADING)
+    user = kernel.index(kernel_builder.PREFERENCES_HEADING)
     environment = kernel.index(kernel_builder.ENVIRONMENT_HEADING)
     cli = kernel.index(kernel_builder.CLI_HEADING)
     assert user < environment < cli

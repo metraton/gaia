@@ -25,7 +25,6 @@ from modules.context.kernel_builder import (  # noqa: E402
     build_cli_block,
     build_dispatch_kernel,
     build_project_context_block,
-    build_project_notes_block,
     build_kernel_context,
 )
 
@@ -127,17 +126,18 @@ def test_kernel_project_context_section_larger_than_the_budget_becomes_a_pointer
     assert len(kernel) <= KERNEL_BUDGET
 
 
-def test_kernel_project_context_under_a_huge_prompt_is_one_line_and_the_contract_stays_whole(db):
+def test_kernel_under_a_huge_prompt_cuts_only_the_project_context_and_reports_the_goal_length(db):
     _section(db, "stack", {"language": "go"})
-    row = _row(DISPLAY, ["stack"], prompt="do it " * 1300)
+    _scope_row(db, "preference", 0, project=True)
+    row = _row(DISPLAY, ["stack"], prompt="do it " * 1600)
 
     kernel = _kernel(db, row)
 
-    cut_lines = len(build_cli_block("platform-architect", workspace="me").splitlines()) - 3
+    contract = build_dispatch_kernel(row, db_path=db, agent_name="platform-architect")
+    assert kernel.startswith(f"{contract}\n\nover the 9,500-char kernel budget: the goal alone is 9,600 chars\n\n")
     assert f"1 section: stack — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
-    assert f"# Your CLI\n\n+{cut_lines} more — `gaia --help`" in kernel
-    assert kernel.startswith(build_dispatch_kernel(row, db_path=db, agent_name="platform-architect"))
-    assert len(kernel) <= KERNEL_BUDGET
+    assert "# Scope preferences: me > alpha (1 of 1)\n" in kernel
+    assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
 
 
 def test_kernel_project_context_many_sections_fit_or_point(db):
@@ -184,77 +184,93 @@ def test_kernel_project_context_absent_without_a_dispatch_project(db):
     assert HEADING not in kernel
 
 
-SCOPE_KINDS = (("preference", 10), ("fact", 20), ("lesson", 48))
-SCOPE_TOTAL = sum(count for _, count in SCOPE_KINDS)
+def _scope_row(db: Path, kind: str, index: int, *, project: bool) -> None:
+    owner, ref = ("project", IDENTITY) if project else ("workspace", None)
+    _execute(
+        db, "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
+        "project_ref, updated_at) VALUES ('me', ?, 'decision', ?, 'why', 'anchor', ?, ?, ?, ?)",
+        f"decision_me_{kind}_{index:02d}", f"Standing {kind} number {index:02d} " + "x" * 150, kind, owner, ref,
+        f"2026-01-01T00:{index:02d}:00Z",
+    )
 
 
-def _big_project(db: Path) -> dict:
-    """A project holding 78 scope rows, two readable sections and 40 standing notes; its preferences are its stalest rows."""
-    minute = 0
-    for kind, count in SCOPE_KINDS:
-        for i in range(count):
-            minute += 1
-            _execute(
-                db, "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
-                "project_ref, updated_at) VALUES ('me', ?, 'decision', ?, 'why', 'anchor', ?, 'project', ?, ?)",
-                f"decision_me_{kind}_{i:02d}", f"Standing {kind} number {i:02d} " + "x" * 150, kind, IDENTITY,
-                f"2026-01-01T{minute // 60:02d}:{minute % 60:02d}:00Z",
-            )
-    for i in range(40):
+def _project_with(db: Path, preferences: int, facts: int, lessons: int, notes: int) -> dict:
+    """The alpha project holding that many scope rows and other standing notes, and two readable sections."""
+    for kind, count in (("preference", preferences), ("fact", facts), ("lesson", lessons)):
+        for index in range(count):
+            _scope_row(db, kind, index, project=True)
+    for index in range(notes):
         _execute(
             db, "INSERT INTO memory (workspace, name, type, description, body, class, project_ref, updated_at) "
-            "VALUES ('me', ?, 'project', ?, 'the full body', 'anchor', ?, '2026-02-01T00:00:00Z')",
-            f"atom_alpha_note_{i:02d}", "Fact: " + "word " * 20, IDENTITY,
+            "VALUES ('me', ?, 'project', 'Decision: a standing note', 'the full body', 'anchor', ?, "
+            "'2026-02-01T00:00:00Z')", f"decision_alpha_note_{index:02d}", IDENTITY,
         )
     _section(db, "stack", {"language": "go", "notes": "s" * 900})
     _section(db, "environment", {"cloud": "gcp", "notes": "e" * 900})
     return _row(DISPLAY, ["stack", "environment"])
 
 
-def _scope_section(kernel: str) -> list:
-    return kernel.split("# Scope memory", 1)[1].split("\n\n# ", 1)[0].splitlines()
+def _kernel_counts(db: Path) -> dict:
+    con = sqlite3.connect(db)
+    try:
+        return dict(con.execute("SELECT name, kernel_count FROM memory WHERE name LIKE 'decision_me_%'"))
+    finally:
+        con.close()
 
 
-def test_a_project_with_more_scope_rows_than_the_budget_births_its_fixed_blocks_whole(db):
-    row = _big_project(db)
+@pytest.mark.parametrize(
+    "preferences, facts, lessons, notes", [(3, 29, 46, 40), (2, 5, 3, 4)], ids=["gaia-size", "mid-size"],
+)
+def test_a_project_kernel_carries_its_preferences_whole_and_counts_what_it_does_not_preload(
+    db, preferences, facts, lessons, notes,
+):
+    row = _project_with(db, preferences, facts, lessons, notes)
 
     kernel = _kernel(db, row)
 
-    notes = build_project_notes_block(row, db_path=db)
-    assert build_cli_block("platform-architect", workspace="me") in kernel
+    assert f"# Scope preferences: me > alpha ({preferences} of {preferences})\n" in kernel
+    for index in range(preferences):
+        assert (
+            f'  "Standing preference number {index:02d} {"x" * 150}"  scope=project'
+            f"  ref=memory:me/decision_me_preference_{index:02d}"
+        ) in kernel
+    assert (
+        f"# Scope memory: me > alpha\nfacts {facts}, lessons {lessons}, other notes {notes} — not preloaded: "
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug>`; this project's, bodies whole: "
+        "`gaia memory get-relevant --initiative alpha --sections anchor`\n"
+    ) in kernel
+    assert "Standing fact number" not in kernel and "Standing lesson number" not in kernel
+    assert "decision_alpha_note_" not in kernel
+    assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
     assert "s" * 900 in kernel and "e" * 900 in kernel
-    assert _pointer("stack") not in kernel and _pointer("environment") not in kernel
-    assert "\n- atom_alpha_note_" in notes and notes in kernel
     assert len(kernel) <= KERNEL_BUDGET
+    assert all(count == ("_preference_" in name) for name, count in _kernel_counts(db).items())
+
+    for verb in ("memory search Standing --workspace me", "memory get-relevant --initiative alpha --sections anchor"):
+        read = _paste(db, verb.split())
+        assert read.returncode == 0, read.stderr
+    assert "decision_me_fact_00" in read.stdout and "decision_alpha_note_00" in read.stdout
 
 
-def test_cut_scope_memory_ends_with_its_omitted_count_and_the_verb_that_lists_them(db):
-    kernel = _kernel(db, _big_project(db))
+def test_a_kernel_with_no_project_carries_the_workspace_preferences_and_counts_its_facts(db):
+    for index in range(2):
+        _scope_row(db, "preference", index, project=False)
+    for index in range(4):
+        _scope_row(db, "fact", index, project=False)
+    row = _row(None, ["stack"])
 
-    section = _scope_section(kernel)
-    shown = {kind: sum(f"Standing {kind} number" in line for line in section) for kind, _ in SCOPE_KINDS}
-    tail = re.fullmatch(r"\+(\d+) more — `(gaia memory list [^`]+)`", section[-1])
-    assert tail, section[-1]
-    assert int(tail[1]) > 0 and int(tail[1]) + sum(shown.values()) == SCOPE_TOTAL
-    assert shown["lesson"] == 0 or shown["fact"] == 20, "lessons leave before facts"
-    assert shown["fact"] == 0 or shown["preference"] == 10, "facts leave before preferences"
+    kernel = _kernel(db, row)
 
-    listed = _paste(db, shlex.split(re.sub(r"<[^>]*lesson[^>]*>", "lesson", tail[2]))[1:])
-    assert listed.returncode == 0, listed.stderr
-    assert "decision_me_lesson_00" in listed.stdout
-
-
-def test_only_the_scope_rows_a_kernel_delivers_count_a_kernel_access(db):
-    kernel = _kernel(db, _big_project(db))
-
-    con = sqlite3.connect(db)
-    try:
-        counted = dict(con.execute("SELECT name, kernel_count FROM memory WHERE name LIKE 'decision_me_%'"))
-    finally:
-        con.close()
-    assert len(counted) == SCOPE_TOTAL
-    for name, count in counted.items():
-        assert count == (1 if f"ref=memory:me/{name}" in kernel else 0), name
+    assert "# Scope preferences: me (2 of 2)\n" in kernel
+    assert "ref=memory:me/decision_me_preference_00" in kernel and "ref=memory:me/decision_me_preference_01" in kernel
+    assert (
+        "# Scope memory: me\nfacts 4 — not preloaded: "
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug>`\n"
+    ) in kernel
+    assert "Standing fact number" not in kernel
+    assert HEADING not in kernel
+    assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
+    assert len(kernel) <= KERNEL_BUDGET
 
 
 def test_project_context_block_degrades_whole_then_pointers_then_one_line_naming_its_sections():
