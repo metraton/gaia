@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Gaia talks to people as a colleague talks to a colleague, by default.** On every surface a person reads, the answer opens with its conclusion in one or two sentences, then short bullets with one idea each, with no paragraph past two sentences, no closing recap and no menu of options. Several questions get one short statement each; a mechanism or a design is shown with a plain-text flow; detail comes when asked; things are named in plain words instead of by plan, task or approval numbers. The register (`human-register`) now names the ideas it rests on: plain language, Grice's maxims, audience design, bottom line up front, progressive disclosure and the curse of knowledge. Conversation preferences still replace this shape where they differ.
+- **Gaia talks to people as a colleague talks to a colleague, by default.** On every surface a person reads, the answer opens with its conclusion in one or two sentences, then short bullets with one idea each, with no paragraph past two sentences, no closing recap and no menu of options. Several questions get one short statement each; a mechanism or a design is shown with a plain-text flow; detail comes when asked; things are named in plain words instead of by plan, task or approval numbers; a technical term the reader has not used is explained in a few words the first time, with the term in parentheses, and used alone after that. The register (`human-register`) now names the ideas it rests on: plain language, Grice's maxims, audience design, bottom line up front, progressive disclosure and the curse of knowledge. Conversation preferences still replace this shape where they differ.
 
 ### Fixed
 
