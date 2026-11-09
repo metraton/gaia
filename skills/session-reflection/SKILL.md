@@ -102,7 +102,7 @@ and the `gaia_system` retrieval query.
 
 ## Output
 The user sees what changed in a sentence, then one plain-named line per durable
-effect, never the working tables, raw verbs or ids. A `type=user` row goes first, for its veto.
+effect, no working tables or raw verbs, an id only to veto or open a row; `type=user` rows first.
 
 ### Resume point
 

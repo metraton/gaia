@@ -95,9 +95,9 @@ do next -- and nothing before the state, because a reader in an incident reads
 the first line and acts. Normal density carries the model in the fixed order of
 Step 2. Deep density adds the why behind each connection and the alternatives
 that were rejected. The same truth appears at all three; density removes
-sentences, never precision. In a conversation the answer is level 1 in
-`human-register`'s shape, its flow drawn when it shows how something works;
-level 2 and the detail come when the reader asks.
+sentences, never precision. In a conversation the answer is level 1, with its
+flow drawn for a mechanism, and level 2 waits until asked: a control-room
+message is short because a long one is misread, not because the writer knew less.
 
 ## Step 2: Build the model in the fixed order
 

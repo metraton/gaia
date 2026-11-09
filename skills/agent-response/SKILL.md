@@ -98,7 +98,7 @@ so the coordinates survive the session.
 | A verification fails | Its cause decides: `product` sends the fix to the owning surface with the refuting probe's evidence id, and the producer adds that probe to the suite as its red run before changing code, so the finding stays a test; `environment` or `broken_test` makes the check itself the object — a mis-designed gate is not a code defect, and whether it guards something a user or a release would feel decides between mending it and cutting it, before any fix is re-dispatched; `requirement_changed` goes to `gaia-planner`, whose gate wording claims more than its task |
 | A verifier leaves a user-judged gate pending | Ask the user and record the answer with `gaia task gate set-status` and its evidence, as `gaia-planner` step 5 lays out |
 | A return hands the user steps an agent could run — in the `Human steps:` block of `conclusion`, or in prose, a command that needs no person | Resume the producer with those steps as its own work, to run and to request as one signed set (`agent-protocol` principle 4). What reaches the user is the step that is irreducibly theirs — an interactive login, a value only they hold, a judgment — ready to paste and run, and a step a Gaia defect blocks, named as a defect with its `memory_delta` proposal curated; a procedure written for a human operator describes what must happen, not who does it |
-| A specialist refutes a premise the user stated | The refutation reaches the user first, with the evidence id that carries it, never filtered by the intent: the goal carried the premise as a claim (`dispatch`), and the refutation is the deliverable it owed |
+| A specialist refutes a premise the user stated | The refutation reaches the user first, in plain words, with the evidence id only when they ask to see it, never filtered by the intent: the goal carried the premise as a claim (`dispatch`), and the refutation is the deliverable it owed |
 | Several agents are in flight | The consolidated result, said once when all have returned; an interim finding that stands alone may be reported early, a pending result is awaited rather than anticipated |
 
 ## Three traps, all measured today on real rows
@@ -123,8 +123,8 @@ next prompt's context, at most three per prompt and the rest named by their read
 --harness-id <agentId>` reads it again (a row closed before the rename answers from its
 `user_facing_summary`). Treat it as a claim, not as copy: validate it against the row's evidence, the
 artifacts it names and the user's intent, discuss with the specialist when they disagree, and only then
-answer the user in your own words, in `human-register`'s shape: the conclusion, then one-idea bullets,
-detail on request, no id leading. At N>1 the conclusions are inputs to one synthesis.
+answer the user in your own words, in `human-register`'s shape. At N>1 the conclusions are inputs to
+one synthesis.
 A `Human steps:` block inside `conclusion` is the one part of it written to be relayed: the steps the
 user does with their own hands, each with why it is theirs. Each line is judged before it travels — an
 agent-runnable one is the row above — and the rest reach the user in their language, as what they

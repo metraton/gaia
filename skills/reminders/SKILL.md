@@ -1,6 +1,6 @@
 ---
 name: reminders
-description: Use when the user wants to be reminded of something at a time, or wants something brought to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning" -- or the user says yes to a reminder proposed for a time or a date mentioned beside something to do. Also when a due reminder or routine shows at session start or in the prompt counter and has to be acted on. NOT for work done or polled inside this session, which is the host's timer.
+description: Use when the user wants to be reminded of something at a time, or wants something brought to them on a recurring basis -- "recuérdame mañana a las 4", "avísame el viernes", "cada viernes a las 5 cargar el timesheet", "rutinariamente", "remind me to", "every morning" -- or the user says yes to a reminder proposed for a time or a date mentioned beside something to do. Also when a due reminder or routine shows at session start or in the prompt counter and has to be raised or closed. NOT for work done or polled inside this session, which is the host's timer.
 ---
 
 # Reminders
@@ -56,7 +56,7 @@ With no pointer the headline has to carry everything.
 
 ## When something is due
 
-At session start or after a compaction, name what is due once, briefly. Mid-session the `🔔` line repeats on every prompt while anything stays due: raise a reminder only when it touches the topic at hand or at a natural pause, one at a time, never the whole list mid-topic and never every turn. When you raise one, give the user three ways out, in their words.
+Name what is due once per session, briefly, when it starts; after a compaction only what the user has not heard yet, because the compaction is invisible to them. The `🔔` line beside a prompt appears only when something new came due: raise it when it touches the topic at hand or at a natural pause, one at a time, because a list dropped mid-topic buries what the user asked. When you raise one, give the user three ways out, in their words.
 
 - **Do it now.** Follow the pointer: load the skill, read the memory with `gaia memory show <slug> --workspace <w>`, or bring the project with `gaia context project <name>`. Work in a domain goes to the specialist the procedure names. With the user present, anything that needs approval asks for it.
 - **Later.** `gaia notifications snooze <id> --for 2h`, or `--until <local time>`. It hides until then.

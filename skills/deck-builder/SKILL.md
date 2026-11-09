@@ -93,7 +93,7 @@ sentence that hands it to the next; what kickers carry; whether chips are
 questions or numbered moments; the colour legend; the face's register.
 Approved: the conventions.
 
-**D. Shape.** Per page, a table in the console, the working document of the deck the person asked for: sections, their components
+**D. Shape.** Per page, a table in the console: sections, their components
 (kicker, title, description), the sizes that carry meaning, and, for each
 component, whether it opens a detail and what that detail defines, in a few
 words. You propose the chips and their members; the person confirms or changes

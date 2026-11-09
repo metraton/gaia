@@ -49,7 +49,7 @@ These two sections are the state-machine expression of the **Autonomous Action B
 2. **Review `_gaia/waiting`** — did the other party respond? Auto-apply → `action` (mechanical, reversible — no confirmation). Stale >1 week → flag.
 3. **Review `_gaia/someday`** — count only: "tienes 5 en someday." Detail only if asked.
 4. **Scan inbox for new signal** — Financial (large amounts, bills, due dates), personal/important (housing, legal, health), expected reply arrived → propose `action`. Interesting, no urgency → propose `someday`.
-5. **Answer** — the overall inbox state first, in one or two sentences, then what needs the user as short bullets; no closing recap.
+5. **Answer** in `human-register`'s shape — the overall inbox state opens it, then the items from steps 1-4 that need the user.
 
 ### 1. Full Triage ("organicemos el correo")
 

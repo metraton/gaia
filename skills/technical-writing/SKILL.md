@@ -106,7 +106,7 @@ A user or a repository that declares its own PR format wins: it arrives as one o
 1. **The situation** -- where things stand, in one or two sentences, the grave thing first.
 2. **What it means** -- for the reader, as short bullets, one idea each: what is at risk, what is settled, what changed since the last report.
 3. **What to do or decide** -- the actions open as bullets, each with who and by when; or that none is needed.
-4. **The detail** -- evidence, numbers, identifiers, each with a pointer the reader can open, and its mark when the report is the user's to decide on (`human-register`, Rule 4); or a link to where it lives.
+4. **The detail** -- evidence, numbers, identifiers, each with a pointer the reader can open, and its mark when the report is the user's to decide on (`human-register`, Rule 7); or a link to where it lives.
 
 The first line of a report is the situation, never an author or date stamp or a title block; metadata, if any, goes last. A report that opens with the detail has handed its reader the agent's register; a report whose grave line sits third misleads by emphasis (`human-register`, Rule 2). A time in a report for readers in several places is written in the standard they share.
 
