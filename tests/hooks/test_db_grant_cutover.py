@@ -240,7 +240,7 @@ class TestCheckFindsDBGrant:
         )
         assert activation_result.success
 
-        grant = check_approval_grant(command, session_id=session_id)
+        grant = check_approval_grant(command, session_id=session_id, requester=_lookup_requester(payload))
 
         assert grant is not None, (
             "check_approval_grant() must find the DB grant after activation"
@@ -286,7 +286,8 @@ class TestConsumeReplayProtection:
         assert result.success
 
         # First check -- should find the grant.
-        grant = check_approval_grant(command, session_id=session_id)
+        requester = _lookup_requester(payload)
+        grant = check_approval_grant(command, session_id=session_id, requester=requester)
         assert grant is not None, "First check must find the grant"
 
         # Consume.
@@ -303,7 +304,7 @@ class TestConsumeReplayProtection:
         assert row[1] is not None, "consumed_at must be stamped"
 
         # Second check -- must NOT find the grant (replay protection).
-        grant2 = check_approval_grant(command, session_id=session_id)
+        grant2 = check_approval_grant(command, session_id=session_id, requester=requester)
         assert grant2 is None, (
             "Second check after consume must return None (replay protection)"
         )

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for nonce-only approval grants."""
 
+import hashlib
 import json
 import re
 import subprocess
@@ -150,7 +151,11 @@ def _write_active_grant(
     assert signature is not None
 
     approval_id = f"P-{_secrets.token_hex(16)}"
-    grant_data = {"command": command, "scope_signature": signature.to_dict()}
+    grant_data = {
+        "command": command,
+        "fingerprint": hashlib.sha256(command.encode("utf-8")).hexdigest(),
+        "scope_signature": signature.to_dict(),
+    }
 
     grant_at = granted_at if granted_at is not None else time.time()
     expires_at = (

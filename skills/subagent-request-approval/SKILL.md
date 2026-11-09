@@ -151,8 +151,10 @@ A protected-path write is requested the same way with
 `--impact` for the edit, and its `--rollback`.
 
 Pass no `--session-id` or `--agent-id`; the request refuses them. It is sealed
-to the session and agent that ran it, read from the dispatch environment on
-both hosts, and only that agent in that session can use the signature.
+to the host session and the agent name that ran it, read from the dispatch
+environment on both hosts. The signature is bound to that pair, not to one
+running agent: every agent of that name dispatched in the session can use it
+(`gaia/store/writer.py::_sealed_item_binds`).
 
 ## When a command was blocked first
 
@@ -163,6 +165,19 @@ that line. Your request replaces the one the block sealed without phrases:
 Gaia withdraws that automatic one by itself and prints `Withdrew <id>` for it,
 so you do not reject it. Do not retry the command, reword it, or reach its
 effect another way.
+
+## A new request retires the older one
+
+One command has one live authority. When you request a command that an older
+request of yours still holds -- pending, or approved and not yet run, in the
+same directory -- Gaia withdraws that pending request or revokes that approved
+signature in the same step and prints `Withdrew <id>` for it
+(`gaia/approvals/core.py::_persist_replacing`). The whole older request goes,
+including the commands the new one does not repeat. This is how you leave a
+stalled set behind: request what still has to run, and report the new id. The
+old id can no longer run anything, even if the user was already asked about it.
+A request for a different command, by another agent, or in another directory
+is untouched.
 
 ## How many requests
 
@@ -256,7 +271,7 @@ it (`orchestrator-present-approval`); the approved work runs under `execution`.
 This is the same in Claude Code and OpenCode: nothing is asked in your
 session, neither when you request nor when your turn ends. The orchestrator
 reads the approval id from your contract and decides when to ask the user.
-A set that failed is not resumed: after fresh investigation, request what still
-has to run as a new request. A single command that failed keeps its signature
-for one retry of the same bytes in the same directory within the window; a
-second failure needs a new request.
+A request that failed is not resumed, whether it holds one command or several:
+`request-set` always seals a set, and its first undeclared non-zero exit
+freezes it (`gaia/approvals/core.py::close_command`). After fresh
+investigation, request what still has to run as a new request.

@@ -13,7 +13,8 @@ consent cycle through this module, so the invariants below have one owner:
   per item what it does and its impact (:func:`check_presentable`, which every
   host runs before showing). The requesting verbs demand them; a reactive block
   seals without them and points its requester to :func:`request_line`, and the
-  phrased request that follows replaces it (withdrawn as ``reemplazada``);
+  phrased request that follows replaces it (withdrawn as ``reemplazada``), as
+  it does any older request or live grant still holding one of its commands;
 * a decision counts only when it is a structured option answering a recorded
   presentation (:func:`record_presentation` then :func:`decide`), and the
   resulting grant is bound to the requesting session and agent;
@@ -54,7 +55,7 @@ _COMMAND_KINDS = frozenset({"command", "command_set"})
 _FILE_KIND = "file_write"
 _FILE_OPERATION = "FILE_WRITE command intercepted: write"
 _MAX_EXIT_CODE = 255
-#: The withdrawal reason of a phraseless request its requester's phrased one
+#: The withdrawal reason of a request or grant its requester's newer request
 #: replaced; readers tell it from a user's rejection and from an expiry by it.
 REPLACED_REASON = "reemplazada"
 #: The flag a requester owes on every request: how to undo it, or that it cannot be undone.
@@ -396,7 +397,7 @@ def _require_phrases(
 
 
 def replaced_by(approval_id: str) -> list[str]:
-    """The phraseless requests that sealing ``approval_id`` withdrew as replaced, oldest first."""
+    """The requests and grants that sealing ``approval_id`` retired as replaced, in the order retired."""
     from gaia.approvals.store import _open_db
 
     con = _open_db()
@@ -426,32 +427,56 @@ def _own_pendings(requester: Mapping[str, str]) -> list[tuple[dict, dict]]:
     return own
 
 
+def _signed_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The command items ``payload`` asks a signature for."""
+    return [item for item in _payload_items(payload) if item.get("command") and is_signed(item)]
+
+
+def _signed_commands(payload: Mapping[str, Any]) -> list[tuple[Optional[str], str]]:
+    """The ``(cwd, command)`` pairs ``payload`` asks a signature for."""
+    return [(item.get("cwd"), item["command"]) for item in _signed_items(payload)]
+
+
 def _replaceable(payload: Mapping[str, Any]) -> list[str]:
-    """The requester's phraseless pending requests of the same kind whose every target ``payload`` carries."""
+    """The requester's pending requests ``payload`` retires, oldest first.
+
+    A phraseless one of the same kind whose every target ``payload`` carries,
+    and any one asking a signature for a command ``payload`` signs in the same
+    directory.
+    """
+    from gaia.store.writer import holds_any
+
     is_file = payload.get("operation") == _FILE_OPERATION
     targets = set(_targets(payload))
+    signed = _signed_commands(payload)
     return [
         row["id"]
         for row, old in _own_pendings(payload["requested_by"])
-        if (old.get("operation") == _FILE_OPERATION) == is_file
-        and set(_targets(old)) <= targets
-        and missing_phrases(old)
+        if holds_any(_signed_items(old), signed) or (
+            (old.get("operation") == _FILE_OPERATION) == is_file
+            and set(_targets(old)) <= targets
+            and missing_phrases(old)
+        )
     ]
 
 
 def _persist_replacing(payload: dict) -> str:
-    """Insert a phrased request and, in the same transaction, withdraw the phraseless ones it replaces.
+    """Insert a phrased request and, in the same transaction, retire what it replaces.
 
-    Withdrawn as revoked with the reason :data:`REPLACED_REASON`: the user
-    never saw them, so it is neither a rejection nor an expiry. One decided or
-    withdrawn since it was listed is left as it is.
+    The requester's pending requests :func:`_replaceable` names are withdrawn,
+    and its live grants still holding a command the request signs are revoked
+    (``writer.revoke_grants_holding``), so no command keeps two authorities.
+    Each carries the reason :data:`REPLACED_REASON`: neither a rejection nor an
+    expiry. A request decided or withdrawn since it was listed is left as it
+    is, and a repeated request, which reuses its own pending, retires nothing.
     """
     from gaia.approvals import store
-    from gaia.store.writer import _retry_on_locked
+    from gaia.store.writer import _retry_on_locked, revoke_grants_holding
 
     session_id = payload["requested_by"]["session_id"]
     agent_id = payload["requested_by"]["agent_id"]
     replaced = _replaceable(payload)
+    signed = _signed_commands(payload)
 
     def work() -> str:
         con = store._open_db()
@@ -467,10 +492,20 @@ def _persist_replacing(payload: dict) -> str:
                     sort_keys=True,
                 )
                 for old in replaced:
+                    if old == approval_id:
+                        continue
                     try:
                         store.revoke(old, session_id, agent_id=agent_id, metadata_json=reason, con=con)
                     except ValueError:
                         continue
+                for old in revoke_grants_holding(
+                    signed, session_id=session_id, agent_id=agent_id, con=con,
+                ):
+                    if store.get_by_id(old, con=con) is not None:
+                        store.record_event(
+                            old, "REVOKED", agent_id=agent_id, session_id=session_id,
+                            metadata_json=reason, con=con,
+                        )
                 con.commit()
                 return approval_id
             except Exception:
@@ -504,8 +539,10 @@ def request_command_set(
     A step that does not classify T3 is sealed as an unsigned step: shown in
     its position, never asked, never reserved. Every phrase is required
     (:class:`NotPresentableError` names each one missing), ``verification``
-    and ``shared_state`` included, and the requester's phraseless reactive
-    requests the set covers are replaced. Each signed step is sealed with the
+    and ``shared_state`` included. The requester's phraseless reactive
+    requests the set covers are replaced, and so is any older request or live
+    grant of its own still holding a command the set signs, unconsumed, in the
+    same directory. Each signed step is sealed with the
     content of the files its command runs or reads. ``requested_from`` is the
     requester's shell folder.
     """

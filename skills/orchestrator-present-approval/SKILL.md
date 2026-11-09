@@ -55,10 +55,11 @@ refused outright: dispatch a specialist for it.
    OpenCode) with that output unchanged, and print nothing about the
    signature. Gaia checks the call before the questions open -- the hook in
    Claude Code, the plugin in OpenCode, which fills the call with every
-   signature's questions -- and ties each answer to its own signature. Only
-   approvals your own specialists requested are accepted. In OpenCode, ask
-   two signatures of the same specialist in separate calls: that specialist
-   runs one approval at a time.
+   signature's questions -- and ties each answer to its own signature. In
+   Claude Code any pending approval is accepted by its id, whichever session
+   requested it (`gaia/approvals/core.py::question_batch`): pass only the ids
+   your own specialists returned. In OpenCode, ask two signatures of the same
+   specialist in separate calls: that specialist runs one approval at a time.
 3. Details: Gaia names the command to run -- the hook's message in Claude
    Code, your call's result in OpenCode --
    `gaia approvals question --details <approval_id> ...`. Pass its output to
@@ -82,7 +83,10 @@ reroute the work through the governed surface.
 Read the decision with `gaia approvals show <approval_id>` (its State); confirm
 it left `pending` before resuming the requester. Approved:
 resume the specialist that requested it -- the same agent, not a new one --
-with `execution`; the signature is bound to that agent and session. When a
+with `execution`; the signature is bound to that agent's name and this
+session, not to the one running agent, so a second agent of the same name
+could spend it. An id a specialist's newer request replaced reads `replaced`
+or shows a revoked grant: present the newer id instead. When a
 grant's TTL is running out mid-verification, re-mint it: verification after
 the mutation is narration, and "execute now, nothing before" costs more than a
 fresh signature. Rejected:

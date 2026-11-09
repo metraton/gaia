@@ -145,6 +145,11 @@ def _sealed_payload(
     )
 
 
+def _requester_of(payload: dict) -> dict:
+    by = payload["requested_by"]
+    return {"cwd": payload["items"][0]["cwd"], "session_id": by["session_id"], "agent_id": by["agent_id"]}
+
+
 def _sealed_command_set_payload(
     command_set: list[dict], *, agent_type: str = "test-agent",
     session_id: str = "test-bridge-session",
@@ -478,8 +483,7 @@ class TestCheckWriteAlignment:
         )
         assert activation_result.success
 
-        # The CHECK side should find the grant.
-        grant = check_approval_grant(command, session_id=session_id)
+        grant = check_approval_grant(command, session_id=session_id, requester=_requester_of(payload))
         assert grant is not None, (
             "check_approval_grant() must find the grant written by activate_db_pending_by_id()"
         )
@@ -888,8 +892,9 @@ class TestActivateDbPendingCommandSet:
         cs_grants = [g for g in grants if g.get("scope") == "COMMAND_SET"]
         assert cs_grants == [], "A single-command payload must not mint a COMMAND_SET grant"
 
-        # And the singular semantic grant is checkable as before.
-        assert check_approval_grant("terraform apply", session_id=session_id) is not None
+        assert check_approval_grant(
+            "terraform apply", session_id=session_id, requester=_requester_of(payload),
+        ) is not None
 
 
 # ---------------------------------------------------------------------------

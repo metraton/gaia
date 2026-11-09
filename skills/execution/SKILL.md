@@ -6,8 +6,10 @@ description: Use when the specialist that requested a T3 operation or COMMAND_SE
 # Approved Execution
 
 The approved work runs in the specialist that requested it, resumed by the
-orchestrator; the signature belongs to that agent and session. Approval does
-not turn the orchestrator into an executor and does not broaden scope.
+orchestrator; the signature is bound to that agent's name and the host
+session, so any agent of that name in the session can consume it, and the one
+that requested it is the one that runs it. Approval does not turn the
+orchestrator into an executor and does not broaden scope.
 
 ## Source boundary
 
@@ -41,15 +43,23 @@ source changes. The same prohibition applies to fixtures and bulk operations.
    it holds no index, so it neither spends nor advances the signature.
 5. A call the host refused before running it (Claude Code's
    `Permission to use Bash ... has been denied`) spends nothing: the item
-   keeps its index and the single-command signature stays usable. Retry the
-   same sealed bytes once, as a new call; if the host refuses again, stop and
-   report the refusal with the approval id instead of requesting anew. A call
-   that never reports back is recorded as no result, not as a failure, and
-   does not advance the set. Read its state before deciding anything, and
-   request anything still needed as a new request.
-   A single-command signature whose command exited non-zero is given back
-   once, while its window lasts: retry the same sealed bytes from the same
-   directory, and after a second failure investigate and request anew.
+   keeps its index. Retry the same sealed bytes once, as a new call; if the
+   host refuses again, stop and report the refusal with the approval id
+   instead of requesting anew. A call that never reports back is recorded as
+   no result, not as a failure, and does not advance the set. Its item stays
+   reserved for 10 minutes and refuses a retry meanwhile; after that a new
+   call may run the same sealed bytes under the same signature while its
+   window lasts (`gaia/store/writer.py::reserve_plan_command`). No result is
+   not proof that the command did not run: read the target's state before
+   retrying.
+   A request made with `request-set` is a set even with one command, so its
+   first undeclared non-zero exit freezes it. Only a signature decided on the
+   request a block sealed by itself -- the user's `gaia approvals approve <id>`
+   from a terminal -- is a single-command one: its command is given back once
+   after a non-zero exit, for the same sealed bytes in the same directory
+   while its window lasts (`gaia/store/writer.py::retry_db_semantic_grant`).
+   To leave a stalled set behind, request what still has to run: the new
+   request revokes the old signature (`subagent-request-approval`).
 6. After successful mutations, verify desired state with separate read-only
    checks. Success exit codes alone are insufficient.
 7. Checkpoint verification and emit `NEEDS_VERIFICATION` for a plan-task-bound
