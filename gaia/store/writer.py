@@ -8278,8 +8278,8 @@ def _iter_live_plan_grants(con: sqlite3.Connection, now_iso: str):
     """
     try:
         rows = con.execute(
-            "SELECT approval_id, command_set_json, next_index, created_at, expires_at "
-            "FROM approval_grants "
+            "SELECT approval_id, command_set_json, next_index, created_at, expires_at, "
+            "session_id, agent_id FROM approval_grants "
             "WHERE scope='COMMAND_SET' AND source='plan-first' AND status='PENDING'"
         ).fetchall()
     except sqlite3.OperationalError as exc:
@@ -8292,6 +8292,8 @@ def _iter_live_plan_grants(con: sqlite3.Connection, now_iso: str):
             "next_index": int(row[2] or 0),
             "created_at": row[3],
             "expires_at": row[4],
+            "session_id": row[5],
+            "agent_id": row[6],
         }
         if not _plan_grant_is_live(grant, now_iso):
             continue
@@ -8355,6 +8357,30 @@ def find_plan_grant_for_command(command: str, *, db_path: Path | None = None) ->
                         "index": index,
                         "next_index": grant["next_index"],
                         "fingerprint": fingerprint,
+                    }
+        return None
+    finally:
+        con.close()
+
+
+def find_unconsumed_plan_item(
+    command: str, *, session_id: str, agent_id: str, db_path: Path | None = None,
+) -> dict | None:
+    """The requester's live plan-first grant that holds ``command`` at or after its next index, else None."""
+    from gaia.approvals.command_set import command_fingerprint
+
+    fingerprint = command_fingerprint(command)
+    con = _connect(db_path)
+    try:
+        for grant, items in _iter_live_plan_grants(con, _now_iso()):
+            if (grant["session_id"], grant["agent_id"]) != (session_id, agent_id):
+                continue
+            for index, item in enumerate(items[grant["next_index"]:], start=grant["next_index"]):
+                if isinstance(item, dict) and item.get("command") == command \
+                        and item.get("fingerprint") == fingerprint:
+                    return {
+                        "approval_id": grant["approval_id"], "index": index,
+                        "next_index": grant["next_index"], "cwd": item.get("cwd"),
                     }
         return None
     finally:
