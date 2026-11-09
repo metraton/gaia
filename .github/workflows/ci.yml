@@ -323,48 +323,29 @@ jobs:
   #                                                 post_tool_use / T3 grant /
   #                                                 FTS5 smoke)
   #
-  # rc.2 launcher/workspace-resolution extension (Step -> what it proves):
+  # The launcher steps run the packed tarball installed by npm into
+  # _launcher/npm-project, with their own workspace and database: `gaia install
+  # --path` refuses to point a launcher at a source checkout. The npm project
+  # is not the workspace, as with a global install, so only GAIA_WORKSPACE_PATH
+  # leads `gaia doctor` to the workspace. Step -> what it proves:
   #   "RC-2 launcher-generated"            -> `gaia install --path` (opt-in)
-  #        emits gaia.cmd + gaia.ps1 (install.py Step 6.5) AND gaia.ps1 runs in
-  #        the MIDDLE of a pipeline (the rc.1 "Cannot run a document in the
-  #        middle of a pipeline" bug); also evidences the baked `python` token
-  #        (POSIX bakes `python3`) resolves on windows-latest.
+  #        emits gaia.cmd + gaia.ps1 AND gaia.ps1 runs in the MIDDLE of a
+  #        pipeline (the rc.1 "Cannot run a document in the middle of a
+  #        pipeline" bug).
   #   "RC-2 resolution-workspace-via-env"  -> `gaia doctor` invoked THROUGH the
-  #        generated launcher WITHOUT --workspace resolves the correct workspace
-  #        from the baked GAIA_WORKSPACE_PATH and reports 0 RED checks. AC-4/AC-6
-  #        used --no-path + explicit --workspace and so skipped BOTH the launcher
-  #        and the env-derivation path -- which is why the user-only false
-  #        CRITICAL never surfaced in CI. These two steps exercise them.
-  #
-  # rc.3 setx-persistence extension (Step -> what it proves):
-  #   "RC-3 setx-persistence"        -> `gaia install` on Windows PERSISTS
-  #        GAIA_WORKSPACE_PATH to the USER environment (install.py Step 6.6,
-  #        _persist_workspace_env -> `setx`; only with the --path opt-in). The
-  #        RC-2 launcher-generated step above already ran `gaia install` into
-  #        _ws, so setx has fired. This step reads the value back from where
-  #        setx writes it -- HKCU\Environment, surfaced by
-  #        [Environment]::GetEnvironmentVariable('GAIA_WORKSPACE_PATH','User') --
-  #        and asserts it equals the installed workspace.
-  #   "RC-3 doctor-via-npm-shim"     -> reproduces the user's MACHINE 2: `gaia`
-  #        resolved via npm's GLOBAL SHIM (not Gaia's ~/.local/bin launcher), so
-  #        the launcher's process-scoped GAIA_WORKSPACE_PATH export never runs
-  #        and __file__ lands outside the workspace's node_modules -> doctor
-  #        derived the npm prefix and emitted a false CRITICAL. In CI this is
-  #        modeled by invoking `python bin/gaia doctor --json` DIRECTLY (bin/gaia
-  #        lives outside node_modules, exactly like the shim's __file__; neither
-  #        runs the launcher, neither self-exports the env var). A NEGATIVE
-  #        CONTROL first proves that WITHOUT the persisted env doctor cannot
-  #        resolve (no JSON, exit 2) -- the machine-2 failure, reproduced. Then,
-  #        with GAIA_WORKSPACE_PATH sourced from the setx-persisted USER env and
-  #        handed to a fresh doctor child, doctor resolves the workspace and
-  #        reports 0 RED -> HEALTHY, WITHOUT --workspace. Note on setx timing:
-  #        setx targets FUTURE processes and the Actions runner does NOT
-  #        re-broadcast WM_SETTINGCHANGE mid-job, so a naive later step would not
-  #        auto-inherit it; we therefore READ the persisted USER value and inject
-  #        it into the doctor child explicitly -- the same inheritance a fresh
-  #        shell gets automatically on the user's box (it reads HKCU\Environment
-  #        at spawn). The SOURCE is the setx-persisted var; only the injection
-  #        mechanism is manual.
+  #        generated launcher WITHOUT --workspace resolves the workspace from
+  #        the baked GAIA_WORKSPACE_PATH and reports 0 RED checks.
+  #   "RC-3 setx-persistence"        -> `gaia install --path` PERSISTS
+  #        GAIA_WORKSPACE_PATH to the USER environment (`setx`), read back from
+  #        HKCU\Environment.
+  #   "RC-3 doctor-via-npm-shim"     -> the user's MACHINE 2: `gaia` reached
+  #        through npm's shim, which runs the package's bin/gaia with no
+  #        launcher and so no exported workspace. A NEGATIVE CONTROL proves
+  #        that without the variable doctor checks the npm project and is not
+  #        healthy; with the setx-persisted value it reports 0 RED. setx
+  #        reaches only FUTURE processes and the runner does not re-broadcast
+  #        mid-job, so the step reads the persisted value and hands it to the
+  #        doctor child, as a fresh shell would inherit it.
   #
   # The heavy assertions (import-every-hook, parse doctor JSON for red checks,
   # drive the hook entry points + verify the DB) live in the committed helper
@@ -372,6 +353,7 @@ jobs:
   # ==========================================================================
   windows-compat:
     name: Windows compatibility (windows-latest)
+    needs: pack
     runs-on: windows-latest
     defaults:
       run:
@@ -388,6 +370,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/_ws" | Out-Null
           New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/_gaia" | Out-Null
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/_launcher/ws" | Out-Null
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/_launcher/npm-project" | Out-Null
 
       # AC-2 -- every module under hooks/ must import on Windows. This is the
       # instant catcher for the fcntl regression (#5): a POSIX-only import
@@ -441,25 +425,48 @@ jobs:
       - name: AC-8 -- runtime smoke (post_tool_use + T3 grant + FTS5)
         run: python tests/ci/windows_smoke.py smoke
 
-      # RC-2 (launcher-generated) -- proves what AC-4 structurally cannot: AC-4
-      # passes --no-path, which SKIPS install.py Step 6.5 entirely, so the
-      # Windows launcher was never generated in CI and the rc.1 launcher bug
-      # (extensionless bash shim that PowerShell rejected in a pipeline with
-      # "Cannot run a document in the middle of a pipeline") only ever appeared
-      # on the user's machine. Here we re-install into the SAME workspace AC-6
-      # validated, this time WITH the --path opt-in, so gaia.cmd + gaia.ps1 are
-      # actually written to ~/.local/bin (install._install_windows_launchers).
-      # We assert BOTH files exist, evidence which `python` the launcher bakes
-      # (POSIX bakes `python3`; Windows must resolve `python`), and then drive
-      # gaia.ps1 IN THE MIDDLE OF A PIPELINE inside a child pwsh -- the child so
-      # the launcher's trailing `exit` cannot terminate this step early -- and
-      # require exit 0, a lone `gaia <version>` line and an empty stderr. `--version` needs no DB and
-      # no workspace, so this isolates the pipeability + python-token surface.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: pack-out
+
+      # `npm init` first: without a package.json here npm would install into
+      # the checkout above.
+      - name: Install the packed tarball for the launcher steps
+        working-directory: ${{ github.workspace }}/_launcher/npm-project
+        env:
+          LAUNCHER_GAIA: ${{ github.workspace }}/_launcher/npm-project/node_modules/@jaguilar87/gaia/bin/gaia
+        run: |
+          $tarballs = @(Get-ChildItem -LiteralPath "${{ github.workspace }}/pack-out" -Filter *.tgz)
+          if ($tarballs.Count -ne 1) { Write-Error "expected one tarball in pack-out, found $($tarballs.Count)"; exit 1 }
+          $tarball = $tarballs[0].FullName
+          npm init -y
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm init failed with exit $LASTEXITCODE"; exit 1 }
+          npm install --no-audit --no-fund $tarball
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm install of $tarball failed with exit $LASTEXITCODE"; exit 1 }
+          if (-not (Test-Path -LiteralPath $env:LAUNCHER_GAIA)) { Write-Error "no installed bin/gaia at $env:LAUNCHER_GAIA"; exit 1 }
+          Write-Host "installed $tarball -> $env:LAUNCHER_GAIA"
+          exit 0
+
+      # RC-2 (launcher-generated) -- AC-4 passes --no-path, so only this step
+      # writes the Windows launcher. The installed package wires a fresh
+      # workspace WITH the --path opt-in, so gaia.cmd + gaia.ps1 are written to
+      # ~/.local/bin (install._install_windows_launchers). We assert BOTH files
+      # exist, then drive gaia.ps1 IN THE MIDDLE OF A PIPELINE inside a child
+      # pwsh -- the child so the launcher's trailing `exit` cannot terminate
+      # this step early -- and require exit 0, a lone `gaia <version>` line and
+      # an empty stderr. `--version` needs no DB and no workspace.
       - name: RC-2 launcher-generated -- gaia.cmd/gaia.ps1 emitted + ps1 pipeable
         env:
-          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+          GAIA_DB: ${{ github.workspace }}/_launcher/gaia.db
+          LAUNCHER_WS: ${{ github.workspace }}/_launcher/ws
+          LAUNCHER_GAIA: ${{ github.workspace }}/_launcher/npm-project/node_modules/@jaguilar87/gaia/bin/gaia
         run: |
-          python bin/gaia install --channel npm --path --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
+          python $env:LAUNCHER_GAIA install --channel npm --path --workspace $env:LAUNCHER_WS --db-path $env:GAIA_DB
           if ($LASTEXITCODE -ne 0) { Write-Error "gaia install --path failed with exit $LASTEXITCODE"; exit 1 }
           $base = Join-Path $HOME ".local/bin"
           $cmd  = Join-Path $base "gaia.cmd"
@@ -489,16 +496,15 @@ jobs:
       # GAIA_WORKSPACE_PATH, which doctor._derive_workspace honors BEFORE its
       # __file__ derivation (and after --workspace). This reproduces the user's
       # real invocation path (a global shim with no --workspace), which AC-6
-      # bypassed by passing --workspace explicitly. In CI bin/gaia lives OUTSIDE
-      # any node_modules, so WITHOUT the baked env var _derive_workspace exits 2
-      # ("global or symlinked install detected") and prints NO JSON -- exactly
-      # the false CRITICAL. WITH the launcher's baked env var it must resolve the
-      # installed workspace and report 0 RED checks. Run in a child pwsh (the
-      # launcher's trailing `exit` must not kill this step); absence of parseable
-      # JSON is itself the regression signal.
+      # bypassed by passing --workspace explicitly. The package sits in the npm
+      # project's node_modules, so WITHOUT the baked env var _derive_workspace
+      # returns the npm project, which has no .claude/ -- the false CRITICAL.
+      # WITH it doctor must resolve the installed workspace and report 0 RED
+      # checks. Run in a child pwsh (the launcher's trailing `exit` must not
+      # kill this step).
       - name: RC-2 resolution-workspace-via-env -- doctor via launcher is HEALTHY
         env:
-          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+          GAIA_DB: ${{ github.workspace }}/_launcher/gaia.db
         run: |
           $ps1 = Join-Path (Join-Path $HOME ".local/bin") "gaia.ps1"
           if (-not (Test-Path -LiteralPath $ps1)) { Write-Error "gaia.ps1 missing; the launcher-generated step must run first"; exit 1 }
@@ -507,7 +513,7 @@ jobs:
           try {
             $doc = $raw | ConvertFrom-Json
           } catch {
-            Write-Error "doctor via launcher emitted no parseable JSON -- _derive_workspace likely exited 2 (regression: baked GAIA_WORKSPACE_PATH not honored). raw output:`n$raw"
+            Write-Error "doctor via launcher emitted no parseable JSON. raw output:`n$raw"
             exit 1
           }
           foreach ($c in $doc.checks) { Write-Host ("   [{0,-7}] {1}: {2}" -f $c.severity, $c.name, $c.detail) }
@@ -523,8 +529,8 @@ jobs:
       # RC-3 (setx-persistence) -- proves the PERSISTENCE half of the rc.3 fix:
       # `gaia install` on Windows writes GAIA_WORKSPACE_PATH to the USER env via
       # `setx` (install.py Step 6.6, _persist_workspace_env). The RC-2
-      # launcher-generated step above already ran `gaia install` into _ws (setx
-      # fires there, even without --no-path), so here we only READ it back from
+      # launcher-generated step above already ran `gaia install --path` into
+      # the launcher workspace, so here we only READ it back from
       # where setx persists it -- HKCU\Environment, exposed by
       # [Environment]::GetEnvironmentVariable(...,'User') -- and assert it points
       # at the installed workspace. Without this persistence, when npm's shim
@@ -532,8 +538,10 @@ jobs:
       # prefix (the machine-2 false CRITICAL that RC-3 doctor-via-npm-shim below
       # exercises end to end).
       - name: RC-3 setx-persistence -- GAIA_WORKSPACE_PATH persisted to user env
+        env:
+          LAUNCHER_WS: ${{ github.workspace }}/_launcher/ws
         run: |
-          $expected = (Resolve-Path -LiteralPath "${{ github.workspace }}/_ws").Path
+          $expected = (Resolve-Path -LiteralPath $env:LAUNCHER_WS).Path
           $persisted = [Environment]::GetEnvironmentVariable('GAIA_WORKSPACE_PATH','User')
           if ([string]::IsNullOrWhiteSpace($persisted)) {
             Write-Error "GAIA_WORKSPACE_PATH was NOT persisted to the user env -- setx (install.py Step 6.6) did not run or failed"
@@ -554,45 +562,44 @@ jobs:
       # RC-3 (doctor-via-npm-shim) -- reproduces the user's MACHINE 2 and proves
       # the setx persistence fixes it. `gaia` resolved via npm's global shim (NOT
       # Gaia's ~/.local/bin launcher): the launcher's process-scoped env export
-      # never runs, and __file__ lands outside the workspace's node_modules, so
-      # doctor._derive_workspace cannot infer a workspace and (without the fix)
-      # exits 2 -> false CRITICAL. We model the shim by invoking `python bin/gaia
-      # doctor --json` DIRECTLY -- in CI bin/gaia is outside node_modules, exactly
-      # like the shim's __file__, and neither runs the launcher nor self-exports
-      # GAIA_WORKSPACE_PATH. A NEGATIVE CONTROL first confirms the bug is real
-      # (no env -> no JSON), then the persisted USER value is injected into a
-      # fresh doctor child and doctor must be HEALTHY WITHOUT --workspace. Both
-      # doctor invocations run in a CHILD pwsh (mirroring the RC-2 step) so the
-      # child's exit code / stderr cannot fail this step -- parseable JSON, or its
-      # absence, is the signal. On setx timing: setx applies to FUTURE processes
-      # and the runner does not re-broadcast mid-job, so we READ the persisted
-      # value and inject it explicitly -- the same env a fresh shell inherits
-      # automatically on the user's machine (only the injection is manual; the
-      # SOURCE is the setx-persisted var).
+      # never runs, and __file__ lands in the npm project's node_modules, so
+      # doctor._derive_workspace returns the npm project -> false CRITICAL. The
+      # step runs the installed package's bin/gaia DIRECTLY, as npm's shim does:
+      # no launcher, no exported GAIA_WORKSPACE_PATH. A NEGATIVE CONTROL first
+      # confirms the bug is real (no env -> doctor is not healthy), then the
+      # persisted USER value is injected into a fresh doctor child and doctor
+      # must be HEALTHY WITHOUT --workspace. Both doctor invocations run in a
+      # CHILD pwsh (mirroring the RC-2 step) so the child's exit code / stderr
+      # cannot fail this step -- the parsed JSON is the signal. On setx timing:
+      # setx applies to FUTURE processes and the runner does not re-broadcast
+      # mid-job, so we READ the persisted value and inject it explicitly -- the
+      # same env a fresh shell inherits automatically on the user's machine.
       - name: RC-3 doctor-via-npm-shim -- doctor without --workspace is HEALTHY
         env:
-          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+          GAIA_DB: ${{ github.workspace }}/_launcher/gaia.db
+          LAUNCHER_GAIA: ${{ github.workspace }}/_launcher/npm-project/node_modules/@jaguilar87/gaia/bin/gaia
         run: |
           # --- Negative control: WITHOUT the persisted env, doctor must NOT
-          # resolve a workspace. Proves the reproduction is genuine (the bug is
+          # come out healthy. Proves the reproduction is genuine (the bug is
           # real) rather than an always-green assertion.
           Remove-Item Env:GAIA_WORKSPACE_PATH -ErrorAction SilentlyContinue
-          $ctl = (pwsh -NoProfile -Command "python bin/gaia doctor --json" | Out-String)
-          $ctlResolved = $false
+          $shim = "python '$env:LAUNCHER_GAIA' doctor --json"
+          $ctl = (pwsh -NoProfile -Command $shim | Out-String)
+          $ctlHealthy = $false
           try {
             $ctlDoc = $ctl | ConvertFrom-Json
-            if ($ctlDoc -and $ctlDoc.checks) { $ctlResolved = $true }
-          } catch { $ctlResolved = $false }
-          if ($ctlResolved) {
-            Write-Error "control FAILED: doctor resolved a workspace WITHOUT the persisted env -- machine-2 is not being reproduced (bin/gaia must be outside node_modules). raw:`n$ctl"
+            $ctlErrs = @($ctlDoc.checks | Where-Object { $_.severity -eq 'error' })
+            if ($ctlDoc.checks -and $ctlErrs.Count -eq 0) { $ctlHealthy = $true }
+          } catch { $ctlHealthy = $false }
+          if ($ctlHealthy) {
+            Write-Error "control FAILED: doctor reported 0 RED WITHOUT the persisted env -- machine-2 is not being reproduced (the package must sit outside the workspace). raw:`n$ctl"
             exit 1
           }
-          Write-Host "control OK: without GAIA_WORKSPACE_PATH, doctor cannot resolve (no JSON / exit 2) -- machine-2 false CRITICAL reproduced."
+          Write-Host "control OK: without GAIA_WORKSPACE_PATH, doctor is not healthy (RED checks or no JSON) -- machine-2 false CRITICAL reproduced."
 
           # --- The fix: source GAIA_WORKSPACE_PATH from the setx-persisted USER
           # env and hand it to a fresh doctor child (a new process inherits it,
-          # just as a fresh shell would on the user's box). Invoke bin/gaia
-          # DIRECTLY (npm-shim stand-in), WITHOUT --workspace.
+          # just as a fresh shell would on the user's box), WITHOUT --workspace.
           $persisted = [Environment]::GetEnvironmentVariable('GAIA_WORKSPACE_PATH','User')
           if ([string]::IsNullOrWhiteSpace($persisted)) {
             Write-Error "GAIA_WORKSPACE_PATH is not persisted in the user env -- the setx step (install.py 6.6) must run first."
@@ -600,7 +607,7 @@ jobs:
           }
           $env:GAIA_WORKSPACE_PATH = $persisted
           Write-Host "doctor via bin/gaia (npm-shim path, no --workspace), GAIA_WORKSPACE_PATH=$persisted"
-          $raw = (pwsh -NoProfile -Command "python bin/gaia doctor --json" | Out-String)
+          $raw = (pwsh -NoProfile -Command $shim | Out-String)
           try {
             $doc = $raw | ConvertFrom-Json
           } catch {
