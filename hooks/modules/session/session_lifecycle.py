@@ -4,7 +4,9 @@ A host's entry script translates its own event and environment into these
 inputs and formats the result for its wire; nothing here reads either.
 """
 
+import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -257,7 +259,7 @@ def prompt_context(session_id: str, workspace: Optional[str]) -> str:
     """Refresh the session heartbeat, then return the context a user prompt carries."""
     refresh_heartbeat(session_id)
     lines = (
-        preferences_line(session_id), notifications_counter(workspace), signals_line(session_id),
+        preferences_line(session_id), due_line(session_id, workspace), signals_line(session_id),
         conclusions_lines(session_id),
     )
     return "\n".join(line for line in lines if line)
@@ -290,15 +292,46 @@ def refresh_heartbeat(session_id: str) -> None:
 DUE_ITEMIZED_MAX = 3
 
 
-def notifications_counter(workspace: Optional[str]) -> str:
-    """Return what ``## Due`` shows for ``workspace`` (None: every one): up to three items in its line shape, else their count; "" when none or on failure."""
+def due_line(session_id: str, workspace: Optional[str]) -> str:
+    """Return the due notifications line when something came due that this session was not shown yet; "" otherwise, an ack included."""
+    try:
+        from gaia.store.reader import due_now
+
+        due = due_now(workspace)
+    except Exception as exc:
+        logger.warning("due notifications not read (advisory, skipping): %s", exc)
+        return ""
+    if not session_id or session_id == "default":
+        return notifications_counter(workspace, due)
+    shown = sorted(f"{row['id']}@{row.get('due_at') or ''}" for row in due)
+    path = _due_cursor_path(session_id)
+    try:
+        seen = set(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        seen = set()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(shown), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("due cursor not written (non-fatal): %s", exc)
+    return notifications_counter(workspace, due) if set(shown) - seen else ""
+
+
+def _due_cursor_path(session_id: str) -> Path:
+    from gaia.paths import state_dir
+
+    return state_dir() / "due_cursor" / f"{re.sub(r'[^A-Za-z0-9._-]', '-', session_id)[:120]}.json"
+
+
+def notifications_counter(workspace: Optional[str], due: Optional[list] = None) -> str:
+    """Return what ``## Due`` shows for ``workspace`` (None: every one), or for the given ``due`` rows: up to three items in its line shape, else their count; "" when none or on failure."""
     try:
         from datetime import datetime, timezone
 
         from gaia.store.reader import due_now
         from modules.session.session_manifest import due_item_line
 
-        due = due_now(workspace)
+        due = due_now(workspace) if due is None else due
         if not due:
             return ""
         noun = "notification" if len(due) == 1 else "notifications"
@@ -350,5 +383,7 @@ def end_session(session_id: Optional[str]) -> None:
     try:
         from gaia.signals import forget
         forget(session_id)
+        if session_id:
+            _due_cursor_path(session_id).unlink(missing_ok=True)
     except Exception as exc:
-        logger.debug("signals cursor not removed (non-fatal): %s", exc)
+        logger.debug("signals or due cursor not removed (non-fatal): %s", exc)

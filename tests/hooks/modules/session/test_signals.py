@@ -144,10 +144,11 @@ def _due(n):
 def test_with_nothing_changed_the_prompt_context_is_the_due_line_alone(two_sessions, monkeypatch):
     monkeypatch.setattr("gaia.store.reader.due_now", lambda ws: _due(5))
 
-    assert prompt_context("B", None) == session_lifecycle.notifications_counter(None)
-    assert prompt_context("B", None) == (
-        "\U0001F514 5 notifications due (`gaia notifications list --unread` to see them)"
-    )
+    first = prompt_context("B", None)
+
+    assert first == session_lifecycle.notifications_counter(None)
+    assert first == "\U0001F514 5 notifications due (`gaia notifications list --unread` to see them)"
+    assert prompt_context("B", None) == ""
 
 
 def test_the_due_line_and_the_change_lines_share_one_context(two_sessions, monkeypatch):

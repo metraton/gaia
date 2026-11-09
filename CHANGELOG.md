@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Gaia talks to people as a colleague talks to a colleague, by default.** On every surface a person reads, the answer opens with its conclusion in one or two sentences, then short bullets with one idea each, with no paragraph past two sentences, no closing recap and no menu of options. Several questions get one short statement each; a mechanism or a design is shown with a plain-text flow; detail comes when asked; things are named in plain words instead of by plan, task or approval numbers; a technical term the reader has not used is explained in a few words the first time, with the term in parentheses, and used alone after that. The register (`human-register`) now names the ideas it rests on: plain language, Grice's maxims, audience design, bottom line up front, progressive disclosure and the curse of knowledge. Conversation preferences still replace this shape where they differ.
+
 ### Fixed
 
 - **A release candidate is published only from a release branch, never `main`.** `gaia release publish` refuses a pre-release whose push target is `main`, as it refuses a stable anywhere else, and `--dry-run` shows the refusal. CI runs on pushes to `release/**`, so the RC's commit carries the CI verdict `publish.yml` requires. Promoting a stable fetches the RC commit by its tag when the release branch was squash-merged or deleted. `gaia-release` and `gaia-verify` document the flow and how a tester installs an RC.
 - **`memory_delta` accepts a Gaia defect or lesson** under initiative `gaia_system`; accepting it writes the row to owner `gaia`.
 - **Retention reclaims what it used to leave behind.** `~/.gaia/tmp` folders are attributed to their contracts and collected with them; scratch and tmp entries with no owner on record, and entries of a paused owner whose session can no longer be read, are reclaimed after 7 untouched days (`GAIA_FS_RETENTION_STALE_DAYS`); entries a process holds open are skipped; a scratch database `<contract_id>.db` keeps its backups beside it in `<contract_id>.backups`.
 - **The validator frees an agent's own local work.** `chmod` in the caller's own scratch entry or worktree and `rm` in its own worktree run free; `uv --directory <repo> run pytest` and a bare `pytest` anchored at an absolute `--rootdir` run Gaia's own tests free; `gaia approvals request`, `request-set` and `request-file-write` store their words as data.
+- **`gaia --version`, `--help` and a bare `gaia` no longer warn that `_install_smoke.py` could not load.** The dispatcher imports each subcommand as `cli.<name>`, the module plugins and tests import too, and skips the `_`-prefixed helpers, which are not subcommands. The release gates now fail on that class of warning: the install smoke, the sandbox check and the Windows CI launcher step require `gaia --version` to print only its version line with an empty stderr.
 - **Host-persisted tool output is read-only evidence.** Inspecting `~/.claude/projects/*/tool-results` with a viewing filter (`grep`, `rg`, `head`, `tail`, `cat`, `wc`, a print-only `sed -n`) stays free; copying it out or feeding it to a program (`jq`, an interpreter, `awk`, `sed`, `xargs`) is refused. A subagent's `mkdir` or `touch` in the home folder outside scratch and every git worktree asks for a signature (`stranded-creation`).
 
 ## [5.7.2-rc.2] - 2026-11-08
