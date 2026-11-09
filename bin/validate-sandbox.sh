@@ -594,19 +594,26 @@ echo "=== Running checks ==="
 
 cd "${WORKSPACE}"
 
-# 1. gaia --version
+# 1. gaia --version loads every plugin, so it must print one version line and
+#    nothing on stderr: a plugin that fails to load still exits 0.
 t0="$(now_ms)"
-if out="$(gaia --version 2>&1)"; then
+err_file="$(mktemp)"
+version_line='^gaia [0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*$'
+if out="$(gaia --version 2>"${err_file}")"; then
   ms=$(( $(now_ms) - t0 ))
-  if grep -qE 'gaia [0-9]+\.[0-9]+\.[0-9]+' <<<"${out}"; then
-    record "gaia --version" "PASS" "$(echo "${out}" | head -1)" "${ms}"
+  err="$(cat "${err_file}")"
+  if [[ -n "${err}" ]]; then
+    record "gaia --version" "FAIL" "stderr: ${err:0:120}" "${ms}"
+  elif [[ "${out}" =~ ${version_line} ]]; then
+    record "gaia --version" "PASS" "${out}" "${ms}"
   else
     record "gaia --version" "FAIL" "unexpected output: ${out:0:60}" "${ms}"
   fi
 else
   ms=$(( $(now_ms) - t0 ))
-  record "gaia --version" "FAIL" "command failed: ${out:0:60}" "${ms}"
+  record "gaia --version" "FAIL" "command failed: ${out:0:60} $(head -c 120 "${err_file}")" "${ms}"
 fi
+rm -f "${err_file}"
 
 # 2. gaia doctor --json (parse and check status)
 t0="$(now_ms)"

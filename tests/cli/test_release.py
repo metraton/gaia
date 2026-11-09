@@ -1364,10 +1364,9 @@ class TestGaiaEntrypointVersionDestCollision(unittest.TestCase):
             )
 
         self.assertEqual(
-            result.returncode, 0,
-            msg=f"stdout: {result.stdout}\nstderr: {result.stderr}",
+            (result.returncode, result.stdout, result.stderr),
+            (0, f"gaia {pkg_version}\n", ""),
         )
-        self.assertIn(pkg_version, result.stdout)
 
 
 # ---------------------------------------------------------------------------

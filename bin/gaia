@@ -15,7 +15,6 @@ Usage:
 import argparse
 import codecs
 import importlib
-import importlib.util
 import locale
 import os
 import subprocess
@@ -108,6 +107,16 @@ def _ensure_db_bootstrapped(subcommand):
         pass
 
 
+def _is_plugin_stem(stem):
+    """True for a bin/cli/<stem>.py that is a subcommand; `_`-prefixed files are helpers plugins import."""
+    return not stem.startswith("_")
+
+
+def _import_plugin(stem):
+    """Import bin/cli/<stem>.py as ``cli.<stem>``, the module plugins and tests import too."""
+    return importlib.import_module(f"cli.{stem}")
+
+
 def _discover_plugins():
     """Return a sorted list of (module_name, module) for all bin/cli/*.py plugins."""
     plugins = []
@@ -115,15 +124,10 @@ def _discover_plugins():
         return plugins
 
     for path in sorted(_CLI_DIR.glob("*.py")):
-        if path.stem == "__init__":
-            continue
-        spec = importlib.util.spec_from_file_location(f"cli.{path.stem}", path)
-        if spec is None:
+        if not _is_plugin_stem(path.stem):
             continue
         try:
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            plugins.append((path.stem, mod))
+            plugins.append((path.stem, _import_plugin(path.stem)))
         except Exception as exc:  # noqa: BLE001
             print(f"Warning: could not load plugin {path.name}: {exc}", file=sys.stderr)
 
@@ -150,7 +154,7 @@ def _fast_path_subcommand(argv):
     if any(a in ("-h", "--help") for a in argv):
         return None
     first = argv[0]
-    if not first or first.startswith("-"):
+    if not first or first.startswith("-") or not _is_plugin_stem(first):
         return None
     if not _CLI_DIR.is_dir():
         return None
@@ -165,16 +169,10 @@ def _load_single_plugin(stem):
     Silent on failure: the caller then runs ``_discover_plugins()``, which
     retries the import and prints the warning once.
     """
-    path = _CLI_DIR / f"{stem}.py"
-    if not path.is_file():
-        return None
-    spec = importlib.util.spec_from_file_location(f"cli.{stem}", path)
-    if spec is None:
+    if not (_CLI_DIR / f"{stem}.py").is_file():
         return None
     try:
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        return _import_plugin(stem)
     except Exception:  # noqa: BLE001
         return None
 
