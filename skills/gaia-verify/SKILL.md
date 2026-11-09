@@ -111,7 +111,7 @@ this convergence; there is no `--from` flag -- the command IS the origin.
 
 ## All modes: reporting
 
-Every mode ends with a structured result:
+Every mode ends with a structured result for the record; the person hears the verdict first, in `human-register`'s shape:
 
 ```
 Mode:     <live | npm-sandbox | plugin | smoke | registry>

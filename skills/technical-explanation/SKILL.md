@@ -54,7 +54,7 @@ a field reference for an answer.
 |------|--------------------------|-------------|
 | **Concept** | understand what something is and why it exists | a model: nouns, relations, consequences |
 | **Procedure** | do something, once, now | numbered steps with the expected result of each |
-| **Reference** | look one fact up | a table, scanned, never read start to end |
+| **Reference** | look one fact up | a table in a document, bullets in a conversation; scanned, never read start to end |
 | **Decision** | choose between options | the options, the criterion, the recommendation and its cost |
 
 A single deliverable can hold more than one mode (a README's narrative is a

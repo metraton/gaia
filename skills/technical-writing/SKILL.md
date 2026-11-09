@@ -50,7 +50,7 @@ Requirements sit before usage on purpose: a reader who tries the invocation with
 
 ### README, component folder -- five sections
 
-1. **Narrative** (2-4 paragraphs, prose, no bullets) -- what lives here; why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy; who touches it -- name the actual actors: a developer, a CI job, an operator by hand, a build step, a runtime process, an agent, an end user running a command.
+1. **Narrative** -- what lives here, in one or two sentences; then short bullets, one idea each (`human-register`): why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy, which may take a short paragraph of its own; who touches it -- name the actual actors: a developer, a CI job, an operator by hand, a build step, a runtime process, an agent, an end user running a command. When the folder's point is a mechanism, a plain-text flow shows it instead of a paragraph describing it.
 2. **How it is wired in** -- this folder's relation to everything outside it, answering the question its reader arrives with: *if I add, change, or remove something here, what happens, and what else has to move?* Two halves, both required -- see below.
 3. **What's here** -- annotated tree, one line per file or subdirectory, with generated files marked so nobody hand-edits them.
 4. **Conventions** -- how to name new files, what internal structure they must follow, what to update elsewhere when something is added here, what validation runs against this folder.
