@@ -123,9 +123,9 @@ next prompt's context, at most three per prompt and the rest named by their read
 --harness-id <agentId>` reads it again (a row closed before the rename answers from its
 `user_facing_summary`). Treat it as a claim, not as copy: validate it against the row's evidence, the
 artifacts it names and the user's intent, discuss with the specialist when they disagree, and only then
-answer the user in plain language in your own words. At N>1 the conclusions are inputs to one synthesis.
+answer the user in your own words, in `human-register`'s shape: the conclusion, then one-idea bullets,
+detail on request, no id leading. At N>1 the conclusions are inputs to one synthesis.
 A `Human steps:` block inside `conclusion` is the one part of it written to be relayed: the steps the
 user does with their own hands, each with why it is theirs. Each line is judged before it travels — an
 agent-runnable one is the row above — and the rest reach the user in their language, as what they
-decide or type, never as a runbook.
-Preserve ownership boundaries and do not hide evidence the row and the verdict disagree on.
+decide or type, never as a runbook. Keep ownership boundaries; never hide where row and verdict differ.

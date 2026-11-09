@@ -101,8 +101,8 @@ Work the evidence through before saving; `reference.md` owns field definitions
 and the `gaia_system` retrieval query.
 
 ## Output
-The user sees a post-curation report, one line per durable effect, not the
-working tables or raw verbs. Flag a `type=user` row first for its governed veto.
+The user sees what changed in a sentence, then one plain-named line per durable
+effect, never the working tables, raw verbs or ids. A `type=user` row goes first, for its veto.
 
 ### Resume point
 
