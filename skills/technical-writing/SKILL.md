@@ -50,7 +50,7 @@ Requirements sit before usage on purpose: a reader who tries the invocation with
 
 ### README, component folder -- five sections
 
-1. **Narrative** (2-4 paragraphs, prose, no bullets) -- what lives here; why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy; who touches it -- name the actual actors: a developer, a CI job, an operator by hand, a build step, a runtime process, an agent, an end user running a command.
+1. **Narrative** -- what lives here, in one or two sentences; then short bullets, one idea each (`human-register`): why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy, which may take a short paragraph of its own; who touches it -- name the actual actors: a developer, a CI job, an operator by hand, a build step, a runtime process, an agent, an end user running a command. When the folder's point is a mechanism, a plain-text flow shows it instead of a paragraph describing it.
 2. **How it is wired in** -- this folder's relation to everything outside it, answering the question its reader arrives with: *if I add, change, or remove something here, what happens, and what else has to move?* Two halves, both required -- see below.
 3. **What's here** -- annotated tree, one line per file or subdirectory, with generated files marked so nobody hand-edits them.
 4. **Conventions** -- how to name new files, what internal structure they must follow, what to update elsewhere when something is added here, what validation runs against this folder.
@@ -92,7 +92,7 @@ Write a runbook when a task is done by hand, rarely, and a mistake is costly -- 
 
 ### PR body -- written after the commits exist
 
-A PR body explains the change to a reviewer who was not present while it was made: in English unless the repository declares another language, self-contained, with no reference to the process that produced it (no task ids, no plan or sprint labels, no "as requested", no approvals, signatures or tiers). The title reuses the commit subject's `type(scope): outcome` rule (`git-conventions`). The body follows the order a reviewer decides in:
+A PR body explains the change to a reviewer who was not present while it was made: in English unless the repository declares another language, self-contained, with no reference to the process that produced it (no task ids, no plan or sprint labels, no "as requested", no approvals, signatures or tiers). The title reuses the commit subject's `type(scope): outcome` rule (`git-conventions`). The body follows the order a reviewer decides in, each section opening on its point in a sentence and going on in short bullets, one idea each (`human-register`):
 
 1. **What changes and why** -- the effect, in plain words, and the problem it answers.
 2. **How it was verified** -- what was run and what it showed; what is still to check, named as such, never claimed.
@@ -103,10 +103,10 @@ A user or a repository that declares its own PR format wins: it arrives as one o
 
 ### Report or status -- four parts, in this order
 
-1. **The situation** -- where things stand, in one to three lines, the grave thing first.
-2. **What it means** -- for the reader: what is at risk, what is settled, what changed since the last report.
-3. **What to do or decide** -- the actions open, each with who and by when; or that none is needed.
-4. **The detail** -- evidence, numbers, identifiers, each with a pointer the reader can open, and its mark when the report is the user's to decide on (`human-register`, Rule 4); or a link to where it lives.
+1. **The situation** -- where things stand, in one or two sentences, the grave thing first.
+2. **What it means** -- for the reader, as short bullets, one idea each: what is at risk, what is settled, what changed since the last report.
+3. **What to do or decide** -- the actions open as bullets, each with who and by when; or that none is needed.
+4. **The detail** -- evidence, numbers, identifiers, each with a pointer the reader can open, and its mark when the report is the user's to decide on (`human-register`, Rule 7); or a link to where it lives.
 
 The first line of a report is the situation, never an author or date stamp or a title block; metadata, if any, goes last. A report that opens with the detail has handed its reader the agent's register; a report whose grave line sits third misleads by emphasis (`human-register`, Rule 2). A time in a report for readers in several places is written in the standard they share.
 

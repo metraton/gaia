@@ -310,14 +310,12 @@ Three things to copy deliberately. **The mode is named in the first two words of
 ````markdown
 # <Folder Name>
 
-<Paragraph 1: in one sentence, what lives here.>
+<One or two sentences: what lives here.>
 
-<Paragraph 2: why this folder exists separately -- its conceptual contract.>
-
-<Paragraph 3: how to think about it -- a mental model or analogy.>
-
-<Paragraph 4: who touches it, naming the real actors -- developer, CI job,
-operator by hand, build step, runtime process, agent, end user.>
+- <Why this folder exists separately -- its conceptual contract.>
+- <How to think about it -- a mental model or analogy; a short paragraph if it needs one.>
+- <Who touches it, naming the real actors -- developer, CI job, operator by
+  hand, build step, runtime process, agent, end user.>
 
 ---
 

@@ -54,7 +54,7 @@ a field reference for an answer.
 |------|--------------------------|-------------|
 | **Concept** | understand what something is and why it exists | a model: nouns, relations, consequences |
 | **Procedure** | do something, once, now | numbered steps with the expected result of each |
-| **Reference** | look one fact up | a table, scanned, never read start to end |
+| **Reference** | look one fact up | a table in a document, bullets in a conversation; scanned, never read start to end |
 | **Decision** | choose between options | the options, the criterion, the recommendation and its cost |
 
 A single deliverable can hold more than one mode (a README's narrative is a
@@ -95,9 +95,9 @@ do next -- and nothing before the state, because a reader in an incident reads
 the first line and acts. Normal density carries the model in the fixed order of
 Step 2. Deep density adds the why behind each connection and the alternatives
 that were rejected. The same truth appears at all three; density removes
-sentences, never precision. The rule comes from the disciplines that write for
-people under time pressure -- an aviation checklist or a control-room message is
-short because a long one is misread, not because the writer knew less.
+sentences, never precision. In a conversation the answer is level 1, with its
+flow drawn for a mechanism, and level 2 waits until asked: a control-room
+message is short because a long one is misread, not because the writer knew less.
 
 ## Step 2: Build the model in the fixed order
 
@@ -143,7 +143,7 @@ common ("the CI machine", not the service-account email; "the old system", not
 the namespace). Its findings are told by their CONSEQUENCE, not by their
 artifact -- "it would have destroyed something that is working", not the pasted
 output of the plan. It separates explicitly what is ours from what is inherited.
-And it closes with one sentence that holds the whole situation.
+And it opens with one sentence that holds the whole situation, never a closing recap.
 
 **The technical register sits beneath it** -- level 2 and the detail. It is the
 same truth at another altitude, never a vaguer one: the plain register does not
