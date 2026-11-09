@@ -745,12 +745,26 @@ def _sync_workspace_hooks() -> bool:
     return action == "updated"
 
 
+def _refresh_path_launcher() -> None:
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if not root:
+        return
+    try:
+        from gaia.path_launcher import refresh_launcher
+
+        for path in refresh_launcher(Path(root)):
+            logger.info("PATH launcher %s now runs %s", path, root)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PATH launcher not refreshed: %s", exc)
+
+
 def run_first_time_setup() -> str | None:
-    """Ensure the registry, permissions and hooks exist; a reload message if any were written."""
+    """Ensure the registry, permissions and hooks exist and the PATH launcher runs this plugin; a reload message if settings were written."""
     with recorded_in_manifest():
         ensure_plugin_registry()
         reload_needed = setup_project_permissions()
         hooks_changed = _sync_workspace_hooks()
+    _refresh_path_launcher()
     if reload_needed or hooks_changed:
         return "Permissions updated. Run /reload-plugins to activate."
     return None

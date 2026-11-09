@@ -864,7 +864,7 @@ class TestInstallPathLauncherWindows(unittest.TestCase):
 
             self.assertEqual(res2["action"], "noop")
 
-    def test_drift_skipped_without_overwrite_replaced_with(self):
+    def test_generated_launcher_replaced_user_file_skipped_without_overwrite(self):
         with tempfile.TemporaryDirectory() as tmp:
             link = Path(tmp) / "bin" / "gaia"
             ws_a = Path(tmp) / "ws_a"
@@ -877,21 +877,18 @@ class TestInstallPathLauncherWindows(unittest.TestCase):
                 _install_path_launcher(
                     link_path=link, workspace=ws_a, gaia_bin=gaia_bin
                 )
-                # Different workspace -> drifted content; no overwrite -> skipped.
-                res_skip = _install_path_launcher(
+                res_repl = _install_path_launcher(
                     link_path=link, workspace=ws_b, gaia_bin=gaia_bin
                 )
-                self.assertEqual(res_skip["action"], "skipped")
-                # overwrite=True -> replaced, now targets ws_b.
-                res_repl = _install_path_launcher(
-                    link_path=link, workspace=ws_b, gaia_bin=gaia_bin,
-                    overwrite=True,
+                link.with_suffix(".cmd").write_text("@echo off\nmine.exe %*\n")
+                res_skip = _install_path_launcher(
+                    link_path=link, workspace=ws_a, gaia_bin=gaia_bin
                 )
 
             self.assertEqual(res_repl["action"], "replaced")
-            content = link.with_suffix(".cmd").read_text()
-            self.assertIn(str(ws_b.resolve()), content)
-            self.assertNotIn(str(ws_a.resolve()), content)
+            self.assertEqual(res_skip["action"], "skipped")
+            self.assertEqual(link.with_suffix(".cmd").read_text(), "@echo off\nmine.exe %*\n")
+            self.assertIn(str(ws_a.resolve()), link.with_suffix(".ps1").read_text(encoding="utf-8-sig"))
 
     def test_render_helpers_direct(self):
         """The render helpers bake both the workspace and the bin path."""

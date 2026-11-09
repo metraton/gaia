@@ -118,6 +118,7 @@ from cli import migrate  # type: ignore  # noqa: E402
 from cli import _manifest  # type: ignore  # noqa: E402
 from cli import _legacy_cleanup  # type: ignore  # noqa: E402
 from gaia.paths import db_path as _resolved_db_path  # noqa: E402
+from gaia import path_launcher  # noqa: E402
 
 _BOOTSTRAP_SCRIPT = migrate.ENGINE
 
@@ -413,11 +414,13 @@ def _install_path_launcher(
     else:
         workspace_resolved = Path(workspace).expanduser().resolve()
 
+    entry = gaia_bin if gaia_bin is not None else target_path
+    entry = Path(entry).expanduser() if entry is not None else _gaia_entrypoint()
+    refused = path_launcher.refusal(entry.resolve().parent.parent, link)
+    if refused:
+        return {"action": "skipped", "path": str(link), "details": refused}
+
     if _is_windows():
-        entry = (
-            Path(gaia_bin).expanduser() if gaia_bin is not None
-            else _gaia_entrypoint()
-        )
         return _install_windows_launchers(
             link=link,
             workspace=workspace_resolved,
@@ -435,10 +438,7 @@ def _install_path_launcher(
             "details": f"failed to create parent {parent}: {exc}",
         }
 
-    entry = gaia_bin if gaia_bin is not None else target_path
-    expected_target = (
-        Path(entry).expanduser() if entry is not None else _gaia_entrypoint()
-    ).resolve()
+    expected_target = entry.resolve()
     if not expected_target.is_file():
         return {
             "action": "error",
@@ -552,8 +552,8 @@ def _install_windows_launchers(
     Idempotent and non-destructive, mirroring the POSIX branch:
       - missing            -> created
       - present, matches   -> noop
-      - present, drifted   -> replaced (overwrite=True, or a 5.x launcher for
-                              this workspace) / skipped (otherwise)
+      - present, drifted   -> replaced (overwrite=True, or a launcher any
+                              `gaia install` wrote) / skipped (otherwise)
       - a directory in the way -> skipped
 
     The aggregate ``action`` is the "strongest" over the two files: error >
@@ -569,12 +569,10 @@ def _install_windows_launchers(
             "details": f"failed to create parent {parent}: {exc}",
         }
 
-    # cmd.exe parses a batch file in the console code page, so the .cmd keeps the
-    # locale codec. Windows PowerShell 5.1 reads a BOM-less script as ANSI and a
-    # BOM-marked one as UTF-8, so the .ps1 carries the BOM.
+    encodings = path_launcher.LAUNCHER_ENCODINGS
     targets = [
-        (link.with_suffix(".cmd"), _render_cmd_launcher(workspace, gaia_bin), None),
-        (link.with_suffix(".ps1"), _render_ps1_launcher(workspace, gaia_bin), "utf-8-sig"),
+        (link.with_suffix(".cmd"), _render_cmd_launcher(workspace, gaia_bin), encodings[".cmd"]),
+        (link.with_suffix(".ps1"), _render_ps1_launcher(workspace, gaia_bin), encodings[".ps1"]),
     ]
 
     # Rank so the aggregate reports the most significant per-file outcome.
@@ -583,7 +581,7 @@ def _install_windows_launchers(
     worst = "noop"
 
     for path, content, encoding in targets:
-        replace = overwrite or _is_5x_windows_launcher(path, workspace)
+        replace = overwrite or path_launcher.is_generated(path)
         action = _write_windows_launcher_file(path, content, overwrite=replace, encoding=encoding)
         per_file.append(f"{path.name}={action}")
         if rank[action] > rank[worst]:
@@ -1570,11 +1568,10 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
     if strict_wiring and failed:
         return 1
 
-    if not wired:
-        if plugin_owns_claude_code and not failed:
-            return 0
+    plugin_only = plugin_owns_claude_code and not failed
+    if not wired and not (plugin_only and opt_path):
         # postinstall stays fail-soft: a non-zero exit aborts the consumer's package install.
-        return 0 if postinstall else 1
+        return 0 if plugin_only or postinstall else 1
 
     # The PATH launcher (~/.local/bin/gaia) is written only with --path, or to
     # migrate a launcher a 5.x install wrote for this workspace.
