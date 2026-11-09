@@ -449,6 +449,22 @@ def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
     return errors
 
 
+UPDATE_CONTRACTS_ENTRY_KEYS = ("contract", "payload")
+
+
+def update_contracts_entry_problem(entry: Any) -> Optional[str]:
+    """Why ``parse_update_contracts`` drops ``entry``, naming the literal keys it lacks, or None when it keeps it."""
+    if not isinstance(entry, dict):
+        return f"is a {type(entry).__name__}, not an object"
+    missing = [f'"{key}"' for key in UPDATE_CONTRACTS_ENTRY_KEYS if key not in entry]
+    if missing:
+        found = ", ".join(f'"{key}"' for key in sorted(map(str, entry))) or "no keys"
+        return f"has {found} and lacks the literal key {' and '.join(missing)}"
+    if not isinstance(entry["payload"], dict):
+        return f'"payload" is a {type(entry["payload"]).__name__}, not an object'
+    return None
+
+
 def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
     """Parse the ``update_contracts`` clause from a contract dict.
 
@@ -478,20 +494,9 @@ def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
 
     results: List[Dict[str, Any]] = []
     for i, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            logger.warning("update_contracts[%d]: not an object, skipping", i)
-            continue
-        if "contract" not in entry or "payload" not in entry:
-            logger.warning(
-                "update_contracts[%d]: missing required keys 'contract'/'payload', skipping", i
-            )
-            continue
-        if not isinstance(entry["payload"], dict):
-            logger.warning(
-                "update_contracts[%d]: payload for contract %r is a %s, not an object; "
-                "skipping (a non-object delta could only replace the whole section)",
-                i, entry.get("contract"), type(entry["payload"]).__name__,
-            )
+        problem = update_contracts_entry_problem(entry)
+        if problem:
+            logger.warning("update_contracts[%d] %s, skipping", i, problem)
             continue
 
         # Evidence entries are validated at write time by
