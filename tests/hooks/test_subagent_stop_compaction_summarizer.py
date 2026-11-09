@@ -1,4 +1,4 @@
-"""The compaction summarizer closes with no contract; every other contractless turn is still gated."""
+"""The compaction window labels the host fork that is the summarizer; a dispatched turn is gated inside it too."""
 
 from __future__ import annotations
 
@@ -121,10 +121,10 @@ def test_a_gaia_subagent_closing_inside_the_window_is_still_rejected():
     assert not response.output.get("compaction_summarizer")
 
 
-def test_the_orchestrator_type_outside_a_window_is_still_rejected():
+def test_a_fork_outside_a_window_is_not_labelled_the_summarizer():
     response = _stop("gaia-orchestrator")
 
-    assert response.exit_code == 2
+    assert response.output.get("host_fork") is True
     assert not response.output.get("compaction_summarizer")
 
 
@@ -134,10 +134,10 @@ def test_post_compact_closes_the_window():
 
     response = _stop("gaia-orchestrator")
 
-    assert response.exit_code == 2
+    assert not response.output.get("compaction_summarizer")
 
 
-def test_a_window_past_its_ttl_exempts_nothing():
+def test_a_window_past_its_ttl_labels_nothing():
     compaction_bracket._marker(SESSION_ID).write_text(
         str(time.time() - compaction_bracket.TTL_SECONDS - 1), encoding="utf-8",
     )
@@ -145,7 +145,7 @@ def test_a_window_past_its_ttl_exempts_nothing():
     assert not compaction_bracket.in_bracket(SESSION_ID)
 
 
-def test_a_future_dated_window_exempts_nothing(tmp_path):
+def test_a_future_dated_window_labels_nothing():
     compaction_bracket._marker(SESSION_ID).write_text(
         str(time.time() + 3600), encoding="utf-8",
     )
@@ -153,19 +153,17 @@ def test_a_future_dated_window_exempts_nothing(tmp_path):
     response = _stop("gaia-orchestrator")
 
     assert not compaction_bracket.in_bracket(SESSION_ID)
-    assert response.exit_code == 2
-    assert _backstop_rows(tmp_path) == 1
+    assert not response.output.get("compaction_summarizer")
 
 
-def test_the_summarizer_still_runs_the_post_close_steps():
+def test_the_summarizer_leaves_no_episode():
     _run_compact_hook("pre_compact")
 
     response = _stop("gaia-orchestrator")
 
     assert response.exit_code == 0
     assert response.output.get("compaction_summarizer") is True
-    assert response.output.get("contract_gate_source") == "row_missing"
-    assert "episode_id" in response.output
+    assert "episode_id" not in response.output
 
 
 @pytest.mark.parametrize("window_open", [True, False], ids=["inside-window", "outside-window"])
