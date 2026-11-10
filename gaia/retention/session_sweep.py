@@ -17,6 +17,15 @@ from gaia.paths import data_dir, scratch_dir, tmp_dir
 
 MIN_INTERVAL_SECONDS = 15 * 60
 CLAIM_SECONDS = 2 * 3600
+SWEEP_ENV = "GAIA_SESSION_SWEEP"
+MODES = ("on", "list", "off")
+DOCTOR_SIZE_BUDGET_SECONDS = 3.0
+
+
+def mode() -> str:
+    """The position in force: ``GAIA_SESSION_SWEEP`` on (default), list or off; an unknown value lists."""
+    value = os.environ.get(SWEEP_ENV, "").strip().lower() or "on"
+    return value if value in MODES else "list"
 
 
 def report_path() -> Path:
@@ -28,7 +37,7 @@ def _claim_path() -> Path:
     return data_dir() / "session-sweep.claim"
 
 
-def _size(path: Path) -> int:
+def _size(path: Path, deadline: Optional[float] = None) -> Optional[int]:
     try:
         if path.is_symlink() or not path.is_dir():
             return path.lstat().st_size
@@ -36,6 +45,8 @@ def _size(path: Path) -> int:
         return 0
     total = 0
     for dirpath, _dirs, files in os.walk(path):
+        if deadline is not None and time.monotonic() > deadline:
+            return None
         for name in files:
             try:
                 total += os.lstat(os.path.join(dirpath, name)).st_size
@@ -44,8 +55,17 @@ def _size(path: Path) -> int:
     return total
 
 
-def _item(kind: str, path, verdict: str, reason: str, **extra) -> Dict[str, object]:
-    size = _size(Path(path)) if verdict != "keep" else None
+def measure_sizes(items: List[Dict[str, object]], *, budget_seconds: Optional[float] = None) -> None:
+    """Fill each item's ``size`` in order; past *budget_seconds* the rest stay None (not measured)."""
+    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
+    for item in items:
+        if deadline is not None and time.monotonic() >= deadline:
+            return
+        item["size"] = _size(Path(str(item["path"])), deadline)
+
+
+def _item(kind: str, path, verdict: str, reason: str, sizes: bool, **extra) -> Dict[str, object]:
+    size = _size(Path(path)) if sizes and verdict != "keep" else None
     return {"kind": kind, "path": str(path), "verdict": verdict, "reason": reason, "size": size, **extra}
 
 
@@ -63,11 +83,11 @@ def sweep_repos(start: Path) -> List[Path]:
     return repos
 
 
-def _turn_scoped(kind: str, root: Path) -> List[Dict[str, object]]:
+def _turn_scoped(kind: str, root: Path, sizes: bool) -> List[Dict[str, object]]:
     from gaia.retention.fs_rules import judge_turn_scoped
 
     return [
-        _item(kind, v["path"], v["verdict"], v["reason"])
+        _item(kind, v["path"], v["verdict"], v["reason"], sizes)
         for v in judge_turn_scoped(root, spare_live_sessions=True)
     ]
 
@@ -111,7 +131,7 @@ def _worktree_verdict(path: Path, contract_id: str, held) -> tuple:
     return "remove", reason
 
 
-def _worktrees(repo: Path, held) -> List[Dict[str, object]]:
+def _worktrees(repo: Path, held, sizes: bool) -> List[Dict[str, object]]:
     from gaia.retention.worktree_collector import list_managed_worktrees
 
     try:
@@ -127,18 +147,18 @@ def _worktrees(repo: Path, held) -> List[Dict[str, object]]:
             verdict, reason = _worktree_verdict(path, entry["contract_id"], held)
         except OSError:
             continue
-        out.append(_item("worktree", path, verdict, reason, repo=str(repo), contract_id=entry["contract_id"]))
+        out.append(_item("worktree", path, verdict, reason, sizes, repo=str(repo), contract_id=entry["contract_id"]))
     return out
 
 
-def plan(start: Path, *, repos: Optional[List[Path]] = None) -> List[Dict[str, object]]:
-    """Every leftover the sweep sees from *start*, each with its verdict and reason; changes nothing."""
+def plan(start: Path, *, repos: Optional[List[Path]] = None, sizes: bool = True) -> List[Dict[str, object]]:
+    """Every leftover the sweep sees from *start*, each with its verdict, reason and (unless *sizes* is off) size."""
     from gaia.retention.fs_rules import _open_paths
 
-    items = _turn_scoped("tmp", tmp_dir()) + _turn_scoped("scratch", scratch_dir())
+    items = _turn_scoped("tmp", tmp_dir(), sizes) + _turn_scoped("scratch", scratch_dir(), sizes)
     held = _open_paths()
     for repo in sweep_repos(start) if repos is None else repos:
-        items += _worktrees(Path(repo), held)
+        items += _worktrees(Path(repo), held, sizes)
     return items
 
 
@@ -204,31 +224,38 @@ def last_report() -> Dict[str, object]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def run(start: Path, *, repos: Optional[List[Path]] = None) -> Optional[Dict[str, object]]:
-    """Remove every ``remove`` item of ``plan`` and store the report; None when another sweep holds the claim."""
+def _store_report(report: Dict[str, object]) -> None:
+    target = report_path()
+    staging = target.with_name(f"{target.name}.{os.getpid()}")
+    staging.write_text(json.dumps(report), encoding="utf-8")
+    replace_retrying(staging, target)
+
+
+def run(start: Path, *, repos: Optional[List[Path]] = None, mode: str = "on") -> Optional[Dict[str, object]]:
+    """Judge without sizes, remove only in mode ``on`` (else record ``would_remove``), store the report; None if claimed."""
     began = time.time()
     if not _claim(began):
         return None
     try:
-        removed, refused, failed = [], [], []
-        for item in plan(start, repos=repos):
+        removed, would_remove, refused, failed = [], [], [], []
+        for item in plan(start, repos=repos, sizes=False):
             if item["verdict"] == "refuse":
                 refused.append(item)
+            elif item["verdict"] == "remove" and mode != "on":
+                would_remove.append(item)
             elif item["verdict"] == "remove":
                 error = _remove(item)
                 (failed if error else removed).append({**item, **({"error": error} if error else {})})
         report = {
             "ran_at": began,
             "seconds": round(time.time() - began, 3),
-            "freed": sum(int(i["size"] or 0) for i in removed),
+            "mode": mode,
             "removed": removed,
+            "would_remove": would_remove,
             "refused": refused,
             "failed": failed,
         }
-        target = report_path()
-        staging = target.with_name(f"{target.name}.{os.getpid()}")
-        staging.write_text(json.dumps(report), encoding="utf-8")
-        replace_retrying(staging, target)
+        _store_report(report)
         return report
     finally:
         try:
@@ -238,19 +265,42 @@ def run(start: Path, *, repos: Optional[List[Path]] = None) -> Optional[Dict[str
 
 
 def spawn(start: Path) -> bool:
-    """Start one detached sweep unless one ran within ``MIN_INTERVAL_SECONDS``; True when started."""
-    if time.time() - float(last_report().get("ran_at") or 0) < MIN_INTERVAL_SECONDS:
+    """Start one detached sweep in the position in force (the first on a machine lists only); True when started."""
+    position = mode()
+    report = last_report()
+    if position == "off" or (report.get("mode") == "first" and not report.get("announced")):
         return False
-    if _claim_path().exists():
+    if time.time() - float(report.get("ran_at") or 0) < MIN_INTERVAL_SECONDS or _claim_path().exists():
         return False
+    how = "first" if not report and position == "on" else position
     package_root = Path(__file__).resolve().parents[2]
     subprocess.Popen(
-        [sys.executable, "-m", "gaia.retention.session_sweep", str(start)],
+        [sys.executable, "-m", "gaia.retention.session_sweep", str(start), "--mode", how],
         cwd=package_root, start_new_session=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return True
 
 
+def first_run_notice() -> str:
+    """The one session-start line after the first sweep listed what it would remove; "" otherwise, and once only."""
+    report = last_report()
+    if report.get("mode") != "first" or report.get("announced"):
+        return ""
+    _store_report({**report, "announced": time.time()})
+    listed = report.get("would_remove") or []
+    if not listed:
+        return ""
+    kinds = ", ".join(
+        f"{sum(1 for i in listed if i['kind'] == kind)} {kind}"
+        for kind in ("tmp", "scratch", "worktree") if any(i["kind"] == kind for i in listed)
+    )
+    return (
+        f"Gaia's first leftover sweep only listed: it would remove {len(listed)} item(s) ({kinds}) whose owner ended. "
+        f"`gaia cleanup --sweep --dry-run` shows them with sizes; the next session-start sweep removes them "
+        f"unless {SWEEP_ENV}=list or off."
+    )
+
+
 if __name__ == "__main__":
-    run(Path(sys.argv[1]))
+    run(Path(sys.argv[1]), mode=sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--mode" else mode())

@@ -142,6 +142,8 @@ gaia doctor --channels               # again, after running those steps
 
 A release candidate and a stable take the same route. Install the exact version, never `@latest` or `@rc`, which can still name the previous release for minutes after a publish. Never update the plugin by removing its marketplace: that deletes the cache running sessions load from. Restart the host, or `/reload-plugins` for the plugin, to load the new version.
 
+**What Gaia cleans up on its own.** At session start Gaia removes the temp folders, scratch files and clean worktrees its own runs left after their session ended. It never removes work that is not committed and pushed. The first sweep after installing only lists what it would remove, and the next session start says so; `GAIA_SESSION_SWEEP=list` keeps it listing, `off` stops it, and `gaia cleanup --sweep --dry-run` shows the list.
+
 **Then declare a workspace.** Installing is one step; declaring a workspace is another, and Gaia does not do it for you:
 
 ```bash
