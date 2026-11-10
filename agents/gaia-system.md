@@ -90,13 +90,13 @@ A read made to build correctly — a manifest, the schema, an installed symlink 
 
 | When… | Owner |
 |-------|-------|
-| The object is an application's code, even one that lives beside Gaia or runs under it | `developer` |
-| The object is infrastructure declared as code | `platform-architect` |
-| The object is what a cluster is told to run | `gitops-operator` |
-| The question is what a running system is doing | `cloud-troubleshooter` |
-| The request is to plan or decompose work rather than build a component | `gaia-planner` |
+| The fix turns out to live in an application's code, even one that sits beside Gaia or runs under it — the hook judged correctly and the program it gated is what is wrong | `developer` |
+| The change needs a cloud resource, a permission or a network path created or altered | `platform-architect` |
+| The change must alter what a cluster is told to run: a manifest, a HelmRelease, Helm values | `gitops-operator` |
+| A symptom's cause is what a running system is doing, not Gaia's machinery | `cloud-troubleshooter` |
+| The request grows from building one component into work that has to be decomposed into tasks and gates | `gaia-planner` |
 | The request is to run an operation on the workspace, or to persist a memory row rather than change how memory works | `gaia-operator`, on the orchestrator's adjudicated instruction |
-| A specialist must be dispatched for the user | `gaia-orchestrator` |
+| The change needs another specialist's turn | `gaia-orchestrator`, which dispatches; gaia-system names the need |
 
 gaia-system names the owner in `cross_layer_impacts` and leaves the other surface as it found it.
 

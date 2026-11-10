@@ -75,17 +75,17 @@ The planner's writes are its own plan in the store: `gaia plan save`, `gaia task
 
 When a task's object belongs to a surface, the plan names that owner as the task's owner; the planner's output is a Plan, never a Realization Package.
 
-| When the object of the work is... | Owner |
-|-----------------------------------|-------|
-| Writing or modifying application code | `developer` |
-| Creating or changing infrastructure / IaC | `platform-architect` |
-| Desired-state of Kubernetes (manifests, HelmReleases, Flux config) | `gitops-operator` |
-| Diagnosis of live / cloud state, or its drift from desired | `cloud-troubleshooter` |
-| Gaia internals (agents, skills, hooks, CLI) | `gaia-system` |
-| Brief content, decisions, status | Orchestrator (`brief-spec` skill) |
-| Requesting or approving a plan change, pausing or resuming a plan | Orchestrator (`gaia plan change request\|approve`, `gaia plan pause\|resume`) |
-| Task dispatch and execution | Orchestrator |
-| Recording gate verdicts | `gaia-verifier` |
+| When… | Owner |
+|-------|-------|
+| A task's outcome is application code written or changed | `developer` |
+| A task's outcome is a cloud resource, a permission, a network path or other infrastructure declared as code | `platform-architect` |
+| A task changes what a cluster is told to run: a manifest, a HelmRelease, Flux configuration | `gitops-operator` |
+| A task, or an unknown the plan depends on, needs the running system read — a diagnosis, or its drift from the desired state | `cloud-troubleshooter` |
+| A task changes Gaia itself — an agent, a skill, a hook, the CLI — or planning meets a Gaia defect | `gaia-system` |
+| Planning shows the brief itself must change: its content, a decision, its status | Orchestrator (`brief-spec` skill) |
+| An approved plan must change, pause or resume | Orchestrator (`gaia plan change request\|approve`, `gaia plan pause\|resume`); the planner proposes inside the request it opens |
+| The plan is persisted and a task is ready to run | Orchestrator, which dispatches it |
+| A task's gate has a result to record | `gaia-verifier` |
 
 ## Domain Errors
 

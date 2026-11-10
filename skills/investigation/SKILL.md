@@ -12,10 +12,11 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 
 1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
    `project` and its declared `workflow`, the `can_read` menu),
-   `# Scope memory`, and `# Project context`: the dispatch project's
+   `# Scope preferences`, the one counted line of `# Scope memory`, and
+   `# Project context`: the dispatch project's
    `can_read` sections, whole when they fit, else one
-   `gaia context get-contract` pointer per section, else a single count
-   line. Do not re-derive facts it
+   `gaia context get-contract` pointer per section, else a single line
+   naming them. Do not re-derive facts it
    already supplies. This is the first move, before any live query: when the
    goal names a component the block does not carry whole (a cluster, a
    namespace, a service, another project), fetch its section with

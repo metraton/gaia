@@ -126,7 +126,32 @@ def test_kernel_project_context_section_larger_than_the_budget_becomes_a_pointer
     assert len(kernel) <= KERNEL_BUDGET
 
 
-def test_kernel_under_a_huge_prompt_cuts_only_the_project_context_and_reports_the_goal_length(db):
+MORE_PREFERENCES = "more — `gaia memory list --kind preference --workspace me`"
+
+
+def test_kernel_past_the_budget_shrinks_the_cli_then_the_preferences_and_fits(db):
+    _section(db, "stack", {"language": "go"})
+    for index in range(12):
+        _scope_row(db, "preference", index, project=True)
+    row = _row(DISPLAY, ["stack"], prompt="do it " * 1000)
+
+    kernel = _kernel(db, row)
+
+    assert len(kernel) <= KERNEL_BUDGET
+    assert kernel.startswith("# Your Contract\n")
+    assert build_cli_block(contract_id=row["contract_id"], contract_only=True) in kernel
+    assert "gaia memory search" not in kernel.split("# Your CLI")[1]
+    assert "# Scope preferences: me > alpha (12)\n" in kernel
+    dropped = int(re.search(r"\n\+(\d+) " + re.escape(MORE_PREFERENCES), kernel).group(1))
+    assert 0 < dropped < 12
+    counted = [name for name, count in sorted(_kernel_counts(db).items()) if count]
+    assert len(counted) == 12 - dropped and all(f"memory:me/{name}" in kernel for name in counted)
+    listed = _paste(db, ["memory", "list", "--kind", "preference", "--workspace", "me"])
+    assert listed.returncode == 0, listed.stderr
+    assert "decision_me_preference_00" in listed.stdout
+
+
+def test_kernel_no_shrink_can_fit_opens_with_what_overflowed_and_how_to_read_the_goal(db):
     _section(db, "stack", {"language": "go"})
     _scope_row(db, "preference", 0, project=True)
     row = _row(DISPLAY, ["stack"], prompt="do it " * 1600)
@@ -134,10 +159,18 @@ def test_kernel_under_a_huge_prompt_cuts_only_the_project_context_and_reports_th
     kernel = _kernel(db, row)
 
     contract = build_dispatch_kernel(row, db_path=db, agent_name="platform-architect")
-    assert kernel.startswith(f"{contract}\n\nover the 9,500-char kernel budget: the goal alone is 9,600 chars\n\n")
+    first, _, rest = kernel.partition("\n\n")
+    assert re.fullmatch(
+        rf"over the 9,500-char kernel budget at [\d,]+ chars: contract {len(contract):,} \(goal 9,600\), .*\. "
+        rf"A host preview cuts what follows; `gaia contract view --contract-id {row['contract_id']} --row` "
+        r"prints the goal whole",
+        first,
+    )
+    assert rest.startswith(f"{contract}\n\n")
     assert f"1 section: stack — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
-    assert "# Scope preferences: me > alpha (1 of 1)\n" in kernel
-    assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
+    assert f"# Scope preferences: me > alpha (1)\n+1 {MORE_PREFERENCES}\n" in kernel
+    assert kernel.endswith(build_cli_block(contract_id=row["contract_id"], contract_only=True))
+    assert not any(_kernel_counts(db).values())
 
 
 def test_kernel_project_context_many_sections_fit_or_point(db):
@@ -228,7 +261,7 @@ def test_a_project_kernel_carries_its_preferences_whole_and_counts_what_it_does_
 
     kernel = _kernel(db, row)
 
-    assert f"# Scope preferences: me > alpha ({preferences} of {preferences})\n" in kernel
+    assert f"# Scope preferences: me > alpha ({preferences})\n" in kernel
     for index in range(preferences):
         assert (
             f'  "Standing preference number {index:02d} {"x" * 150}"  scope=project'
@@ -236,9 +269,9 @@ def test_a_project_kernel_carries_its_preferences_whole_and_counts_what_it_does_
         ) in kernel
     assert (
         f"# Scope memory: me > alpha\nfacts {facts}, lessons {lessons}, other notes {notes} — not preloaded: "
-        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug>`; this project's, bodies whole: "
-        "`gaia memory get-relevant --initiative alpha --sections anchor`\n"
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug> --workspace me`\n"
     ) in kernel
+    assert "get-relevant --initiative alpha" not in kernel and "--sections anchor" not in kernel
     assert "Standing fact number" not in kernel and "Standing lesson number" not in kernel
     assert "decision_alpha_note_" not in kernel
     assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
@@ -246,10 +279,14 @@ def test_a_project_kernel_carries_its_preferences_whole_and_counts_what_it_does_
     assert len(kernel) <= KERNEL_BUDGET
     assert all(count == ("_preference_" in name) for name, count in _kernel_counts(db).items())
 
-    for verb in ("memory search Standing --workspace me", "memory get-relevant --initiative alpha --sections anchor"):
+    for verb, found in (
+        ("memory search Standing --workspace me --limit 200", "decision_me_fact_00"),
+        ("memory show decision_alpha_note_00 --workspace me", "the full body"),
+        ("open memory:me/decision_me_preference_00", "decision_me_preference_00"),
+    ):
         read = _paste(db, verb.split())
         assert read.returncode == 0, read.stderr
-    assert "decision_me_fact_00" in read.stdout and "decision_alpha_note_00" in read.stdout
+        assert found in read.stdout
 
 
 def test_a_kernel_with_no_project_carries_the_workspace_preferences_and_counts_its_facts(db):
@@ -261,11 +298,11 @@ def test_a_kernel_with_no_project_carries_the_workspace_preferences_and_counts_i
 
     kernel = _kernel(db, row)
 
-    assert "# Scope preferences: me (2 of 2)\n" in kernel
+    assert "# Scope preferences: me (2)\n" in kernel
     assert "ref=memory:me/decision_me_preference_00" in kernel and "ref=memory:me/decision_me_preference_01" in kernel
     assert (
         "# Scope memory: me\nfacts 4 — not preloaded: "
-        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug>`\n"
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug> --workspace me`\n"
     ) in kernel
     assert "Standing fact number" not in kernel
     assert HEADING not in kernel

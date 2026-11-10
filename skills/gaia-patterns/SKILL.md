@@ -40,8 +40,10 @@ Construction patterns for building Gaia components. Every component type follows
    |
 4. SubagentStart hook claims the born row and injects the KERNEL:
    "# Your Contract" (incl. project, its declared workflow when
-   there is one, can_read/can_write menu), "# Scope memory",
-   "# Project context", "# Standing notes", "# Environment", "# Your CLI".
+   there is one, can_read/can_write menu), "# Scope preferences" (the
+   scope's preferences whole), "# Scope memory" (one line counting its
+   facts, lessons and notes), "# Project context", "# Environment",
+   "# Your CLI".
    "# Project context" carries the dispatch project's can_read sections: whole
    when they fit, else pointer lines, else one line; the verbs for the rest
    are in agent-protocol/read-map.md.
@@ -96,7 +98,7 @@ cli:
 
 `skills:` and `cli:` are read by two different parties, not one -- this is why the example shows both. `skills:` is preloaded by the HOST (Claude Code), not by any Gaia hook, and only for a dispatched SUBAGENT: the primary agent (`gaia-orchestrator.md`) carries no `skills:` field, because Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread. `cli:` is the one frontmatter field Gaia itself reads, at subagent birth (`context/kernel_builder.py::_agent_cli_extras`): its lines are appended verbatim to the "# Your CLI" kernel block. It is optional and no shipped agent declares it yet -- shown here so the two fields' different owners (host vs. Gaia) are visible side by side, not to imply it is required.
 
-A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by the host from frontmatter) + dispatch kernel (# Your Contract / # Scope memory / # Project context / # Standing notes / # Environment / # Your CLI, rendered from the born row) + orchestrator request. The primary agent skips the skills step entirely. Project context arrives as the kernel's `# Project context` block, built from the `can_read` sections (from `agent_contract_permissions`) of `project_context_contracts`; a section the block only points at is pulled on demand -- the verb that reaches it, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
+A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by the host from frontmatter) + dispatch kernel (# Your Contract / # Scope preferences / # Scope memory / # Project context / # Environment / # Your CLI, rendered from the born row) + orchestrator request. The primary agent skips the skills step entirely. Project context arrives as the kernel's `# Project context` block, built from the `can_read` sections (from `agent_contract_permissions`) of `project_context_contracts`; a section the block only points at is pulled on demand -- the verb that reaches it, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
 
 ## Routing Patterns
 
@@ -111,15 +113,15 @@ CLI tools live in `bin/` and are registered in `package.json` `bin` field. Patte
 
 ## Documentation Drift Awareness
 
-When you modify any Gaia component (hook, skill, agent definition, routing config, security rule), check if existing reference docs describe that component's behavior. If drift exists, report it via `cross_layer_impacts` in your contract row. The orchestrator then decides whether to dispatch a documentation update task.
+When you modify any Gaia component (hook, skill, agent definition, routing config, security rule), check whether an existing document describes that component's behavior. Which document it is decides who corrects it:
 
-**Do NOT update docs yourself** -- your job is to flag the drift and let the orchestrator choose the next action.
+- **The README of the folder the change touched is part of the change.** Adding or modifying files in agents/, skills/, hooks/, config/, bin/, tests/, build/ or the repo root, update that folder's README.md in the same change, with Skill('technical-writing') (door: README).
+- **A reference document elsewhere is flagged, not edited** -- another skill, another folder's README, `ARCHITECTURE.md`. Report it via `cross_layer_impacts` in your contract row; the orchestrator decides whether to dispatch its update, so it does not change unreviewed inside another task. A goal that names that document as its target makes it part of the change.
 
 **Examples of drift to flag:**
 - Changed `hooks/modules/security/protected_paths.py::is_protected_hook_path` paths → check `security-tiers/SKILL.md` for path documentation
 - Added a new agent definition → check `gaia-patterns/reference.md` for agents table
 - Modified hook enforcement logic → check `security-tiers` and `agent-protocol` references
-- When adding or modifying files in agents/, skills/, hooks/, config/, bin/, tests/, build/ or the repo root, load Skill('technical-writing') (door: README) to update the relevant README.md
 
 **Format:** In `cross_layer_impacts`, list the doc file and the behavior change, e.g.:
 ```

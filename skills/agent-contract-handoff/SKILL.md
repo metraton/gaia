@@ -46,14 +46,15 @@ See `agent-protocol` for when in the turn's cycle this first write happens.
 The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
 role/surface, `project` with its declared `workflow` line when the project
 declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
-acceptance gates), `# Scope memory` (an index of the preferences, facts and
-lessons the dispatch's workspace, group and project hold, each line a title and
-its `ref=memory:...`; never the user's rows), `# Standing notes` (the project's live anchors, one line each, when
-it has any), `# Environment` (one line: OS, the gaia CLI path, the tools on
-PATH including the user's own executables), `# Project context` and
+acceptance gates), `# Scope preferences` (every live preference the dispatch's
+workspace, group and project hold, each line a title and its `ref=memory:...`;
+never the user's rows), `# Scope memory` (one line counting the chain's facts
+and lessons and the project's other standing notes, none preloaded, with the
+verbs that read them), `# Project context`, `# Environment` (one line: OS, the
+gaia CLI path, the tools on PATH including the user's own executables) and
 `# Your CLI`. `# Project context` carries the dispatch project's `can_read`
 sections whole when they fit, else one `get-contract` pointer per section,
-else a single count line; it is absent when the row's project does not
+else a single line naming them; it is absent when the row's project does not
 resolve, none of its `can_read` sections is stored, or the read fails
 (`hooks/modules/context/kernel_builder.py::build_project_context_block`).
 No surface routing arrives. Pull what the block only points at on demand

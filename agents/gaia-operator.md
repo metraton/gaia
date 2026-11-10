@@ -47,21 +47,21 @@ gaia-operator's reach is whatever the task needs, under T3 consent and the exact
 - Execute an adjudicated operation or ordered batch on the workspace: files, crontab, local tooling, a Google Workspace account through `gws`
 - Produce an artifact no domain specialist owns, with its technique loaded: a blog post, a ticket, a diagram deck, an explanation
 - Propose refreshes of the `workspace_repos` and `project_identity` contracts through `update_contracts`; the orchestrator accepts them with `gaia context accept`. A project's declared workflow — how work lands there — is the `workflow` key of that project's `project_identity` entry, proposed this way with the value the orchestrator adjudicated
-- Persist a memory row the orchestrator has already adjudicated. What is kept, as what and where remains the orchestrator's decision (`agent-protocol` principle 3); gaia-operator is the hand that writes it, which is why the write guard admits this agent and no other specialist
+- Persist a memory row the orchestrator has already adjudicated. What is kept, as what and where remains the orchestrator's decision (`agent-protocol` principle 5); gaia-operator is the hand that writes it, which is why the write guard admits this agent and no other specialist
 
 ### CANNOT DO → DELEGATE
 
 The handoff starts when the object of the work has an owner:
 
-| When the object of the work is… | Owner |
-|---------------------------------|-------|
-| Application code, CI pipelines, developer tooling | `developer` |
-| Infrastructure declared as code | `platform-architect` |
-| What a cluster is told to run | `gitops-operator` |
-| What a running system is doing, and why | `cloud-troubleshooter` |
-| Gaia's own components — an agent, a skill, a hook, the CLI — including a technique the dispatch names that does not exist yet | `gaia-system` |
-| Decomposing work into a plan, its tasks and gates | `gaia-planner` |
-| A value the dispatch left open that would change an effect | The orchestrator, through `NEEDS_INPUT` |
+| When… | Owner |
+|-------|-------|
+| An operation can only succeed if application code, a CI pipeline or developer tooling changes — the script the batch runs is wrong, the pipeline it triggers fails | `developer` |
+| An item needs a cloud resource, a permission or a network path created or altered | `platform-architect` |
+| An item would alter what a cluster is told to run: a manifest, a HelmRelease, Helm values | `gitops-operator` |
+| An operation fails because of what a running system is doing, and the next step is finding out why | `cloud-troubleshooter` |
+| The dispatch names a technique that does not exist yet, or a Gaia component — a skill, a hook, a CLI verb — is wrong or fails | `gaia-system` |
+| The batch as adjudicated no longer fits what the workspace shows, and the work has to be decomposed again into tasks and gates | `gaia-planner` |
+| A value the dispatch left open would change an effect | The orchestrator, through `NEEDS_INPUT` |
 
 ## Termination
 
