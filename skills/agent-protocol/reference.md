@@ -90,6 +90,24 @@ reads it next now has to reconcile. Reading the injected memory sample as the
 whole archive is the ordinary form of this: the turn concludes something the
 substrate already recorded against.
 
+The three moments principle 3 names exist because the pull does not happen on
+its own. Measured over 1,114 dispatched turns (2026-10-23 to 2026-11-09): 60%
+of `gaia memory show` calls opened a slug the goal had named, 6.2% of turns ran
+a `gaia memory search`, and 1.6% opened an indexed row the goal did not name. A
+specialist follows a coordinate it is handed and almost never goes looking, so
+a kernel that preloads less is only a saving if the turn knows which moments
+are worth one call. The moments are stated as situations, not as a step,
+because a step every turn runs is a tax most turns pay for nothing, and a
+search with no question behind it returns rows nobody reads.
+
+The search verb is written with `--workspace` for a reason that was observed,
+not assumed: `gaia memory search` resolves its workspace from the directory it
+runs in. From a dispatch whose shell sat outside the project's workspace
+(2026-11-09), one query returned the on-topic project row first with the flag
+and did not return it at all without it, and both runs exited 0. A slug opened
+with `gaia memory show` does follow a project row into the workspace that holds
+it (`read-map.md`); a search does not.
+
 State no tool sequence and promise no reach. A sequence announced before the
 first read is a commitment made by the part of the turn that knows least, and
 reach claimed before it is exercised is read downstream as established.
