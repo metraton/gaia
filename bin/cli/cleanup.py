@@ -1110,6 +1110,13 @@ def register(subparsers):
         help="Run the session-start sweep now: Gaia's tmp, scratch and worktrees, by owner",
     )
     p.add_argument(
+        "--no-sizes",
+        dest="no_sizes",
+        action="store_true",
+        default=False,
+        help="With --sweep --dry-run: judge as the automatic sweep does, without measuring sizes",
+    )
+    p.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
@@ -1126,16 +1133,16 @@ def register(subparsers):
 
 
 def _mib(size) -> str:
-    return f"{int(size or 0) / 2**20:.1f} MiB"
+    return "-" if size is None else f"{int(size) / 2**20:.1f} MiB"
 
 
-def cmd_sweep(dry_run: bool, as_json: bool) -> int:
+def cmd_sweep(dry_run: bool, as_json: bool, sizes: bool = True) -> int:
     """Print or run the session-start sweep from the current folder; 1 when another sweep holds the claim."""
     from gaia.retention.session_sweep import plan, run
 
     start = Path.cwd()
     if dry_run:
-        items = [i for i in plan(start) if i["verdict"] != "keep"]
+        items = [i for i in plan(start, sizes=sizes) if i["verdict"] != "keep"]
         kept = None
     else:
         report = run(start)
@@ -1155,10 +1162,12 @@ def cmd_sweep(dry_run: bool, as_json: bool) -> int:
         print(f"{'FAILED':<12} {item['kind']:<8} {_mib(item['size']):>11}  {item['path']}  -- {item['error']}")
     gone = [i for i in items if i["verdict"] == "remove"]
     refused = [i for i in items if i["verdict"] == "refuse"]
+    measured = all(i["size"] is not None for i in gone + refused)
     print(
-        f"\n{'Would free' if dry_run else 'Freed'} {_mib(sum(int(i['size'] or 0) for i in gone))} "
-        f"in {len(gone)} item(s); refused {len(refused)} item(s), "
-        f"{_mib(sum(int(i['size'] or 0) for i in refused))}."
+        f"\n{'Would free' if dry_run else 'Freed'} "
+        f"{_mib(sum(int(i['size'] or 0) for i in gone)) if measured else 'sizes not measured'} "
+        f"in {len(gone)} item(s); refused {len(refused)} item(s)"
+        f"{', ' + _mib(sum(int(i['size'] or 0) for i in refused)) if measured else ''}."
     )
     return 0
 
@@ -1166,7 +1175,9 @@ def cmd_sweep(dry_run: bool, as_json: bool) -> int:
 def cmd_cleanup(args) -> int:
     """Execute the cleanup subcommand."""
     if getattr(args, "sweep", False):
-        return cmd_sweep(getattr(args, "dry_run", False), getattr(args, "json", False))
+        return cmd_sweep(
+            getattr(args, "dry_run", False), getattr(args, "json", False), not getattr(args, "no_sizes", False),
+        )
     root = _find_project_root()
     prune_only = getattr(args, "prune", False) or getattr(args, "retain", False)
     dry_run = getattr(args, "dry_run", False)

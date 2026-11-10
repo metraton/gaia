@@ -56,6 +56,7 @@ def start_session(start: SessionStart) -> StartOutcome:
         "## Workspace": workspace_notice,
         "## Install integrity": _install_integrity_notice(),
         "## Temp space": _temp_space_notice(),
+        "## Leftover sweep": _first_sweep_notice(),
         "## Leftovers": _leftovers_notice(start.workspace_dir),
     }
     shown = {title: text for title, text in notices.items() if text}
@@ -198,6 +199,15 @@ def _temp_space_notice() -> str:
         return notice_line()
     except Exception as exc:
         logger.debug("temp space notice failed (non-fatal): %s", exc)
+        return ""
+
+
+def _first_sweep_notice() -> str:
+    try:
+        from gaia.retention.session_sweep import first_run_notice
+        return first_run_notice()
+    except Exception as exc:
+        logger.debug("first sweep notice failed (non-fatal): %s", exc)
         return ""
 
 

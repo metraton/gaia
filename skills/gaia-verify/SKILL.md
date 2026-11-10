@@ -46,6 +46,8 @@ Why each part matters:
 
 The instrument is `gaia cleanup --sweep --dry-run`, which prints each item the sweep would remove or refuse, with its size and reason.
 
+`GAIA_SESSION_SWEEP` sets the position: `on` (the default) removes, `list` only records what it would remove for `gaia doctor` to show, and `off` stops it. The first sweep on a machine only lists, and the next session start says so in one line, so nobody's first session deletes unseen.
+
 ## Decision tree
 
 ```

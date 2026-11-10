@@ -1121,27 +1121,33 @@ def check_temp_space() -> dict:
 
 @register_check("Sweep leftovers", order=43)
 def check_sweep_leftovers() -> dict:
-    """List what the last session-start sweep refused to remove, each with size and reason."""
+    """The sweep switch in force, and what the last sweep left: listed-only items and refusals, sizes within a budget."""
     try:
-        from gaia.retention.session_sweep import last_report, report_path  # noqa: PLC0415
+        from gaia.retention import session_sweep  # noqa: PLC0415
     except ImportError as exc:
         return _result("Sweep leftovers", "info", f"sweep report unavailable: {exc}")
-    report = last_report()
+    switch = f"{session_sweep.SWEEP_ENV}={session_sweep.mode()}"
+    report = session_sweep.last_report()
     if not report:
-        return _result("Sweep leftovers", "info", f"no sweep has run yet ({report_path()})")
-    refused = report.get("refused") or []
-    freed = int(report.get("freed") or 0) / 2**20
-    head = f"last sweep removed {len(report.get('removed') or [])} ({freed:.0f} MiB)"
-    if not refused:
-        return _result("Sweep leftovers", "pass", f"{head}; refused nothing")
-    lines = [
-        f"{item['kind']} {item['path']} ({int(item.get('size') or 0) / 2**20:.0f} MiB): {item['reason']}"
-        for item in refused
-    ]
+        return _result("Sweep leftovers", "info", f"{switch}; no sweep has run yet ({session_sweep.report_path()})")
+    listed = [{**i, "verb": "would remove"} for i in report.get("would_remove") or []]
+    listed += [{**i, "verb": "refused"} for i in report.get("refused") or []]
+    head = (
+        f"{switch}; last sweep ({report.get('mode', 'on')}) removed {len(report.get('removed') or [])}, "
+        f"listed {len(report.get('would_remove') or [])} it would remove, refused {len(report.get('refused') or [])}"
+    )
+    if not listed:
+        return _result("Sweep leftovers", "pass", head)
+    shown = listed[:20]
+    session_sweep.measure_sizes(shown, budget_seconds=session_sweep.DOCTOR_SIZE_BUDGET_SECONDS)
+    lines = []
+    for item in shown:
+        size = "size not measured" if item["size"] is None else "%.0f MiB" % (int(item["size"]) / 2**20)
+        lines.append(f"{item['verb']} {item['kind']} {item['path']} ({size}): {item['reason']}")
+    more = f"\n    +{len(listed) - len(shown)} more" if len(listed) > len(shown) else ""
     return _result(
-        "Sweep leftovers", "info",
-        f"{head}; refused {len(refused)}:\n    " + "\n    ".join(lines),
-        "`gaia cleanup --sweep --dry-run` re-judges them now",
+        "Sweep leftovers", "info", f"{head}:\n    " + "\n    ".join(lines) + more,
+        "`gaia cleanup --sweep --dry-run` lists every item with its size",
     )
 
 

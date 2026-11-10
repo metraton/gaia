@@ -117,6 +117,7 @@ def test_abandoned_worktree_collected_no_manual_invocation(sandbox):
     _seed_rows(data_dir / "gaia.db", [
         ("abandoned-1", "sess-abandoned", "IN_PROGRESS", "reaped"),
     ])
+    (data_dir / "session-sweep.json").write_text(json.dumps({"ran_at": 0, "mode": "on"}), encoding="utf-8")
 
     result = _run_session_start(repo, env, "sess-live-unrelated")
     assert result.returncode == 0, f"hook failed: {result.stderr[-800:]!r}"
