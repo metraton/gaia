@@ -27,8 +27,9 @@ def _write(path: Path, data) -> Path:
     return path
 
 
-def _package(root: Path, version: str) -> Path:
+def _package(root: Path, version: str, schema: int = 75) -> Path:
     _write(root / "package.json", {"name": "@jaguilar87/gaia", "version": version})
+    _write(root / "bin" / "cli" / "doctor.py", f"EXPECTED_SCHEMA_VERSION = {schema}\n")
     _write(root / "opencode" / "plugin.ts", "export const GaiaOpenCodePlugin = async () => ({})\n")
     return root
 
@@ -54,6 +55,15 @@ class Box:
         self.settings = {"user": {}, "local": {}}
         self.known: dict = {}
         self.installed: dict = {}
+        self.ledger, self.minimum = 75, 75
+
+    def store_plan(self, db_path: str) -> dict:
+        """What `gaia migrate plan --json` reports for a store at ``self.ledger``."""
+        return {"database": db_path, "ledger": self.ledger, "min_code_version": self.minimum, "direction": "current",
+                "chain": None, "consent_command": None, "backups": []}
+
+    def read(self) -> dict:
+        return state.read(self.machine(), store_plan=self.store_plan)
 
     def declare(self, source: dict, scope: str = "user", name: str = MKT) -> None:
         self.settings[scope].setdefault("extraKnownMarketplaces", {})[name] = {"source": source}
@@ -62,16 +72,17 @@ class Box:
         where = location or self.plugins / "marketplaces" / name
         self.known[name] = {"source": source, "installLocation": str(where)}
 
-    def install_plugin(self, version: str, name: str = MKT, commit: str = "c" * 40, enabled: bool = True) -> Path:
-        root = _package(self.plugins / "cache" / name / "gaia" / version, version)
+    def install_plugin(self, version: str, name: str = MKT, commit: str = "c" * 40, enabled: bool = True,
+                       schema: int = 75) -> Path:
+        root = _package(self.plugins / "cache" / name / "gaia" / version, version, schema)
         self.installed.setdefault(f"gaia@{name}", []).append({
             "scope": "local", "projectPath": str(self.ws), "installPath": str(root),
             "version": version, "gitCommitSha": commit})
         self.settings["local"].setdefault("enabledPlugins", {})[f"gaia@{name}"] = enabled
         return root
 
-    def npm_local(self, version: str, integrity: str = "sha512-same") -> Path:
-        root = _package(self.ws / "node_modules" / "@jaguilar87" / "gaia", version)
+    def npm_local(self, version: str, integrity: str = "sha512-same", schema: int = 75) -> Path:
+        root = _package(self.ws / "node_modules" / "@jaguilar87" / "gaia", version, schema)
         _write(self.ws / "package.json", {"dependencies": {"@jaguilar87/gaia": version}})
         lock = {"packages": {"node_modules/@jaguilar87/gaia": {
             "version": version, "integrity": integrity,
@@ -94,7 +105,7 @@ class Box:
         return state.Machine(
             workspace=self.ws, user_settings=self.home / ".claude" / "settings.json",
             plugins_dir=self.plugins, opencode_global=self.home / ".config" / "opencode",
-            npm_prefix=None, path_gaia=None, plugin_root=None, windows=False)
+            npm_prefix=None, path_gaia=None, plugin_root=None, windows=False, db_path=self.home / ".gaia" / "gaia.db")
 
 
 def _errors(report: dict) -> "list[str]":
@@ -122,7 +133,7 @@ def test_an_aligned_machine_reads_one_version_proves_its_commit_and_changes_noth
     machine = box.machine()
     before = _snapshot(tmp_path)
 
-    report = state.read(machine)
+    report = state.read(machine, store_plan=box.store_plan)
     plan = state.plan(report, "5.8.0-rc.2")
 
     assert (report["status"], report["exit_code"], report["versions"]) == ("aligned", 0, ["5.8.0-rc.2"])
@@ -142,7 +153,7 @@ def test_an_installed_commit_that_is_not_the_tag_commit_fails_provenance(tmp_pat
     box.register(ref, location=clone)
     box.install_plugin("5.8.0-rc.2", commit="0" * 40)
 
-    report = state.read(box.machine())
+    report = box.read()
 
     assert report["exit_code"] == 2
     assert any("0" * 12 in e and commit[:12] in e and "v5.8.0-rc.2" in e for e in _errors(report))
@@ -154,7 +165,7 @@ def test_a_declared_git_url_against_a_registered_github_ref_is_a_split_named_on_
     box.register({**GITHUB, "ref": "v5.8.0-rc.1"})
     box.install_plugin("5.8.0-rc.1")
 
-    report = state.read(box.machine())
+    report = box.read()
     plan = state.plan(report, "5.8.0-rc.2")
 
     assert report["exit_code"] == 2
@@ -177,7 +188,7 @@ def test_the_plugin_and_opencode_on_different_versions_is_a_split(tmp_path):
     box.npm_local("5.7.2-rc.2")
     box.opencode(box.npm_entry())
 
-    report = state.read(box.machine())
+    report = box.read()
     plan = state.plan(report, "5.8.0-rc.1")
 
     assert report["exit_code"] == 2
@@ -199,7 +210,7 @@ def test_an_opencode_entry_in_a_swept_plugin_cache_folder_is_stale(tmp_path):
     _write(stale / ".orphaned_at", "1762473600000")
     box.opencode(stale / "opencode" / "plugin.ts", box.npm_entry())
 
-    report = state.read(box.machine())
+    report = box.read()
     plan = state.plan(report, "5.8.0-rc.1")
 
     assert report["exit_code"] == 2
@@ -220,7 +231,7 @@ def test_a_dev_marketplace_beside_the_real_one(tmp_path, dev_enabled):
     box.register({"source": "directory", "path": str(dev)}, name="gaia-dev", location=dev)
     box.install_plugin("5.7.2-rc.2", name="gaia-dev", enabled=dev_enabled)
 
-    report = state.read(box.machine())
+    report = box.read()
     plan = state.plan(report, "5.8.0-rc.1")
 
     disable = "claude plugin disable gaia@gaia-dev --scope local"
@@ -232,6 +243,30 @@ def test_a_dev_marketplace_beside_the_real_one(tmp_path, dev_enabled):
         assert (report["status"], report["exit_code"]) == ("aligned", 0)
         assert any(f["severity"] == "info" and "gaia@gaia-dev" in f["detail"] for f in report["findings"])
         assert disable not in _commands(plan)
+
+
+def test_the_store_is_one_more_row_and_a_copy_it_refuses_is_a_split(tmp_path):
+    box = Box(tmp_path)
+    ref = {**GITHUB, "ref": "v5.8.0-rc.1"}
+    box.declare(ref)
+    box.register(ref)
+    box.install_plugin("5.8.0-rc.1", schema=76)
+    box.npm_local("5.7.2-rc.2", schema=74)
+    box.opencode(box.npm_entry())
+    box.ledger, box.minimum = 76, 76
+
+    report = box.read()
+    store = next(c for c in report["channels"] if c["channel"] == "store")
+    verdicts = {copy["label"]: copy["verdict"] for copy in store["copies"]}
+
+    assert (store["schema"], verdicts["plugin gaia@gaia-marketplace"], verdicts["npm-local"]) == (76, "current", "refused")
+    assert any("5.7.2-rc.2" in e and "v74" in e and "refused" in e for e in _errors(report))
+    assert "gaia migrate plan" in _commands(state.plan(report, "5.8.0-rc.1"))
+
+    box.ledger, box.minimum = 75, 70
+    store = next(c for c in box.read()["channels"] if c["channel"] == "store")
+    verdicts = {copy["label"]: copy["verdict"] for copy in store["copies"]}
+    assert (verdicts["plugin gaia@gaia-marketplace"], verdicts["npm-local"]) == ("migrates", "writes-ahead")
 
 
 def test_windows_paths_and_sources_are_read_by_their_form():
@@ -252,6 +287,8 @@ def _doctor(box: Box, monkeypatch, capsys, channels: bool = True, target: "str |
     monkeypatch.setenv("HOME", str(box.home))
     monkeypatch.setenv("PATH", str(box.home / "empty-bin"))
     monkeypatch.setenv("NPM_CONFIG_PREFIX", str(box.home / "npm-global"))
+    monkeypatch.delenv("GAIA_DATA_DIR", raising=False)
+    monkeypatch.setenv("GAIA_DB", str(box.home / ".gaia" / "gaia.db"))
     args = Namespace(workspace=str(box.ws), json=True, fix=False, channels=channels, target=target)
     code = doctor_mod.cmd_doctor(args)
     return code, json.loads(capsys.readouterr().out)

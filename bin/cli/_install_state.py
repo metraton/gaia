@@ -32,11 +32,13 @@ class Machine:
     path_gaia: "Path | None"
     plugin_root: "Path | None"
     windows: bool
+    db_path: "Path | None" = None
 
     @classmethod
     def current(cls, workspace: Path, user_settings: Path, plugins_dir: Path) -> "Machine":
         """This machine, with ``CLAUDE_CODE_PLUGIN_CACHE_DIR`` moving the plugins root when set."""
         from cli.install import _npm_config_prefix_posix  # noqa: PLC0415
+        from gaia.paths.resolver import db_path  # noqa: PLC0415
 
         windows = sys.platform == "win32"
         prefix = _npm_config_prefix_posix()
@@ -55,6 +57,7 @@ class Machine:
             path_gaia=Path(which) if which else None,
             plugin_root=Path(plugin_root) if plugin_root else None,
             windows=windows,
+            db_path=db_path(),
         )
 
 
@@ -498,7 +501,7 @@ def _launcher(m: Machine, plugins: list, findings: list) -> "dict | None":
     version = _version(package)
     kind = _origin_kind(m, package) if package else "unknown"
     channel = {"channel": "launcher", "declared": None, "registered": None, "installed": None, "kind": kind,
-               "running": {"version": version, "path": str(m.path_gaia),
+               "running": {"version": version, "path": str(m.path_gaia), "root": str(package) if package else None,
                            "origin": f"`gaia` on PATH runs {package or 'a package Gaia cannot identify'}"}}
     if kind == "plugin-cache":
         recorded = any(same_path(i["path"], package, windows=m.windows) for i in _recorded_installs(plugins))
@@ -508,25 +511,89 @@ def _launcher(m: Machine, plugins: list, findings: list) -> "dict | None":
     return channel
 
 
-def _live_versions(channels: list) -> "list[tuple[str, str, str]]":
-    """(label, version, where) for every copy a host or the shell runs on this machine."""
+def _live_versions(channels: list) -> "list[tuple[str, str, str, str | None]]":
+    """(label, version, where, package root) for every copy a host or the shell runs on this machine."""
     live = []
     for channel in channels:
         kind = channel["channel"]
         if kind == "plugin" and channel["running"]:
-            live.append((f"plugin {channel['key']}", channel["running"]["version"], channel["running"]["path"]))
+            path = channel["running"]["path"]
+            live.append((f"plugin {channel['key']}", channel["running"]["version"], path, path))
         elif kind in ("npm-local", "npm-global") and channel["installed"]:
-            live.append((kind, channel["installed"]["version"], channel["installed"]["path"]))
+            path = channel["installed"]["path"]
+            live.append((kind, channel["installed"]["version"], path, path))
         elif kind == "opencode":
-            live += [(f"opencode ({e['config']})", e["version"], e["root"] or e["entry"])
+            live += [(f"opencode ({e['config']})", e["version"], e["root"] or e["entry"], e["root"])
                      for e in channel["entries"] if e["exists"] is not False]
         elif kind == "launcher":
-            live.append(("launcher", channel["running"]["version"], channel["running"]["path"]))
+            running = channel["running"]
+            live.append(("launcher", running["version"], running["path"], running.get("root")))
     return [entry for entry in live if entry[1]]
 
 
-def read(m: Machine) -> dict:
-    """The install state of *m*: each channel's stages, the splits as findings, and an install-scoped verdict."""
+def _schema_expected(root) -> "int | None":
+    """The store schema the build at *root* writes: its doctor's EXPECTED_SCHEMA_VERSION, the engine's own source."""
+    try:
+        text = (Path(root) / "bin" / "cli" / "doctor.py").read_text(encoding="utf-8")
+    except (OSError, TypeError):
+        return None
+    found = re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", text, re.MULTILINE)
+    return int(found.group(1)) if found else None
+
+
+def _store_verdict(m: Machine, label, version, root, expects, ledger, minimum, findings) -> str:
+    if expects == ledger:
+        return "current"
+    if expects > ledger:
+        _finding(findings, "warning", "store", f"{label} {version} ({root}) expects schema v{expects}: its next "
+                 f"install or session start migrates {m.db_path} from v{ledger}")
+        return "migrates"
+    if minimum is not None and minimum <= expects:
+        return "writes-ahead"
+    _finding(findings, "error", "store", f"{m.db_path} is at schema v{ledger}, writable by builds of schema "
+             f"v{minimum if minimum is not None else ledger} or later; {label} {version} ({root}) writes "
+             f"v{expects} and every write it makes is refused")
+    return "refused"
+
+
+def _store(m: Machine, live: list, findings: list, store_plan) -> "dict | None":
+    if m.db_path is None:
+        return None
+    try:
+        report = store_plan(str(m.db_path))
+    except (OSError, RuntimeError) as exc:
+        _finding(findings, "warning", "store", f"`gaia migrate plan` could not read {m.db_path}: {exc}")
+        return None
+    ledger, minimum = report.get("ledger") or 0, report.get("min_code_version")
+    fresh = report.get("direction") == "fresh"
+    copies, seen = [], set()
+    for label, version, _where, root in live:
+        expects = _schema_expected(root) if root else None
+        if expects is None or (root, label) in seen:
+            continue
+        seen.add((root, label))
+        verdict = "creates" if fresh else _store_verdict(m, label, version, root, expects, ledger, minimum, findings)
+        copies.append({"label": label, "version": version, "root": root, "expects": expects, "verdict": verdict})
+    if report.get("direction") == "missing-migrations":
+        _finding(findings, "warning", "store", f"this doctor's build lacks migrations {', '.join(report['missing'])} "
+                 f"for {m.db_path}")
+    floor = minimum if minimum is not None else "?"
+    return {"channel": "store", "path": str(m.db_path), "schema": None if fresh else ledger,
+            "min_code_version": minimum, "direction": report.get("direction"), "chain": report.get("chain"),
+            "consent_command": report.get("consent_command"), "backups": report.get("backups") or [],
+            "copies": copies, "declared": None, "registered": None, "running": None,
+            "installed": {"version": "absent (fresh)" if fresh else f"schema v{ledger}",
+                          "origin": f"{m.db_path}, writable by builds of schema v{floor}+"}}
+
+
+def _plan_report(db_path: str) -> dict:
+    from cli.migrate import plan_report  # noqa: PLC0415
+
+    return plan_report(db_path)
+
+
+def read(m: Machine, store_plan=None) -> dict:
+    """The install state of *m* (channels and the store), its splits as findings, and an install-scoped verdict; *store_plan* defaults to ``cli.migrate.plan_report``."""
     findings: list = []
     plugins = _plugin_channels(m, findings)
     enabled = [c for c in plugins if c["enabled"] and c["enabled"]["value"]]
@@ -538,10 +605,13 @@ def read(m: Machine) -> dict:
                 _launcher(m, plugins, findings)]
     channels = [channel for channel in channels if channel]
     live = _live_versions(channels)
-    versions = sorted({version for _, version, _ in live})
+    versions = sorted({version for _, version, _, _ in live})
     if len(versions) > 1:
         _finding(findings, "error", "machine", f"Gaia runs {len(versions)} versions on this machine: "
-                 + "; ".join(f"{label} {version} ({where})" for label, version, where in live))
+                 + "; ".join(f"{label} {version} ({where})" for label, version, where, _ in live))
+    store = _store(m, live, findings, store_plan or _plan_report)
+    if store:
+        channels.append(store)
     errors = sum(1 for f in findings if f["severity"] == "error")
     warnings = sum(1 for f in findings if f["severity"] == "warning")
     here = Path(__file__).resolve().parent.parent.parent
@@ -650,6 +720,14 @@ def plan(report: dict, target: str) -> dict:
         _step(steps, "launcher", "command", f"`gaia` on PATH runs {launcher['running']['version']}",
               command="gaia install --path", cwd=report["workspace"],
               detail="run it with the gaia of the new copy, from the workspace")
+    store = by_kind.get("store")
+    if store and steps:
+        _step(steps, "store", "check",
+              f"the store {store['path']} is at {store['installed']['version']}, writable by builds of schema "
+              f"v{store['min_code_version'] if store['min_code_version'] is not None else '?'}+",
+              command="gaia migrate plan",
+              detail="run it with the gaia of the new copy once installed: it shows the chain the data goes through, "
+                     "whether apply needs --consent-chain, and the backups on hand")
     if any(s["channel"] == "plugin" for s in steps):
         _step(steps, "plugin", "session", "a running session keeps the version it loaded",
               detail="start a new Claude Code session in each install's project, or run /reload-plugins")
@@ -698,6 +776,15 @@ def format_report(report: dict) -> "list[str]":
                 lines.append(f"      {'declared':<11} {entry['entry']}  ({entry['config']})")
                 lines.append(f"      {'installed':<11} {entry['version'] or '?'}  {entry['origin']}")
             lines.append(f"      {'running':<11} not observable: OpenCode logs no plugin load")
+        elif kind == "store":
+            lines.append("    store")
+            lines += _stage("installed", channel["installed"])
+            lines.append(f"      {'direction':<11} {channel['direction']} against this doctor's build"
+                         + (f", chain {channel['chain']}" if channel["chain"] else "")
+                         + f"; {len(channel['backups'])} backup(s) on hand")
+            for copy in channel["copies"]:
+                lines.append(f"      {'copy':<11} {copy['label']} {copy['version']} writes v{copy['expects']}: "
+                             f"{copy['verdict']}")
         else:
             lines.append(f"    {kind}")
             for label in ("declared", "registered", "installed", "running"):
