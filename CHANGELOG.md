@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The PATH launcher keeps running the current Gaia after a plugin upgrade.** A launcher (`~/.local/bin/gaia`, or `gaia.cmd` and `gaia.ps1` on Windows) left on a plugin version Claude Code no longer records is moved to the recorded version of the same marketplace when that version starts a session; a dev plugin, a pinned version and a file the user wrote are never rewritten. `gaia install --path` now writes the launcher in a workspace served only by the plugin, replaces a launcher an earlier `gaia install` wrote, and refuses to point it at a temporary, scratch, worktree, source-checkout or dev-plugin copy. `gaia doctor` warns when the `gaia` on PATH runs a version Claude Code no longer records, even when the doctor itself was started through it.
 - **Host-persisted tool output is read-only evidence.** Inspecting `~/.claude/projects/*/tool-results` with a viewing filter (`grep`, `rg`, `head`, `tail`, `cat`, `wc`, a print-only `sed -n`) stays free; copying it out or feeding it to a program (`jq`, an interpreter, `awk`, `sed`, `xargs`) is refused. A subagent's `mkdir` or `touch` in the home folder outside scratch and every git worktree asks for a signature (`stranded-creation`).
 
+## [5.8.0-rc.1] - 2026-11-10
+
 ## [5.7.2-rc.2] - 2026-11-08
 
 ## [5.7.2-rc.1] - 2026-11-07
