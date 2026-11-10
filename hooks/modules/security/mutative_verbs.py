@@ -24,7 +24,7 @@ import re
 import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple, Union
 
 try:
     import tomllib
@@ -53,6 +53,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .nested_executors import EXECUTOR_PROGRAMS as NESTED_EXECUTOR_PROGRAMS
 from .nested_executors import nested_run, opens_session, reads_local_state, with_target_flags, writes_or_sends
 from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
@@ -5463,8 +5464,18 @@ def _arguments_are_data(base_cmd: str, semantics: "CommandSemantics") -> bool:
     )
 
 
-def handed_commands(command: str) -> "Tuple[str, ...]":
-    """Every command the program of *command* is handed to run: an executor's, find's or prefix runner's payload, a reader option's, and each argument of a program with no grammar here."""
+def starts_carrier(tokens: Sequence[str], index: int) -> bool:
+    """True when a command begun at ``tokens[index]`` derives a command beyond its own tail: it names every program ``handed_commands`` and ``_peel_wrapper_readings`` read a payload from."""
+    name = program_identity(tokens[index])
+    return name in {"find", "git"} or any(name in table for table in (
+        _COMMAND_WRAPPERS, _COMMAND_EXECUTORS, _PREFIX_RUNNER_SUBCOMMANDS, READER_GRAMMARS, NESTED_EXECUTOR_PROGRAMS))
+
+
+def handed_commands(
+    command: str,
+    starts_command: "Callable[[Sequence[str], int], bool]" = starts_carrier,
+) -> "Tuple[str, ...]":
+    """Every command the program of *command* is handed to run: an executor's, find's or prefix runner's payload, a reader option's, and for a program with no grammar here each multi-word argument and the words from each argument *starts_command* accepts."""
     semantics = analyze_command(command)
     tokens = list(semantics.tokens)
     if not tokens:
@@ -5481,6 +5492,7 @@ def handed_commands(command: str) -> "Tuple[str, ...]":
         handed += [
             word if len(word.split()) > 1 else shlex.join(tokens[index:])
             for index, word in enumerate(tokens[1:], 1)
+            if len(word.split()) > 1 or starts_command(tokens, index)
         ]
     return tuple(dict.fromkeys(handed))
 
@@ -8175,9 +8187,15 @@ def _short_bundle_ends_in_value_flag(tok: str, value_flags: FrozenSet[str]) -> b
     return False
 
 
+def spells_long_option(tok: str, option: str) -> bool:
+    """True when *tok* is *option* or an abbreviation getopt_long accepts for it, with or without ``=value``."""
+    name = tok.split("=", 1)[0]
+    return len(name) > 2 and option.startswith(name)
+
+
 def _split_string_flag(tok: str, grammar: _WrapperGrammar) -> bool:
     if tok.startswith("--"):
-        return tok.split("=", 1)[0] in grammar.split_string_flags
+        return any(spells_long_option(tok, flag) for flag in grammar.split_string_flags if flag.startswith("--"))
     for letter in tok[1:]:
         if f"-{letter}" in grammar.split_string_flags:
             return True
@@ -8349,16 +8367,18 @@ def _peel_prefix(s: str) -> "Tuple[int, Optional[_WrapperGrammar]]":
 
 
 def _expand_split_string(rest: str, grammar: "Optional[_WrapperGrammar]") -> "Optional[str]":
-    """Rewrite ``env -S STRING ARGS`` as ``env STRING ARGS``: env reads the split words as its own arguments."""
+    """Rewrite ``env -S STRING ARGS`` as ``env STRING ARGS``, and ``env -iS STRING`` as ``env -i STRING``: env reads the split words as its own arguments."""
     if grammar is None or not grammar.split_string_flags:
         return None
     tok_end = _consume_shell_word(rest, 0)
     tok = rest[:tok_end]
     if not tok.startswith("-") or not _split_string_flag(tok, grammar):
         return None
+    bundled = ""
     if tok.startswith("--"):
         value = tok.split("=", 1)[1] if "=" in tok else None
     else:
+        bundled = f"-{tok[1:tok.index('S')]} " if tok.index("S") > 1 else ""
         attached = tok[tok.index("S") + 1:]
         value = attached or None
     if value is None:
@@ -8369,7 +8389,7 @@ def _expand_split_string(rest: str, grammar: "Optional[_WrapperGrammar]") -> "Op
         words = shlex.split(value)
     except ValueError:
         words = [value]
-    return f"env {' '.join(words)} {rest[tok_end:].strip()}".strip()
+    return f"env {bundled}{' '.join(words)} {rest[tok_end:].strip()}".strip()
 
 
 _GIT_CODE_PATH_KEY_RE = _re.compile(r"core\.hookspath|core\.fsmonitor|include\.path|includeif\..+\.path")

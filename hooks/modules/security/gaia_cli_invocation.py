@@ -242,6 +242,7 @@ def _commands_run(component: str) -> List[Tuple[str, bool]]:
     run: List[Tuple[str, bool]] = []
     pending = [(part, False, 0) for part in parse_command(component) or [component]]
     seen = {part for part, _, _ in pending}
+    offered = set()
     while pending:
         text, fed, depth = pending.pop()
         run.append((text, fed))
@@ -251,12 +252,26 @@ def _commands_run(component: str) -> List[Tuple[str, bool]]:
             if index is None or _is_gaia_entry(words, index):
                 continue
             feeds = fed or os.path.basename(words[0]) in _ARGV_FEEDERS
-            for handed in handed_commands(reading):
+            for handed in handed_commands(reading, _may_start_command):
+                if handed in offered:
+                    continue
+                offered.add(handed)
                 for part in parse_command(handed) or [handed]:
                     if part not in seen:
                         seen.add(part)
                         pending.append((part, feeds, depth + 1))
     return run
+
+
+def _may_start_command(words: Sequence[str], index: int) -> bool:
+    """True when a command begun at ``words[index]`` can touch the identity or reach the CLI by more than the tails its caller already offers."""
+    from .canonical_path import program_identity
+    from .mutative_verbs import _interpreter_family, starts_carrier
+
+    word, name = words[index], program_identity(words[index])
+    respelled = name != word and _is_gaia_entry([name, *words[index + 1:index + 2]], 0)
+    return (starts_carrier(words, index) or bool(_ASSIGNMENT.match(word)) or word in _DECLARERS
+            or _interpreter_family(name.lower()).startswith("python") or _is_gaia_entry(words, index) or respelled)
 
 
 def _programs_started(component: str) -> List[Tuple[str, bool]]:
@@ -339,13 +354,15 @@ def _identity_touch(text: str) -> Optional[str]:
 
 
 def _env_touch(args: Sequence[Tuple[str, bool]]) -> Optional[str]:
+    from .mutative_verbs import spells_long_option
+
     index = 0
     while index < len(args):
         word = args[index][0]
         value = args[index + 1] if index + 1 < len(args) else ("", False)
         if word.startswith(_IDENTITY + "="):
             return _NAMES_IDENTITY
-        if word in ("-", "-i", "--ignore-environment"):
+        if word in ("-", "-i") or spells_long_option(word, "--ignore-environment"):
             return _CLEARS_ENVIRONMENT
         if word.startswith("--unset"):
             named = word.partition("=")[2] if "=" in word else value[0]
