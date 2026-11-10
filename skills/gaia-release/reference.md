@@ -62,7 +62,7 @@ Scanning is NOT part of install. `gaia scan` is a separate, on-demand flow that 
 
 **DB bootstrap without `gaia install`:** the very first `gaia` CLI call in any folder lazily creates `~/.gaia/gaia.db` (`_ensure_db_bootstrapped` in `bin/gaia`) -- so a plain `pnpm add` followed by any `gaia` command has a DB even before the explicit wiring. The explicit `gaia install` is what wires the *install folder* (`.claude/` symlinks, settings, registry); it declares no workspace.
 
-**Revert:** reinstall a published version over the same install folder (`pnpm add @jaguilar87/gaia@rc` or `@latest`); the next install wins. `--fresh` is the more aggressive lever.
+**Revert:** put the dev folder back on a published version with `SKILL.md` -> "Installing a version on a machine" (`gaia doctor --target <version>`), which installs the exact version and re-wires; the next install wins. `--fresh` is the more aggressive lever.
 
 **Picking up the change:** see `SKILL.md` -> "Reloading a change". After `gaia dev` re-installs, **restart Claude Code** -- the harness pins hook commands at session start and does not hot-reload, so the open session keeps running the OLD hooks until restarted (`gaia dev` prints this notice). Plugin-surface skill/agent changes need `/reload-plugins`; a slash-command change needs a full restart.
 
@@ -74,12 +74,12 @@ No registry; the only network use is gate 4's read-only GitHub API lookup of the
 
 `gaia release check` (and `gaia release publish`) validate what will be **PUBLISHED**, which lives only in the SOURCE checkout (the pre-publish validator needs devDependencies, the pack/dry-run gates need `build/gaia.manifest.json`, `npm test` needs `tests/` -- all excluded from the slim installed copy). They resolve the canonical source via `resolve_source_root` and **fail loud** if no source checkout is reachable rather than silently validating the slim installed copy. Run them **from the source checkout** (`python3 <checkout>/bin/gaia release check`) -- there is no env-var escape hatch; do not expect the bare launcher invoked from a consumer install folder to locate the source for you.
 
-**Primary path -- one command, all six gates, always run:**
+**Primary path -- one command, all seven gates, always run:**
 ```
 gaia release check                # add --functional for the opt-in live plugin probe
 gaia release check --quiet        # suppress per-gate progress, only print the summary
 ```
-`gaia release check` (`bin/cli/release.py`) first runs publish's node-deps step (see "Node deps" under the Layer 3 runbook); a failure there is the only result. Then it runs, in order, every gate below and reports a complete PASS/FAIL/SKIP picture -- it never stops at the first red light, so a single run tells you exactly which one broke. Gates 1-4 are each a subprocess call to the existing script (never reimplemented); gate 5 is an in-process read-only inspection via the shared `cli/_converge` inspector, and gate 6 (`opencode:surface`) an in-process inspection of gate 2's tarball. The raw forms below are what gates 1-4 wrap, useful when diagnosing which one failed.
+`gaia release check` (`bin/cli/release.py`) first runs publish's node-deps step (see "Node deps" under the Layer 3 runbook); a failure there is the only result. Then it runs, in order, every gate below and reports a complete PASS/FAIL/SKIP picture -- it never stops at the first red light, so a single run tells you exactly which one broke. Gates 1-4 are each a subprocess call to the existing script (never reimplemented); gate 5 is an in-process read-only inspection via the shared `cli/_converge` inspector, gate 6 (`opencode:surface`) an in-process inspection of gate 2's tarball, and gate 7 (`install:smoke`) the session smoke set on that tarball laid out as every channel. The raw forms below are what gates 1-4 wrap, useful when diagnosing which one failed.
 
 **1 -- version-drift gate (reproduces `validate-manifests`):**
 ```
@@ -116,7 +116,7 @@ python3 <pr-worktree>/bin/gaia dev --channel plugin --workspace <dev-install-fol
 # then, from a terminal:
 gaia doctor --workspace <dev-install-folder>
 ```
-The `gaia` entry of `.claude-plugin/marketplace.json` has `source: "."`, so a marketplace added from a ref serves that ref's tree: after a tag exists, `/plugin marketplace add metraton/gaia#v<version>` + `/plugin install gaia@gaia-marketplace` exercises the published path. An RC's tag sits on its release branch, never on `main`, so the RC tag (or `#release/<x.y.z>`) is the only way the plugin channel reaches it. This is `gaia-verify` mode `plugin`; run `gaia-verify plugin` to score it against the checklist.
+The `gaia` entry of `.claude-plugin/marketplace.json` has `source: "."`, so a marketplace pinned to a ref serves that ref's tree. Once a tag exists, the published path is exercised by installing it on a machine (`SKILL.md` -> "Installing a version on a machine"); an RC's tag sits on its release branch, never on `main`, so the tag is the only way the plugin channel reaches it.
 
 **4 -- test pyramid:**
 ```
@@ -128,6 +128,12 @@ python3 tools/gaia_simulator/cli.py "<test prompt>"   # optional routing check
 **5 -- drift-free convergence (shared with `gaia dev`):** No raw form to wrap -- this gate is an in-process, read-only call to `bin/cli/_converge.py` (`gate_convergence` in `release.py`), the SAME convergence `gaia dev` runs after its reconcile, but with the **origin = the release artifact** (this repo's `package.json` version). It inspects the destination's 5 install surfaces and applies the **schema-DIRECTION guard** (`scripts/bootstrap_database.py`): a live `~/.gaia/gaia.db` NEWER than the artifact's expected schema (reverse-direction drift) is a hard **FAIL** -- installing that artifact would be REFUSED by bootstrap (never ship code older than the DB). Forward/stale surfaces are informational (a release does not reconcile the developer's machine), so only the reverse-direction guard fails the gate; an inspection error is a **SKIP**. To see the same report by hand outside a release: `gaia doctor` (which reports the 5-surface + schema-direction skew) or `gaia dev` (which prints the convergence report after wiring).
 
 **6 -- OpenCode surface (`opencode:surface`):** No raw form either -- `gate_opencode_surface` in `release.py` extracts gate 2's tarball, wires it into a temp install folder the way `gaia install --channel opencode` does, and FAILs naming each missing piece: `opencode/plugin.ts`, a file it resolves by relative path (`./bridge.py`, `../bin/gaia`), an agent `{file:...}` prompt in the generated `opencode.json`, or a skill link. It never starts OpenCode; the live check stays manual.
+
+**7 -- install smoke (`install:smoke`):**
+```
+gaia release smoke --tarball <tgz>          # gate 7 alone; no --tarball packs this tree
+```
+`bin/cli/_install_smoke.py::smoke` lays the tarball out in a throwaway home as the marketplace plugin cache, a workspace's `node_modules`, the npm global prefix and a dev-plugin entry, and runs the session smoke set through each copy's own hooks, as orchestrator and as subagent. CI's Windows job runs it on Windows.
 
 A pass here means the package, plugin and OpenCode surfaces of the exact artifact are green, CI's drift gate is satisfied, and the destination is not carrying a DB newer than the artifact would ship.
 
@@ -174,9 +180,7 @@ gaia release publish [version] --gh <wrapper> --branch NAME # push to origin's N
    - Title: the version.
    - RC/beta/alpha versions get `--prerelease` automatically.
 9. `publish.yml` triggers automatically (as a consequence of step 8) and publishes with `--tag <auto-detected>`.
-10. Verify from the registry and update every install folder on every channel: `gaia-verify registry` (`gaia:verify-install:rc` / `:latest`), then update EACH install folder. **A publish updates no install folder on its own** -- a `file:` install keeps the dev-pack tarball and a plugin install keeps its version. Per channel: package, `pnpm add @jaguilar87/gaia@<dist-tag>` (or `npm install`) + `npx gaia update`, which re-wires every channel the install folder's manifest recorded, OpenCode included, then restart Claude Code or OpenCode; plugin, `claude plugin marketplace update gaia-marketplace` + `claude plugin update gaia@gaia-marketplace`, then restart -- it updates only when the fetched `plugin.json` version differs from the installed one. Then `gaia-verify live`. To find WHICH local install folders are still on stale code, run `gaia doctor` in each: its **Install provenance** check (order 57) detects a `file:` install and reports whether it is fresh vs source, hinting `gaia dev --workspace <install-folder> --channel <channel>` to fix. (There is no bulk `sync-local` command -- that action-at-a-distance was removed in favor of per-install-folder `gaia dev` + the `doctor` diagnostic.) The release is done when the published version installs and validates in every target -- not at the tag.
-
-**Why the reinstall is mandatory, not optional:** `gaia dev`'s content-addressed tarball naming (`jaguilar87-gaia-<version>+<sha8>.tgz`) guarantees a *changed* build gets a fresh pnpm store key, but only when `gaia dev` is actually re-run. A publish alone leaves the local `file:` install frozen at whatever it last packed. Skipping item 10's reinstall is exactly how a fixed release keeps exhibiting the old behaviour in a local install folder.
+10. Verify from the registry, then install the version everywhere it runs: `gaia-verify` mode registry on the exact version, then on every machine `SKILL.md` -> "Installing a version on a machine" (`gaia doctor --channels`, `gaia doctor --target <version>`, the steps it names, `gaia doctor --channels` again). **A publish changes no machine on its own**: a plugin install keeps its version, an npm copy its version, and a dev folder the build `gaia dev` last packed. The release is done when the published version is installed and verified in every target -- not at the tag.
 
 ### Reconciling a diverged remote -- merge, never rebase; never move a tag
 
@@ -186,11 +190,9 @@ gaia release publish [version] --gh <wrapper> --branch NAME # push to origin's N
 - **Tags are create-only -- never move one.** A published tag is immutable history; a new release gets a *new* tag (`-rc.N+1`, next patch/minor), it does not re-point an old one. Moving a tag requires the same force path, and the release norm does not sign it.
 - **The no-force rule is release policy, not a hook floor.** With the `dist/` commit-back removed, `publish.yml` no longer runs `git tag -f` or `git push --force` at all -- it neither commits nor pushes. For any manual reconciliation, never force a tag or a push; merge instead.
 
-**Verify from npm** (registry round-trip):
-- RC: `npm run gaia:verify-install:rc`
-- stable: `npm run gaia:verify-install:latest`
+**Verify from npm** (registry round-trip), always on the exact version: `bash bin/validate-sandbox.sh --version @X.Y.Z-rc.N --target sandbox` once `npm view @jaguilar87/gaia@X.Y.Z-rc.N version` prints it (`gaia-verify` mode registry).
 
-**An rc from a release branch:** push the integration branch as `release/X.Y.Z` (the push runs CI, so the RC's commit gets its verdict), then from a worktree on its tip: `gaia release publish rc --branch release/X.Y.Z --gh <wrapper>`. The bump commit and `vX.Y.Z-rc.N` land on the release branch, never on `main`; `gh release create --prerelease` starts `publish.yml`, which publishes under the `rc` dist-tag. Testers install it from npm (`npm install @jaguilar87/gaia@rc`) and from the plugin channel at the tag (`claude plugin marketplace remove gaia-marketplace`, `claude plugin marketplace add metraton/gaia#vX.Y.Z-rc.N`, `claude plugin install gaia@gaia-marketplace`), as SKILL.md "How a tester installs an RC" spells out.
+**An rc from a release branch:** fixes land in `release/X.Y.Z` through pull requests, each run by CI, and each merge gets its own run. From a worktree on the branch's tip: `gaia release publish rc --branch release/X.Y.Z --gh <wrapper>`. The bump commit and `vX.Y.Z-rc.N` land on the release branch, never on `main`; `gh release create --prerelease` starts `publish.yml`, which publishes under the `rc` dist-tag. Testers install it by the same route as a stable, `SKILL.md` -> "Installing a version on a machine", with the RC as the target.
 
 **From rc to stable:** after `gaia release smoke --live --version X.Y.Z-rc.N` passes, merge the release branch into a worktree on `main` locally and run `gaia release publish X.Y.Z --branch main` there, so the merge and the stable bump reach `main` in one push. Do not move an rc onto `latest` with `npm dist-tag`: its version still carries `-rc.N` on every channel, and the plugin's tag would not be on `main`.
 
@@ -208,7 +210,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 | DB missing / `no such table` on first use | Lazy bootstrap did not run (e.g. `gaia` never invoked yet) | Run any `gaia` command (it triggers `_ensure_db_bootstrapped`), or `gaia update` for the full seed. There is no postinstall to "re-run". |
 | Plugin mounts but hooks never fire | Generated `hooks/hooks.json` broken at the package root, or CC did not reload | Regenerate (`npm run generate:plugin-root`), re-run `npm run gaia:plugin-dryrun`, and `/reload-plugins`. Inspect the root `hooks/hooks.json` (the canonical hook source); `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block. |
 | `bootstrap exited 1: table projects has no column named identity` | Schema/bootstrap drift (old seed SQL) | Update to a build whose seed matches the current schema. |
-| `gaia contract finalize` (or another CLI) errors `no column named ...`; `gaia doctor` reports `schema_version=N > code expected M` | **Reverse-direction drift**: the live `~/.gaia/gaia.db` was migrated by a NEWER Gaia than the code now running -- stale code mis-reading a newer schema. | Install code at least as new as the DB by running the drift-safe convergence -- `gaia dev` (from a source checkout whose `EXPECTED_SCHEMA_VERSION` >= the DB) or `gaia install --channel <channel>`/`gaia release` (artifact). The bootstrap direction guard now REFUSES this case (no clobber) and migrates forward when the code is newer; do **not** `npm install @latest` a build older than the DB, and **never** downgrade the DB. |
+| `gaia contract finalize` (or another CLI) errors `no column named ...`; `gaia doctor` reports `schema_version=N > code expected M` | **Reverse-direction drift**: the live `~/.gaia/gaia.db` was migrated by a NEWER Gaia than the code now running -- stale code mis-reading a newer schema. | Install code at least as new as the store on every channel: `gaia doctor --channels` names the copy the store refuses, and `gaia doctor --target <version>` the steps to move it. To go back to an older version deliberately, put back the backup taken before the migration (`gaia migrate restore --from <backup>`); never edit the schema by hand. |
 | `Permission denied` invoking a hook `.py` | Exec bit lost on cross-platform checkout | Hooks are invoked via `python3 <script>` (see `build-plugin.py` `generate_hooks_json`), so the exec bit should not matter; if it does, update to a build that uses the `python3 <script>` invoker. |
 | Agent says "no conozco Gaia" or "developer agent does not exist" | `settings.local.json` missing or mis-wired (npm surface) | Re-run `gaia install --channel npm`. In plugin surface, `/reload-plugins`. |
 | Same approved command emits a fresh `approval_id` on retry | Not a bug -- single-use per sub-agent invocation is intentional | Re-approve. Each blocked command produces its own approval; there is no batch grant. See `orchestrator-present-approval/SKILL.md` -> Rule 3. |
