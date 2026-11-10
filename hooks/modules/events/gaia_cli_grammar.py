@@ -174,7 +174,7 @@ OPTIONS = {
         '--channel --from-worktree --help --host --keep-tarball --no-global-link --pack-dest '
         '--quiet --ref --verbose --workspace -h -v'
     ),
-    'doctor': '--fix --help --json --workspace -h',
+    'doctor': '--channels --fix --help --json --target --workspace -h',
     'evidence': '--help -h',
     'evidence add': (
         '--ac --artifact-file --brief --created-by --gate --help --json --negative --task '

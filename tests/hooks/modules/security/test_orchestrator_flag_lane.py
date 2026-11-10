@@ -31,6 +31,7 @@ TRUSTED = "/trusted/node_modules/gaia/bin/gaia"
 # carry. The first three are signed operations; the others sweep or override.
 WITHHELD = {
     ("doctor",): {"--fix"},
+    ("migrate", "plan"): {"--db"},
     ("memory", "add"): {"--replace"},
     ("memory", "link"): {"--delete"},
     ("approvals", "reject"): {"--all"},
@@ -85,6 +86,9 @@ USED_TODAY = [
     "contract view --draft-id d",
     "contract view --harness-id h",
     "doctor --workspace me",
+    "doctor --channels --json --workspace /w",
+    "doctor --target 5.8.0-rc.2 --json",
+    "migrate plan --json",
     "evidence list --brief demo",
     "memory add --name x --type feedback --body-file - --project p",
     "memory append x --body-file -",

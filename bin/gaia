@@ -220,8 +220,12 @@ READ -- changes nothing. The orchestrator runs these itself.
                  row-level triage: subagent anomalies (episode_anomalies) and
                  the hook-log failures graded above `info`.
   doctor
-                 health checks, read-only. `doctor --fix` MUTATES and is NOT
-                 in this lane -- see `gaia doctor --help`.
+                 health checks, read-only. `--channels` is the install state
+                 per channel, `--target <version>` the steps to reach a version.
+                 `doctor --fix` MUTATES and is NOT in this lane.
+  migrate        plan
+                 the pending schema change and the backups on hand; `apply` and
+                 `restore` write and are not in this lane.
   status
                  workspace status: agents, hooks, contracts.
   history

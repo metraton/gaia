@@ -421,6 +421,9 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # ``doctor`` is read-only EXCEPT under --fix, which is why it also appears
     # in _READ_PHRASE_FORBIDDEN_FLAGS below (Design decision 4).
     ("doctor",),
+    # The orchestrator reads the store's pending change before it dispatches an
+    # install: bin/cli/migrate.py::plan_report opens the database read-only.
+    ("migrate", "plan"),
     ("now",),
     ("map",),
     ("signals",),
@@ -1173,6 +1176,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("notifications", "show"): _flags("", "--json"),
     ("notifications", "snooze"): _flags("--for --until", "--json"),
     ("lint", "comments"): _flags("--repo --head --base", "--json"),
+    ("migrate", "plan"): _flags("", "--json"),
     ("now",): _flags("", "--json"),
     ("open",): _flags("", "--line --json"),
     ("map",): _flags(""),
@@ -1222,7 +1226,7 @@ _FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
         ("approvals", "stats"), ("brief", "list"), ("context", "get"), ("context", "get-contract"),
         ("context", "scan"), ("context", "show"), ("contract", "proposals", "list"),
         ("contract", "validate"), ("contract", "view"), ("defects",), ("doctor",),
-        ("evidence", "list"), ("history",), ("lint", "comments"), ("memory", "add"),
+        ("evidence", "list"), ("history",), ("lint", "comments"), ("migrate", "plan"), ("memory", "add"),
         ("memory", "checkpoint"), ("memory", "conflicts"), ("memory", "declare"), ("memory", "get-relevant"),
         ("memory", "list"), ("memory", "stats"), ("metrics",), ("notifications", "add"),
         ("notifications", "list"), ("now",), ("plan", "list"), ("query",),
