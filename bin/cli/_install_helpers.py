@@ -129,12 +129,27 @@ def configure_opencode_plugin(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Register Gaia's packaged OpenCode plugin without touching ``.claude/``."""
+    """Register Gaia's packaged OpenCode plugin without touching ``.claude/``.
+
+    A Claude Code plugin-cache copy is refused: Claude Code deletes that folder 14 days after the next
+    plugin update, and OpenCode then fails at startup on the missing file.
+    """
+    from cli._install_state import cache_entry  # noqa: PLC0415
+
     pkg_root = plugin_root or _PACKAGE_ROOT
     config_root = _opencode_package_root(workspace, pkg_root)
     plugin_path = config_root / "opencode" / "plugin.ts"
     policy_path = pkg_root / "opencode" / "agent-policy.json"
     config_path = workspace / "opencode.json"
+    cached = cache_entry(config_root)
+    if cached is not None:
+        return _result(
+            "error",
+            config_path,
+            f"this gaia runs from the Claude Code plugin cache ({config_root}), which Claude Code removes "
+            f"after the next plugin update; install the package in {workspace} (`npm install "
+            f"@jaguilar87/gaia@{cached[1]}`) and run its own `npx gaia install --channel opencode`",
+        )
     if not plugin_path.is_file():
         return _result("error", config_path, f"OpenCode plugin not found: {plugin_path}")
     try:
@@ -193,7 +208,10 @@ def configure_opencode_plugin(
     desired = dict(existing)
     def _is_gaia_opencode_plugin(item: str) -> bool:
         normalized = item.replace("\\", "/")
-        return item == entry or normalized.endswith("/@jaguilar87/gaia/opencode/plugin.ts")
+        if not normalized.endswith("/opencode/plugin.ts"):
+            return False
+        return (item == entry or normalized.endswith("/@jaguilar87/gaia/opencode/plugin.ts")
+                or cache_entry(normalized) is not None)
 
     foreign_plugins = [item for item in plugins if not _is_gaia_opencode_plugin(item)]
     desired["plugin"] = [*foreign_plugins, entry]
