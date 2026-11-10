@@ -13,8 +13,8 @@ on:
 # complete runs between 06:24 and 09:17 on 2026-07-24 from stacked pushes), and
 # every superseded run was spending the whole matrix on a commit already
 # replaced. Cancelling in progress keeps only the run whose result can matter.
-# A release-branch push carries its commit in the group, so no merge there is superseded.
 concurrency:
+  # A release-branch push carries its commit in the group, so no merge there is superseded.
   group: ci-${{ github.ref }}${{ startsWith(github.ref, 'refs/heads/release/') && format('-{0}', github.sha) || '' }}
   cancel-in-progress: true
 
