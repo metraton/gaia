@@ -81,13 +81,12 @@ def test_kernel_carries_the_scope_chain_and_none_of_the_users_rows():
     _seed_rows()
     kernel = build_memory_block({"workspace": "me", "dispatch_project": "gaia"})
     assert kernel.splitlines() == [
-        "# Scope preferences: me > tools > gaia (1 of 1)",
+        "# Scope preferences: me > tools > gaia (1)",
         '  "Reports: UTC only."  scope=workspace  ref=memory:me/decision_me_ws_rule',
         "",
         "# Scope memory: me > tools > gaia",
         "facts 1, lessons 1, other notes 1 — not preloaded: `gaia memory search '<term>' --workspace me`; "
-        "`gaia memory show <slug>`; this project's, bodies whole: "
-        "`gaia memory get-relevant --initiative gaia --sections anchor`",
+        "`gaia memory show <slug> --workspace me`",
     ]
     assert "memory:user/" not in kernel
     assert "close the probe" not in kernel

@@ -66,9 +66,8 @@ def test_project_notes_are_counted_with_the_verbs_that_read_them_and_never_liste
     kernel = _kernel(db, "alpha (/work/alpha)")
 
     assert (
-        f"{MEMORY_HEADING}: me > alpha (/work/alpha)\nother notes 2 — not preloaded: `gaia memory search '<term>' --workspace me`; "
-        "`gaia memory show <slug>`; this project's, bodies whole: "
-        "`gaia memory get-relevant --initiative alpha --sections anchor`\n"
+        f"{MEMORY_HEADING}: me > alpha (/work/alpha)\nother notes 2 — not preloaded: "
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug> --workspace me`\n"
     ) in kernel
     assert "atom_alpha_login_sso" not in kernel and "the full body" not in kernel
 

@@ -44,10 +44,12 @@ agent's .md frontmatter and spawns the subagent with:
     that frontmatter's skills: list. No Gaia hook performs this load.
         |
 [subagent_start.py] claims the born row, injects the dispatch KERNEL
-(# Your Contract incl. can_read/can_write menu, # Scope memory,
-# Project context, # Standing notes, # Environment, # Your CLI). # Project context carries the
-dispatch project's can_read sections: whole when they fit, else one get-contract pointer per
-section, else a single count line; the agent pulls what the block only points at on demand.
+(# Your Contract incl. can_read/can_write menu, # Scope preferences, # Scope memory,
+# Project context, # Environment, # Your CLI). # Scope preferences lists the scope's
+preferences whole and # Scope memory is one line counting its facts, lessons and notes.
+# Project context carries the dispatch project's can_read sections: whole when they fit, else
+one get-contract pointer per section, else a single line naming them; the agent pulls what
+the kernel only counts or points at on demand.
         |
 Agent executes, closing its agent_contract_handoffs row with
 `gaia contract finalize`; the orchestrator reads that row.
