@@ -356,7 +356,7 @@ def _preview(args) -> int:
         details = helper_res.get("details", "")
         if action == "noop" and not verbose:
             return
-        icon = {"created": "+", "updated": "~", "noop": "=",
+        icon = {"created": "+", "updated": "~", "migrated": "~", "noop": "=",
                 "skipped": "-", "error": "!"}.get(action, "?")
         print(f"  [{icon}] {name}: {details}")
 

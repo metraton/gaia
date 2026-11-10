@@ -255,6 +255,16 @@ def test_bare_install_merges_5x_data_dirs_and_drops_the_grant_cache(tmp_path):
         assert not (workspace / ".claude" / gone).exists(), gone
 
 
+@pytest.mark.parametrize("command,heading", (("gaia install", "Installing Gaia"), ("gaia update", "Updating Gaia")))
+def test_the_header_says_what_the_command_does(capsys, command, heading):
+    from cli import install
+
+    install._print_header(command=command, postinstall=False, quiet=False, workspace=Path("/w"))
+
+    out = capsys.readouterr().out
+    assert heading in out and "first time" not in out
+
+
 def test_a_conflicting_legacy_file_is_kept_and_its_dir_survives(tmp_path):
     from cli import _legacy_cleanup
 
@@ -266,6 +276,8 @@ def test_a_conflicting_legacy_file_is_kept_and_its_dir_survives(tmp_path):
     result = _legacy_cleanup.merge_legacy_data_dirs(workspace, data)
 
     assert "1 conflicting" in result["details"]
+    assert ".claude/logs/hooks.log" in result["details"].replace("\\", "/")
+    assert "no longer read" in result["details"]
     assert (workspace / ".claude" / "logs" / "hooks.log").read_text() == "5.4 log\n"
     assert (data / "logs" / "hooks.log").read_text() == "current log\n"
     assert _legacy_cleanup.merge_legacy_data_dirs(workspace, data)["action"] == "migrated"

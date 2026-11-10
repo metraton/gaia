@@ -46,7 +46,8 @@ def merge_legacy_data_dirs(workspace: Path, data_dir: Path) -> dict:
     A file whose destination already holds different bytes stays where it is,
     so its legacy dir survives non-empty and nothing is lost.
     """
-    moved = kept = 0
+    moved = 0
+    kept: list[str] = []
     for legacy, current in LEGACY_DATA_DIRS.items():
         source_root = workspace / legacy
         if not source_root.is_dir() or source_root.is_symlink():
@@ -57,7 +58,7 @@ def merge_legacy_data_dirs(workspace: Path, data_dir: Path) -> dict:
                 if filecmp.cmp(source, target, shallow=False):
                     source.unlink()
                 else:
-                    kept += 1
+                    kept.append(source.relative_to(workspace).as_posix())
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(target))
@@ -67,7 +68,8 @@ def merge_legacy_data_dirs(workspace: Path, data_dir: Path) -> dict:
         return {"action": "noop", "details": "no 5.x data dirs in the workspace"}
     details = f"merged {moved} file(s) into {data_dir}"
     if kept:
-        details += f"; {kept} conflicting file(s) left in place"
+        details += (f"; {len(kept)} conflicting file(s) left in place: {', '.join(kept)}. Gaia reads its own copy in "
+                    f"{data_dir} and the 5.x file is no longer read; remove it once you have checked it")
     return {"action": "migrated", "details": details}
 
 
