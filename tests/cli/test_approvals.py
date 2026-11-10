@@ -127,6 +127,19 @@ def _make_v12_schema(con):
         CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
         BEFORE DELETE ON approval_events
         BEGIN SELECT RAISE(ABORT, 'approval_events is append-only'); END;
+        CREATE TABLE IF NOT EXISTS approval_grants (
+            approval_id      TEXT PRIMARY KEY,
+            scope            TEXT,
+            source           TEXT,
+            status           TEXT,
+            session_id       TEXT,
+            agent_id         TEXT,
+            command_set_json TEXT,
+            next_index       INTEGER,
+            created_at       TEXT,
+            expires_at       TEXT,
+            revoked_at       TEXT
+        );
     """)
 
 
