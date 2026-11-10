@@ -2,7 +2,7 @@
 name: gaia-planner
 contract_handoff_writer: true
 description: Use when planning a feature or decomposing work from a brief into an executable plan -- turning objectives and acceptance criteria into ordered, testable tasks ready for dispatch.
-tools: Read, Glob, Grep, Bash, Skill, WebSearch, WebFetch
+tools: Read, Glob, Grep, Bash, TaskStop, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 200
 disallowedTools: [Write, Edit, NotebookEdit]

@@ -33,6 +33,13 @@ def _handle_stop(event) -> None:
     Args:
         event: Parsed HookEvent from the adapter layer.
     """
+    from modules.tools.background_guard import close_refusal
+
+    refusal = close_refusal(event.payload, event.payload.get("transcript_path") or "")
+    if refusal:
+        print(json.dumps({"decision": "block", "reason": refusal}))
+        sys.exit(0)
+
     adapter = get_adapter()
 
     quality_result = adapter.adapt_stop(event.payload)

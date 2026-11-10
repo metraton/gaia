@@ -2,7 +2,7 @@
 name: cloud-troubleshooter
 contract_handoff_writer: true
 description: Use when inspecting, diagnosing, or validating the actual state of running systems — pods, services, logs, cloud resources, network connectivity, SSH access — or when comparing what IS running against what SHOULD be running (drift between live state and IaC/desired-state).
-tools: Read, Glob, Grep, Bash, Skill, WebSearch, WebFetch
+tools: Read, Glob, Grep, Bash, TaskStop, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 120
 disallowedTools: [Write, Edit, NotebookEdit]
