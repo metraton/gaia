@@ -257,15 +257,36 @@ def sealed_files(command: str, cwd: str) -> list[dict]:
     return list(seals.values())
 
 
+def _seal_now(path: str) -> dict | None:
+    try:
+        return _file_seal(path)
+    except (CommandSetValidationError, OSError):
+        return None
+
+
+def changed_files(item: dict) -> list[str]:
+    """The paths sealed in ``item`` that no longer seal exactly as they did when signed."""
+    return [seal["path"] for seal in item.get("files") or () if _seal_now(seal["path"]) != seal]
+
+
 def files_unchanged(item: dict) -> bool:
     """True when every file sealed in ``item`` still seals exactly as it did when signed."""
-    for seal in item.get("files") or ():
-        try:
-            if _file_seal(seal["path"]) != seal:
-                return False
-        except (CommandSetValidationError, OSError):
-            return False
-    return True
+    return not changed_files(item)
+
+
+def reseal_protected_files(item: dict) -> list[str]:
+    """Re-seal in place each changed file of ``item`` whose resolved path only a signed call can write; return those paths."""
+    _hooks_importable()
+    from modules.security.protected_paths import is_protected_hook_path
+
+    resealed: list[str] = []
+    for position, seal in enumerate(item.get("files") or ()):
+        now = _seal_now(seal["path"])
+        if now is None or now == seal or not is_protected_hook_path(os.path.realpath(seal["path"])):
+            continue
+        item["files"][position] = now
+        resealed.append(seal["path"])
+    return resealed
 
 
 def command_fingerprint(command: str) -> str:
@@ -279,6 +300,12 @@ def request_fingerprint(commands: Iterable[str]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _hooks_importable() -> None:
+    hooks_dir = str(Path(__file__).resolve().parents[2] / "hooks")
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+
+
 def validate_request_set(
     commands: list[str], *, cwd: str | None = None, cwds: list[str] | None = None,
 ) -> list[dict]:
@@ -290,10 +317,7 @@ def validate_request_set(
     if not isinstance(commands, list) or len(commands) < 1:
         raise CommandSetValidationError("COMMAND_SET requires at least one command")
 
-    hooks_dir = str(Path(__file__).resolve().parents[2] / "hooks")
-    if hooks_dir not in sys.path:
-        sys.path.insert(0, hooks_dir)
-
+    _hooks_importable()
     from modules.security.blocked_commands import is_blocked_command
     from modules.security.flag_classifiers import (
         OUTCOME_BLOCKED,
