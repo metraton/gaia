@@ -55,6 +55,7 @@ def start_session(start: SessionStart) -> StartOutcome:
         "## Data home": data_home_notice,
         "## Workspace": workspace_notice,
         "## Install integrity": _install_integrity_notice(),
+        "## Temp space": _temp_space_notice(),
         "## Leftovers": _leftovers_notice(start.workspace_dir),
     }
     shown = {title: text for title, text in notices.items() if text}
@@ -90,9 +91,8 @@ def run_start_maintenance(start: SessionStart) -> None:
     """Registry, approval, dead-turn, backup, draft and worktree upkeep; each step fails alone.
 
     Safe to repeat for the same session: registration replaces its entry and
-    every other step acts only on what is stale. The worktree sweep runs after
-    registration so this session's fresh heartbeat already protects the
-    worktrees it owns.
+    every other step acts only on what is stale. The leftover sweep starts
+    after registration so this session's entry already protects what it owns.
     """
     from modules.session.session_registry import SessionRegistryError, register_session
 
@@ -167,15 +167,11 @@ def run_start_maintenance(start: SessionStart) -> None:
         logger.debug("gc_contract_drafts failed (non-fatal): %s", exc)
 
     try:
-        from gaia.retention.worktree_collector import sweep_repo_worktrees
-        collected = sweep_repo_worktrees(start.workspace_dir)
-        if collected:
-            logger.info(
-                "worktree_collector: collected %d abandoned worktree(s) at SessionStart",
-                len(collected),
-            )
+        from gaia.retention.session_sweep import spawn
+        if spawn(start.workspace_dir):
+            logger.info("session_sweep: started detached at SessionStart")
     except Exception as exc:
-        logger.debug("sweep_repo_worktrees failed (non-fatal): %s", exc)
+        logger.debug("session_sweep spawn failed (non-fatal): %s", exc)
 
     try:
         from gaia import conclusions, signals
@@ -193,6 +189,15 @@ def _install_integrity_notice() -> str:
         return integrity_notice(installed_root())
     except Exception as exc:
         logger.debug("install integrity notice failed (non-fatal): %s", exc)
+        return ""
+
+
+def _temp_space_notice() -> str:
+    try:
+        from gaia.temp_volume import notice_line
+        return notice_line()
+    except Exception as exc:
+        logger.debug("temp space notice failed (non-fatal): %s", exc)
         return ""
 
 

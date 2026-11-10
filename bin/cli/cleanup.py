@@ -399,11 +399,12 @@ def _prune_worktrees(root: Path, label: str, dry_run: bool) -> list:
     closed on a non-git ``root`` or any walking error.
     """
     try:
+        from gaia.retention.session_sweep import sweep_repos
         from gaia.retention.worktree_collector import sweep_repo_worktrees
     except ImportError:
         return []
 
-    results = sweep_repo_worktrees(root, dry_run=dry_run)
+    results = [r for repo in sweep_repos(root) for r in sweep_repo_worktrees(repo, dry_run=dry_run)]
 
     actions = []
     for r in results:
@@ -1085,6 +1086,8 @@ def register(subparsers):
             "them (per .claude/gaia-manifest.json, or without a manifest a settings.json\n"
             "holding only Gaia hooks); a file you wrote is kept byte for byte.\n"
             "--prune / --retain: run data retention only (no file/symlink removal).\n"
+            "--sweep: run the sweep SessionStart starts on its own, from this folder;\n"
+            "  with --dry-run it prints each item it would remove or refuse, and why.\n"
             "--dry-run: print what would change without modifying anything.\n"
         ),
     )
@@ -1099,6 +1102,12 @@ def register(subparsers):
         action="store_true",
         default=False,
         help="Alias for --prune",
+    )
+    p.add_argument(
+        "--sweep",
+        action="store_true",
+        default=False,
+        help="Run the session-start sweep now: Gaia's tmp, scratch and worktrees, by owner",
     )
     p.add_argument(
         "--dry-run",
@@ -1116,8 +1125,48 @@ def register(subparsers):
     return p
 
 
+def _mib(size) -> str:
+    return f"{int(size or 0) / 2**20:.1f} MiB"
+
+
+def cmd_sweep(dry_run: bool, as_json: bool) -> int:
+    """Print or run the session-start sweep from the current folder; 1 when another sweep holds the claim."""
+    from gaia.retention.session_sweep import plan, run
+
+    start = Path.cwd()
+    if dry_run:
+        items = [i for i in plan(start) if i["verdict"] != "keep"]
+        kept = None
+    else:
+        report = run(start)
+        if report is None:
+            print("Another sweep is running; nothing done.", file=sys.stderr)
+            return 1
+        items = [{**i, "verdict": "remove"} for i in report["removed"]] + report["refused"]
+        kept = report["failed"]
+    if as_json:
+        print(json.dumps({"dry_run": dry_run, "items": items, "failed": kept or []}, indent=2))
+        return 0
+    verb = "WOULD REMOVE" if dry_run else "REMOVED"
+    for item in items:
+        word = verb if item["verdict"] == "remove" else "REFUSED"
+        print(f"{word:<12} {item['kind']:<8} {_mib(item['size']):>11}  {item['path']}  -- {item['reason']}")
+    for item in kept or []:
+        print(f"{'FAILED':<12} {item['kind']:<8} {_mib(item['size']):>11}  {item['path']}  -- {item['error']}")
+    gone = [i for i in items if i["verdict"] == "remove"]
+    refused = [i for i in items if i["verdict"] == "refuse"]
+    print(
+        f"\n{'Would free' if dry_run else 'Freed'} {_mib(sum(int(i['size'] or 0) for i in gone))} "
+        f"in {len(gone)} item(s); refused {len(refused)} item(s), "
+        f"{_mib(sum(int(i['size'] or 0) for i in refused))}."
+    )
+    return 0
+
+
 def cmd_cleanup(args) -> int:
     """Execute the cleanup subcommand."""
+    if getattr(args, "sweep", False):
+        return cmd_sweep(getattr(args, "dry_run", False), getattr(args, "json", False))
     root = _find_project_root()
     prune_only = getattr(args, "prune", False) or getattr(args, "retain", False)
     dry_run = getattr(args, "dry_run", False)

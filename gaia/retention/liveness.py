@@ -47,9 +47,11 @@ Public surface:
 
 from __future__ import annotations
 
+import json
 import time
+from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, Set
 
 from gaia.retention.infra import _ro_db_connect, resolve_grace_hours
 
@@ -188,3 +190,67 @@ def session_dead_past_grace(
     hours = resolve_grace_hours() if grace_hours is None else grace_hours
     current = time.time() if now is None else now
     return (current - mtime) >= hours * 3600
+
+
+def registered_sessions() -> Optional[Set[str]]:
+    """Session ids the registry holds, or None when the file is missing, unreadable or malformed."""
+    try:
+        from hooks.modules.session.session_registry import _get_registry_path
+        data = json.loads(_get_registry_path().read_text(encoding="utf-8"))
+    except (ImportError, OSError, ValueError):
+        return None
+    sessions = data.get("sessions") if isinstance(data, dict) else None
+    return set(sessions) if isinstance(sessions, dict) else None
+
+
+def _last_activity(session_id: str) -> Optional[float]:
+    con = _ro_db_connect()
+    if con is None:
+        return None
+    try:
+        row = con.execute(
+            "select max(created_at) from agent_contract_handoffs where session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+    finally:
+        con.close()
+
+
+def session_ended(
+    session_id: Optional[str],
+    *,
+    grace_hours: Optional[int] = None,
+    now: Optional[float] = None,
+    registered: Optional[Set[str]] = None,
+) -> Optional[bool]:
+    """True when *session_id* left a whole registry and the store saw nothing of it for the grace window; False when registered or recent; None when unreadable."""
+    if not session_id:
+        return None
+    sessions = registered_sessions() if registered is None else registered
+    if sessions is None:
+        return None
+    if session_id in sessions:
+        return False
+    last = _last_activity(session_id)
+    if last is None:
+        return None
+    hours = resolve_grace_hours() if grace_hours is None else grace_hours
+    current = time.time() if now is None else now
+    return (current - last) >= hours * 3600
+
+
+def session_ended_for_contract(
+    contract_id: str,
+    *,
+    grace_hours: Optional[int] = None,
+    now: Optional[float] = None,
+    registered: Optional[Set[str]] = None,
+) -> Optional[bool]:
+    """``session_ended`` for the session recorded on *contract_id*'s row."""
+    return session_ended(
+        _session_id_for_contract(contract_id),
+        grace_hours=grace_hours, now=now, registered=registered,
+    )

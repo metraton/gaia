@@ -12,6 +12,7 @@ owner ended:
 
   * TERMINAL (``TERMINAL_PLAN_STATUSES``) -- quiet for the grace window
     (``GAIA_FS_RETENTION_GRACE_HOURS``, 24h);
+  * any other state whose session ended (``liveness.session_ended``) -- quiet for the grace window;
   * PAUSED (APPROVAL_REQUEST, BLOCKED, NEEDS_INPUT, NEEDS_VERIFICATION) -- the
     turn can resume under the same id, so never on state alone: its session
     reads DEAD past the grace window, or, when the caller passes
@@ -52,7 +53,10 @@ from gaia.retention.infra import (
 )
 from gaia.retention.liveness import (
     SessionLiveness,
+    _session_id_for_contract,
+    registered_sessions,
     session_dead_past_grace,
+    session_ended_for_contract,
     session_liveness_for_contract,
 )
 from gaia.state import CLOSED_TURN_PLAN_STATUSES, TERMINAL_PLAN_STATUSES
@@ -228,6 +232,22 @@ def collectable_turn_scoped(
 
     ``stale_days`` None turns the two age lanes off.
     """
+    return [
+        {"action": v["action"], "path": v["path"], "label": label, "reason": v["reason"]}
+        for v in judge_turn_scoped(root, grace_hours=grace_hours, now=now, stale_days=stale_days)
+        if v["verdict"] == "remove"
+    ]
+
+
+def judge_turn_scoped(
+    root: Path,
+    *,
+    grace_hours: Optional[int] = None,
+    now: Optional[float] = None,
+    stale_days: Optional[int] = None,
+    spare_live_sessions: bool = False,
+) -> List[Dict[str, object]]:
+    """Each entry under *root* as ``remove``, ``keep`` or ``refuse`` (its owner cannot be read), with the reason."""
     hours = resolve_grace_hours() if grace_hours is None else grace_hours
     current = time.time() if now is None else now
     cutoff = current - hours * 3600
@@ -245,58 +265,84 @@ def collectable_turn_scoped(
     if states is None:
         return []
     held = _open_paths()
+    registered = registered_sessions()
 
     out: List[Dict[str, object]] = []
     for entry in entries:
         known = {cid: states[cid] for cid in owners[entry.name] if cid in states}
+        refusal = None
         try:
             mtime = entry.stat().st_mtime
             if known:
-                reasons, aged = _owned_reasons(entry, mtime, known, hours, current, cutoff, stale_cutoff, stale_days)
+                reasons, aged, refusal = _owned_reasons(
+                    entry, mtime, known, hours, current, cutoff, stale_cutoff, stale_days,
+                    registered, spare_live_sessions,
+                )
             elif stale_cutoff is not None and _newest_mtime(entry) < stale_cutoff:
                 reasons, aged = [f"no owning contract on record, untouched {stale_days}d"], True
             else:
-                continue
+                reasons, aged, refusal = [], False, "no owning contract on record"
         except OSError:
             continue
-        if not reasons or (held is None and aged) or (held and _holds_open(entry, held)):
-            continue
+        if held and _holds_open(entry, held):
+            verdict, reason = "keep", "a running process holds a file or its cwd inside"
+        elif reasons and not (held is None and aged):
+            verdict, reason = "remove", "; ".join(reasons)
+        elif refusal:
+            verdict, reason = "refuse", refusal
+        else:
+            verdict, reason = "keep", "an owner may still be running"
         out.append({
+            "verdict": verdict,
             "action": "delete-dir" if entry.is_dir() else "delete-file",
             "path": str(entry),
-            "label": label,
-            "reason": "; ".join(reasons),
+            "reason": reason,
         })
     return out
 
 
-def _owned_reasons(entry, mtime, known, hours, current, cutoff, stale_cutoff, stale_days):
-    """``(reasons, aged)`` when every owner in *known* ended, else ``([], False)``; aged marks a stale-window lane."""
+def _owned_reasons(entry, mtime, known, hours, current, cutoff, stale_cutoff, stale_days,
+                   registered=None, spare_live=False):
+    """``(reasons, aged, refusal)`` when every owner in *known* ended, else ``([], False, refusal-or-None)``; aged marks a stale-window lane."""
     reasons: List[str] = []
     aged = False
     for cid, state in sorted(known.items()):
+        ended = None if state in _CLOSED_STATES else session_ended_for_contract(
+            cid, grace_hours=hours, now=current, registered=registered,
+        )
         if state in _CLOSED_STATES:
-            if mtime >= cutoff:
-                return [], False
+            live = spare_live and _session_id_for_contract(cid) in (registered or set())
+            if mtime >= cutoff or live:
+                return [], False, None
             reasons.append(f"owning contract {cid} reached a terminal verdict, quiet {hours}h")
+        elif ended:
+            if mtime >= cutoff:
+                return [], False, None
+            reasons.append(f"owning contract {cid} ({state}) ran in a session that ended, quiet {hours}h")
         elif state in _PAUSED_STATES:
             liveness = session_liveness_for_contract(cid, now=current)
             if liveness == SessionLiveness.DEAD:
                 if not session_dead_past_grace(cid, mtime, grace_hours=hours, now=current):
-                    return [], False
+                    return [], False, None
                 reasons.append(f"owning contract {cid} paused ({state}) but its session is gone, quiet {hours}h")
             elif liveness == SessionLiveness.UNKNOWN and stale_cutoff is not None:
                 if _newest_mtime(entry) >= stale_cutoff:
-                    return [], False
+                    return [], False, _unreadable(cid, state, ended)
                 aged = True
                 reasons.append(
                     f"owning contract {cid} paused ({state}), its session cannot be read, untouched {stale_days}d"
                 )
             else:
-                return [], False
+                return [], False, _unreadable(cid, state, ended)
         else:
-            return [], False
-    return reasons, aged
+            return [], False, _unreadable(cid, state, ended)
+    return reasons, aged, None
+
+
+def _unreadable(cid: str, state: str, ended: Optional[bool]) -> Optional[str]:
+    if ended is None:
+        return f"owning contract {cid} ({state}): its session cannot be read"
+    return None
 
 
 def collectable_rejected_turns(

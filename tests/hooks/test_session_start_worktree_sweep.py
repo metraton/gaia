@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SessionStart's automatic worktree sweep (agent-protocol's missing trigger,
-gaia.retention.worktree_collector.sweep_repo_worktrees).
+gaia.retention.session_sweep, started detached, so each test waits for it).
 
 Drives the REAL hooks/session_start.py the way Claude Code does -- pipe a
 SessionStart event on stdin, in a subprocess, with GAIA_DATA_DIR/HOME
@@ -23,6 +23,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,9 @@ def test_abandoned_worktree_collected_no_manual_invocation(sandbox):
     result = _run_session_start(repo, env, "sess-live-unrelated")
     assert result.returncode == 0, f"hook failed: {result.stderr[-800:]!r}"
 
+    deadline = time.time() + 30
+    while wt_abandoned.exists() and time.time() < deadline:
+        time.sleep(0.2)
     assert not wt_abandoned.exists(), (
         "the abandoned worktree must be collected by the SessionStart hook "
         "alone, with no manual invocation"
@@ -148,6 +152,11 @@ def test_live_session_worktree_never_touched(sandbox):
     result = _run_session_start(repo, env, "sess-alive-1")
     assert result.returncode == 0, f"hook failed: {result.stderr[-800:]!r}"
 
+    report = data_dir / "session-sweep.json"
+    deadline = time.time() + 30
+    while not report.exists() and time.time() < deadline:
+        time.sleep(0.2)
+    assert report.exists(), "the detached sweep never reported"
     assert wt_alive.exists(), (
         "a worktree whose owning session is alive right now must never be "
         "touched by the automatic sweep"

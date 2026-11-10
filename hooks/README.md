@@ -18,7 +18,9 @@ Session opens
         |  Registers session in heartbeat-based session_registry
         |  Sweeps stale registry entries, marks expired approval grant rows
         |  EXPIRED in gaia.db (no grant files exist on disk), snapshots
-        |  gaia.db at most once per 24 h, sweeps idle worktrees;
+        |  gaia.db at most once per 24 h, starts the detached leftover
+        |  sweep (gaia.retention.session_sweep: Gaia tmp, scratch and
+        |  worktrees of ended owners), warns when temp space is low;
         |  reaps dead DISPATCHED turns of sessions the registry no longer
         |  holds live (session_lifecycle._reap_dead_turns);
         |  on the plugin channel, migrates a database that is behind
