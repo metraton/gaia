@@ -13,10 +13,14 @@ from typing import Any, Optional
 DECISIONS = ("accepted", "dismissed")
 
 
-def _hook_parsers():
+def _hooks_importable() -> None:
     hooks_root = str(Path(__file__).resolve().parents[2] / "hooks")
     if hooks_root not in sys.path:
         sys.path.insert(0, hooks_root)
+
+
+def _hook_parsers():
+    _hooks_importable()
     from modules.agents.response_contract import parse_memory_delta
     from modules.context.context_writer import proposed_entries
 
@@ -74,17 +78,62 @@ def _split_memory(envelope: Any) -> tuple:
     return accepted, refused
 
 
-def refusal_message(envelope: Any) -> Optional[str]:
-    """The write-time refusal for an envelope holding a proposal `gaia memory add` would reject, or None."""
+_MEMORY_DELTA_SHAPE = (
+    'shape: {"version": 1, "proposals": [{"operation": "create", "create": {...}}]} -- each proposal '
+    'names its "operation" (create, append, reclassify, link) and carries an object under that same key'
+)
+_UPDATE_CONTRACTS_FIX = (
+    'fix: each entry is {"contract": "<section>", "payload": {<keys to add or update>}} -- the keys are '
+    'literally "contract" and "payload"; replace update_contracts with a corrected value '
+    "(gaia contract set update_contracts '<json array>')"
+)
+
+
+def _memory_refusal(envelope: dict) -> list:
+    """The refusal lines for a memory_delta the close would drop, whole or in part."""
     from gaia.store.writer import VALID_MEMORY_TYPES
 
+    parse_memory_delta, _entries = _hook_parsers()
+    malformed = parse_memory_delta(
+        "", parsed_contract={"memory_delta": envelope.get("memory_delta")}).warnings
     _accepted, refused = _split_memory(envelope)
-    if not refused:
-        return None
-    lines = [f"memory_delta refused, {_refusal(item, reason)}" for item, reason in refused]
-    lines.append(f"accepted types: {', '.join(VALID_MEMORY_TYPES)}")
+    if not (malformed or refused):
+        return []
+    lines = [f"memory_delta refused, {warning}: it would record nothing" for warning in malformed]
+    lines += [f"memory_delta refused, {_refusal(item, reason)}" for item, reason in refused]
+    if malformed:
+        lines.append(_MEMORY_DELTA_SHAPE)
+    if refused:
+        lines.append(f"accepted types: {', '.join(VALID_MEMORY_TYPES)}")
     lines.append("fix: replace memory_delta with a corrected value (gaia contract set memory_delta '<json>')")
-    return "\n".join(lines)
+    return lines
+
+
+def _context_refusal(clause: Any) -> list:
+    """The refusal lines for an update_contracts clause the close would drop, whole or in part."""
+    _hooks_importable()
+    from modules.agents.contract_validator import update_contracts_entry_problem
+    from modules.context.context_writer import _parse_clause
+
+    _entries, _note, errors = _parse_clause(clause)
+    if not errors:
+        return []
+    lines = [f"refused at write -- {error}" for error in errors]
+    if isinstance(clause, list):
+        problems = (
+            (index, update_contracts_entry_problem(entry)) for index, entry in enumerate(clause)
+        )
+        lines += [f"update_contracts[{index}] {problem}" for index, problem in problems if problem]
+    lines.append(_UPDATE_CONTRACTS_FIX)
+    return lines
+
+
+def refusal_message(envelope: Any) -> Optional[str]:
+    """The write-time refusal for an envelope whose memory_delta or update_contracts the close would drop, or None."""
+    if not isinstance(envelope, dict):
+        return None
+    lines = _memory_refusal(envelope) + _context_refusal(envelope.get("update_contracts"))
+    return "\n".join(lines) or None
 
 
 def extract_proposals(envelope: Any) -> list:
