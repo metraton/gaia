@@ -191,8 +191,8 @@ shows the gate where it reads and writes runs free; reach for these first
   or handing it to a program as input (`jq`, a script) is refused; regenerate
   the data into your scratch entry instead (cases `grep-inspects-host-tool-output`,
   `jq-transforms-host-tool-output`).
-- Request a signature in natural words: `gaia approvals request`,
-  `request-set` and `request-file-write` store their words, so a path inside an
+- Request a signature in natural words: `gaia approvals request-set` and
+  `request-file-write` store their words, so a path inside an
   installed Gaia named in a phrase or in `--command` is data (case
   `request-set-names-install-path`).
 - Keep a Python probe's argv literal: names bound once to literals and passed

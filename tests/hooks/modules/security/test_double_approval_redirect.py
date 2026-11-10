@@ -1,27 +1,9 @@
 #!/usr/bin/env python3
-"""Reproduction + regression test for the double-approval grant bug.
+"""Redirect variants share a semantic signature, yet a grant and a pending serve only the bytes they sealed.
 
-Root cause (investigated in-session): the approval signature bound shell
-redirect tokens (`2>&1`, `> file`, `2> file`) into its identity. A T3 command
-blocked as `git push`, then retried as `git push 2>&1` (the agent appended a
-redirect), produced a DIFFERENT signature -- so:
-  * the active grant minted for the first form did NOT match the retry, and
-  * _find_pending_in_db() (byte-exact) did NOT see the existing pending,
-    minting a FRESH approval_id.
-The net effect: the user was asked to approve "the same command" twice.
-
-Fixes under test:
-  A -- analyze_command / tokenize_command strip redirect tokens, so
-       `git push` and `git push 2>&1` share one semantic signature.
-  B -- _find_pending_in_db uses the SAME semantic matcher as the consumption
-       path, so a semantically-matching retry REUSES the existing pending
-       instead of minting a new nonce.
-
-Policy under test (USER DECISION): the `-C <path>` / `--chdir` directory stays
-part of the signature (directory = intent). A SAME-path variant matches; a
-DIFFERENT-path variant does NOT.
-
-The DB / filesystem isolation fixtures mirror test_activation_db_bridge.py.
+``tokenize_command`` drops output redirects, so `git push` and `git push 2>&1`
+classify alike and `-C <path>` stays part of the signature. Authority is not
+decided there: the grant lookup and the pending reuse both compare bytes.
 """
 
 from __future__ import annotations
@@ -180,14 +162,22 @@ class TestRedirectNormalization:
         assert matches_approval_signature(sig, "git push | tee log") is False
 
 
-# ---------------------------------------------------------------------------
-# The reproduction: block 'git push 2>&1' -> approve -> retry 'git push'.
-# Asserts the active grant matches + is consumed, and NO new pending is minted.
-# ---------------------------------------------------------------------------
+def _blocked_id(command: str, session_id: str) -> str:
+    """Validate ``command`` as a subagent, assert it is denied, and return the approval_id it names."""
+    import re
 
-class TestDoubleApprovalReproduction:
-    def test_redirect_block_then_plain_retry_reuses_grant(self, db_and_store, monkeypatch):
-        import gaia.approvals.store as astore
+    from modules.tools.bash_validator import validate_bash_command
+
+    result = validate_bash_command(
+        command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
+    )
+    assert not result.allowed, result.reason
+    reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+    return re.search(r"approval_id:\s*(P-[\w-]+)", reason).group(1)
+
+
+class TestSignedBytesOnly:
+    def test_only_the_blocked_bytes_consume_the_grant(self, db_and_store, monkeypatch):
         import modules.tools.bash_validator as bash_validator
         from modules.tools.bash_validator import validate_bash_command
         from modules.security.approval_grants import activate_db_pending_by_id
@@ -195,101 +185,36 @@ class TestDoubleApprovalReproduction:
 
         # The comment gate measures the checkout under the cwd; this test is about grants.
         monkeypatch.setattr(bash_validator, "check_comment_push", lambda *a, **k: GateVerdict(True))
-
-        db_path, assert_con, store = db_and_store
         session_id = "test-dbl-session"
-        blocked_form = "git push 2>&1"   # what the agent first ran
-        retry_form = "git push"          # the redirect-stripped retry
+        signed = "git push 2>&1"
+        approval_id = _blocked_id(signed, session_id)
+        assert activate_db_pending_by_id(approval_id, current_session_id=session_id).success
 
-        # Step 1: block the redirect form -> DB REQUESTED row + approval_id.
-        result1 = validate_bash_command(
-            blocked_form, is_subagent=True, agent_type="gaia-system", session_id=session_id,
+        other_spelling = _blocked_id("git push", session_id)
+        retry = validate_bash_command(
+            signed, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
-        assert not result1.allowed, "T3 push must be blocked"
-        reason = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        import re
-        m = re.search(r"approval_id:\s*(P-[\w-]+)", reason)
-        assert m, f"no approval_id in deny reason: {reason}"
-        approval_id_1 = m.group(1)
+        replay = _blocked_id(signed, session_id)
 
-        pending = astore.get_pending(all_sessions=True, con=assert_con)
-        assert len(pending) == 1, f"exactly one pending expected, got {len(pending)}"
+        assert other_spelling != approval_id
+        assert retry.allowed and retry.consumed_approval_id == approval_id
+        assert replay not in (approval_id, other_spelling)
+        assert _blocked_id("git push 1>&2", session_id) != replay
+        assert _blocked_id(signed, session_id) == replay
 
-        # Step 2: user approves -> grant activated.
-        activation = activate_db_pending_by_id(
-            approval_id_1, current_session_id=session_id,
-        )
-        assert activation.success, f"activation failed: {activation.reason}"
-
-        # Step 3: retry with the redirect-STRIPPED form -> must be ALLOWED
-        # (active grant matches across the redirect difference -- Fix A).
-        result2 = validate_bash_command(
-            retry_form, is_subagent=True, agent_type="gaia-system", session_id=session_id,
-        )
-        assert result2.allowed, (
-            f"plain retry must match the grant minted for the redirect form, "
-            f"got: {result2.reason}"
-        )
-
-        # Step 4: grant is CONSUMED -- a second retry of the SAME operation no
-        # longer matches an active grant, so it re-blocks (replay protection).
-        from gaia.store.writer import check_db_semantic_grant
-        assert check_db_semantic_grant(retry_form, session_id=session_id) is None, (
-            "grant must be CONSUMED after the matching retry"
-        )
-
-        # Step 5: with the step-1 grant now consumed, re-blocking the operation
-        # mints ONE fresh pending; a SECOND block of a semantically-equal variant
-        # (different fd-dup redirect) must REUSE that pending, not mint a third.
-        #
-        # NOTE: we use fd-duplication redirects (`2>&1`, `1>&2`) here, not a
-        # trailing `> file`, to keep this reproduction independent of the
-        # trailing-redirect sanitizer path (covered separately by
-        # test_sanitizer_redirect_t3_evasion.py). fd-dups are never touched
-        # by the sanitizer and always reach the T3 classifier directly.
-        result_reblock_a = validate_bash_command(
-            "git push 2>&1", is_subagent=True, agent_type="gaia-system", session_id=session_id,
-        )
-        assert not result_reblock_a.allowed
-        reason_a = result_reblock_a.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        id_a = re.search(r"approval_id:\s*(P-[\w-]+)", reason_a).group(1)
-
-        result_reblock_b = validate_bash_command(
-            "git push 1>&2", is_subagent=True, agent_type="gaia-system", session_id=session_id,
-        )
-        assert not result_reblock_b.allowed
-        reason_b = result_reblock_b.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        id_b = re.search(r"approval_id:\s*(P-[\w-]+)", reason_b).group(1)
-
-        assert id_a == id_b, (
-            "Fix B: a semantically-equal re-block (different redirect) must REUSE "
-            f"the same pending nonce, not mint a new one. got {id_a} vs {id_b}"
-        )
-
-    def test_find_pending_in_db_semantic_reuse(self, db_and_store):
-        """Direct unit test of Fix B: _find_pending_in_db matches semantically."""
+    def test_find_pending_in_db_names_only_the_sealed_bytes(self, db_and_store):
         from modules.tools.bash_validator import _find_pending_in_db, _build_sealed_payload
         import gaia.approvals.store as astore
 
-        db_path, assert_con, store = db_and_store
         session_id = "test-dbl-session"
-
-        # Mint a pending whose stored exact_content carries a redirect.
         payload = _build_sealed_payload(
             "git push 2>&1", verb="push", category="MUTATIVE", agent_type="t",
             session_id=session_id,
         )
         approval_id = astore.insert_requested(payload, session_id=session_id)
 
-        # The redirect-stripped form must find the SAME pending semantically.
-        found = _find_pending_in_db(session_id, "git push", "t")
-        assert found == approval_id, (
-            f"semantic dedup must reuse pending {approval_id}, got {found}"
-        )
-        # A byte-exact match still works too.
         assert _find_pending_in_db(session_id, "git push 2>&1", "t") == approval_id
-
-        # A genuinely different command must NOT match.
+        assert _find_pending_in_db(session_id, "git push", "t") is None
         assert _find_pending_in_db(session_id, "git pull", "t") is None
 
 
@@ -340,6 +265,5 @@ class TestChdirPathPolicy:
         )
         approval_id = astore.insert_requested(payload, session_id=session_id)
 
-        # Same path (with a redirect) reuses; different path does not.
-        assert _find_pending_in_db(session_id, "git -C /repo/a push 2>&1", "t") == approval_id
+        assert _find_pending_in_db(session_id, "git -C /repo/a push", "t") == approval_id
         assert _find_pending_in_db(session_id, "git -C /repo/b push", "t") is None

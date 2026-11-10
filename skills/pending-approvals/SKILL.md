@@ -12,11 +12,16 @@ lookup and single-item decision takes the complete canonical
 
 ## Reading
 
-- `gaia approvals pending` -- the undecided requests, all sessions by default
-  (`--session <id>` narrows).
+- `gaia approvals pending` -- this session's live undecided requests, those
+  its dispatched agents made included, and a trailer counting what that scope
+  hides. `--all-sessions` adds other sessions' requests, `--include-stale` the
+  orphaned and expired ones, `--session <id>` scopes to another session; a
+  shell outside any host session sees every session's
+  (`bin/cli/approvals.py::cmd_pending`).
 - `gaia approvals list` -- grants with STATUS, GRANT_STATE and OUTCOME
-  columns, and the undecided requests beneath them with their STATE
-  (`--session`, `--orphans-only` for the orphaned ones, `--json`).
+  columns, and the undecided requests beneath them with their STATE, under
+  the same session scope (`--session`, `--all-sessions`, `--include-stale`,
+  `--orphans-only` for the orphaned ones in every session, `--json`).
 - `gaia approvals show <approval_id>` -- one approval: State, Outcome, Reason,
   Requester, Window, Directory, the grant and the sealed payload.
 - `gaia approvals history [<approval_id>]` -- recent approvals, or one

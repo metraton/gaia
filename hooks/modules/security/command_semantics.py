@@ -163,11 +163,11 @@ def tokenize_command(command: str) -> Tuple[str, ...]:
     """Tokenize a shell command safely, preserving quoted substrings.
 
     Shell redirect tokens (``2>&1``, ``>foo``, ``2>foo``, ``>> log``, ...) are
-    stripped here so they never bind into downstream semantic analysis or the
-    approval signature.  A redirect is a side-effect on the command's I/O, not
-    part of its identity: ``git push`` and ``git push 2>&1`` are the SAME
-    operation and MUST produce the same signature, so a grant minted for one
-    matches the other.  Pipes (``|``), chaining
+    stripped here so they never bind into downstream semantic analysis:
+    ``git push`` and ``git push 2>&1`` classify as the same operation.  The
+    tokens are therefore not what a grant authorises -- a redirect's target is
+    an effect of its own, and ``gaia.store.writer.check_db_semantic_grant``
+    compares the command bytes.  Pipes (``|``), chaining
     (``&&``, ``;``), and command substitution (``$(...)``) are NOT redirects --
     they change the command's identity and are deliberately left intact so a
     decorated form re-triggers T3.
