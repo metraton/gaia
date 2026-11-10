@@ -88,7 +88,7 @@ npm run pre-publish:validate
 
 **2 -- npm surface (what a registry publish would ship):**
 ```
-npm run gaia:verify-install:local          # pack + install into /tmp/gaia-sandbox-<ts>/ + harness
+npm run gaia:verify-install:local          # pack + install into a gaia-sandbox-<ts>-<pid>/ (location: "Path Defaults") + harness
 ```
 To poke at the sandbox interactively:
 ```
@@ -263,4 +263,4 @@ Publishing authenticates by npm trusted publishing (OIDC): npm exchanges the job
 |-----------|-----------|
 | "here" / "this session" / "this project" / live | Nearest `.claude/` ancestor of cwd with a Gaia marker, falling back to `$GAIA_WORKSPACE_PATH` when set; with neither, `bin/validate-sandbox.sh` fails and asks for `--workspace <install-folder>` |
 | "in project X" / specific path | Pass `--workspace /absolute/path/to/project` to `bin/validate-sandbox.sh` (bypasses auto-detect) |
-| Nothing specified (pre-release sandbox) | `/tmp/gaia-sandbox-<unix-ts>-<pid>/` (auto-cleanup unless `--stay`) |
+| Nothing specified (pre-release sandbox) | `gaia-sandbox-<unix-ts>-<pid>/` under the first of `$TMPDIR`, `/tmp`, `$HOME/.cache/gaia-sandbox` not mounted noexec (auto-cleanup unless `--stay`) |

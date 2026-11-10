@@ -17,7 +17,7 @@ Then the wire-up checklist (`SKILL.md` -> "Wire-up checklist").
 
 ## Mode: npm-sandbox
 
-Fastest path: packs, installs into `/tmp/gaia-sandbox-<ts>-<pid>/`, runs the harness, cleans up.
+Fastest path: packs, installs into `gaia-sandbox-<ts>-<pid>/` under `$TMPDIR`, else `/tmp`, else `$HOME/.cache/gaia-sandbox` (the first not mounted noexec, since npm's bin shims must execute; `bin/validate-sandbox.sh::select_sandbox_prefix`), runs the harness, cleans up.
 ```bash
 cd <repo>
 npm run gaia:verify-install:local
