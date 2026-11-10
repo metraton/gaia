@@ -6,10 +6,11 @@ this code expects, and is what ``gaia install``, ``gaia update`` and the lazy
 first-run bootstrap reach through ``gaia migrate``. Cross-platform: it uses
 Python's built-in ``sqlite3`` module, never the ``sqlite3`` CLI or ``bash``.
 
-Two actions:
+Three actions:
   (default) apply -- run the pending chain.
-  --plan          -- print the chain, what each step reaches, and what apply
+  --plan [--json] -- print the chain, what each step reaches, and what apply
                      would require; writes nothing, creates nothing.
+  --restore FILE  -- put a backup back, keeping the current DB as a backup.
 
 How a run treats the database:
   * Fresh (no file, or no tables): ``schema.sql`` builds it, the ledger is
@@ -46,6 +47,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -83,7 +85,7 @@ FRESH, SEALED, UNSEALED = "fresh", "sealed", "unsealed"
 AFTER_BACKUP_FLAG = "--apply-after-backup"
 
 BACKUPS_KEPT = 3
-_BACKUP_STAMP_RE = re.compile(r"-pre-migrate-(\d{8}T\d{12}Z)\.db\.gz$")
+_BACKUP_STAMP_RE = re.compile(r"-pre-(migrate|restore)-(\d{8}T\d{12}Z)\.db\.gz$")
 
 
 def _log(msg: str) -> None:
@@ -260,18 +262,22 @@ def _backup_dir() -> Path:
 
 
 def _backup(
-    con: sqlite3.Connection, ledger: int, now: datetime, census: dict[str, int]
+    con: sqlite3.Connection,
+    ledger: int,
+    now: datetime,
+    census: dict[str, int],
+    kind: str = "migrate",
 ) -> Path:
     """Write a compressed copy of the whole database beside it, proven to restore it.
 
     Raises sqlite3.DatabaseError unless the copy passes integrity_check and
-    holds exactly the rows *census* counted, so no chain runs without one.
-    Only the newest BACKUPS_KEPT compressed pre-migration backups are kept.
+    holds exactly the rows *census* counted, so nothing runs without one.
+    Only the newest BACKUPS_KEPT backups of the same *kind* are kept.
     Stdlib only: the engine runs without the gaia package beside it.
     """
     backup_dir = _backup_dir()
     target = backup_dir / (
-        f"{GAIA_DB.stem}-v{ledger}-pre-migrate-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db.gz"
+        f"{GAIA_DB.stem}-v{ledger}-pre-{kind}-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db.gz"
     )
     copy = target.with_name(f".{target.name}.copy")
     part = target.with_name(f".{target.name}.part")
@@ -300,18 +306,24 @@ def _backup(
     finally:
         for leftover in (copy, Path(f"{copy}-journal"), part):
             leftover.unlink(missing_ok=True)
-    _prune_backups(backup_dir)
+    _prune_backups(backup_dir, kind)
     return target
 
 
-def _prune_backups(backup_dir: Path) -> None:
-    """Delete all but the newest BACKUPS_KEPT compressed pre-migration backups, by the stamp in their name."""
+def _stamped_backups(backup_dir: Path, kind: str | None = None) -> list[Path]:
+    if not backup_dir.is_dir():
+        return []
     stamped = sorted(
-        (match.group(1), path)
-        for path in backup_dir.glob("*-pre-migrate-*.db.gz")
-        if (match := _BACKUP_STAMP_RE.search(path.name))
+        (match.group(2), path)
+        for path in backup_dir.glob("*-pre-*.db.gz")
+        if (match := _BACKUP_STAMP_RE.search(path.name)) and kind in (None, match.group(1))
     )
-    for _stamp_text, path in stamped[:-BACKUPS_KEPT]:
+    return [path for _stamp_text, path in stamped]
+
+
+def _prune_backups(backup_dir: Path, kind: str = "migrate") -> None:
+    """Delete all but the newest BACKUPS_KEPT backups of *kind*, by the stamp in their name."""
+    for path in _stamped_backups(backup_dir, kind)[:-BACKUPS_KEPT]:
         try:
             path.unlink()
         except OSError:
@@ -347,6 +359,79 @@ def _restore(backup: Path) -> None:
 def _staged_restore_path() -> Path:
     """Where _restore stages the decompressed backup; kept when the final replace fails."""
     return GAIA_DB.with_name(GAIA_DB.name + ".restore")
+
+
+def _unpack(source: Path, staged: Path) -> None:
+    with open(source, "rb") as probe:
+        packed = probe.read(2) == b"\x1f\x8b"
+    opener = gzip.open if packed else open
+    with opener(source, "rb") as src, open(staged, "wb") as dst:
+        shutil.copyfileobj(src, dst, 1 << 20)
+
+
+def _verified(path: Path) -> tuple[int, dict[str, int]]:
+    """(ledger, census) of the database at *path*; raises sqlite3.DatabaseError unless it passes integrity_check."""
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        verdict = con.execute("PRAGMA integrity_check").fetchone()[0]
+        if verdict != "ok":
+            raise sqlite3.DatabaseError(f"integrity_check={verdict!r}")
+        return _ledger_version(con), migration_guard.take_census(con)
+    finally:
+        con.close()
+
+
+def _restore_from(source: Path, expected: int) -> int:
+    """Put the backup *source* back as GAIA_DB once it and a pre-restore backup of GAIA_DB verify.
+
+    Pages go through SQLite's backup API under GAIA_DB's lock, so another process never sees a swapped file."""
+    if not source.is_file():
+        _err(f"ERROR: backup {source} does not exist. Nothing was restored.")
+        return 1
+    staged = _staged_restore_path()
+    try:
+        try:
+            _unpack(source, staged)
+            ledger, census = _verified(staged)
+        except (OSError, EOFError, sqlite3.DatabaseError) as exc:
+            _err(f"ERROR: backup {source} did not verify ({exc}). Nothing was restored.")
+            return 1
+        con = _connect()
+        try:
+            live_census = migration_guard.take_census(con)
+            if live_census:
+                live_ledger = _ledger_version(con)
+                try:
+                    kept = _backup(con, live_ledger, datetime.now(timezone.utc), live_census, "restore")
+                except sqlite3.Error as exc:
+                    _err(f"ERROR: {exc}. Nothing was restored; the DB is unchanged.")
+                    return 1
+                _log(f"the database being replaced (v{live_ledger}) is kept, verified, at {kept}")
+            src = sqlite3.connect(f"file:{staged}?mode=ro", uri=True)
+            try:
+                src.backup(con)
+            except sqlite3.Error as exc:
+                _err(f"ERROR: could not copy {source} into {GAIA_DB} ({exc}). Nothing was restored.")
+                return 1
+            finally:
+                src.close()
+            if migration_guard.take_census(con) != census:
+                _err(f"ERROR: {GAIA_DB} does not hold the rows {source} holds after the restore.")
+                return 1
+        finally:
+            con.close()
+    finally:
+        staged.unlink(missing_ok=True)
+    _log(f"restored {GAIA_DB} from {source} (schema v{ledger}).")
+    if ledger < expected:
+        _log(
+            f"This Gaia expects v{expected}: its next `gaia migrate apply`, `gaia install` or "
+            f"session start moves the database forward again. To stay at v{ledger}, install "
+            "the Gaia release that wrote it first."
+        )
+    elif ledger > expected:
+        _log(f"The backup is at v{ledger}, newer than this Gaia (v{expected}); `gaia migrate plan` says whether it may write.")
+    return 0
 
 
 def _apply_chain(
@@ -401,7 +486,8 @@ def _assess_chain(
     ]
 
 
-def _plan(expected: int) -> int:
+def plan_report(expected: int) -> dict:
+    """What apply would do to GAIA_DB, read-only: the dict `--plan --json` prints, ``exit`` its return code."""
     con = _open_for_plan()
     census = migration_guard.take_census(con) if con else {}
     ledger = _ledger_version(con) if con else 0
@@ -409,57 +495,107 @@ def _plan(expected: int) -> int:
     if con:
         con.close()
     state = _database_state(census, ledger)
-    print(f"database: {GAIA_DB}")
+    backup_dir = _backup_dir()
+    report = {
+        "database": str(GAIA_DB),
+        "state": state,
+        "ledger": ledger,
+        "expected": expected,
+        "min_code_version": minimum,
+        "direction": "current",
+        "chain": None,
+        "migrations": [],
+        "missing": [],
+        "consent_command": None,
+        "backup_dir": str(backup_dir),
+        "backups": [str(p) for p in reversed(_stamped_backups(backup_dir))],
+        "exit": 0,
+    }
     if state == FRESH:
+        report["direction"] = FRESH
+        return report
+    if ledger > expected:
+        compatible = minimum is not None and minimum <= expected
+        report["direction"] = "ahead-compatible" if compatible else "ahead-refused"
+        report["exit"] = 0 if compatible else 1
+        return report
+    start = ledger if state == SEALED else SCHEMA_FLOOR
+    if start == expected and state == SEALED:
+        return report
+    chain = _chain(start, expected)
+    report["chain"] = migration_guard.chain_label(start, expected)
+    report["missing"] = [p.name for _, p in chain if not p.is_file()]
+    if report["missing"]:
+        report.update(direction="missing-migrations", exit=1)
+        return report
+    report["direction"] = "behind"
+    verdicts = _assess_chain(chain, census)
+    report["migrations"] = [
+        {
+            "migration": v.migration,
+            "reaches": [{"verb": r.verb, "table": r.table, "rows": r.rows} for r in v.reaches],
+        }
+        for v in verdicts
+    ]
+    if any(v.reaches for v in verdicts):
+        report["consent_command"] = migration_guard.consent_command(report["chain"])
+    return report
+
+
+def _print_plan(report: dict) -> None:
+    ledger, expected, minimum = report["ledger"], report["expected"], report["min_code_version"]
+    direction = report["direction"]
+    print(f"database: {report['database']}")
+    if direction == FRESH:
         print(
             f"fresh database: schema.sql builds it and the ledger is sealed at "
             f"v{expected}. Nothing to back up, nothing to consent."
         )
-        return 0
-    start = ledger if state == SEALED else SCHEMA_FLOOR
-    if ledger > expected:
-        if minimum is not None and minimum <= expected:
-            print(
-                f"ledger v{ledger} is newer than this code (v{expected}) and accepts "
-                f"code from v{minimum}: nothing to apply, this code keeps writing."
-            )
-            return 0
+    elif direction == "ahead-compatible":
+        print(
+            f"ledger v{ledger} is newer than this code (v{expected}) and accepts "
+            f"code from v{minimum}: nothing to apply, this code keeps writing."
+        )
+    elif direction == "ahead-refused":
         print(
             f"ledger v{ledger} is NEWER than this code (v{expected}) and requires "
             f"code at v{minimum if minimum is not None else ledger}; apply refuses."
         )
-        return 1
-    if start == expected and state == SEALED:
+    elif direction == "current":
         print(f"ledger at v{ledger}: up to date, nothing to apply.")
-        return 0
-    chain = _chain(start, expected)
-    missing = [p.name for _, p in chain if not p.is_file()]
-    if missing:
-        print(f"missing migration files: {', '.join(missing)}; apply refuses.")
-        return 1
-    label = migration_guard.chain_label(start, expected)
-    print(f"chain {label} ({len(chain)} migrations, {state} database):")
-    if state == UNSEALED:
-        print("  schema.sql      rebuilds the unsealed database before the chain")
-    verdicts = _assess_chain(chain, census)
-    for verdict in verdicts:
-        if not verdict.reaches:
-            print(f"  {verdict.migration:<15} structure only")
-            continue
-        for reach in verdict.reaches:
-            print(
-                f"  {verdict.migration:<15} reaches data: {reach.verb} on "
-                f"`{reach.table}` ({reach.rows} rows)"
-            )
-    print(f"backup: written to {_backup_dir()} before anything changes")
-    if any(v.reaches for v in verdicts):
-        print(
-            "consent: required once for the whole chain -> "
-            f"{migration_guard.consent_command(label)}"
-        )
+    elif direction == "missing-migrations":
+        print(f"missing migration files: {', '.join(report['missing'])}; apply refuses.")
     else:
-        print("consent: none -- the chain only adds structure and applies on its own")
-    return 0
+        print(f"chain {report['chain']} ({len(report['migrations'])} migrations, {report['state']} database):")
+        if report["state"] == UNSEALED:
+            print("  schema.sql      rebuilds the unsealed database before the chain")
+        for step in report["migrations"]:
+            if not step["reaches"]:
+                print(f"  {step['migration']:<15} structure only")
+            for reach in step["reaches"]:
+                print(
+                    f"  {step['migration']:<15} reaches data: {reach['verb']} on "
+                    f"`{reach['table']}` ({reach['rows']} rows)"
+                )
+        print(f"backup: written to {report['backup_dir']} before anything changes")
+        if report["consent_command"]:
+            print(f"consent: required once for the whole chain -> {report['consent_command']}")
+        else:
+            print("consent: none -- the chain only adds structure and applies on its own")
+    if report["backups"]:
+        print(f"backups on hand ({len(report['backups'])}), newest first:")
+        for path in report["backups"]:
+            print(f"  {path}")
+        print("restore one: gaia migrate restore --from <backup>")
+
+
+def _plan(expected: int, as_json: bool = False) -> int:
+    report = plan_report(expected)
+    if as_json:
+        print(json.dumps(report, indent=2))
+    else:
+        _print_plan(report)
+    return report["exit"]
 
 
 def _apply(expected: int, consent_chain: str | None, after_backup: bool = False) -> int:
@@ -689,6 +825,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--plan", action="store_true", help="print the pending chain; write nothing"
     )
     parser.add_argument(
+        "--json", action="store_true", help="with --plan, print the plan as one JSON object"
+    )
+    parser.add_argument(
+        "--restore",
+        metavar="BACKUP",
+        type=Path,
+        help="put BACKUP back as the database, keeping the current one as a verified backup",
+    )
+    parser.add_argument(
         migration_guard.CONSENT_FLAG,
         dest="consent_chain",
         metavar="vA..vB",
@@ -709,7 +854,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or [])
     expected = _read_expected_schema_version()
     if args.plan:
-        return _plan(expected)
+        return _plan(expected, args.json)
+    if args.restore:
+        return _restore_from(args.restore.expanduser(), expected)
     return _apply(expected, args.consent_chain, args.after_backup)
 
 

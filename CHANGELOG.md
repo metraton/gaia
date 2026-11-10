@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gaia migrate restore --from <backup>` puts a database backup back, and `gaia migrate plan --json` shows the pending change as data.** Restore checks the backup with `integrity_check` before anything changes, keeps the database it replaces as a verified `pre-restore` backup beside the `pre-migrate` ones, and copies the pages with SQLite's backup API under the database's lock, so a process holding the database open sees the old one or the restored one, never a swapped file. It accepts the `.db.gz` backups Gaia writes and a plain `.db`, and asks for a signature. This is the route the 5.7 notes give for going back past a breaking migration. `plan` now lists the backups on hand, newest first. `plan --json` prints the direction (`fresh`, `current`, `behind`, `ahead-compatible`, `ahead-refused`, `missing-migrations`), the chain, what each migration reaches, the consent command and the backups; `bin/cli/migrate.py::plan_report` returns the same dict to other commands. Each kind of backup keeps its newest 3.
+
 ### Changed
 
 - **Gaia talks to people as a colleague talks to a colleague, by default.** On every surface a person reads, the answer opens with its conclusion in one or two sentences, then short bullets with one idea each, with no paragraph past two sentences, no closing recap and no menu of options. Several questions get one short statement each; a mechanism or a design is shown with a plain-text flow; detail comes when asked; things are named in plain words instead of by plan, task or approval numbers; a technical term the reader has not used is explained in a few words the first time, with the term in parentheses, and used alone after that. The register (`human-register`) now names the ideas it rests on: plain language, Grice's maxims, audience design, bottom line up front, progressive disclosure and the curse of knowledge. Conversation preferences still replace this shape where they differ.

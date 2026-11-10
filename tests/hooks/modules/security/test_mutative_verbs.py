@@ -4684,7 +4684,7 @@ class TestNounFirstGroupVerbExceptions:
     `label`) must not gate the read-only action under it, while every action
     that writes keeps its gate."""
 
-    MIGRATE_ACTION_WRITES = {"plan": False, "apply": True}
+    MIGRATE_ACTION_WRITES = {"plan": False, "apply": True, "restore": True}
 
     def test_every_migrate_action_is_classified_by_whether_it_writes(self):
         from modules.security.tiers import classify_command_tier

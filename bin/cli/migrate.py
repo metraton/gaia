@@ -11,6 +11,7 @@ never take the calling command down with it.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -29,12 +30,17 @@ Move the Gaia database to the schema version this code expects.
 
   plan    Print the pending chain vA..vB, what each migration reaches
           (structure only, or rows that already exist), where the backup
-          will go, and whether apply will need consent. Writes nothing.
+          will go, whether apply will need consent, and the backups on hand.
+          Writes nothing. --json prints the same as one object.
   apply   Run the chain.
+  restore Put a backup back as the database (--from <backup>). The database
+          it replaces is first kept as a verified pre-restore backup, and
+          nothing changes unless the backup passes integrity_check.
 
 How apply treats a database:
   - Before anything changes on an existing database, a full copy is written
-    with SQLite's backup API to <database dir>/backups/.
+    with SQLite's backup API to <database dir>/backups/, verified, gzipped;
+    the newest 3 pre-migrate (and 3 pre-restore) copies are kept.
   - The whole chain -- every migration and its schema_version seal -- runs in
     ONE transaction: an interruption at any point leaves the objects and the
     version exactly as they were.
@@ -63,9 +69,13 @@ minimum is installed. SessionStart names the fix in either direction.
 
 
 def engine_command(
-    action: str, consent_chain: str | None = None, after_backup: bool = False
+    action: str,
+    consent_chain: str | None = None,
+    after_backup: bool = False,
+    as_json: bool = False,
+    backup: str | None = None,
 ) -> list[str]:
-    """The engine invocation for ``action`` ('plan' or 'apply').
+    """The engine invocation for ``action`` ('plan', 'apply' or 'restore').
 
     *after_backup* lets a verified backup stand in for the chain consent; only
     `gaia install` passes it (D140).
@@ -73,6 +83,10 @@ def engine_command(
     cmd = [sys.executable or "python3", str(ENGINE)]
     if action == "plan":
         cmd.append("--plan")
+        if as_json:
+            cmd.append("--json")
+    if action == "restore":
+        cmd += ["--restore", str(Path(backup).expanduser().resolve())]
     if consent_chain:
         cmd += ["--consent-chain", consent_chain]
     if after_backup:
@@ -86,6 +100,8 @@ def run(
     db_path: str | None = None,
     capture: bool = False,
     after_backup: bool = False,
+    as_json: bool = False,
+    backup: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the engine on ``db_path``, else on the database every gaia call resolves.
 
@@ -97,12 +113,21 @@ def run(
         str(Path(db_path).expanduser().resolve()) if db_path else str(_resolved_db_path())
     )
     return subprocess.run(
-        engine_command(action, consent_chain, after_backup),
+        engine_command(action, consent_chain, after_backup, as_json, backup),
         env=env,
         capture_output=capture,
         text=True,
         check=False,
     )
+
+
+def plan_report(db_path: str | None = None) -> dict:
+    """What `gaia migrate apply` would do to the database, read-only, as the dict `plan --json` prints."""
+    result = run("plan", db_path=db_path, capture=True, as_json=True)
+    try:
+        return json.loads(result.stdout)
+    except ValueError as exc:
+        raise RuntimeError(f"gaia migrate plan --json printed no report: {result.stderr.strip()}") from exc
 
 
 def register(subparsers):
@@ -115,11 +140,12 @@ def register(subparsers):
         description=_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    actions = p.add_subparsers(dest="migrate_action", metavar="{plan,apply}")
+    actions = p.add_subparsers(dest="migrate_action", metavar="{plan,apply,restore}")
     actions.required = True
     for name, help_text in (
         ("plan", "Show the pending chain and what apply would need; writes nothing"),
         ("apply", "Back up, then apply the chain in one transaction"),
+        ("restore", "Put a backup back as the database, keeping the current one as a verified backup"),
     ):
         sub = actions.add_parser(name, help=help_text, description=help_text)
         sub.add_argument(
@@ -137,6 +163,16 @@ def register(subparsers):
                 help="Consent, once, to a chain that reaches existing data; "
                 "must name the chain `gaia migrate plan` prints",
             )
+        if name == "plan":
+            sub.add_argument(
+                "--json", dest="as_json", action="store_true",
+                help="Print the plan as one JSON object (direction, chain, migrations, backups)",
+            )
+        if name == "restore":
+            sub.add_argument(
+                "--from", dest="backup", required=True, metavar="BACKUP",
+                help="The backup to put back: a .db.gz `plan` lists, or a plain .db",
+            )
     return p
 
 
@@ -148,4 +184,6 @@ def cmd_migrate(args) -> int:
         args.migrate_action,
         consent_chain=getattr(args, "consent_chain", None),
         db_path=args.db_path,
+        as_json=getattr(args, "as_json", False),
+        backup=getattr(args, "backup", None),
     ).returncode
