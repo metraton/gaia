@@ -8163,6 +8163,37 @@ def _sealed_item_binds(
     )
 
 
+def _reservation_refusal(
+    item: dict,
+    grant: dict,
+    *,
+    cwd: str | None,
+    session_id: str,
+    agent_id: str | None,
+    tool_use_id: str | None,
+    now_iso: str,
+) -> dict | None:
+    """The check refusing to reserve ``item`` for this call, else None; a ``cwd`` or ``tool_use_id`` of None skips its checks."""
+    from gaia.approvals.command_set import changed_files
+
+    changed = changed_files(item)
+    if changed:
+        return {"check": "files", "final": False, "paths": changed}
+    if "position" in item:
+        if cwd is not None and item.get("cwd") != cwd:
+            return {"check": "directory", "final": False, "sealed": item.get("cwd"), "call": cwd}
+        if not _sealed_item_binds(item, grant, item.get("cwd"), session_id, agent_id):
+            return {"check": "requester", "final": False}
+    if tool_use_id is None:
+        return None
+    if tool_use_id in _json.loads(grant.get("reserved_tool_use_ids_json") or "[]"):
+        return {"check": "call_reused", "final": True, "tool_use_id": tool_use_id}
+    held_by = grant.get("reservation_tool_use_id")
+    if held_by and _reservation_is_live(grant, now_iso):
+        return {"check": "held", "final": True, "tool_use_id": held_by, "since": grant.get("reservation_at")}
+    return None
+
+
 def reserve_plan_command(
     command: str,
     *,
@@ -8196,7 +8227,7 @@ def reserve_plan_command(
     """
     if not session_id or not tool_use_id:
         return None
-    from gaia.approvals.command_set import command_fingerprint, files_unchanged
+    from gaia.approvals.command_set import command_fingerprint
 
     con = _connect(db_path)
     now_iso = _now_iso()
@@ -8221,18 +8252,17 @@ def reserve_plan_command(
             item = items[index]
             if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
                 continue
-            if not files_unchanged(item):
-                continue
-            if "position" in item and not _sealed_item_binds(item, grant, cwd, session_id, agent_id):
+            refusal = _reservation_refusal(
+                item, grant, cwd=cwd or "", session_id=session_id, agent_id=agent_id,
+                tool_use_id=tool_use_id, now_iso=now_iso,
+            )
+            if refusal is not None and refusal["final"]:
+                con.rollback()
+                return None
+            if refusal is not None:
                 continue
             reserved_ids = _json.loads(grant.get("reserved_tool_use_ids_json") or "[]")
-            if tool_use_id in reserved_ids:
-                con.rollback()
-                return None
             held_by = grant.get("reservation_tool_use_id")
-            if held_by and _reservation_is_live(grant, now_iso):
-                con.rollback()
-                return None
             abandoned = (
                 {
                     "tool_use_id": held_by,
@@ -8364,24 +8394,44 @@ def find_plan_grant_for_command(command: str, *, db_path: Path | None = None) ->
 
 
 def find_unconsumed_plan_item(
-    command: str, *, session_id: str, agent_id: str, db_path: Path | None = None,
+    command: str,
+    *,
+    session_id: str,
+    agent_id: str,
+    cwd: str | None = None,
+    tool_use_id: str | None = None,
+    db_path: Path | None = None,
 ) -> dict | None:
-    """The requester's live plan-first grant that holds ``command`` at or after its next index, else None."""
+    """The requester's live plan-first grant that holds ``command`` at or after its next index, with the check refusing it, else None."""
     from gaia.approvals.command_set import command_fingerprint
 
     fingerprint = command_fingerprint(command)
     con = _connect(db_path)
+    now_iso = _now_iso()
     try:
-        for grant, items in _iter_live_plan_grants(con, _now_iso()):
+        for grant, items in _iter_live_plan_grants(con, now_iso):
             if (grant["session_id"], grant["agent_id"]) != (session_id, agent_id):
                 continue
             for index, item in enumerate(items[grant["next_index"]:], start=grant["next_index"]):
-                if isinstance(item, dict) and item.get("command") == command \
-                        and item.get("fingerprint") == fingerprint:
-                    return {
-                        "approval_id": grant["approval_id"], "index": index,
-                        "next_index": grant["next_index"], "cwd": item.get("cwd"),
-                    }
+                if not (isinstance(item, dict) and item.get("command") == command
+                        and item.get("fingerprint") == fingerprint):
+                    continue
+                if index != grant["next_index"]:
+                    refusal = {"check": "order", "final": False}
+                else:
+                    row = con.execute(
+                        "SELECT reserved_tool_use_ids_json, reservation_tool_use_id, reservation_at "
+                        "FROM approval_grants WHERE approval_id = ?", (grant["approval_id"],),
+                    ).fetchone()
+                    refusal = _reservation_refusal(
+                        item, {**grant, **dict(row)}, cwd=cwd,
+                        session_id=session_id, agent_id=agent_id, tool_use_id=tool_use_id,
+                        now_iso=now_iso,
+                    )
+                return {
+                    "approval_id": grant["approval_id"], "index": index,
+                    "next_index": grant["next_index"], "cwd": item.get("cwd"), "refusal": refusal,
+                }
         return None
     finally:
         con.close()
@@ -8403,6 +8453,9 @@ def settle_plan_command(
     """
     if not session_id or not tool_use_id:
         return False
+    from gaia.approvals.command_set import reseal_protected_files
+
+    resealed: dict[int, list[str]] = {}
     con = _connect(db_path)
     try:
         con.execute("BEGIN IMMEDIATE")
@@ -8427,12 +8480,18 @@ def settle_plan_command(
                 status = grant["status"]
             else:
                 status = "CONSUMED" if next_index == len(items) else "PENDING"
+            for later, item in enumerate(items[next_index:], start=next_index):
+                paths = reseal_protected_files(item) if isinstance(item, dict) else []
+                if paths:
+                    resealed[later] = paths
             con.execute(
                 "UPDATE approval_grants SET next_index=?, consumed_indexes_json=?, status=?, "
                 "consumed_at=CASE WHEN ?='CONSUMED' THEN ? ELSE consumed_at END, "
+                "command_set_json=?, "
                 "reservation_index=NULL, reservation_session_id=NULL, "
                 "reservation_tool_use_id=NULL, reservation_at=NULL WHERE approval_id=?",
-                (next_index, _json.dumps(consumed), status, status, _now_iso(), approval_id),
+                (next_index, _json.dumps(consumed), status, status, _now_iso(),
+                 _json.dumps(items), approval_id),
             )
         else:
             con.execute(
@@ -8442,12 +8501,42 @@ def settle_plan_command(
                 (grant["status"] if withdrawn else "FAILED", index, failure_reason, approval_id),
             )
         con.commit()
-        return True
     except Exception:
         con.rollback()
         raise
     finally:
         con.close()
+    if resealed:
+        _record_resealed_files(approval_id, index, resealed, session_id=session_id, db_path=db_path)
+    return True
+
+
+def _record_resealed_files(
+    approval_id: str,
+    settled_index: int,
+    resealed: dict[int, list[str]],
+    *,
+    session_id: str,
+    db_path: Path | None = None,
+) -> None:
+    try:
+        from gaia.approvals.chain import insert_event
+        from gaia.approvals.store import _open_db
+
+        con = _open_db(db_path)
+        try:
+            insert_event(
+                con, approval_id, "NOOP", session_id=session_id,
+                metadata_json=_json.dumps({
+                    "kind": "files_resealed", "settled_index": settled_index,
+                    "items": {str(index): paths for index, paths in resealed.items()},
+                }, sort_keys=True),
+            )
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        return
 
 
 def release_plan_command(
