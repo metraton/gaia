@@ -245,7 +245,10 @@ minted, `approval_id`, copied verbatim from the request's output.
   `{"version": 1, "proposals": [...]}`, each proposal an `operation` and its
   object (`create`, `append`, `reclassify`, `link`). A non-user `create` lands
   on the contract's project; a Gaia defect or lesson carries
-  `"initiative": "gaia_system"` and lands on owner gaia.
+  `"initiative": "gaia_system"` and lands on owner gaia. `gaia contract
+  set/add/fill` and `finalize` refuse a `memory_delta` whose shape would
+  record nothing, or a proposal `gaia memory add` would reject, naming the
+  repair (`gaia/store/proposals.py::refusal_message`).
 - `update_contracts`: `{contract, payload}` entries, a proposal for any
   section and never write authority: project context is written by the
   orchestrator alone. SubagentStop writes nothing for them, whatever
@@ -255,7 +258,9 @@ minted, `approval_id`, copied verbatim from the request's output.
   (`--dry-run` shows the target workspaces). Accepting deep-merges the
   payload; lists replace whole and no delete sentinel exists. A single
   `{section: payload}` object is read as the array it abbreviates, any other
-  shape is refused with a repair hint. A `project_identity` payload is split
+  shape is refused with a repair hint, at `gaia contract set/add/fill` and at
+  `finalize`, before the row is persisted
+  (`gaia/store/proposals.py::refusal_message`). A `project_identity` payload is split
   by project key: each key is written into the workspace that owns that
   project, underscore and hyphen spellings alike, and a key no workspace owns
   is refused, never written to the dispatch's workspace
