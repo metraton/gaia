@@ -199,6 +199,8 @@ def test_the_plugin_and_opencode_on_different_versions_is_a_split(tmp_path):
     assert "      declared    ^5.7.2-rc.2  package.json " + str(box.ws / "package.json") in shown
     install = next(s for s in plan["steps"] if s.get("command") == "npm install @jaguilar87/gaia@5.8.0-rc.1 --save-exact")
     assert install["cwd"] == str(box.ws)
+    rewire = next(s for s in plan["steps"] if (s.get("command") or "").endswith(f"update --workspace {box.ws}"))
+    assert "agent block" in rewire["detail"]
     assert not any("claude plugin" in c for c in _commands(plan))
 
 

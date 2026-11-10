@@ -675,7 +675,10 @@ def _npm_steps(report: dict, channel, target: str, steps: list, windows: bool) -
     _step(steps, "npm-local", "command", gap, command=f"npm install {PACKAGE}@{target} --save-exact", cwd=ws)
     gaia = (f"{ws}\\node_modules\\.bin\\gaia.cmd" if windows else f"{ws}/node_modules/.bin/gaia")
     _step(steps, "npm-local", "command", "the new copy re-wires the channels this workspace recorded",
-          command=f"{_arg(gaia)} update --workspace {_arg(ws)}", cwd=ws)
+          command=f"{_arg(gaia)} update --workspace {_arg(ws)}", cwd=ws,
+          detail="it also regenerates opencode.json's agent block (each agent's permissions and scratch path), "
+                 "so a diff of that file shows more than the plugin entry; `--dry-run` previews only the "
+                 "Claude Code wiring, so read the result with `gaia doctor --channels` instead")
 
 
 def plan(report: dict, target: str) -> dict:
