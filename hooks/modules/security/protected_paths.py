@@ -24,11 +24,11 @@ replacing a live install still requires consent.
 
 THE DERIVATION. Two lanes, both install-specific by construction and judged on
 a path's literal, absolute and symlink-resolved forms. ``_shape_hit`` matches a
-``hooks`` tree under ``.claude``. ``_install_root`` protects EVERYTHING inside
-an install root -- a directory whose package.json names ``@jaguilar87/gaia``,
-holding no ``.git``, from any channel -- because the plain ``gaia`` CLI imports
-``bin/`` and ``gaia/`` from there, so a planted module or ``.pth`` is code the
-next call runs.
+``hooks`` tree directly under ``.claude`` or under a plugin root in its
+``plugins``. ``_install_root`` protects EVERYTHING inside an install root -- the
+npm store, the dev-plugin cache, or a ``.git``-less directory declaring Gaia
+that is a plugin cache entry or the root this hook runs from -- because ``gaia``
+imports ``bin/`` and ``gaia/`` there: a planted module is code the next call runs.
 
 ``declared_hook_tree_roots()`` resolves checkout roots from the workspace
 registry for a DIFFERENT caller: ``adapters/subagent_stop_core.py`` uses it to
@@ -74,6 +74,11 @@ _HARNESS_DIR = ".claude"
 _HOOKS_DIR = "hooks"
 
 _DEV_PLUGIN_DIR = "dev-plugin"
+
+# A host unpacks an installed plugin at ``plugins/cache/<marketplace>/<plugin>/<version>``.
+_PLUGINS_DIR = "plugins"
+_PLUGIN_CACHE_DIRS = (_PLUGINS_DIR, "cache")
+_PLUGIN_MANIFEST_DIR = ".claude-plugin"
 
 _SETTINGS_BASENAMES = frozenset({"settings.json", "settings.local.json"})
 # Long names an 8.3 alias may stand for (``CLAUDE~1``, ``SETTIN~1.JSO``).
@@ -164,12 +169,24 @@ def declared_hook_tree_roots() -> Tuple[str, ...]:
     return _declared_roots_cache
 
 
+def _is_plugin_root(parts: Tuple[str, ...], below_harness: Tuple[str, ...]) -> bool:
+    cached = len(below_harness) == 5 and below_harness[:2] == _PLUGIN_CACHE_DIRS
+    return cached or os.path.isdir(os.path.join(*parts, _PLUGIN_MANIFEST_DIR))
+
+
 def _shape_hit(parts: Tuple[str, ...]) -> bool:
-    """True iff the path shape places it inside a ``.claude`` ``hooks`` tree."""
-    return any(
-        part == _HARNESS_DIR and _HOOKS_DIR in parts[index + 1:]
-        for index, part in enumerate(parts)
-    )
+    """True iff the path lies in a ``hooks`` tree directly under ``.claude`` or under a plugin root in ``.claude/plugins``."""
+    for index, part in enumerate(parts):
+        if part != _HARNESS_DIR:
+            continue
+        if parts[index + 1:index + 2] == (_HOOKS_DIR,):
+            return True
+        if parts[index + 1:index + 2] != (_PLUGINS_DIR,):
+            continue
+        for at in range(index + 3, len(parts)):
+            if parts[at] == _HOOKS_DIR and _is_plugin_root(parts[:at], parts[index + 1:at]):
+                return True
+    return False
 
 
 def _dev_plugin_caches() -> Tuple[Path, ...]:
@@ -191,8 +208,19 @@ def _declares_gaia(directory: Path) -> bool:
     return named and not os.path.lexists(directory / ".git")
 
 
+def _running_hook_roots() -> Tuple[Path, ...]:
+    from . import mutative_verbs
+
+    root = mutative_verbs._HOOK_ROOT
+    return (root, Path(os.path.realpath(root)))
+
+
+def _is_plugin_cache_entry(directory: Path) -> bool:
+    return tuple(os.path.normcase(part) for part in directory.parts[-5:-3]) == _PLUGIN_CACHE_DIRS
+
+
 def _install_root(path: Path) -> Optional[Path]:
-    """The installed Gaia root `path` is or lies inside, or None."""
+    """The installed Gaia root `path` is or lies inside, or None; a manifest counts only where a host loads Gaia from."""
     parts = path.parts
     for index in range(len(parts) - 1):
         if os.path.normcase(parts[index]) == _PACKAGE_SCOPE_DIR and os.path.normcase(parts[index + 1]) == _PACKAGE_DIR:
@@ -200,7 +228,11 @@ def _install_root(path: Path) -> Optional[Path]:
     for container in _dev_plugin_caches():
         if container in path.parents:
             return Path(*parts[:len(container.parts) + 1])
-    return next((d for d in (path, *path.parents) if _declares_gaia(d)), None)
+    running = _running_hook_roots()
+    return next(
+        (d for d in (path, *path.parents) if (d in running or _is_plugin_cache_entry(d)) and _declares_gaia(d)),
+        None,
+    )
 
 
 @contextlib.contextmanager

@@ -282,11 +282,61 @@ class TestIsProtectedClaudePath:
         # source checkout is an ordinary project, gated by git only.
         (str(Path(__file__).resolve().parents[4] / "hooks" / "pre_tool_use.py"), False),
         ("src/hooks/pre_tool_use.py", False),     # a hooks dir in no Gaia root
+        ("/repo/.claude/worktrees/n/src/hooks/useX.ts", False),
+        ("/repo/.claude/worktrees/n/hooks/pre_tool_use.py", False),
+        (".claude/skills/x/hooks/notes.py", False),
+        (".claude/plugins/cache/market/plug/1.0/src/hooks/h.py", False),
+        (".claude/plugins/cache/market/plug/1.0/hooks/h.py", True),
+        ("/home/u/.claude/plugins/cache/market/plug/1.0/hooks/sub/h.py", True),
         ("-f", False),                           # flag token
         ("", False),
     ])
     def test_predicate(self, token, expected):
         assert _is_protected_claude_path(token) is expected
+
+    @pytest.mark.parametrize("plugin_root", ["plugins/marketplaces/m", "plugins/marketplaces/m/plugins/p"])
+    def test_hooks_beside_a_plugin_manifest_are_protected(self, tmp_path, plugin_root):
+        root = tmp_path / ".claude" / plugin_root
+        (root / ".claude-plugin").mkdir(parents=True)
+        assert _is_protected_claude_path(str(root / "hooks" / "h.py")) is True
+        assert _is_protected_claude_path(str(root / "src" / "hooks" / "h.py")) is False
+        assert check(f"cp /tmp/a {root}/hooks/h.py")[0] is False
+
+    @pytest.mark.parametrize("writer", ["cp /tmp/a {T}", "mv /tmp/a {T}", "echo x > {T}", "rm {T}", "chmod +x {T}"])
+    def test_a_project_hooks_folder_deep_under_claude_is_an_ordinary_write(self, writer):
+        target = "/repo/.claude/worktrees/n/src/hooks/useX.ts"
+        assert check(writer.format(T=target))[0] is True
+        assert check(writer.format(T="/repo/.claude/hooks/useX.py"))[0] is False
+        assert check(writer.format(T="/home/u/.claude/plugins/cache/m/p/1.0/hooks/h.py"))[0] is False
+
+
+class TestAReaderIsProvenByItsOptions:
+    @pytest.mark.parametrize("cmd", [
+        "sort /repo/.claude/settings.json",
+        "ls /repo/.claude/hooks | sort -r | uniq -c",
+        "uniq -c /repo/.claude/settings.json",
+        "cut -c1-80 /repo/.claude/settings.json | tr a-z A-Z | nl",
+    ])
+    def test_a_filter_that_only_reads_the_tree_passes(self, cmd):
+        assert check(cmd)[0] is True
+
+    @pytest.mark.parametrize("cmd", [
+        "sort -o /repo/.claude/settings.json /tmp/x",
+        "sort --output=/repo/.claude/settings.json /tmp/x",
+        "sort /tmp/x -o /repo/.claude/hooks/pre_tool_use.py",
+        "uniq /tmp/x /repo/.claude/settings.json",
+        "uniq /tmp/x '>/repo/.claude/settings.json'",
+        "sed -n '1,3p' /repo/.claude/settings.json",
+        "sed -n 'w /repo/.claude/hooks/pre_tool_use.py' /tmp/x",
+    ])
+    def test_a_filter_spelled_to_write_the_tree_stays_refused(self, cmd):
+        assert check(cmd)[0] is False
+
+    @pytest.mark.parametrize("cmd", ["sort -o {DB} /tmp/x", "uniq /tmp/x {DB}", "sed -n 'w {DB}' /tmp/x"])
+    def test_a_filter_spelled_to_write_the_store_stays_refused(self, tmp_path, cmd):
+        from modules.security import gaia_db_write_guard
+
+        assert gaia_db_write_guard.check(cmd.format(DB=tmp_path / "gaia.db"))[0] is False
 
 
 def test_targets_protected_path_returns_offending_path():

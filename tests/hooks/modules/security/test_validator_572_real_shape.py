@@ -40,6 +40,20 @@ def _worktree(repo: Path, path: Path, agent: str, contract: str) -> None:
     _git("-C", str(repo), "worktree", "lock", "--reason", lock_reason(contract, agent), str(path))
 
 
+def _register(workspace: Path, repo: Path) -> None:
+    from gaia.store.writer import _connect
+
+    connection = _connect()
+    try:
+        connection.execute("INSERT INTO workspaces (name, root_path) VALUES (?, ?)", ("ws", str(workspace)))
+        connection.execute(
+            "INSERT INTO projects (workspace, name, path) VALUES (?, ?, ?)", ("ws", repo.name, str(repo)),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 @pytest.fixture(scope="module")
 def world(tmp_path_factory):
     root = Path(os.path.realpath(tmp_path_factory.mktemp("v572")))
@@ -48,7 +62,7 @@ def world(tmp_path_factory):
     patch.setenv("GAIA_DB", str(root / "data" / "gaia.db"))
     patch.setenv("HOME", str(root / "home"))
     patch.delenv("GAIA_DISPATCH_AGENT", raising=False)
-    from gaia.paths import cache_dir, ensure_layout, scratch_dir, worktrees_dir
+    from gaia.paths import cache_dir, ensure_layout, scratch_dir
     from gaia.store.writer import insert_dispatched_handoff, stamp_harness_agent_id
 
     ensure_layout()
@@ -81,12 +95,16 @@ def world(tmp_path_factory):
     _git("-C", str(root / "home" / "ws"), "init", "-q", "-b", "main", str(repo))
     _git("-C", str(repo), "add", ".")
     _git("-C", str(repo), "commit", "-q", "-m", "init")
-    managed = Path(os.path.realpath(worktrees_dir())) / "gaia"
-    managed.mkdir(parents=True)
+    _register(root / "home" / "ws", repo)
+    managed = root / "home" / "ws" / ".project-worktrees" / "gaia"
+    lookalike = root / "elsewhere" / ".project-worktrees" / "gaia" / "33333333333333333333333333333333"
+    for folder in (managed, lookalike.parent):
+        folder.mkdir(parents=True)
     mine, theirs = managed / "11111111111111111111111111111111", managed / "22222222222222222222222222222222"
     _worktree(repo, mine, AGENT, CONTRACT)
     _worktree(repo, theirs, OTHER_AGENT, OTHER)
-    for tree in (mine, theirs):
+    _worktree(repo, lookalike, AGENT, CONTRACT)
+    for tree in (mine, theirs, lookalike):
         (tree / "x.sh").write_text("echo x\n")
         (tree / "gone.txt").write_text("g")
     (own / "writes_own_worktree.py").write_text(
@@ -101,7 +119,8 @@ def world(tmp_path_factory):
     dev_plugin.mkdir(parents=True)
     (dev_plugin / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia"}))
     yield {
-        "SR": str(scratch_root), "S": str(own), "W": str(mine), "OW": str(theirs), "REPO": str(repo),
+        "SR": str(scratch_root), "S": str(own), "W": str(mine), "OW": str(theirs), "LOOK": str(lookalike),
+        "REPO": str(repo),
         "WS": str(root / "home" / "ws"), "HOME": str(root / "home"), "DEV": str(dev_plugin),
         "OUT": str(outside), "DATA": str(root / "data"),
     }
@@ -158,6 +177,12 @@ CASES = [
     ("rm-own-worktree", "rm -f {W}/gone.txt", "W", FREE),
     ("rm-other-agent-worktree", "rm -f {OW}/gone.txt", "W", SIGN),
     ("rm-own-worktree-root", "rm -rf {W}", "W", SIGN),
+    ("rm-own-worktree-outside-the-managed-root", "rm -f {LOOK}/gone.txt", "W", SIGN),
+    ("cp-in-own-worktree", "cp {W}/x.sh {W}/copy.sh", "W", FREE),
+    ("mv-in-own-worktree", "mv {W}/gone.txt {W}/moved.txt", "W", FREE),
+    ("cp-onto-own-worktree-git-file", "cp {W}/x.sh {W}/.git", "W", SIGN),
+    ("mv-out-of-own-worktree", "mv {W}/gone.txt {OUT}/gone.txt", "W", SIGN),
+    ("cp-into-worktree-outside-the-managed-root", "cp {W}/x.sh {LOOK}/copy.sh", "W", SIGN),
     ("script-open-writes-own-scratch", "python3 {S}/writes_own.py", "W", FREE),
     ("script-path-writes-own-scratch", "python3 {S}/writes_own_path.py", "W", FREE),
     ("script-handle-writes-own-scratch", "python3 {S}/writes_handle.py", "W", FREE),

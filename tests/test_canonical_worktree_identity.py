@@ -224,7 +224,18 @@ def test_managed_roots_do_not_cover_lookalikes_or_the_root_itself(workspace, tmp
     lookalike = _repo(tmp_path / "elsewhere" / ".project-worktrees" / "proj" / "wt")
 
     assert managed_root_containing(lookalike) is None
+    assert managed_root_containing(lookalike / "initial.txt") is None
+    assert managed_root_containing(lookalike / "missing" / "new.txt") is None
     assert managed_root_containing(ws / ".project-worktrees") is None
+
+
+def test_a_file_or_a_missing_path_in_a_workspace_worktree_is_inside_its_managed_root(workspace):
+    ws, repo = workspace
+    target = Path(create_canonical_worktree(repo, "proj", "c-file", "a-file", base="HEAD").path)
+    root = (ws / ".project-worktrees").resolve()
+
+    assert managed_root_containing(target / "initial.txt") == root
+    assert managed_root_containing(target / "new" / "file.txt") == root
 
 
 def test_legacy_in_tree_sidecar_is_still_read_and_exempt(workspace):

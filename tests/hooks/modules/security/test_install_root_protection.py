@@ -39,11 +39,25 @@ def _isolated(monkeypatch, tmp_path):
     protected_paths.reset_caches()
 
 
-@pytest.fixture(params=["npm_store", "dev_plugin_cache"])
-def install_root(request, tmp_path):
+@pytest.fixture(params=["npm_store", "dev_plugin_cache", "plugin_cache", "running_hook_root"])
+def install_root(request, tmp_path, monkeypatch):
     if request.param == "npm_store":
         return _gaia_tree(tmp_path / "proj" / "node_modules" / "@jaguilar87" / "gaia")
+    if request.param == "plugin_cache":
+        return _gaia_tree(tmp_path / "cfg" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / "5.7.2")
+    if request.param == "running_hook_root":
+        from modules.security import mutative_verbs
+
+        root = _gaia_tree(tmp_path / "opt" / "a" / "b" / "gaia")
+        monkeypatch.setattr(mutative_verbs, "_HOOK_ROOT", root)
+        mutative_verbs._root_is_install.cache_clear()
+        return root
     return _gaia_tree(tmp_path / "data" / "cache" / "dev-plugin" / "ws")
+
+
+@pytest.fixture
+def extracted_source(tmp_path):
+    return _gaia_tree(tmp_path / "data" / "scratch" / "a1.b2" / "full")
 
 
 @pytest.fixture
@@ -67,6 +81,13 @@ class TestPredicate:
     @pytest.mark.parametrize("relative", PLANTED)
     def test_development_checkout_stays_writable(self, dev_checkout, relative):
         assert protected_paths.is_protected_hook_path(str(dev_checkout / relative)) is False
+
+    @pytest.mark.parametrize("relative", PLANTED + ("tests/test_probe.py", "hooks/x.py"))
+    def test_an_extracted_source_tree_no_host_loads_is_not_an_install(self, extracted_source, relative):
+        target = extracted_source / relative
+        assert protected_paths.is_protected_hook_path(str(target)) is False
+        assert protected_paths.is_install_root_path(str(target)) is False
+        assert [form for form in _shell_forms(target) if not _guard(form)[0]] == []
 
     def test_other_cache_entries_are_not_install_roots(self, tmp_path):
         assert protected_paths.is_protected_hook_path(str(tmp_path / "data" / "cache" / "other" / "x.py")) is False
@@ -132,9 +153,45 @@ class TestShellSurface:
         "git -C {I} status",
         "cd {I} && ls",
         "{I}/bin/gaia doctor",
+        "sed -n '1,3p' {I}/package.json",
+        "sed -n -e '/name/p' -e '$=' {I}/package.json",
+        "awk 'NR<3' {I}/package.json",
+        "ls {I}/hooks | sort",
+        "sort -u {I}/package.json | uniq -c | cut -c1-80 | tr a-z A-Z | nl",
+        "git hash-object {I}/package.json",
+        "git -C {I} rev-list --count HEAD",
     ])
     def test_provable_reads_and_running_installed_code_pass(self, install_root, form):
         assert _guard(form.format(I=install_root))[0] is True
+
+    @pytest.mark.parametrize("form", [
+        "sed -n '1e touch {I}/bin/x.py' {I}/package.json",
+        "sed -n 'w {I}/bin/x.py' {I}/package.json",
+        "sed -n 's/a/b/w {I}/bin/x.py' {I}/package.json",
+        "sed -n '/a\\/p;/w {I}/bin/x.py/p' {I}/package.json",
+        "sed -n '1,3p' -i {I}/package.json",
+        "sed -n --in-place '1,3p' {I}/package.json",
+        "sed -n -f /tmp/script.sed {I}/package.json",
+        "sed -n \"$SCRIPT\" {I}/package.json",
+        "sed -n \"$p\" {I}/package.json",
+        "p='w {I}/bin/x.py'; sed -n \"$p\" {I}/package.json",
+        "Q='1\" \"{{print > \"{I}/bin/x.py\"}}'; awk \"$Q\" {I}/package.json",
+        "awk '{{print > \"{I}/bin/x.py\"}}' {I}/package.json",
+        "awk 'BEGIN{{system(\"touch {I}/bin/x.py\")}}' {I}/package.json",
+        "awk -f /tmp/missing.awk {I}/package.json",
+        "awk \"$PROGRAM\" {I}/package.json",
+        "sort -o {I}/bin/x.py {I}/package.json",
+        "sort --output={I}/bin/x.py {I}/package.json",
+        "sort {I}/package.json -o {I}/bin/x.py",
+        "sort --compress-program={I}/bin/gaia {I}/package.json",
+        "ls {I}/hooks | sort -o {I}/bin/x.py",
+        "uniq {I}/package.json {I}/bin/x.py",
+        "uniq {I}/package.json -c {I}/bin/x.py",
+        "git hash-object -w {I}/package.json",
+        "git hash-object -t blob -w {I}/package.json",
+    ])
+    def test_a_reader_spelled_to_write_or_run_still_asks(self, install_root, form):
+        assert _guard(form.format(I=install_root))[0] is False
 
     @pytest.mark.parametrize("form", [
         "X={I}; ls $X/bin",
