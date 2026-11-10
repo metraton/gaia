@@ -270,6 +270,13 @@ _INSTALLED_PLUGINS_PATH = Path("~/.claude/plugins/installed_plugins.json").expan
 _KNOWN_MARKETPLACES_PATH = Path("~/.claude/plugins/known_marketplaces.json").expanduser()
 
 
+def _plugins_record(default: Path) -> Path:
+    """*default*'s file inside the plugins root Claude Code uses, which ``CLAUDE_CODE_PLUGIN_CACHE_DIR`` can move."""
+    from cli import _install_state  # noqa: PLC0415
+
+    return _install_state.claude_plugins_dir(default.parent) / default.name
+
+
 def _db_path() -> Path:
     """gaia.db as the store resolves it: GAIA_DB > GAIA_DATA_DIR > ~/.gaia."""
     from gaia.paths.resolver import db_path  # noqa: PLC0415
@@ -417,7 +424,7 @@ def _active_channels(project_root: Path) -> dict:
 
 def _installed_gaia_installs() -> "dict[str, list]":
     """installed_plugins.json entries per ``gaia@<marketplace>`` key whose tree exists."""
-    record = _read_json(_INSTALLED_PLUGINS_PATH)
+    record = _read_json(_plugins_record(_INSTALLED_PLUGINS_PATH))
     plugins = record.get("plugins") if isinstance(record, dict) else None
     installed: dict = {}
     for key, entries in (plugins or {}).items():
@@ -438,7 +445,7 @@ def _served_tree(key: str, install: dict) -> Path:
     A directory marketplace is loaded in place, so its installPath is only the
     copy taken at the first install and goes stale on every rebuild.
     """
-    known = _read_json(_KNOWN_MARKETPLACES_PATH)
+    known = _read_json(_plugins_record(_KNOWN_MARKETPLACES_PATH))
     marketplace = known.get(key.partition("@")[2]) if isinstance(known, dict) else None
     if isinstance(marketplace, dict):
         source = marketplace.get("source")
@@ -631,8 +638,8 @@ def check_package_integrity() -> dict:
             "Package integrity",
             "error",
             f"missing files: {', '.join(missing)}",
-            "Your Gaia install is incomplete. Reinstall: "
-            "`npm install @jaguilar87/gaia@latest`. If it persists, file a bug.",
+            "Your Gaia install is incomplete. Reinstall an exact version: "
+            "`gaia doctor --target <version>` lists the steps. If it persists, file a bug.",
         )
 
     return _result(
@@ -1071,8 +1078,8 @@ def check_schema_version() -> dict:
         )
         minimum = schema_versions(db_path)[2]
         fix = (
-            "`npm install @jaguilar87/gaia@latest` then `gaia update` (npm channel), "
-            "or `claude plugin update gaia` (plugin channel); never downgrade the database"
+            "`gaia doctor --target <version>` lists the steps to an exact version on every channel "
+            "present, then `gaia update` (npm channel); never downgrade the database"
         )
         if writes_refused(live, EXPECTED_SCHEMA_VERSION, minimum):
             return _result(
@@ -2194,7 +2201,7 @@ def check_global_cli_alignment(project_root: Path) -> dict:
             f"PATH gaia resolves to {g_root} (v{g_ver or '?'}) but this workspace "
             f"expects {w_root} (v{w_ver or '?'}, via {workspace_info['source']})",
             "Realign the global install with the workspace build "
-            f"(`npm install -g @jaguilar87/gaia@{w_ver or 'latest'}`), or reorder PATH so "
+            f"(`gaia doctor --target {w_ver or '<version>'}` lists the steps), or reorder PATH so "
             "the workspace's own gaia (its node_modules/.bin shim, ahead of the global "
             "install) wins.",
         )

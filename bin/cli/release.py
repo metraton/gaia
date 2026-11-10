@@ -140,6 +140,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 from cli import _converge  # type: ignore  # noqa: E402
 from cli import _install_helpers  # type: ignore  # noqa: E402
+from cli import _install_state  # type: ignore  # noqa: E402
 from cli import _install_smoke  # type: ignore  # noqa: E402
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
@@ -637,7 +638,7 @@ def live_channels(version: str, workspace: Path | None) -> list[_install_smoke.C
     """The installs of *version* on this machine: the marketplace plugin cache, npm global, and *workspace*'s node_modules."""
     from cli import install as install_mod  # noqa: PLC0415
 
-    found = [("marketplace", Path.home() / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / version, None)]
+    found = [("marketplace", _install_state.claude_plugins_dir() / "cache" / "gaia-marketplace" / "gaia" / version, None)]
     shim_dir = install_mod._npm_global_prefix()
     if shim_dir is not None:
         modules = shim_dir / "node_modules" if os.name == "nt" else shim_dir.parent / "lib" / "node_modules"
