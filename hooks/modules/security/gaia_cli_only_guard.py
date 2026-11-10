@@ -421,8 +421,6 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # ``doctor`` is read-only EXCEPT under --fix, which is why it also appears
     # in _READ_PHRASE_FORBIDDEN_FLAGS below (Design decision 4).
     ("doctor",),
-    # The orchestrator reads the store's pending change before it dispatches an
-    # install: bin/cli/migrate.py::plan_report opens the database read-only.
     ("migrate", "plan"),
     ("now",),
     ("map",),

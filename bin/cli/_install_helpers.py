@@ -129,11 +129,7 @@ def configure_opencode_plugin(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Register Gaia's packaged OpenCode plugin without touching ``.claude/``.
-
-    A Claude Code plugin-cache copy is refused: Claude Code deletes that folder 14 days after the next
-    plugin update, and OpenCode then fails at startup on the missing file.
-    """
+    """Register Gaia's packaged OpenCode plugin without touching ``.claude/``, never from a plugin-cache copy."""
     from cli._install_state import cache_entry  # noqa: PLC0415
 
     pkg_root = plugin_root or _PACKAGE_ROOT
