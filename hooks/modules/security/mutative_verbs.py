@@ -35,7 +35,7 @@ from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, native_path, program_identity
 from .cli_aliases import as_wrapped_cli, declared_wrapper
 from .execution_scan import scan_execution
-from .flag_classifiers import AWK_PROGRAMS
+from .flag_classifiers import AWK_PROGRAMS, READER_GRAMMARS, reader_effect
 from .forge_shapes import change_request_action
 from .verb_lexicon import (
     CHANGE_REQUEST_OWN_WORK,
@@ -2449,34 +2449,26 @@ COMMAND_ALIASES: Dict[str, str] = {
 # without `-i` is read-only, but distinguishing flags here is fragile and the
 # verb scanner already classifies bare `sed` as safe by elimination.
 #
-# These commands are read-only by design at the syscall level: they open files
-# for reading and write to stdout. The flag that mutates state, `find -delete`,
-# is checked explicitly inside the fast path (_FIND_MUTATIVE_FLAGS), and `find
-# -exec` payloads in Step 1a-exec, ahead of it.
+# The names listed here have no option that writes a file or starts a command;
+# a reader that has one is declared in flag_classifiers.READER_GRAMMARS instead.
 
-READ_ONLY_BASE_CMDS: FrozenSet[str] = frozenset({
-    "grep", "egrep", "fgrep", "rg", "ag", "ack",
-    "find", "fd", "locate",
-    "ls", "ll", "la", "tree",
-    "cat", "bat", "less", "more",
+READ_ONLY_BASE_CMDS: FrozenSet[str] = frozenset(READER_GRAMMARS) | frozenset({
+    "grep", "egrep", "fgrep",
+    "locate",
+    "ls", "ll", "la",
+    "cat", "more",
     "head", "tail",
-    "awk", "sort", "uniq", "cut", "tr", "wc", "column",
-    "stat", "file", "du", "df",
+    "awk", "cut", "tr", "wc", "column",
+    "stat", "du", "df",
     "readlink", "realpath", "dirname", "basename",
     "which", "whereis", "type", "command",
     "echo", "printf", "yes", "true", "false",
-    "date", "uptime", "id", "whoami", "groups", "hostname",
+    "uptime", "id", "whoami", "groups",
     "ps", "pgrep",
     "env",
     "diff", "cmp",
-    "xxd", "od", "hexdump", "strings",
+    "od", "hexdump", "strings",
 })
-
-
-# Find -- special handling: `-delete` flag mutates. We scan for it explicitly
-# in the find fast-path so we can keep `find` in the read-only whitelist for
-# the common case while still flagging the destructive flag.
-_FIND_MUTATIVE_FLAGS: FrozenSet[str] = frozenset({"-delete"})
 
 
 # ============================================================================
@@ -2965,7 +2957,7 @@ def _rm_scratch_confined_targets(tokens: tuple, caller: "Optional[LocalWorkCalle
         # (b) reject unexpanded globs and parent traversal outright.
         if any(ch in _RM_GLOB_CHARS for ch in token):
             return None
-        if ".." in token:
+        if ".." in token.split(os.sep):
             return None
         real = _resolve_local_work_path(token, caller.cwd if caller else None)
         if real is None or _owned_local_work_root(real, caller) is None or _shares_inode(real):
@@ -3547,7 +3539,7 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
 def _is_inside_managed_worktrees_root(target: str) -> bool:
     """True when *target* is absolute, glob- and ``..``-free, and resolves inside a managed root."""
     import os
-    if any(char in _WORKTREE_GLOB_CHARS for char in target) or ".." in target:
+    if any(char in _WORKTREE_GLOB_CHARS for char in target) or ".." in target.split(os.sep):
         return False
     expanded = os.path.expanduser(target)
     if not os.path.isabs(expanded):
@@ -5461,17 +5453,44 @@ def _names_a_program(word: str) -> bool:
     )
 
 
+def _arguments_are_data(base_cmd: str, semantics: "CommandSemantics") -> bool:
+    """True when a classifier rule models *base_cmd* and it is no executor, so none of its arguments is a command it may start."""
+    return base_cmd not in _COMMAND_EXECUTORS and bool(
+        _classifier_rule_names(base_cmd)
+        or base_cmd in _EXPRESSION_FIRST_TOOLS
+        or (_is_capability_verb is not None and _is_capability_verb(base_cmd))
+        or _is_windows_native_token(base_cmd, semantics)
+    )
+
+
+def handed_commands(command: str) -> "Tuple[str, ...]":
+    """Every command the program of *command* is handed to run: an executor's, find's or prefix runner's payload, a reader option's, and each argument of a program with no grammar here."""
+    semantics = analyze_command(command)
+    tokens = list(semantics.tokens)
+    if not tokens:
+        return ()
+    base_cmd = semantics.base_cmd
+    handed = list(_executor_floor_payloads(command))
+    runner = _resolve_prefix_runner_payload(base_cmd, semantics)
+    if runner is not None:
+        handed.append(shlex.join([runner[1], *runner[2]]))
+    effect = reader_effect(base_cmd, tokens[1:])
+    if effect is not None and effect.command:
+        handed.append(effect.command)
+    if not _arguments_are_data(base_cmd, semantics):
+        handed += [
+            word if len(word.split()) > 1 else shlex.join(tokens[index:])
+            for index, word in enumerate(tokens[1:], 1)
+        ]
+    return tuple(dict.fromkeys(handed))
+
+
 def _check_launched_payload(
     base_cmd: str, semantics: "CommandSemantics", *,
     cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
     """Adopt the mutative verdict of any command a program with no grammar here could be handed in its arguments; a command substitution, or any expansion in a trap action or mapfile callback, signs."""
-    if base_cmd not in _COMMAND_EXECUTORS and (
-        _classifier_rule_names(base_cmd)
-        or base_cmd in _EXPRESSION_FIRST_TOOLS
-        or (_is_capability_verb is not None and _is_capability_verb(base_cmd))
-        or _is_windows_native_token(base_cmd, semantics)
-    ):
+    if _arguments_are_data(base_cmd, semantics):
         return None
     raw = semantics.raw_command.strip()
     names_a_callback = base_cmd == "trap" or base_cmd in _CALLBACK_BUILTINS and any(
@@ -6159,20 +6178,26 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # being flagged as MUTATIVE because camelCase splitting on "SessionStart"
     # produced "start" (a mutative verb).
     #
-    # Special-case: `find ... -delete` is destructive — flag it explicitly
-    # before falling into the safe path.
+    # A reader's option or operand that writes or removes a file signs, and one
+    # that starts a command takes that command's verdict.
     if base_cmd in READ_ONLY_BASE_CMDS:
-        if base_cmd == "find" and any(
-            t.lower() in _FIND_MUTATIVE_FLAGS for t in tokens
-        ):
+        effect = reader_effect(base_cmd, tokens[1:])
+        if effect is not None and effect.command is None:
             return MutativeResult(
                 is_mutative=True,
                 category=CATEGORY_MUTATIVE,
-                verb="find",
-                dangerous_flags=("-delete",),
+                verb=base_cmd,
+                dangerous_flags=(effect.option,),
                 cli_family="system",
                 confidence="high",
-                reason="`find -delete` removes matched files",
+                reason=f"`{base_cmd} {effect.option}` writes or removes files",
+            )
+        if effect is not None and _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+            return _budget_exhausted_result("reader command")
+        started = _strictest_component(effect.command, cwd=cwd, _depth=_depth + 1) if effect is not None else None
+        if started is not None and started.is_mutative:
+            return replace(
+                started, reason=f"'{base_cmd} {effect.option}' runs {effect.command!r}: {started.reason}",
             )
         return MutativeResult(
             is_mutative=False,

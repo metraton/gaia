@@ -126,7 +126,7 @@ class TestDetectMutativeCommand:
         assert r.cli_family == "system"
         assert r.confidence == "high"
         assert r.dangerous_flags == ("-delete",)
-        assert r.reason == "`find -delete` removes matched files"
+        assert r.reason == "`find -delete` writes or removes files"
 
     def test_find_readonly_fast_path(self):
         r = detect_mutative_command("find . -name x")
