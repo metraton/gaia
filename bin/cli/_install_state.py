@@ -350,7 +350,7 @@ def _npm_local(m: Machine, findings: list) -> "dict | None":
     lock, hidden = _lock_entry(ws / "package-lock.json"), _lock_entry(ws / "node_modules" / ".package-lock.json")
     channel = {
         "channel": "npm-local", "path": str(root),
-        "declared": {"version": spec if _exact(spec) else None, "spec": spec,
+        "declared": {"version": spec, "spec": spec,
                      "origin": f"package.json {ws / 'package.json'}"} if spec else None,
         "registered": {"version": lock.get("version"), "integrity": lock.get("integrity"),
                        "resolved": lock.get("resolved"), "origin": f"package-lock.json, {lock.get('resolved')}"}
@@ -787,9 +787,9 @@ def format_report(report: dict) -> "list[str]":
                              f"{copy['verdict']}")
         else:
             lines.append(f"    {kind}")
-            for label in ("declared", "registered", "installed", "running"):
-                if label in channel and (channel[label] or label != "running" or kind == "launcher"):
-                    lines += _stage(label, channel[label])
+            labels = ("running",) if kind == "launcher" else ("declared", "registered", "installed")
+            for label in labels:
+                lines += _stage(label, channel[label])
             if channel.get("provenance"):
                 lines.append(f"      {'provenance':<11} {channel['provenance']['verdict']}: "
                              f"{channel['provenance']['detail']}")

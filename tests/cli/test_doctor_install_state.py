@@ -194,6 +194,9 @@ def test_the_plugin_and_opencode_on_different_versions_is_a_split(tmp_path):
     assert report["exit_code"] == 2
     assert report["versions"] == ["5.7.2-rc.2", "5.8.0-rc.1"]
     assert any("5.8.0-rc.1" in e and "5.7.2-rc.2" in e and "opencode" in e for e in _errors(report))
+    _write(box.ws / "package.json", {"dependencies": {"@jaguilar87/gaia": "^5.7.2-rc.2"}})
+    shown = state.format_report(box.read())
+    assert "      declared    ^5.7.2-rc.2  package.json " + str(box.ws / "package.json") in shown
     install = next(s for s in plan["steps"] if s.get("command") == "npm install @jaguilar87/gaia@5.8.0-rc.1 --save-exact")
     assert install["cwd"] == str(box.ws)
     assert not any("claude plugin" in c for c in _commands(plan))
