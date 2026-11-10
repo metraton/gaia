@@ -67,6 +67,7 @@ bin/
     ├── _dev_plugin.py         # gaia dev --channel plugin: the local gaia-dev marketplace and its undo (private)
     ├── _brief_scope.py        # Shared brief lookup by name across workspaces (private)
     ├── _converge.py           # Shared drift-free convergence primitives for dev/release (private, no register())
+    ├── _install_state.py      # Read-only install state per channel (declared/registered/installed/running), splits, and the --target plan; backs `gaia doctor --channels` (private)
     ├── _pack_helpers.py       # shared `npm pack` primitive for dev/release (private, no register())
     ├── ac.py                  # gaia ac         — acceptance criteria for briefs (DB-canonical)
     ├── approvals.py           # gaia approvals  — list/pending/show/question/request-set/request-file-write/approve/revoke/reject/reject-all/history/replay/clean/stats/audit-secrets T3 grants
@@ -77,7 +78,7 @@ bin/
     ├── contract_proposals.py  # gaia contract proposals — list/accept/dismiss/backfill what turns proposed (update_contracts, memory_delta); attached to contract.py's parser
     ├── defects.py             # gaia defects    — row-level triage of subagent anomalies and graded hook-log failures
     ├── dev.py                 # gaia dev        — fast local dev loop: pack/link + install + wire, one command, per --channel
-    ├── doctor.py              # gaia doctor     — system health check (the model to learn)
+    ├── doctor.py              # gaia doctor     — system health check (the model to learn); --channels is the install verdict alone, --target <v> the steps to that version
     ├── evidence.py            # gaia evidence   — per-AC evidence (three-tier storage)
     ├── history.py             # gaia history    — recent agent sessions
     ├── install.py             # gaia install    — migrate the DB, wire settings and symlinks, record the manifest (run manually; no postinstall; declares no workspace)

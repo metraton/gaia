@@ -6,7 +6,8 @@ The checks are the functions registered with ``@register_check(name, order)``;
 
 Severity: pass / info / warning / error (error = Gaia is broken for the user,
 warning = degraded but usable, info = advisory).
-Exit codes: 0=healthy, 1=warnings, 2=errors
+Exit codes: 0=healthy, 1=warnings, 2=errors; with --channels or --target the
+same three codes carry the install verdict alone (aligned, residue, split).
 
 A warning or error prints its ``fix`` hint inline. Checks only report; the one
 exception is ``--fix``, which repairs the orchestrator ``agent`` field in
@@ -942,6 +943,27 @@ def check_install_channel(project_root: Path) -> dict:
         return _result(name, "info",
                        f"{' and '.join(active)} -- both active; Hook registrations shows whether hooks run twice")
     return _result(name, "pass", " and ".join(active))
+
+
+def _install_report(project_root: Path) -> dict:
+    """``cli._install_state.read`` of this machine, the plugin records taken where this module reads them."""
+    from cli import _install_state  # noqa: PLC0415
+
+    machine = _install_state.Machine.current(project_root, _USER_SETTINGS_PATH, _INSTALLED_PLUGINS_PATH.parent)
+    return _install_state.read(machine)
+
+
+@register_check("Channel versions", order=37)
+def check_channel_versions(project_root: Path) -> dict:
+    """Fail when the channels present on this machine run different versions or disagree with their records."""
+    report = _install_report(project_root)
+    severity = {"split": "error", "residue": "warning"}.get(report["status"], "pass")
+    first = next((f["detail"] for f in report["findings"] if f["severity"] != "info"), None)
+    detail = f"{', '.join(report['versions']) or 'no Gaia copy found'}" + (f"; {first}" if first else "")
+    result = _result("Channel versions", severity, detail,
+                     "`gaia doctor --channels` names every split; `--target <version>` lists what closes it")
+    result["install"] = {key: report[key] for key in ("status", "exit_code", "errors", "warnings", "versions")}
+    return result
 
 
 @register_check("Plugin registered", order=40)
@@ -3542,6 +3564,11 @@ def register(subparsers):
             "root recorded in gaia.db that contains CLAUDE_PROJECT_DIR or the\n"
             "current folder. Never a walk up to an unrecorded .claude/.\n"
             "\n"
+            "Install state: --channels prints, per channel on this machine,\n"
+            "what is declared, registered, installed and running, and exits\n"
+            "with that verdict alone; --target VERSION adds the host commands\n"
+            "that would bring each channel to VERSION, which doctor never runs.\n"
+            "\n"
             "Read-only: every check inspects state and prints an inline fix\n"
             "hint. Nothing is written UNLESS --fix is passed."
         ),
@@ -3558,12 +3585,39 @@ def register(subparsers):
     sub.add_argument("--workspace", metavar="PATH", default=None,
                      help="Check this workspace's .claude/ instead of auto-deriving. "
                           "Skips the derivation entirely.")
+    sub.add_argument("--channels", action="store_true", default=False,
+                     help="Only the install state: per channel (Claude Code plugin, npm local and global, "
+                          "OpenCode, the PATH launcher) what is declared, registered, installed and running, "
+                          "with version and origin, and every split. Exit 0 aligned, 1 residue, 2 split, "
+                          "whatever the other checks say. Read-only.")
+    sub.add_argument("--target", metavar="VERSION", default=None,
+                     help="With the install state, the gaps between this machine and VERSION per channel and "
+                          "the host command or settings edit that closes each, the marketplace source spelled "
+                          "as declared. Describes; runs nothing. Exit code as --channels.")
+
+
+def _cmd_channels(project_root: Path, target: "str | None", as_json: bool) -> int:
+    """`gaia doctor --channels [--target V]`: the install report, the plan when a target is named, the install verdict as exit code."""
+    from cli import _install_state  # noqa: PLC0415
+
+    report = _install_report(project_root)
+    target_plan = _install_state.plan(report, target) if target else None
+    if as_json:
+        print(json.dumps({**report, "plan": target_plan}, indent=2))
+    else:
+        print()
+        print("\n".join(_install_state.format_report(report)))
+        if target_plan:
+            print("\n".join(_install_state.format_plan(target_plan)))
+    return report["exit_code"]
 
 
 def cmd_doctor(args) -> int:
     """Handler for `gaia doctor`."""
     workspace_override = getattr(args, "workspace", None)
     project_root = _derive_workspace(override=workspace_override)
+    if getattr(args, "channels", False) or getattr(args, "target", None):
+        return _cmd_channels(project_root, getattr(args, "target", None), getattr(args, "json", False))
 
     # Iterate the global check registry populated by @register_check.
     # Each check function is invoked with project_root if it accepts an
@@ -3639,6 +3693,7 @@ def cmd_doctor(args) -> int:
         output = {
             "healthy": not has_errors and not has_warnings,
             "status": status,
+            "install": next((r["install"] for r in results if "install" in r), None),
             "checks": results,
             "fixes": fixes,
         }

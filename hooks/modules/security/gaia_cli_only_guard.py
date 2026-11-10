@@ -1131,7 +1131,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
         "--field --draft-id --agent-id --harness-id --contract-id", "--row --json"),
     ("defects",): _flags(
         "--origin --type --severity --agent --since --until --limit --workspace", "--count --json"),
-    ("doctor",): _flags("--workspace", "--json"),
+    ("doctor",): _flags("--workspace --target", "--json --channels"),
     ("evidence", "list"): _flags("--brief --ac --workspace", "--json"),
     ("evidence", "show"): _flags("", "--json"),
     ("history",): _flags("--agent -a --limit -n --workspace", "--today -t --blocked -b --json"),
