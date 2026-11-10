@@ -2,10 +2,10 @@
 
 The tarball is extracted into one stable directory per workspace that is also a
 local-directory marketplace named ``gaia-dev`` whose only entry has source ``.``.
-Claude Code loads a relative-path plugin of a local-directory marketplace in
-place, so replacing the directory's contents reaches a running session through
-``/reload-plugins`` with no version bump, and no dependency install runs there
-(Gaia's package has no runtime dependencies).
+Claude Code also copies it into its plugin cache (``cache/gaia-dev/gaia/<version>``)
+and records the directory as ``readFromFolder``; a rebuild replaces the directory,
+not that copy, and reaches a session through ``/reload-plugins``. ``gaia doctor
+--channels`` shows both trees. Never an update route for a published version.
 
 Registration is local scope in the target workspace only, and
 ``gaia@gaia-marketplace`` is disabled there: both plugins' manifests are named

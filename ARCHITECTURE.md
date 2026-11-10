@@ -256,17 +256,21 @@ ClaudeCodeAdapter.format_validation_response() -> Claude Code stdout JSON
 ### Plugin Distribution
 Gaia ships as the single unified `gaia` plugin. There is **no `dist/` bundle** --
 the npm package root (`@jaguilar87/gaia`) IS the plugin. The root
-`.claude-plugin/plugin.json` (with hooks embedded inline) and `hooks/hooks.json`
+`.claude-plugin/plugin.json` (metadata only, no hooks) and `hooks/hooks.json`
 are generated from `build/gaia.manifest.json` at pack time
 (`prepack` -> `generate:plugin-root`) and tracked in git. Claude Code
 auto-discovers agents, skills, commands, and hooks from their respective
 directories at the package root.
 
-See `.claude-plugin/marketplace.json` for the self-hosted marketplace, which
-advertises the one `gaia` plugin with a `source: npm` object
-(`{"source": "npm", "package": "@jaguilar87/gaia"}`) -- Claude Code installs the
-package into its plugin cache and reads the inline-hooks `plugin.json` from the
-package root.
+`.claude-plugin/marketplace.json` advertises the one `gaia` plugin with
+`source: "."`, so a marketplace added at a git ref installs that ref's tree into
+Claude Code's plugin cache (`cache/gaia-marketplace/gaia/<version>`). The
+package and OpenCode channels install the same tree from npm. Gaia never runs
+the host's install commands: `gaia doctor --channels`
+(`bin/cli/_install_state.py::read`) reads what each channel declares,
+registers, installs and runs, and `gaia doctor --target <version>`
+(`bin/cli/_install_state.py::plan`) names the host steps that would bring the
+machine there. `skills/gaia-release` carries the install flow.
 
 ### Workspace settings ownership
 `gaia install`/`gaia update` (`_install_helpers.merge_local_permissions`) and the
