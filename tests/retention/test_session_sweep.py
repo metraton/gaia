@@ -169,8 +169,22 @@ def test_a_dirty_worktree_stays_and_is_listed(home, repo):
 
     report = session_sweep.run(home, repos=[repo])
     assert dirty.exists()
+    assert [(i["path"], i["reason"]) for i in report["refused"]] == [(str(dirty), "uncommitted work, kept as evidence")]
+
+
+def test_a_worktree_with_unpushed_commits_stays_and_is_listed(home, repo):
+    from gaia.retention import session_sweep
+
+    ahead = _worktree(repo, "ahead", "NEEDS_VERIFICATION", "sess-ended")
+    (ahead / "work.txt").write_text("committed, never pushed\n", encoding="utf-8")
+    _git(ahead, "add", "work.txt")
+    _git(ahead, "commit", "-q", "-m", "local only")
+    _age(ahead, 3)
+
+    report = session_sweep.run(home, repos=[repo])
+    assert ahead.exists()
     assert [(i["path"], i["reason"]) for i in report["refused"]] == [
-        (str(dirty), "uncommitted or unpushed work, kept as evidence"),
+        (str(ahead), "1 commit(s) no other branch holds, kept as evidence"),
     ]
 
 

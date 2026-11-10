@@ -16,7 +16,7 @@ from gaia.atomic_replace import replace_retrying
 from gaia.paths import data_dir, scratch_dir, tmp_dir
 
 MIN_INTERVAL_SECONDS = 15 * 60
-CLAIM_SECONDS = 10 * 60
+CLAIM_SECONDS = 2 * 3600
 
 
 def report_path() -> Path:
@@ -80,7 +80,7 @@ def _worktree_verdict(path: Path, contract_id: str, held) -> tuple:
         session_ended_for_contract,
         session_liveness_for_contract,
     )
-    from gaia.retention.worktree_reclaim import worktree_needs_capture
+    from gaia.retention.worktree_reclaim import _exempt_metadata_filename, _has_uncommitted_changes
 
     if worktree_collector._contract_row(contract_id) is None:
         return "refuse", f"owning contract {contract_id} has no readable row"
@@ -94,10 +94,20 @@ def _worktree_verdict(path: Path, contract_id: str, held) -> tuple:
             return "refuse", f"owning contract {contract_id}: its session cannot be read"
         return "keep", "its owner may still be running"
     try:
-        if worktree_needs_capture(path):
-            return "refuse", "uncommitted or unpushed work, kept as evidence"
+        if _has_uncommitted_changes(path, exempt=_exempt_metadata_filename(path)):
+            return "refuse", "uncommitted work, kept as evidence"
+        branch = subprocess.run(
+            ["git", "-C", str(path), "symbolic-ref", "-q", "HEAD"], capture_output=True, text=True,
+        ).stdout.strip()
+        others = [f"--exclude={branch[len('refs/heads/'):]}"] if branch else []
+        unpushed = subprocess.run(
+            ["git", "-C", str(path), "rev-list", "--count", "HEAD", "--not", "--remotes", *others, "--branches"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
     except subprocess.CalledProcessError as exc:
         return "refuse", f"git could not read its state: {exc}"
+    if unpushed != "0":
+        return "refuse", f"{unpushed} commit(s) no other branch holds, kept as evidence"
     return "remove", reason
 
 
@@ -143,10 +153,13 @@ def _writable_retry(func, path, _exc) -> None:
 def _remove(item: Dict[str, object]) -> Optional[str]:
     path = Path(str(item["path"]))
     if item["kind"] == "worktree":
-        from gaia.retention.worktree_reclaim import reclaim_worktree
+        from gaia.retention.worktree_reclaim import _exempt_metadata_filename, _remove_worktree
 
-        result = reclaim_worktree(Path(str(item["repo"])), path)
-        return None if result.get("recycled") else str(result.get("reason") or result.get("status"))
+        try:
+            _remove_worktree(Path(str(item["repo"])), path, exempt=_exempt_metadata_filename(path))
+        except (subprocess.CalledProcessError, OSError) as exc:
+            return str(getattr(exc, "stderr", "") or exc).strip()
+        return None
     try:
         if path.is_dir() and not path.is_symlink():
             if sys.version_info >= (3, 12):
