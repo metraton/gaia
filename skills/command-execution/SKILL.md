@@ -92,11 +92,13 @@ instruction to use one and record the refusal, as rule 6 below does for writes.
    trailing extension (`<contract_id>.json`) -- never a free-form or
    task-derived name: that is the identifier Gaia's own retention rule reads
    back to attribute the entry to its turn and reclaim it once the contract
-   closes. An entry no turn owns is reclaimed anyway after 7 untouched days
-   (`GAIA_FS_RETENTION_STALE_DAYS`), and so is one whose paused owner's session
-   can no longer be read; tmp folders are attributed and collected the same
-   way, and a scratch database `<contract_id>.db` keeps its backups beside it
-   in `<contract_id>.backups`. A file
+   closes. Every session start reclaims it on its own once the session that
+   owned it has ended and it has been quiet 24 hours, and tmp folders the same
+   way (`gaia/retention/session_sweep.py`); an entry no turn owns is only listed
+   there, and `gaia cleanup --prune` reclaims it after 7 untouched days
+   (`GAIA_FS_RETENTION_STALE_DAYS`). `gaia cleanup --sweep --dry-run` shows what
+   the next sweep would take. A scratch database `<contract_id>.db` keeps its
+   backups beside it in `<contract_id>.backups`. A file
    worth keeping as proof of what was done is deposited as evidence through
    the contract's evidence clause (`agent-contract-handoff`), not left sitting
    in scratch or committed as a side effect. Temporaries a tool creates on its
@@ -117,7 +119,15 @@ instruction to use one and record the refusal, as rule 6 below does for writes.
    turn closes, because the host keeps it running and keeps spooling its output
    after the turn that started it is gone; the closing record says which of the
    two it was. Reach for the background only when the foreground cannot hold
-   the work.
+   the work, and then send both streams to your scratch entry,
+   `<command> &> ~/.gaia/scratch/<contract_id>.log`, the one redirect rule 3
+   admits and the route the background guard's denial names; read the file
+   with `Read`. A CI wait is either that,
+   `ghx -C <repo> run watch <run-id> --exit-status --compact --interval 30 &> ~/.gaia/scratch/<contract_id>.ci.log`
+   with `run_in_background`, or a foreground
+   `ghx -C <repo> run view <run-id> --json status,conclusion` repeated; a
+   foreground `run watch` outlives its timeout, is moved to the background
+   with its output unrouted, and holds the close until stopped.
 9. Work against a SCRATCH DATABASE by setting `GAIA_DB` to a file under the
    scratch directory, named by `contract_id` like any other scratch entry
    (`~/.gaia/scratch/<contract_id>.db`). `GAIA_DB` is FILE-scoped: it relocates

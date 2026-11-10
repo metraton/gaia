@@ -500,8 +500,9 @@ class ToolPolicy:
         # The grant is consumed here, so the call's terminal event can only
         # find the approval through this state.
         effective_command = result.modified_input.get("command", command) if result.modified_input else command
-        if parameters.get("run_in_background") is True and command.startswith(effective_command):
-            # The sanitizer's trailing-redirect strip would send a vetted background redirect back to the spool.
+        stripped_tail = command[len(effective_command):].strip() if command.startswith(effective_command) else ""
+        if stripped_tail and not stripped_tail.endswith("&"):
+            # The sanitizer's trailing-redirect strip would send a vetted redirect back to the spool.
             effective_command = command
         state = create_pre_hook_state(
             tool_name=tool_name,

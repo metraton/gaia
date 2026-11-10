@@ -104,6 +104,14 @@ def test_a_foreground_command_is_not_judged_by_the_background_rule(tmp_path):
     assert "[BACKGROUND_OUTPUT]" not in result.stdout
 
 
+def test_a_foreground_command_keeps_its_redirect_into_scratch(tmp_path):
+    command = f"ls -la {tmp_path} &> {_scratch(tmp_path)}/listing.log"
+    result = _pre_tool_use(command, tmp_path, background=False)
+    decision = json.loads(result.stdout.strip().splitlines()[-1])["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "allow", result.stdout[-600:]
+    assert decision["updatedInput"]["command"].endswith(command)
+
+
 def _agent_transcript(tmp_path: Path) -> Path:
     path = tmp_path / f"agent-{AGENT}.jsonl"
     launch = {"type": "assistant", "agentId": AGENT, "message": {"role": "assistant", "content": [

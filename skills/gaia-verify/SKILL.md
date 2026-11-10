@@ -33,6 +33,19 @@ The instrument that reads it is `gaia doctor --channels [--json] [--workspace <f
 
 Read the verdict from the exit code and the `[FAIL]`/`[WARN]` lines, never from a plain `gaia doctor` summary. Plain doctor mixes the install verdict with unrelated workspace warnings, so it can exit 1 on a healthy install and once passed a split one.
 
+## What a healthy temp is
+
+**The principle of temporaries: they live where the platform and the host put them, each belongs to the turn that made it, and that turn removes it when it ends. A sweep at session start removes what a dead run left, deciding by owner, never by age alone, and touches nothing of a live session. Gaia never reconfigures the machine's temp; it reports.**
+
+Why each part matters:
+
+- *Where the platform puts them*, because the host spools to its own temp whatever Gaia does, and a dispatched shell's `TMPDIR` is already Gaia's (`~/.gaia/tmp/<id>`). Moving the machine's temp is the user's choice, and the remedy `gaia doctor` names is theirs to apply.
+- *The turn that made it*, because only Gaia knows which turn made a file and whether that turn is over. An age sweep cannot tell a spent scratch from a run that is still writing.
+- *By owner, never by age alone*, because a killed run never cleans up after itself. The session-start sweep (`gaia/retention/session_sweep.py`) removes an entry once its owner's session has ended and the entry has been quiet for the grace window. A worktree with uncommitted or unpushed work is evidence, and an entry whose owner cannot be read is unattributed: both are listed, never removed.
+- *It reports*, because the host's temp may be small or in memory, and that is a machine setting. `gaia doctor` (`Temp space`, `Sweep leftovers`) and one session-start line, shown only when temp space warns, say so.
+
+The instrument is `gaia cleanup --sweep --dry-run`, which prints each item the sweep would remove or refuse, with its size and reason.
+
 ## Decision tree
 
 ```
@@ -124,4 +137,4 @@ If the verdict is split or `gaia doctor` fails, report the exact lines and stop;
 - **Verifying through a dist-tag.** `@rc` and `@latest` follow the registry, which serves a new version minutes late. The check then validates the previous build and passes.
 - **Continuing after a failed verdict.** A split install or a failing doctor makes every later check a description of one copy. Report and stop.
 - **Assuming a postinstall bootstrapped the store.** There is none. The store is created on the first `gaia` call or by `gaia install`.
-- **Skipping cleanup.** `/tmp/gaia-sandbox-*` and registry temp dirs accumulate; delete them after reporting (n/a for live).
+- **Skipping cleanup.** A `--stay` sandbox (`gaia-sandbox-<ts>-<pid>/` under the prefix `select_sandbox_prefix` chose) and registry temp dirs accumulate, and no sweep owns them; delete them after reporting (n/a for live).
