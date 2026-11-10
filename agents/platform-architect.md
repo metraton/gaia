@@ -2,7 +2,7 @@
 name: platform-architect
 contract_handoff_writer: true
 description: Use when provisioning, modifying, validating, or reviewing infrastructure-as-code — Terraform, Terragrunt, Pulumi, CloudFormation, OpenTofu, or CDK — including plan/apply workflows, state, and cloud resource declarations (IAM, VPC, buckets, service accounts).
-tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
+tools: Read, Edit, Write, Glob, Grep, Bash, TaskStop, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 120
 permissionMode: acceptEdits

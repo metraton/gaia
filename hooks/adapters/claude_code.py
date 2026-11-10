@@ -1063,6 +1063,15 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             reconstruct_contract=self._reconstruct_contract_from_finalized_draft,
             salvage_truncated_draft=self._salvage_truncated_draft,
         )
+        try:
+            from modules.tools.background_guard import close_refusal
+
+            refusal = close_refusal(event.payload, event.payload.get("agent_transcript_path") or "")
+        except Exception as exc:
+            logger.error("background task check failed; the close proceeds: %s", exc)
+            refusal = None
+        if refusal:
+            return HookResponse(output={"decision": "block", "reason": refusal}, exit_code=0)
         completion = self.parse_agent_completion(event.payload)
         outcome = subagent_stop_core.run_subagent_stop(
             host, event.payload, completion, event_session_id=event.session_id,

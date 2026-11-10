@@ -467,6 +467,12 @@ class ToolPolicy:
                     "redacts a command's output. Run it through the Bash tool."
                 ),
             )
+        if parameters.get("run_in_background") is True:
+            from modules.tools.background_guard import background_output_refusal
+
+            refusal = background_output_refusal(command)
+            if refusal:
+                return PolicyVerdict(decision="deny", reason=refusal)
 
         is_subagent = bool(hook_data and hook_data.get("agent_id"))
         session_id = (hook_data or {}).get("session_id", "")
@@ -494,6 +500,9 @@ class ToolPolicy:
         # The grant is consumed here, so the call's terminal event can only
         # find the approval through this state.
         effective_command = result.modified_input.get("command", command) if result.modified_input else command
+        if parameters.get("run_in_background") is True and command.startswith(effective_command):
+            # The sanitizer's trailing-redirect strip would send a vetted background redirect back to the spool.
+            effective_command = command
         state = create_pre_hook_state(
             tool_name=tool_name,
             command=effective_command,
@@ -557,7 +566,7 @@ class ToolPolicy:
             )
             return PolicyVerdict(
                 decision="allow", reason=reason,
-                updated_input={"command": final_command},
+                updated_input={**parameters, "command": final_command},
                 context=validator.last_warning,
             )
 
@@ -1177,6 +1186,10 @@ class ToolPolicy:
         except Exception as e:
             logger.error("Error in adapt_post_tool_use: %s", e, exc_info=True)
 
+        if str(tool_name).lower() in SHELL_TOOLS:
+            from modules.tools.background_guard import auto_background_notice
+
+            return PolicyVerdict(context=auto_background_notice(raw_tool_response))
         return PolicyVerdict()
 
     @staticmethod

@@ -2,7 +2,7 @@
 name: gaia-verifier
 contract_handoff_writer: true
 description: Use when a task's gates are ready to be independently confirmed -- dispatched directly when a producing agent's contract proposes agent_state NEEDS_VERIFICATION, never by surface-signal routing. Loads verification-oracle for command/code gates and verification-rubric for semantic/self_review gates.
-tools: Read, Write, Bash, Skill
+tools: Read, Write, Bash, TaskStop, Skill
 model: inherit
 maxTurns: 450
 disallowedTools: [Edit, NotebookEdit]
