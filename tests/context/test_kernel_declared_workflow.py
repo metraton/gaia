@@ -144,3 +144,30 @@ def test_a_workflow_declared_before_the_first_scan_is_refused_then_reaches_the_k
     alpha = _contract_lines(db, "alpha")
     project_at = next(i for i, line in enumerate(alpha) if line.startswith("project: alpha"))
     assert all(value in alpha[project_at + 1] for value in DECLARED.values())
+
+
+def test_the_workflow_line_carries_the_date_its_row_was_last_written(db, tmp_path):
+    """The declaration is stored text, so a reader is told how old it is."""
+    import sqlite3
+
+    _scan(db, tmp_path, "alpha", remote="git@github.com:acme/alpha.git")
+    declared = apply_update(
+        {"contract": "project_identity", "payload": {_slug_of(db, "alpha"): {"workflow": DECLARED}}},
+        "gaia-operator", workspace=WORKSPACE, db_path=db,
+    )
+    assert declared["success"], declared
+    con = sqlite3.connect(db)
+    try:
+        written = con.execute(
+            "UPDATE project_context SET updated_at = '2026-11-05T14:30:00Z' "
+            "WHERE contract_name = 'project_identity'"
+        ).rowcount
+        con.commit()
+    finally:
+        con.close()
+    assert written == 1
+
+    alpha = _contract_lines(db, "alpha")
+
+    project_at = next(i for i, line in enumerate(alpha) if line.startswith("project: alpha"))
+    assert alpha[project_at + 1].startswith("  workflow (as of 2026-11-05): integration=pull_request, ")

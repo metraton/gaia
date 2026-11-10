@@ -96,7 +96,7 @@ def test_specialist_kernel_carries_exactly_the_scope_chain_rows(
     kernel = _kernel(tmp_path, db)
 
     assert f'  "{SCOPE_TITLE}"  scope=workspace  ref=memory:me/decision_me_suite_home' in kernel
-    assert f"{MEMORY_HEADING}: me\nkind=preference" in kernel
+    assert "# Scope preferences: me (1 of 1)\n" in kernel
     assert not any(title in kernel for _, title in USER_TITLES.values())
 
 

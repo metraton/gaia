@@ -6,41 +6,30 @@ row:
 
   * ``# Your Contract``  -- identity, goal, role/surface, the project the
     dispatch ran from (``dispatch_project``) with the workflow that
-    project declared in its ``project_identity`` entry, section scope, and
+    project declared in its ``project_identity`` entry and the date that
+    entry's row was last written, section scope, and
     (for a plan-task-bound turn) the task's acceptance gates. DATA ONLY: the
     block carries no instructions; the pedagogy lives in the agent-protocol
     skill, which documents every field.
   * ``# Your CLI``       -- the commands through which the turn pulls project
-    context, memory (search/list/show/get-relevant -- open to every subagent
-    regardless of role), and its own contract (both the read verbs --
-    view/list/validate -- and the incremental-fill ones --
-    set/add/fill/finalize) ON DEMAND (nothing beyond these blocks is
-    preloaded). This is the INDEX of what the turn
-    can look up on its own -- a capability the turn already has but that is
-    not announced here does not exist for the turn in practice. Per-role
-    extras are declared in the agent's frontmatter (``cli:`` key, same
-    declaration pattern as ``routing:``) and rendered verbatim when present,
-    additive to the base lines. Declaring is NOT permitting: tiers and
-    guards still gate every execution.
-  * ``# Scope memory: <ws> > [<group> >] <project>`` -- an index (title and
-    ``ref=memory:...`` coordinate, grouped by kind, each line marked
-    ``scope=workspace|group|project``) of the live preferences, facts and
-    lessons the dispatch's workspace, group and project hold
-    (``gaia.store.reader.scope_memory_rows`` rendered by
-    ``modules.context.user_sections``). The user's own rows never reach a
-    kernel: the preferences that touch this output travel in the goal.
-    Omitted entirely when no row is selected -- never an empty heading.
+    context, memory (open to every subagent regardless of role) and fills its
+    own contract, the contract verbs written with the turn's ``contract_id``.
+    It is the index of what the turn can look up on its own and is never cut.
+    Per-role extras are declared in the agent's frontmatter (``cli:`` key) and
+    rendered verbatim after the base lines. Declaring is NOT permitting: tiers
+    and guards still gate every execution.
+  * ``# Scope preferences: <ws> > [<group> >] <project> (N of N)`` -- every
+    live preference the dispatch's workspace, group and project hold, as a
+    title and its ``ref=memory:...`` coordinate marked
+    ``scope=workspace|group|project``; never cut. The user's own rows never
+    reach a kernel: the preferences that touch this output travel in the goal.
+  * ``# Scope memory: <chain>`` -- one line counting the chain's facts and
+    lessons and the project's other standing notes, none of them preloaded,
+    with the commands that read them. Both headings are omitted when they
+    would be empty.
   * ``# Environment``    -- the session's environment line (OS, host, gaia CLI
     path, tools on PATH) and up to ``KERNEL_TOOL_LINES`` of the user's
     ``tool=`` lines.
-  * ``# Standing notes``     -- an INDEX (slug + one line, never a body) of the
-    dispatch project's live anchor notes, hard-capped at
-    ``PROJECT_NOTES_BUDGET``, rendered after ``# Scope memory`` and
-    ``# Project context`` and before ``# Environment`` and the CLI index: the
-    host truncates a kernel from the end, so a long kernel loses the CLI index
-    first and the notes only after it. Omitted when the dispatch has no project
-    or the project has no notes. Bodies are opened on demand with
-    ``gaia memory show <slug>``.
 
 ``# Your skills`` is a further block, rendered only for a host that preloads
 no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
@@ -79,15 +68,14 @@ logger = logging.getLogger(__name__)
 
 KERNEL_HEADING = "# Your Contract"
 CLI_HEADING = "# Your CLI"
+PREFERENCES_HEADING = "# Scope preferences"
 MEMORY_HEADING = "# Scope memory"
 SKILLS_HEADING = "# Your skills"
-PROJECT_NOTES_HEADING = "# Standing notes"
 ENVIRONMENT_HEADING = "# Environment"
 
 PROJECT_CONTEXT_HEADING = "# Project context"
 
-PROJECT_NOTES_BUDGET = 600
-_PROJECT_NOTE_LINE_MAX = 150
+
 def _section_pointer(section: str, workspace: str, project: str) -> str:
     args = " ".join(("--workspace", shlex.quote(workspace), "--project", shlex.quote(project)))
     return f"`gaia context get-contract --section {section} {args}`"
@@ -107,38 +95,29 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _GOAL_WRAP_WIDTH = 96
 _GOAL_INDENT = "  "
 
-# The base CLI lines every turn receives, verbatim. Every verb/flag here must
-# be executable as written, because this block is the index of what the turn
-# can look up on its own: a command it does not announce does not exist for
-# it. Memory reads are open to any subagent regardless of role; nothing here
-# is orchestrator-only.
-#
-# Line 0 (`get`) and line 1 (`get-contract`) resolve --section against two
-# DIFFERENT namespaces -- the fixed workspace shape (apps/services/stack/
-# git/...) vs project_context_contracts.contract_name -- and can_read/
-# can_write (in `# Your Contract`) names the SECOND one, so they stay two
-# lines.
-_CLI_BASE_LINES = (
-    "  gaia context get --section <s>   # forma del workspace (apps/services/stack/git/...), a demanda",
-    "  gaia context get-contract --section <s>   # contratos de contexto (project_identity, stack, ...) -- namespace de can_read/can_write",
-    "  gaia memory search '<término>'   # memoria curada y episodios",
-    "  gaia memory list --type <t>      # t: project|user|feedback|atom|decision|negative",
-    "  gaia memory show <slug>          # cuerpo completo de una fila curada",
-    "  gaia memory get-relevant --initiative <k>   # pendientes vivos de UN proyecto",
-    "  gaia memory get-relevant --initiative <k> --sections anchor   # one project's standing notes, bodies included",
-    "  gaia memory get-relevant --sections <s>      # s: carry_forward|anchor|thread_open",
-    "  gaia contract view / list / validate         # tu contrato: lectura",
-    "  gaia contract set / add / fill / finalize    # tu contrato: llenado incremental y cierre",
-    "  gaia --help                      # todo lo demás",
+# Every line must run as written once its <placeholders> are filled: this block
+# is the index of what the turn can look up alone, and it is never cut.
+_CLI_CONTEXT_LINE = (
+    "  gaia context get-contract --section <s>   # one context section; <s> is a name from can_read"
 )
-
-# Rendered when the dispatch workspace is known: the workspace row of
-# `gaia context get-contract`, the only verb that reaches can_read (`get` never
-# resolves a contract name). A project's own sections are read with --project,
-# through the pointers `# Project context` prints (`_section_pointer`).
 _CLI_WORKSPACE_LINE = (
     "  gaia context get-contract --section <s> --workspace {workspace}"
-    "   # tus secciones legibles: can_read"
+    "   # the same section as your workspace holds it"
+)
+_CLI_LINES = (
+    "  gaia memory search '<term>'      # curated memory and episodes",
+    "  gaia memory show <slug>          # one curated row, body whole; there is no `memory get`",
+    "  gaia memory list --type <t>      # t: project|user|feedback|atom|decision|negative",
+    "  gaia memory get-relevant --initiative <k>   # one project's live pendings",
+    "  gaia memory get-relevant --initiative <k> --sections anchor   # one project's standing notes, bodies included",
+    "  gaia memory get-relevant --sections <s>      # s: carry_forward|anchor|thread_open",
+    "  gaia contract view --draft-id {draft}   # your contract as it stands; also list, validate",
+    "  gaia contract set --draft-id {draft} <dotted.field> <value>   # replace one field; <value> is read as JSON when it parses",
+    "  gaia contract add --draft-id {draft} <dotted.list.field> <value>   # append one entry to a list",
+    "  gaia contract fill --draft-id {draft} --json '<object>'   # deep-merge; writes a list only while it is empty",
+    "  gaia contract fill --draft-id {draft} --json-file -   # the same, the object read from a quoted heredoc",
+    "  gaia contract finalize --draft-id {draft}   # last, once agent_status.agent_state holds the closing state",
+    "  gaia --help                      # everything else",
 )
 
 def _connect(db_path):
@@ -253,11 +232,12 @@ def _acceptance_lines(plan_task_id: int, db_path=None) -> list:
 
 
 def _declared_workflow(workspace: str, dispatch_project: str, db_path=None) -> str:
-    """The workflow the dispatch's project declared, as one data line, or "" when it declared none.
+    """The ``workflow (as of <date>):`` line of the dispatch's project, or "" when it declared none.
 
     A mapping renders its scalar values as ``key=value`` pairs in stored order,
     a string renders as written; whitespace runs collapse so the value stays one
-    line, and anything else declares nothing renderable.
+    line, and anything else declares nothing renderable. The date is the day the
+    ``project_identity`` row holding the declaration was last written.
     """
     try:
         from ..core.paths import ensure_package_root_importable
@@ -271,14 +251,32 @@ def _declared_workflow(workspace: str, dispatch_project: str, db_path=None) -> s
         logger.debug("declared workflow read failed (non-fatal)", exc_info=True)
         return ""
     declared = (entry or {}).get(DECLARED_WORKFLOW_KEY)
-    if isinstance(declared, str):
-        return " ".join(declared.split())
     if isinstance(declared, dict):
-        return ", ".join(
+        declared = ", ".join(
             f"{key}={' '.join(str(value).split())}" for key, value in declared.items()
             if isinstance(value, (str, int, float)) and str(value).strip()
         )
-    return ""
+    if not isinstance(declared, str) or not declared.strip():
+        return ""
+    written = _project_identity_written(workspace, dispatch_project, db_path) or "unknown date"
+    return f"  workflow (as of {written}): {' '.join(declared.split())}"
+
+
+def _project_identity_written(workspace: str, dispatch_project: str, db_path=None) -> str:
+    """The day (``YYYY-MM-DD``) the dispatch project's ``project_identity`` row was last written, or ""."""
+    try:
+        from gaia.store.project_context import project_sections, resolve_project
+
+        con = _connect(db_path)
+        try:
+            project = resolve_project(con, dispatch_project, workspace or None)
+            stored = project_sections(con, project).get("project_identity") if project else None
+        finally:
+            con.close()
+    except Exception:
+        logger.debug("project_identity date read failed (non-fatal)", exc_info=True)
+        return ""
+    return str((stored or {}).get("updated_at") or "")[:10]
 
 
 def build_dispatch_kernel(
@@ -328,7 +326,7 @@ def build_dispatch_kernel(
             str(row.get("workspace") or ""), dispatch_project, db_path=db_path,
         )
         if workflow:
-            parts.append(f"  workflow: {workflow}")
+            parts.append(workflow)
 
     plan_task_id = row.get("plan_task_id")
     if plan_task_id is not None:
@@ -425,19 +423,18 @@ def build_skills_block(
 
 def build_cli_block(
     agent_name: str = "", *, agents_dir: "Path | None" = None,
-    workspace: str = "",
+    workspace: str = "", contract_id: str = "",
 ) -> str:
     """Render ``# Your CLI``: the base lines plus any per-role extras.
 
-    When ``workspace`` is known (the row's own column), the workspace-scoped
-    ``get-contract`` example is rendered concrete right after the generic
-    ``get``/``get-contract`` pair; a project's own sections are read with
-    ``--project`` through the ``# Project context`` pointers.
+    A known ``workspace`` adds the workspace-scoped ``get-contract`` line, and a
+    known ``contract_id`` is written into every ``gaia contract`` line in place
+    of ``<contract_id>``.
     """
-    lines = [CLI_HEADING, "", _CLI_BASE_LINES[0], _CLI_BASE_LINES[1]]
+    lines = [CLI_HEADING, "", _CLI_CONTEXT_LINE]
     if workspace:
         lines.append(_CLI_WORKSPACE_LINE.format(workspace=workspace))
-    lines.extend(_CLI_BASE_LINES[2:])
+    lines.extend(line.format(draft=contract_id or "<contract_id>") for line in _CLI_LINES)
     lines.extend(_agent_cli_extras(agent_name, agents_dir))
     return "\n".join(lines)
 
@@ -508,94 +505,66 @@ def _scope_chain(row: Mapping[str, Any], *, db_path=None) -> tuple:
     return label, workspace, group_key, project_key
 
 
-def build_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars: Optional[int] = None) -> str:
-    """Render ``# Scope memory: <chain>`` -- the preferences, facts and lessons of the dispatch's workspace, group and project -- within ``max_chars`` when given, or "" for an empty scope.
+def build_memory_block(row: Mapping[str, Any] = None, *, db_path=None) -> str:
+    """Render the scope chain's memory: its preferences whole, the rest as one counted pointer line; "" for an empty scope.
 
-    A read that fails is logged and rendered as the one line
+    ``# Scope preferences: <chain> (N of N)`` lists every live preference of the
+    dispatch's workspace, group and project and is never cut; only those rows
+    count a kernel access. ``# Scope memory: <chain>`` counts the facts, lessons
+    and other standing notes that are not preloaded and names the commands that
+    read them. A read that fails is logged and rendered as the one line
     ``scope memory unavailable: <error class>``, never as an empty scope.
     """
     try:
-        return _scope_memory_block(row, db_path=db_path, max_chars=max_chars)
+        return _scope_memory_block(row, db_path=db_path)
     except Exception as exc:
         logger.warning("scope memory unavailable: %s", exc, exc_info=True)
         return f"scope memory unavailable: {type(exc).__name__}"
 
 
-def _scope_memory_block(row: Mapping[str, Any] = None, *, db_path=None, max_chars: Optional[int] = None) -> str:
-    from gaia.store.reader import scope_memory_rows
+def _not_preloaded_line(counts: dict, workspace: Optional[str], project_key: Optional[str]) -> str:
+    """``facts N, lessons N, other notes N — not preloaded:`` and the commands that read them; "" when every count is zero."""
+    counted = ", ".join(f"{label} {count}" for label, count in counts.items() if count)
+    if not counted:
+        return ""
+    scope = f" --workspace {shlex.quote(workspace)}" if workspace else ""
+    verbs = [f"`gaia memory search '<term>'{scope}`", "`gaia memory show <slug>`"]
+    if project_key:
+        verbs.append(
+            f"this project's, bodies whole: `gaia memory get-relevant --initiative {shlex.quote(project_key)} --sections anchor`"
+        )
+    return f"{counted} — not preloaded: {'; '.join(verbs)}"
 
-    from .user_sections import render_scope_section
+
+def _scope_memory_block(row: Mapping[str, Any] = None, *, db_path=None) -> str:
+    from gaia.store.reader import anchor_index_by_project, scope_memory_rows
+
+    from .user_sections import memory_line
 
     label, workspace, group_key, project_key = _scope_chain(row or {}, db_path=db_path)
     rows = scope_memory_rows(workspace, group_key, project_key, db_path)
-    section = render_scope_section(label, rows)
-    while rows and max_chars is not None and len(section) > max_chars:
-        rows.pop()
-        section = render_scope_section(label, rows)
-    if not section:
-        return ""
-    _record_kernel_telemetry(
-        [(r["workspace"], r["name"]) for r in rows], db_path=db_path,
+    preferences = [r for r in rows if r["kind"] == "preference"]
+    in_scope = {(r["workspace"], r["name"]) for r in rows}
+    notes = anchor_index_by_project([project_key], db_path) if project_key else []
+    pointer = _not_preloaded_line(
+        {
+            "facts": sum(r["kind"] == "fact" for r in rows),
+            "lessons": sum(r["kind"] == "lesson" for r in rows),
+            "other notes": sum((n["workspace"], n["name"]) not in in_scope for n in notes),
+        },
+        workspace, project_key,
     )
-    return section
-
-
-def _project_note_line(name: str, description: str) -> str:
-    """``- slug: description`` on one line, the description clipped to fit ``_PROJECT_NOTE_LINE_MAX``."""
-    summary = " ".join(description.split())
-    line = f"- {name}: {summary}" if summary else f"- {name}"
-    if len(line) <= _PROJECT_NOTE_LINE_MAX:
-        return line
-    return line[:_PROJECT_NOTE_LINE_MAX - 1].rstrip() + "…"
-
-
-def build_project_notes_block(
-    row: Mapping[str, Any], *, db_path=None, max_chars: int = PROJECT_NOTES_BUDGET,
-) -> str:
-    """Render ``# Standing notes`` for the dispatch's project, or "" when it has none.
-
-    The notes are the project's live anchors (``gaia.store.reader``), matched
-    by the same ``canonical_project_key`` as ``gaia context project`` and
-    ``gaia memory get-relevant --initiative``, freshest first. As many lines
-    as fit ``max_chars`` are kept, the tail counting the rest and naming the
-    command that lists them.
-    """
-    dispatch_project = row.get("dispatch_project")
-    if not dispatch_project:
-        return ""
-    try:
-        from ..core.paths import ensure_package_root_importable
-
-        ensure_package_root_importable()
-        from gaia.store.reader import anchor_index_by_project
-        from tools.context.context_provider import dispatch_project_key
-
-        key = dispatch_project_key(
-            str(row.get("workspace") or ""), dispatch_project, db_path=db_path,
-        )
-        notes = anchor_index_by_project([key], db_path) if key else []
-    except Exception:
-        logger.debug("project notes read failed (non-fatal)", exc_info=True)
-        return ""
-    if not notes:
-        return ""
-
-    def tail(more: int) -> str:
-        return f"+{more} more — `gaia memory get-relevant --initiative {key} --sections anchor`"
-
-    shown = [PROJECT_NOTES_HEADING, ""]
-    kept = 0
-    for note in notes:
-        line = _project_note_line(note["name"], note.get("description") or "")
-        is_last = kept == len(notes) - 1
-        size = len("\n".join(shown + [line] + ([] if is_last else [tail(len(notes))])))
-        if size > max_chars:
-            break
-        shown.append(line)
-        kept += 1
-    if kept < len(notes):
-        shown.append(tail(len(notes) - kept))
-    return "\n".join(shown)
+    blocks = []
+    if preferences:
+        count = len(preferences)
+        heading = f"{PREFERENCES_HEADING}: {label} ({count} of {count})"
+        blocks.append("\n".join([heading, *(memory_line(r, scope=True) for r in preferences)]))
+    if pointer:
+        blocks.append(f"{MEMORY_HEADING}: {label}\n{pointer}")
+    _record_kernel_telemetry(
+        [(r["workspace"], r["name"]) for r in preferences], db_path=db_path,
+    )
+    return "\n\n".join(blocks)
 
 
 def _readable_project_sections(row: Mapping[str, Any], *, db_path=None) -> tuple:
@@ -676,7 +645,7 @@ def build_group_context_block(group: str, members: list, *, max_chars: int) -> s
 
 
 def build_project_context_block(workspace: str, project: str, sections: list, *, max_chars: int) -> str:
-    """Render ``# Project context`` as whole sections, then pointers, then one count line that ignores ``max_chars``."""
+    """Render ``# Project context`` as whole sections, then pointers, then one line naming the sections that ignores ``max_chars``."""
     if not sections:
         return ""
     texts = [json.dumps(payload, ensure_ascii=False) for _, payload in sections]
@@ -688,8 +657,9 @@ def build_project_context_block(workspace: str, project: str, sections: list, *,
     spare = max_chars - len("\n".join(head + pointers))
     if spare < 0:
         count = f"{len(sections)} section{'s' if len(sections) > 1 else ''}"
+        names = ", ".join(name for name, _ in sections)
         return "\n".join(
-            head + [f"{count} — " + _section_pointer("<s>", workspace, project)]
+            head + [f"{count}: {names} — " + _section_pointer("<s>", workspace, project)]
         )
     lines = list(pointers)
     for index, ((name, _), text) in enumerate(zip(sections, texts)):
@@ -704,17 +674,23 @@ KERNEL_TOOL_LINES = 5
 
 
 def build_environment_block(db_path=None) -> str:
-    """Render ``# Environment``: the session's environment line, then up to ``KERNEL_TOOL_LINES`` detected user tools; "" when empty."""
+    """Render ``# Environment``: the session's environment line, then up to ``KERNEL_TOOL_LINES`` detected user tools and the count of the rest; "" when empty."""
     try:
         from gaia.store.reader import user_tool_rows
+        from gaia.store.writer import USER_WORKSPACE
 
         from ..session.session_manifest import build_environment_line
 
         line = build_environment_line(db_path=db_path)
-        tools = tool_lines(user_tool_rows(db_path), cap=KERNEL_TOOL_LINES)
+        detected = tool_lines(user_tool_rows(db_path))
     except Exception:
         logger.debug("environment line failed (non-fatal)", exc_info=True)
         return ""
+    tools = detected[:KERNEL_TOOL_LINES]
+    if len(detected) > len(tools):
+        tools.append(
+            f"+{len(detected) - len(tools)} more — `gaia memory list --workspace {USER_WORKSPACE} --kind tool`"
+        )
     body = "\n".join([line, *tools] if line else tools)
     return f"{ENVIRONMENT_HEADING}\n\n{body}" if body else ""
 
@@ -731,34 +707,39 @@ def build_kernel_context(
     db_path=None,
     with_skills: bool = False,
 ) -> Optional[str]:
-    """The kernel payload within ``KERNEL_BUDGET``, shrunk in the order hooks/README.md names; None without a contract block."""
+    """The kernel payload, held to ``KERNEL_BUDGET`` by its project context alone; None without a contract block.
+
+    The contract, the scope preferences and pointer line, the environment and
+    the CLI index are never cut. The project context takes the room they leave,
+    and the skills lose their descriptions before it loses any. A goal too long
+    for even that leaves the kernel over the budget, with one line after the
+    contract saying how long the goal is.
+    """
     kernel = build_dispatch_kernel(row, db_path=db_path, agent_name=agent_name)
     if not kernel:
         return None
-    workspace = str(row.get("workspace") or "")
-    memory_size = len(build_memory_block(row, db_path=db_path))
-    notes = build_project_notes_block(row, db_path=db_path)
+    memory = build_memory_block(row, db_path=db_path)
     environment = build_environment_block(db_path=db_path)
-    cli = build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace)
+    cli = build_cli_block(
+        agent_name, agents_dir=agents_dir, workspace=str(row.get("workspace") or ""),
+        contract_id=str(row.get("contract_id") or ""),
+    )
     skills = build_skills_block(agent_name, agents_dir=agents_dir) if with_skills else ""
     project, sections = _readable_project_sections(row, db_path=db_path)
-    context_room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 4 - memory_size
+
+    def room() -> int:
+        return KERNEL_BUDGET - len(_joined(kernel, memory, environment, cli, skills)) - 2
+
+    if room() < 0 and skills:
+        skills = build_skills_block(agent_name, agents_dir=agents_dir, names_only=True)
     context = build_project_context_block(
-        project.get("workspace", ""), project.get("identity", ""), sections, max_chars=context_room,
+        project.get("workspace", ""), project.get("identity", ""), sections, max_chars=room(),
     ) or build_group_context_block(
         str(row.get("dispatch_project") or ""), _readable_group_sections(row, db_path=db_path),
-        max_chars=context_room,
+        max_chars=room(),
     )
-
-    def over() -> bool:
-        return len(_joined(kernel, context, notes, environment, cli, skills)) + 2 + memory_size > KERNEL_BUDGET
-
-    if over():
-        cli = f"{CLI_HEADING}\n\n{_CLI_BASE_LINES[-1]}"
-    if over() and skills:
-        skills = build_skills_block(agent_name, agents_dir=agents_dir, names_only=True)
-    if over() and notes:
-        notes = build_project_notes_block(row, db_path=db_path, max_chars=0)
-    room = KERNEL_BUDGET - len(_joined(kernel, context, notes, environment, cli, skills)) - 2
-    memory = build_memory_block(row, db_path=db_path, max_chars=room)
-    return _joined(kernel, memory, context, notes, environment, cli, skills)
+    over = ""
+    if len(_joined(kernel, memory, context, environment, cli, skills)) > KERNEL_BUDGET:
+        goal_chars = len(str(row.get("dispatch_prompt") or ""))
+        over = f"over the {KERNEL_BUDGET:,}-char kernel budget: the goal alone is {goal_chars:,} chars"
+    return _joined(kernel, over, memory, context, environment, cli, skills)

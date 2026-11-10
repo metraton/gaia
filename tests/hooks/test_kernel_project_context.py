@@ -22,6 +22,7 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "hooks"):
 
 from modules.context.kernel_builder import (  # noqa: E402
     KERNEL_BUDGET,
+    build_cli_block,
     build_dispatch_kernel,
     build_project_context_block,
     build_kernel_context,
@@ -31,7 +32,6 @@ HEADING = "# Project context"
 PROJECT = "alpha"
 IDENTITY = "github.com/me/alpha"
 DISPLAY = "alpha (/work/alpha)"
-SCOPE_ROWS = 7
 POINTER_SCOPE = f"--workspace me --project {IDENTITY}"
 
 
@@ -75,16 +75,6 @@ def _section(db: Path, name: str, payload) -> None:
         db, "INSERT INTO project_context (project_identity, contract_name, payload, updated_at) "
         "VALUES (?, ?, ?, '2026-10-01T00:00:00Z')", IDENTITY, name, json.dumps(payload),
     )
-
-
-def _scope_rows(db: Path, count: int, size: int) -> None:
-    for i in range(count):
-        title = f"Rule {i}: " + "x" * size
-        _execute(
-            db, "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
-            "updated_at) VALUES ('me', ?, 'decision', ?, 'why', 'anchor', 'preference', 'workspace', ?)",
-            f"decision_me_rule_{i}", title, f"2026-09-{i + 1:02d}T00:00:00Z",
-        )
 
 
 def _row(project, can_read, prompt="fix the build") -> dict:
@@ -136,15 +126,18 @@ def test_kernel_project_context_section_larger_than_the_budget_becomes_a_pointer
     assert len(kernel) <= KERNEL_BUDGET
 
 
-def test_kernel_project_context_under_a_huge_prompt_is_one_line_and_the_contract_stays_whole(db):
+def test_kernel_under_a_huge_prompt_cuts_only_the_project_context_and_reports_the_goal_length(db):
     _section(db, "stack", {"language": "go"})
-    row = _row(DISPLAY, ["stack"], prompt="do it " * 1300)
+    _scope_row(db, "preference", 0, project=True)
+    row = _row(DISPLAY, ["stack"], prompt="do it " * 1600)
 
     kernel = _kernel(db, row)
 
-    assert f"1 section — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
-    assert kernel.startswith(build_dispatch_kernel(row, db_path=db, agent_name="platform-architect"))
-    assert len(kernel) <= KERNEL_BUDGET
+    contract = build_dispatch_kernel(row, db_path=db, agent_name="platform-architect")
+    assert kernel.startswith(f"{contract}\n\nover the 9,500-char kernel budget: the goal alone is 9,600 chars\n\n")
+    assert f"1 section: stack — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
+    assert "# Scope preferences: me > alpha (1 of 1)\n" in kernel
+    assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
 
 
 def test_kernel_project_context_many_sections_fit_or_point(db):
@@ -191,64 +184,96 @@ def test_kernel_project_context_absent_without_a_dispatch_project(db):
     assert HEADING not in kernel
 
 
-def _scope_rows_leaving_room(db: Path, row: dict, room: int) -> None:
-    """Scope memory rows sized so the kernel without project context leaves exactly ``room`` chars under the budget."""
-    _scope_rows(db, SCOPE_ROWS, 600)
-    base = len(_kernel(db, row))
-    delta = KERNEL_BUDGET - room - base
-    assert delta > 0, "the rows must leave more than the requested room"
-    _execute(db, "UPDATE memory SET description = description || ? WHERE name = ?",
-             "y" * delta, f"decision_me_rule_{SCOPE_ROWS - 1}")
+def _scope_row(db: Path, kind: str, index: int, *, project: bool) -> None:
+    owner, ref = ("project", IDENTITY) if project else ("workspace", None)
+    _execute(
+        db, "INSERT INTO memory (workspace, name, type, description, body, class, kind, owner_level, "
+        "project_ref, updated_at) VALUES ('me', ?, 'decision', ?, 'why', 'anchor', ?, ?, ?, ?)",
+        f"decision_me_{kind}_{index:02d}", f"Standing {kind} number {index:02d} " + "x" * 150, kind, owner, ref,
+        f"2026-01-01T00:{index:02d}:00Z",
+    )
 
 
-def _assert_all_scope_rows(kernel: str) -> None:
-    for i in range(SCOPE_ROWS):
-        assert f"Rule {i}: " in kernel
+def _project_with(db: Path, preferences: int, facts: int, lessons: int, notes: int) -> dict:
+    """The alpha project holding that many scope rows and other standing notes, and two readable sections."""
+    for kind, count in (("preference", preferences), ("fact", facts), ("lesson", lessons)):
+        for index in range(count):
+            _scope_row(db, kind, index, project=True)
+    for index in range(notes):
+        _execute(
+            db, "INSERT INTO memory (workspace, name, type, description, body, class, project_ref, updated_at) "
+            "VALUES ('me', ?, 'project', 'Decision: a standing note', 'the full body', 'anchor', ?, "
+            "'2026-02-01T00:00:00Z')", f"decision_alpha_note_{index:02d}", IDENTITY,
+        )
+    _section(db, "stack", {"language": "go", "notes": "s" * 900})
+    _section(db, "environment", {"cloud": "gcp", "notes": "e" * 900})
+    return _row(DISPLAY, ["stack", "environment"])
 
 
-def test_kernel_project_context_points_while_every_scope_row_stays(db):
-    row = _row(DISPLAY, ["stack"])
-    _scope_rows_leaving_room(db, row, 400)
-    _section(db, "stack", {"language": "go", "notes": "s" * 1500})
-
-    kernel = _kernel(db, row)
-
-    assert _pointer("stack") in kernel
-    assert "s" * 1500 not in kernel
-    _assert_all_scope_rows(kernel)
-    assert kernel.startswith(build_dispatch_kernel(row, db_path=db, agent_name="platform-architect"))
-    assert len(kernel) <= KERNEL_BUDGET
+def _kernel_counts(db: Path) -> dict:
+    con = sqlite3.connect(db)
+    try:
+        return dict(con.execute("SELECT name, kernel_count FROM memory WHERE name LIKE 'decision_me_%'"))
+    finally:
+        con.close()
 
 
-def test_kernel_project_context_near_the_cap_is_one_line_and_no_scope_row_leaves(db):
-    row = _row(DISPLAY, ["stack", "environment", "cluster"])
-    _scope_rows_leaving_room(db, row, 60)
-    for name in ("stack", "environment", "cluster"):
-        _section(db, name, {"value": name * 40})
-
-    kernel = _kernel(db, row)
-
-    assert f"3 sections — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
-    assert "- stack," not in kernel
-    _assert_all_scope_rows(kernel)
-    assert len(kernel) <= KERNEL_BUDGET
-
-
-def test_kernel_project_context_pointers_without_bodies_when_only_they_fit(db):
-    row = _row(DISPLAY, ["stack", "environment"])
-    _scope_rows_leaving_room(db, row, 420)
-    _section(db, "stack", {"value": "a" * 400})
-    _section(db, "environment", {"value": "b" * 400})
+@pytest.mark.parametrize(
+    "preferences, facts, lessons, notes", [(3, 29, 46, 40), (2, 5, 3, 4)], ids=["gaia-size", "mid-size"],
+)
+def test_a_project_kernel_carries_its_preferences_whole_and_counts_what_it_does_not_preload(
+    db, preferences, facts, lessons, notes,
+):
+    row = _project_with(db, preferences, facts, lessons, notes)
 
     kernel = _kernel(db, row)
 
-    assert _pointer("stack") in kernel and _pointer("environment") in kernel
-    assert "a" * 400 not in kernel and "b" * 400 not in kernel
-    _assert_all_scope_rows(kernel)
+    assert f"# Scope preferences: me > alpha ({preferences} of {preferences})\n" in kernel
+    for index in range(preferences):
+        assert (
+            f'  "Standing preference number {index:02d} {"x" * 150}"  scope=project'
+            f"  ref=memory:me/decision_me_preference_{index:02d}"
+        ) in kernel
+    assert (
+        f"# Scope memory: me > alpha\nfacts {facts}, lessons {lessons}, other notes {notes} — not preloaded: "
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug>`; this project's, bodies whole: "
+        "`gaia memory get-relevant --initiative alpha --sections anchor`\n"
+    ) in kernel
+    assert "Standing fact number" not in kernel and "Standing lesson number" not in kernel
+    assert "decision_alpha_note_" not in kernel
+    assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
+    assert "s" * 900 in kernel and "e" * 900 in kernel
+    assert len(kernel) <= KERNEL_BUDGET
+    assert all(count == ("_preference_" in name) for name, count in _kernel_counts(db).items())
+
+    for verb in ("memory search Standing --workspace me", "memory get-relevant --initiative alpha --sections anchor"):
+        read = _paste(db, verb.split())
+        assert read.returncode == 0, read.stderr
+    assert "decision_me_fact_00" in read.stdout and "decision_alpha_note_00" in read.stdout
+
+
+def test_a_kernel_with_no_project_carries_the_workspace_preferences_and_counts_its_facts(db):
+    for index in range(2):
+        _scope_row(db, "preference", index, project=False)
+    for index in range(4):
+        _scope_row(db, "fact", index, project=False)
+    row = _row(None, ["stack"])
+
+    kernel = _kernel(db, row)
+
+    assert "# Scope preferences: me (2 of 2)\n" in kernel
+    assert "ref=memory:me/decision_me_preference_00" in kernel and "ref=memory:me/decision_me_preference_01" in kernel
+    assert (
+        "# Scope memory: me\nfacts 4 — not preloaded: "
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug>`\n"
+    ) in kernel
+    assert "Standing fact number" not in kernel
+    assert HEADING not in kernel
+    assert build_cli_block("platform-architect", workspace="me", contract_id=row["contract_id"]) in kernel
     assert len(kernel) <= KERNEL_BUDGET
 
 
-def test_project_context_block_degrades_whole_then_pointers_then_one_line():
+def test_project_context_block_degrades_whole_then_pointers_then_one_line_naming_its_sections():
     sections = [("stack", {"v": "a" * 300}), ("environment", {"v": "b" * 300})]
     whole = build_project_context_block("me", IDENTITY, sections, max_chars=10_000)
     mixed = build_project_context_block("me", IDENTITY, sections, max_chars=len(whole) - 1)
@@ -261,7 +286,10 @@ def test_project_context_block_degrades_whole_then_pointers_then_one_line():
     assert _pointer("environment") in mixed and _pointer("stack") not in mixed
     assert "a" * 300 not in pointers
     assert _pointer("stack") in pointers and _pointer("environment") in pointers
-    assert line == f"{HEADING}\n\n2 sections — `gaia context get-contract --section <s> {POINTER_SCOPE}`"
+    assert line == (
+        f"{HEADING}\n\n2 sections: stack, environment — "
+        f"`gaia context get-contract --section <s> {POINTER_SCOPE}`"
+    )
 
 
 def _pasted_pointers(kernel: str) -> list:
