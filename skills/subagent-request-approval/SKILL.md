@@ -51,9 +51,13 @@ file yet (it may be a word, as in `git push -f origin`) is sealed as absent.
 An ELF binary or a file over 64 MiB is sealed by its identity (device, inode,
 size, modification and change times) instead of its content, so replacing or
 rewriting it breaks the match all the same.
-If any sealed file changes before the command runs -- or an absent one appears
+If a sealed file changes before the command runs -- or an absent one appears
 -- the command no longer matches the signature and is blocked; request it
-again.
+again. One exception: when an earlier step of the same signed set finishes, a
+later step's changed file is sealed again if its real path is one only a signed
+call can write (an installed Gaia, a `.claude` hook tree), because only the
+signed step before it could have changed it; the approval records that
+(`gaia/approvals/command_set.py::reseal_protected_files`).
 
 Optional, per command:
 `--cwd` (the existing directory it must run in, once for all or once per
