@@ -185,6 +185,16 @@ that updates it through its own channel
 on such a database changes nothing: it returns 0 inside the window and refuses
 outside it.
 
+**Going back.** Migrations never run backwards. Every chain on an existing
+database first writes a verified `<db>-vN-pre-migrate-<stamp>.db.gz` to
+`<database dir>/backups/` (newest 3 kept); `gaia migrate plan` lists them, and
+`gaia migrate restore --from <backup>` puts one back after keeping the current
+database as a verified `pre-restore` backup. A restored database older than
+the installed code is moved forward again by the next apply, install or
+session start, so going back past a breaking migration means installing the
+older Gaia too. `tests/cli/test_migration_restore.py` pins the round trip from
+v21.
+
 ---
 
 ## 2. Version assertions in tests

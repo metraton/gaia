@@ -88,7 +88,7 @@ bin/
     ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/move/checkpoint, --from-file batches for reclassify/link/move; add --replace and link --delete signed; declare, signed, records a tool's effect or a project command form that no hook reads yet) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
     ├── memory_story.py        # backs `gaia memory story` (lineage narration); imported by memory.py, no register() of its own
     ├── metrics.py             # gaia metrics    — usage analytics (DB-canonical episodes/anomalies + audit-log tier/commands)
-    ├── migrate.py             # gaia migrate    — plan | apply the schema migration chain: backup, one transaction, --consent-chain for data-reaching chains
+    ├── migrate.py             # gaia migrate    — plan [--json] | apply | restore --from <backup>: backup, one transaction, --consent-chain for data-reaching chains; plan_report() for other commands
     ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
     ├── notifications.py       # gaia notifications — reports, reminders and routines (add/list/show/ack/snooze/cancel)
     ├── now.py                 # gaia now        — local time, UTC offset and zone; opens no database
