@@ -20,6 +20,14 @@ _PLAIN_ARG = re.compile(r"[\w@%+=:,./#~-]+")
 _OPENCODE_SUFFIX = "/opencode/plugin.ts"
 
 
+def claude_plugins_dir(default: "Path | None" = None) -> Path:
+    """Claude Code's plugins root: ``CLAUDE_CODE_PLUGIN_CACHE_DIR`` when set, else *default*, else ``~/.claude/plugins``."""
+    moved = os.environ.get("CLAUDE_CODE_PLUGIN_CACHE_DIR", "").strip()
+    if moved:
+        return Path(moved).expanduser()
+    return Path(default) if default is not None else Path.home() / ".claude" / "plugins"
+
+
 @dataclass(frozen=True)
 class Machine:
     """Where this machine keeps each record the report reads."""
@@ -46,12 +54,11 @@ class Machine:
             prefix = Path(os.environ["APPDATA"]) / "npm"
         config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
         plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
-        plugins_env = os.environ.get("CLAUDE_CODE_PLUGIN_CACHE_DIR", "").strip()
         which = shutil.which("gaia")
         return cls(
             workspace=Path(workspace),
             user_settings=Path(user_settings),
-            plugins_dir=Path(plugins_env).expanduser() if plugins_env else Path(plugins_dir),
+            plugins_dir=claude_plugins_dir(plugins_dir),
             opencode_global=(Path(config_home) if config_home else Path.home() / ".config") / "opencode",
             npm_prefix=prefix,
             path_gaia=Path(which) if which else None,

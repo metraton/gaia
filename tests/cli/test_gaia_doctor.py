@@ -831,7 +831,8 @@ class TestCheckPackageIntegrity:
         r = doctor_mod.check_package_integrity()
         assert r["severity"] == "error"
         assert "scripts/bootstrap_database.py" in r["detail"]
-        assert "npm install" in r.get("fix", ""), "hint must guide reinstall"
+        assert "gaia doctor --target" in r.get("fix", ""), "hint must guide reinstall by exact version"
+        assert "@latest" not in r["fix"]
 
 
 # ---------------------------------------------------------------------------
