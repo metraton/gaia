@@ -37,7 +37,8 @@ def calls(monkeypatch, tmp_path):
     stub("modules.security.approval_cleanup", "count_stale_db_pendings", 0)
     stub("modules.session.db_backup", "maybe_backup_db")
     stub("modules.session.contract_drafts_gc", "gc_contract_drafts", 0)
-    stub("gaia.retention.worktree_collector", "sweep_repo_worktrees", [])
+    stub("gaia.retention.session_sweep", "spawn", False)
+    stub("gaia.temp_volume", "notice_line", "")
     stub("modules.core.plugin_setup", "run_first_time_setup", "setup done")
     stub("modules.core.plugin_setup", "mark_data_home", "home moved")
     stub("gaia.install_root", "installed_root", tmp_path / "root")
@@ -77,18 +78,19 @@ def test_start_maintenance_runs_in_order_on_the_explicit_inputs(calls, tmp_path)
         "count_stale_db_pendings",
         "maybe_backup_db",
         "gc_contract_drafts",
-        "sweep_repo_worktrees",
+        "spawn",
         "run_first_time_setup",
         "mark_data_home",
         "installed_root",
         "reconcile_plugin_install",
         "workspace_status",
         "installed_root",
+        "notice_line",
         "build_session_context",
     ]
     by_name = {name: (args, kwargs) for name, args, kwargs in calls}
     assert by_name["cleanup_expired_grants"] == ((), {"force": True})
-    assert by_name["sweep_repo_worktrees"] == ((tmp_path / "ws",), {})
+    assert by_name["spawn"] == ((tmp_path / "ws",), {})
     assert by_name["reconcile_plugin_install"] == ((tmp_path / "root",), {})
 
 

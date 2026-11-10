@@ -56,7 +56,7 @@ def steps(db, monkeypatch):
     monkeypatch.setattr("modules.security.approval_grants.cleanup_expired_grants", record("grants", 0))
     monkeypatch.setattr("modules.session.db_backup.maybe_backup_db", record("backup", None))
     monkeypatch.setattr("modules.session.contract_drafts_gc.gc_contract_drafts", record("drafts", 0))
-    monkeypatch.setattr("gaia.retention.worktree_collector.sweep_repo_worktrees", record("worktrees", []))
+    monkeypatch.setattr("gaia.retention.session_sweep.spawn", record("worktrees", False))
     return calls
 
 

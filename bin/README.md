@@ -72,7 +72,7 @@ bin/
     ├── ac.py                  # gaia ac         — acceptance criteria for briefs (DB-canonical)
     ├── approvals.py           # gaia approvals  — list/pending/show/question/request-set/request-file-write/approve/revoke/reject/reject-all/history/replay/clean/stats/audit-secrets T3 grants
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle, set-project, history (brief_events)
-    ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
+    ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__; --sweep runs the session-start sweep
     ├── context.py             # gaia context    — show / scan / get / query / wipe / prune-workspaces project context from gaia.db
     ├── contract.py            # gaia contract   — build/validate an agent_contract_handoff draft by-value: init/set/add/view (--field for one subtree)/validate/finalize + fill --json, plus reconcile for hook-written residue rows
     ├── contract_proposals.py  # gaia contract proposals — list/accept/dismiss/backfill what turns proposed (update_contracts, memory_delta); attached to contract.py's parser

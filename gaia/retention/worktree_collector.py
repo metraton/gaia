@@ -41,7 +41,7 @@ nothing. A caller that branches only on "is this DEAD" gets that asymmetry
 for free, which is why the predicate below never asks "is this alive"
 separately.
 
-The five cases it adjudicates:
+The cases it adjudicates:
     (a) contract TERMINAL (COMPLETE) and quiet past the grace window
         -> collect.
     (b) contract not yet closed, session ALIVE (running right now)
@@ -55,6 +55,8 @@ The five cases it adjudicates:
         BACKSTOP_CAPTURE) -- collected immediately, no grace wait, because
         the row already proves an external mechanism determined this turn
         is over.
+    (f) any state whose session ended (``liveness.session_ended``), quiet past
+        the grace window -> collect; SessionEnd deletes the entry (c) reads.
     (e) the database is unreadable -- nothing is collected. Every row
         lookup fails closed (returns ``None``), so every worktree reads as
         "cannot determine," which this module treats exactly like "leave
@@ -90,7 +92,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from gaia.retention.infra import _ro_db_connect, resolve_grace_hours
-from gaia.retention.liveness import session_dead_past_grace
+from gaia.retention.liveness import session_dead_past_grace, session_ended_for_contract
 from gaia.retention.worktree_reclaim import reclaim_worktree
 from gaia.state import (
     CUT_REASON_BACKSTOP_CAPTURE,
@@ -196,6 +198,10 @@ def worktree_collect_reason(
 
     if session_dead_past_grace(contract_id, mtime, grace_hours=hours, now=current):
         return f"owning contract {contract_id} is unfinished but its session is dead, quiet {hours}h"
+
+    quiet = (current - mtime) >= hours * 3600
+    if quiet and session_ended_for_contract(contract_id, grace_hours=hours, now=current):
+        return f"owning contract {contract_id} ({row.get('agent_state')}) ran in a session that ended, quiet {hours}h"
 
     return None
 

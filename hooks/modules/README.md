@@ -70,6 +70,8 @@ modules/
 │   ├── bash_validator.py # Bash command validation (orchestrates the pipeline below); decide_t3_outcome
 │   ├── task_validator.py # Task/Agent dispatch validation
 │   ├── cloud_pipe_validator.py # Cloud pipe/redirect/chain check
+│   ├── background_guard.py # Refuses a run_in_background command whose output is not routed to Gaia scratch/tmp,
+│   │                     #   /dev/null or a bounded head/tail; holds a turn's close while a task it started runs
 │   └── hook_response.py  # Standardized hook response formatting
 │
 ├── context/              # Context management

@@ -27,7 +27,7 @@ Wrong patterns that look right but fail:
 Avoids a Python T3 approval for a simple transform:
 
 ```bash
-RAW=$(base64 -w 0 /tmp/reply.eml | tr '+/' '-_' | tr -d '=')
+RAW=$(base64 -w 0 "$HOME/.gaia/scratch/<contract_id>.eml" | tr '+/' '-_' | tr -d '=')
 ```
 
 - `base64 -w 0` disables line wrapping (required -- Gmail rejects newlines mid-string)
@@ -36,7 +36,7 @@ RAW=$(base64 -w 0 /tmp/reply.eml | tr '+/' '-_' | tr -d '=')
 
 The result goes directly into the `raw` field of `--json`.
 
-If writing the `.eml` first via the Write tool, then encode with the pipeline above. This is T0 (read-only transformation).
+If writing the `.eml` first via the Write tool, write it in your own scratch entry (`~/.gaia/scratch/<contract_id>.eml`, never a shared temp folder), then encode with the pipeline above. This is T0 (read-only transformation).
 
 ## RFC 2822 Reply Construction
 
@@ -220,8 +220,8 @@ Report to the user: draft ID, threadId (if linked), and snippet. This closes the
 
 After a draft is created from a `.eml` file containing sensitive data:
 
-1. Delete the `.eml`: `rm /tmp/reply.eml` (T3 -- file mutation, but within PII hygiene flow)
-2. Verify deletion with Glob: `Glob /tmp/*.eml`
+1. Delete the `.eml`: `rm "$HOME/.gaia/scratch/<contract_id>.eml"` (runs free: `rm` inside your own scratch entry; the sensitive file is removed now, not left for the scratch retention sweep)
+2. Verify deletion with Glob: `Glob ~/.gaia/scratch/<contract_id>.eml`
 3. Report: "Archivo temporal eliminado."
 
 Sensitive data includes: RUT, número de cuenta bancaria, teléfono, DOB, dirección física, números de contrato, número de pasaporte.

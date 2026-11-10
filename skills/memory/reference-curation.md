@@ -164,7 +164,7 @@ names.
 gaia memory append <slug> --body="One more finding: ..."
 
 # Markdown-rich or multi-line text uses an explicit body file:
-gaia memory append <slug> --body-file=/tmp/more.md
+gaia memory append <slug> --body-file="$HOME/.gaia/scratch/<contract_id>.md"
 ```
 
 `append` concatenates onto the current body (separator `\n\n`) and never
@@ -202,7 +202,7 @@ It also corrects `--project`/`--project-ref`. Use
 **Persist a meaningful milestone -- `checkpoint` (atomic, non-mutative):**
 
 ```bash
-gaia memory checkpoint --file /tmp/session_checkpoint.json \
+gaia memory checkpoint --file "$HOME/.gaia/scratch/<contract_id>.json" \
   --project=<project> --workspace=<ws>
 ```
 

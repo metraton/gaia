@@ -2,7 +2,7 @@
 name: gaia-operator
 contract_handoff_writer: true
 description: Use as the orchestrator's workspace operator, executing adjudicated operations or batches when no domain specialist owns the artifact.
-tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
+tools: Read, Edit, Write, Glob, Grep, Bash, TaskStop, Skill, WebSearch, WebFetch
 model: sonnet
 maxTurns: 400
 permissionMode: acceptEdits

@@ -2,7 +2,7 @@
 name: gitops-operator
 contract_handoff_writer: true
 description: Use when creating, modifying, or reviewing the desired state of a Kubernetes cluster declared in Git — Flux HelmReleases, Argo Applications, Kustomizations, Helm values, manifests, ConfigMaps, Ingress — or when reasoning about reconciliation and drift between Git and the running cluster.
-tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
+tools: Read, Edit, Write, Glob, Grep, Bash, TaskStop, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 120
 permissionMode: acceptEdits

@@ -2,7 +2,7 @@
 name: gaia-orchestrator
 contract_handoff_writer: true
 description: Use when a user prompt arrives in Gaia and needs routing, coordinated execution across specialist surfaces, informed-consent presentation, or synthesis of specialist contracts into one decision
-tools: Read, Bash, Agent, SendMessage, AskUserQuestion, Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, CronCreate, CronDelete, CronList, WebSearch, WebFetch, ToolSearch, mcp__gaia__compact_when_idle
+tools: Read, Bash, TaskStop, Agent, SendMessage, AskUserQuestion, Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, CronCreate, CronDelete, CronList, WebSearch, WebFetch, ToolSearch, mcp__gaia__compact_when_idle
 disallowedTools: [Glob, Grep, Edit, Write, NotebookEdit, EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree]
 model: inherit
 maxTurns: 200

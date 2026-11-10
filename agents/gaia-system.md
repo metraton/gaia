@@ -2,7 +2,7 @@
 name: gaia-system
 contract_handoff_writer: true
 description: Use when building, modifying, or auditing Gaia's own machinery — agents, skills, hooks and hook modules, routing config, CLI plugins, build manifests — or when analyzing Gaia's architecture, install, or release surface. Not for work in the user's application, infrastructure, cluster, or live runtime.
-tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
+tools: Read, Edit, Write, Glob, Grep, Bash, TaskStop, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 200
 effort: high

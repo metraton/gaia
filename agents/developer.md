@@ -2,7 +2,7 @@
 name: developer
 contract_handoff_writer: true
 description: Use when writing, modifying, debugging, or reviewing application code, CI/CD pipelines, or developer tooling — or when investigating an application-layer bug or behavior.
-tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
+tools: Read, Edit, Write, Glob, Grep, Bash, TaskStop, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 200
 permissionMode: acceptEdits

@@ -1108,6 +1108,43 @@ def check_db_backups() -> dict:
     return _result("DB backups", health["severity"], health["detail"], fix)
 
 
+@register_check("Temp space", order=43)
+def check_temp_space() -> dict:
+    """Size, free space and medium of the host's temp spool and Gaia's tmp; warn when one is small or nearly full."""
+    try:
+        from gaia.temp_volume import health  # noqa: PLC0415
+    except ImportError as exc:
+        return _result("Temp space", "info", f"temp check unavailable: {exc}")
+    found = health()
+    return _result("Temp space", found["severity"], found["detail"], found["fix"] or None)
+
+
+@register_check("Sweep leftovers", order=43)
+def check_sweep_leftovers() -> dict:
+    """List what the last session-start sweep refused to remove, each with size and reason."""
+    try:
+        from gaia.retention.session_sweep import last_report, report_path  # noqa: PLC0415
+    except ImportError as exc:
+        return _result("Sweep leftovers", "info", f"sweep report unavailable: {exc}")
+    report = last_report()
+    if not report:
+        return _result("Sweep leftovers", "info", f"no sweep has run yet ({report_path()})")
+    refused = report.get("refused") or []
+    freed = int(report.get("freed") or 0) / 2**20
+    head = f"last sweep removed {len(report.get('removed') or [])} ({freed:.0f} MiB)"
+    if not refused:
+        return _result("Sweep leftovers", "pass", f"{head}; refused nothing")
+    lines = [
+        f"{item['kind']} {item['path']} ({int(item.get('size') or 0) / 2**20:.0f} MiB): {item['reason']}"
+        for item in refused
+    ]
+    return _result(
+        "Sweep leftovers", "info",
+        f"{head}; refused {len(refused)}:\n    " + "\n    ".join(lines),
+        "`gaia cleanup --sweep --dry-run` re-judges them now",
+    )
+
+
 @register_check("Episodes growth", order=48)
 def check_episodes_growth() -> dict:
     """Report gaia.db growth: FILE size vs the episodes TABLE size (distinct).

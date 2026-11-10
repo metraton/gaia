@@ -125,7 +125,7 @@ OPTIONS = {
     'brief set-status': '--help --json --workspace -h',
     'brief show': '--help --json --workspace -h',
     'brief verify': '--help --json --workspace -h',
-    'cleanup': '--dry-run --help --json --prune --retain -h',
+    'cleanup': '--dry-run --help --json --prune --retain --sweep -h',
     'context': '--help -h',
     'context accept': '--dry-run --help --json --workspace -h',
     'context dump': '--help --include-missing --json --section --text --workspace -h',

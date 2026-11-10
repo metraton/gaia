@@ -24,7 +24,8 @@ contract/              agent contract drafts, validation, cross-checks and the h
 state/                 the state machines for tasks, gates and permissions
 briefs/                brief and plan storage
 evidence/              evidence files deposited by a contract
-retention/             reclaiming scratch, worktrees, branches and workspace leftovers
+retention/             reclaiming scratch, tmp, worktrees, branches and workspace leftovers; the session-start sweep
+temp_volume.py         room left on the host's temp spool and Gaia's tmp, and the platform remedy
 project.py             which declared workspace a folder belongs to; merge of ~/.gaia/workspaces files
 worktree.py            creation, identity and managed roots of agent worktrees
 refs.py                KIND:SCOPE/ID#FIELD references used by gaia open

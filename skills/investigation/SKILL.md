@@ -54,9 +54,10 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    under the canonical Gaia scratch directory (`~/.gaia/scratch`, never the
    workspace/client repo), named after the current turn's `contract_id`
    (`<agent_id>.<token>`, bare or with one trailing extension) so Gaia's own
-   retention rule can attribute it and reclaim it 24 hours after the contract
-   closes (an entry with no owner on record, or whose paused owner's session
-   cannot be read, waits 7 untouched days instead), then
+   retention rule can attribute it and reclaim it: the next session start
+   after its session ends and it has been quiet 24 hours, while an entry
+   with no owner on record is only listed (`gaia cleanup --sweep --dry-run`
+   shows both), then
    deposit it as evidence through the contract's evidence clause -- see
    `agent-contract-handoff` -- rather than leaving it as a loose file.
 5. What gets checkpointed is governed by value-at-risk, not a fixed list; the
