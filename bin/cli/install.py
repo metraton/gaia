@@ -1119,12 +1119,11 @@ def _clear_install_error_marker() -> None:
 # Output helpers
 # ---------------------------------------------------------------------------
 
-def _print_header(*, postinstall: bool, quiet: bool, workspace: Path) -> None:
+def _print_header(*, command: str, postinstall: bool, quiet: bool, workspace: Path) -> None:
     if quiet:
         return
-    label = "postinstall" if postinstall else "first-time install"
-    print(f"\n  Setting up Gaia for the first time...")
-    print(f"  ({label})")
+    action = "Updating" if command.endswith("update") else "Installing"
+    print(f"\n  {action} Gaia{' (postinstall)' if postinstall else ''}...")
     print(f"  workspace: {workspace}")
     print()
 
@@ -1141,6 +1140,7 @@ def _report_step(*, name: str, result: dict, quiet: bool, verbose: bool) -> None
         "created": "+",
         "updated": "~",
         "noop": "=",
+        "migrated": "~",
         "skipped": "-",
         "error": "!",
     }.get(action, "?")
@@ -1490,7 +1490,7 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
                 print(f"{command}: {conflict}", file=sys.stderr)
                 return 1
 
-    _print_header(postinstall=postinstall, quiet=quiet, workspace=workspace)
+    _print_header(command=command, postinstall=postinstall, quiet=quiet, workspace=workspace)
 
     bootstrap_res = _run_bootstrap(db_path=db_path, verbose=verbose, quiet=quiet)
     rc = bootstrap_res["rc"]

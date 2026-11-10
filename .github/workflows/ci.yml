@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   # Manual re-run trigger. Without it, revalidating a red run required a dummy
   # push, which both burned a full matrix and stacked another queued run.
   workflow_dispatch:
@@ -14,7 +14,8 @@ on:
 # every superseded run was spending the whole matrix on a commit already
 # replaced. Cancelling in progress keeps only the run whose result can matter.
 concurrency:
-  group: ci-${{ github.ref }}
+  # A release-branch push carries its commit in the group, so no merge there is superseded.
+  group: ci-${{ github.ref }}${{ startsWith(github.ref, 'refs/heads/release/') && format('-{0}', github.sha) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -296,6 +297,16 @@ jobs:
 
       - name: Validate manifests (version drift check)
         run: npm run pre-publish:validate
+
+  main-version-guard:
+    name: No pre-release on main
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fail on a pre-release version
+        run: python3 .github/scripts/main_version_guard.py
 
   # ==========================================================================
   # Windows compatibility -- the evidence source for the Windows artifact
@@ -710,6 +721,7 @@ jobs:
       - lint-js
       - build-plugins
       - validate-manifests
+      - main-version-guard
       - windows-compat
       - pack
       - upgrade

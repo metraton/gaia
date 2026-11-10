@@ -57,14 +57,7 @@ Claude Code consumes the plugin from GitHub: the marketplace is the `metraton/ga
 
 The marketplace route loads the agents, skills and hooks, and it does write into the install folder (it declares no workspace): the plugin's first session merges Gaia's permission set (the `permissions` allow list and an empty ask list; it writes no deny rule, and removes the deny rules releases up to 5.5 wrote while keeping yours) and the hidden `attribution` setting into `.claude/settings.local.json` (`setup_project_permissions` in `hooks/modules/core/plugin_setup.py`), links `.claude/hooks`, then asks for `/reload-plugins` or a restart. Its sessions record those writes in `.claude/gaia-manifest.json`, the same manifest `gaia install` keeps, so `gaia uninstall` reverts them (see Uninstallation). What the plugin does **not** do is put the `gaia` CLI on your terminal's `PATH` (the orchestrator runs the plugin's own `bin/gaia`) or create the other `.claude/` links and `opencode.json`: those come from Surfaces 1 and 3. The hooks run as `sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/<entrypoint>.py"`; the launcher uses the first of `python3`, `python` or `py -3` that is Python 3, so a Python >= 3.12 under any of those names must be on `PATH` on this route too.
 
-Auto-update is off by default for third-party marketplaces, so a new release does not reach you on its own. Refresh the marketplace, then update the plugin:
-
-```bash
-claude plugin marketplace update gaia-marketplace
-claude plugin update gaia@gaia-marketplace
-```
-
-Then restart Claude Code. The update only lands when the version in the fetched `.claude-plugin/plugin.json` differs from the installed one; the same version re-fetched installs nothing new.
+Auto-update is off by default for third-party marketplaces, so a new release does not reach you on its own. Take it as described in [Update Process](#update-process): a marketplace pinned to a tag stays on that tag until its declared ref changes, so `claude plugin marketplace update` alone may install nothing new.
 
 For a pre-release dry-run of the plugin surface without publishing, pack the exact tarball and validate the extracted root headless:
 
@@ -308,16 +301,21 @@ Orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated vi
 
 ### Update Process
 
-```bash
-# 1. Update package
-npm install @jaguilar87/gaia@latest   # or: pnpm add @jaguilar87/gaia@latest
+On one machine Gaia should be one version, from one declared source, in every channel present, all on one database. Gaia reads that state and names the steps; it runs none of them:
 
-# 2. Re-sync the install folder (no postinstall does this for you):
-npx gaia update                       # or: pnpm exec gaia update
-#    - Refreshes DB schema, config, and symlinks after the version bump
-#    - Re-wires every channel recorded in .claude/gaia-manifest.json;
-#      fails naming gaia install when none is recorded
+```bash
+gaia doctor --channels --workspace <folder>        # declared, registered, installed, running per channel
+gaia doctor --target <version> --workspace <folder>  # each gap and the host command or edit that closes it
+# run those steps, one at a time, from the folder each names
+gaia doctor --channels --workspace <folder>        # exit 0 aligned, 1 leftovers, 2 split
 ```
+
+- **One route for a release candidate and a stable.** The plugin is pinned to the tag `v<version>` and npm installs the exact `<version>` (`--save-exact`). Never use `@latest` or `@rc`: for several minutes after a publish they still name the previous release.
+- **The plugin moves by its declared ref.** The view names the settings edit and a `claude plugin marketplace add` spelled exactly as declared, then `claude plugin update` at each install's scope from its project folder. Never remove the marketplace to update it: that deletes the cache running sessions load from and uninstalls the plugin.
+- **npm and OpenCode.** After the exact install, the new copy's own `gaia update` re-wires the channels recorded in `.claude/gaia-manifest.json`. For OpenCode that regenerates `opencode.json`'s agent block as well as the plugin entry.
+- **The data.** Every migration runs after a verified backup. `gaia migrate plan` shows the chain, the consent it needs and the backups on hand, and `gaia migrate restore --from <backup>` puts one back.
+
+Then restart the host, or `/reload-plugins` for the plugin.
 
 ### Upgrading from an older Gaia
 
@@ -325,7 +323,7 @@ Moving from an older release, take it out cleanly and install the new one fresh.
 
 1. Copy the database, `~/.gaia/gaia.db`, somewhere safe.
 2. In each folder Gaia is wired into, run `gaia uninstall`. Then remove the old package with `npm uninstall -g @jaguilar87/gaia` (or `npm uninstall @jaguilar87/gaia` in the folder where you installed it). On the plugin, run `claude plugin uninstall gaia@gaia-marketplace` instead.
-3. Install the new version: `npm install -g @jaguilar87/gaia@latest`, or `claude plugin install gaia@gaia-marketplace` on the plugin.
+3. Install the new version, exactly: `npm install -g @jaguilar87/gaia@<version>`, or `claude plugin install gaia@gaia-marketplace` on the plugin with the marketplace pinned to `v<version>`.
 4. In each folder, run `gaia install`. It backs up the database, checks the backup, updates the database to the new version and prints where the backup is (`backup written and verified: <path>`).
 
 To go back, put your copy of `gaia.db` back in `~/.gaia/`, install the old version (`npm install -g @jaguilar87/gaia@<old version>`) and run `gaia install` in the folder.
@@ -444,7 +442,7 @@ Run `gaia uninstall` in the install folder **before** `claude plugin uninstall`,
 <installPath>/bin/gaia uninstall --dry-run          # shows what reverts, changes nothing
 <installPath>/bin/gaia uninstall                    # reverts the plugin's writes into the install folder
 claude plugin uninstall gaia@gaia-marketplace
-claude plugin marketplace remove gaia-marketplace   # optional
+claude plugin marketplace remove gaia-marketplace   # optional, only to leave Gaia: deletes the cache
 ```
 
 The plugin's sessions record what they write into the install folder in `.claude/gaia-manifest.json` -- the permissions and `attribution` merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts them, restores the user entries the merge replaced, and keeps what you added since. A plugin install folder from before that record is recognized by Gaia's permissions and attribution.
@@ -483,7 +481,7 @@ A: Yes. Every git repository is a project, and one install serves them all. Gath
 A: Symlinks need Windows developer mode or an administrator shell. Without that privilege, `gaia install` copies each directory into `.claude/` instead and records the package version of each copy in `.claude/.gaia-symlink-fallback.json`; the next `gaia install` or `gaia update` refreshes a copy whose recorded version differs from the package, and `gaia doctor` checks it. A Windows junction is treated as a link.
 
 **Q: How do I update only documentation without changing code?**
-A: `npm install @jaguilar87/gaia@latest` then `npx gaia update` - symlinks point to the new version automatically.
+A: Take the new version as in [Update Process](#update-process); the `.claude/` links point at the new copy once its `gaia update` runs.
 
 ---
 

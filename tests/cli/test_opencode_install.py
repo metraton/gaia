@@ -481,3 +481,45 @@ def test_retired_copied_skill_is_pruned(tmp_path, monkeypatch):
 
     assert (linked, changed) == (["kept"], True)
     assert not (tmp_path / ".opencode" / "skills" / "retired").exists()
+
+
+def _opencode_package(package: Path) -> Path:
+    plugin = package / "opencode" / "plugin.ts"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(
+        "export const GaiaOpenCodePlugin = async () => ({})\n"
+        'export default { id: "gaia", server: GaiaOpenCodePlugin }\n'
+    )
+    (plugin.parent / "agent-policy.json").write_text('{"default": {"mode": "subagent"}}\n')
+    agent = package / "agents" / "gaia-orchestrator.md"
+    agent.parent.mkdir()
+    agent.write_text("---\nname: gaia-orchestrator\ndescription: Routes work\n---\nPrompt\n")
+    _package_skills(package, "sample")
+    return plugin
+
+
+def test_a_plugin_cache_copy_is_never_wired_into_opencode(tmp_path):
+    package = tmp_path / "home" / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / "5.8.0-rc.1"
+    _opencode_package(package)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    result = _install_helpers.configure_opencode_plugin(workspace, package)
+
+    assert result["action"] == "error"
+    assert "plugin cache" in result["details"] and "npm install @jaguilar87/gaia@" in result["details"]
+    assert not (workspace / "opencode.json").exists()
+
+
+def test_a_rewire_drops_plugin_cache_entries_and_keeps_the_user_ones(tmp_path):
+    plugin = _opencode_package(tmp_path / "package")
+    (tmp_path / "opencode.json").write_text(json.dumps({"plugin": [
+        "./user-plugin.ts",
+        "/home/u/.claude/plugins/cache/gaia-marketplace/gaia/5.7.0/opencode/plugin.ts",
+        "C:\\Users\\u\\.claude\\plugins\\cache\\gaia-dev\\gaia\\5.7.2-rc.2\\opencode\\plugin.ts",
+    ]}))
+
+    _install_helpers.configure_opencode_plugin(tmp_path, tmp_path / "package")
+
+    config = json.loads((tmp_path / "opencode.json").read_text())
+    assert config["plugin"] == ["./user-plugin.ts", str(plugin.resolve())]

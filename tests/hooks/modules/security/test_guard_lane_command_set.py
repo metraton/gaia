@@ -178,4 +178,5 @@ def test_a_denial_names_the_approved_signature_instead_of_sealing_another(lane_e
 
     assert not elsewhere.allowed
     assert approval_id in _denial_text(elsewhere)
+    assert f"sealed for {lane_env['work']} and this call runs in {lane_env['tmp']}" in _denial_text(elsewhere)
     assert _rows(lane_env["db"], "SELECT COUNT(*) FROM approvals") == rows_before

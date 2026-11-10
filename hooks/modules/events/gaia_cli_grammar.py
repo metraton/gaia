@@ -35,7 +35,7 @@ SUBCOMMANDS = {
         'add append checkpoint conflicts declare delete edit episode-show get-relevant link '
         'list move reclassify search show stats story'
     ),
-    'migrate': 'apply plan',
+    'migrate': 'apply plan restore',
     'milestone': 'add edit remove set-status',
     'notifications': 'ack add cancel list show snooze',
     'paths': 'data db',
@@ -174,7 +174,7 @@ OPTIONS = {
         '--channel --from-worktree --help --host --keep-tarball --no-global-link --pack-dest '
         '--quiet --ref --verbose --workspace -h -v'
     ),
-    'doctor': '--fix --help --json --workspace -h',
+    'doctor': '--channels --fix --help --json --target --workspace -h',
     'evidence': '--help -h',
     'evidence add': (
         '--ac --artifact-file --brief --created-by --gate --help --json --negative --task '
@@ -231,7 +231,8 @@ OPTIONS = {
     'metrics': '--agent --help --json --range --since --until --workspace -h',
     'migrate': '--help -h',
     'migrate apply': '--consent-chain --db --help -h',
-    'migrate plan': '--db --help -h',
+    'migrate plan': '--db --help --json -h',
+    'migrate restore': '--db --from --help -h',
     'milestone': '--help --workspace -h',
     'milestone add': '--description --help --json --order --workspace -h',
     'milestone edit': '--description --help --json --new-name --workspace -h',

@@ -1129,9 +1129,10 @@ class BashValidator:
         # Decided before the sanitizer strips the redirect or `< file` a lane rests on.
         guarded = signing_guard(command, cwd, is_subagent)
         if guarded is not None:
+            call_id = str((hook_payload or {}).get("tool_use_id", ""))
             return _granted_result(
                 command, session_id=session_id, agent_type=agent_type, cwd=cwd,
-                tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
+                tool_use_id=call_id,
             ) or decide_t3_outcome(
                 command,
                 verb=guarded.verb,
@@ -1140,6 +1141,7 @@ class BashValidator:
                 session_id=session_id,
                 agent_type=agent_type,
                 cwd=cwd,
+                tool_use_id=call_id,
                 guidance=guarded.guidance,
                 rule=guarded.rule,
             )
@@ -1539,6 +1541,7 @@ class BashValidator:
                 agent_type=agent_type,
                 guidance=result.guidance,
                 cwd=cwd,
+                tool_use_id=tool_use_id,
                 rule=result.rule,
             )
 
@@ -1574,6 +1577,7 @@ class BashValidator:
                         session_id=session_id,
                         agent_type=agent_type,
                         cwd=cwd,
+                        tool_use_id=tool_use_id,
                     )
 
         # Not blocked, not mutative -> SAFE by elimination
@@ -2458,25 +2462,69 @@ def _granted_result(
     )
 
 
-def _approved_signature_denial(command: str, session_id: str, agent_type: str) -> BashValidationResult | None:
-    """The denial naming a live, approved set that still holds *command* for this requester, else None."""
+def _unreserved_item_cause(held: dict, tool_use_id: str | None) -> str:
+    refusal = held.get("refusal") or {}
+    approval_id, check = held["approval_id"], refusal.get("check")
+    if check == "order":
+        return (
+            f"it is out of order: run item [{held['next_index']}] first, then this one alone. "
+            "Do not request it again."
+        )
+    if check == "files":
+        return (
+            f"{', '.join(refusal['paths'])} changed since it was signed, so the signature no longer "
+            f"covers what the command would run. Restore the file as signed, or withdraw the set with "
+            f"`gaia approvals revoke {approval_id}` and request it again over the file as it is now."
+        )
+    if check == "directory":
+        return (
+            f"it is sealed for {refusal['sealed']} and this call runs in {refusal['call']}: run it "
+            "from the sealed directory. Do not request it again."
+        )
+    if check == "call_reused":
+        return (
+            f"tool call {refusal['tool_use_id']} already reserved an item of this set: retry from a "
+            "new call. Do not request it again."
+        )
+    if check == "held":
+        from gaia.store.writer import PLAN_COMMAND_RESERVATION_TTL_MINUTES
+
+        return (
+            f"call {refusal['tool_use_id']} holds item [{held['index']}] since {refusal['since']}: "
+            "wait for that call to report back, or for the hold to lapse after "
+            f"{PLAN_COMMAND_RESERVATION_TTL_MINUTES} minutes, then retry from a new call. "
+            "Do not request it again."
+        )
+    if tool_use_id == "":
+        return (
+            "the host event carries no tool_use_id, which a signed item needs. "
+            "Do not request it again."
+        )
+    return (
+        "no check this lane can see refused it: retry the byte-identical command alone from a "
+        "new call. Do not request it again."
+    )
+
+
+def _approved_signature_denial(
+    command: str, session_id: str, agent_type: str, *, cwd: str | None, tool_use_id: str | None,
+) -> BashValidationResult | None:
+    """The denial naming a live, approved set that still holds *command* for this requester and why this call cannot run it, else None."""
     try:
         from gaia.store.writer import find_unconsumed_plan_item
 
-        held = find_unconsumed_plan_item(command, session_id=session_id, agent_id=agent_type)
+        held = find_unconsumed_plan_item(
+            command, session_id=session_id, agent_id=agent_type, cwd=cwd, tool_use_id=tool_use_id,
+        )
     except Exception as exc:
         logger.warning("approved-signature probe failed (non-fatal): %s", exc)
         return None
     if held is None:
         return None
-    approval_id = held["approval_id"]
-    where = f" in {held['cwd']}" if held.get("cwd") else ""
     reason = (
-        f"T3 command denied: {approval_id} is approved and already signs this exact command as "
-        f"item [{held['index']}]; the next item it runs is [{held['next_index']}]. Nothing was "
-        f"consumed and no new request was sealed: run the byte-identical command alone, in its "
-        f"turn{where}, from a call whose host event carries a session_id and a tool_use_id. "
-        f"Do not request it again."
+        f"T3 command denied: {held['approval_id']} is approved and signs this exact command as "
+        f"item [{held['index']}], but this call cannot run it: {_unreserved_item_cause(held, tool_use_id)} "
+        "Nothing was consumed and no new request was sealed."
     )
     return BashValidationResult(
         allowed=False, tier=SecurityTier.T3_BLOCKED, reason=reason,
@@ -2510,6 +2558,7 @@ def decide_t3_outcome(
     command_set: list | None = None,
     guidance: str = "",
     cwd: str | None = None,
+    tool_use_id: str | None = None,
 ) -> BashValidationResult:
     """Single decision point for the outcome of a T3 (state-mutating) command.
 
@@ -2604,7 +2653,9 @@ def decide_t3_outcome(
     # fingerprint dedup in insert_requested; the singular probe would match a
     # leftover pending of one sub-command and degrade the chain to one grant.
     if not is_chain_command_set:
-        approved = _approved_signature_denial(command, session_id, agent_type)
+        approved = _approved_signature_denial(
+            command, session_id, agent_type, cwd=cwd, tool_use_id=tool_use_id,
+        )
         if approved is not None:
             return approved
         # A pending plan-first COMMAND_SET carrying this exact command is named

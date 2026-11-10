@@ -638,11 +638,10 @@ def live_channels(version: str, workspace: Path | None) -> list[_install_smoke.C
     from cli import install as install_mod  # noqa: PLC0415
 
     found = [("marketplace", Path.home() / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / version, None)]
-    prefix = install_mod._npm_global_prefix()
-    if prefix is not None:
-        windows = os.name == "nt"
-        root = (prefix if windows else prefix / "lib") / "node_modules" / "@jaguilar87" / "gaia"
-        found.append(("npm-global", root, prefix if windows else prefix / "bin"))
+    shim_dir = install_mod._npm_global_prefix()
+    if shim_dir is not None:
+        modules = shim_dir / "node_modules" if os.name == "nt" else shim_dir.parent / "lib" / "node_modules"
+        found.append(("npm-global", modules / "@jaguilar87" / "gaia", shim_dir))
     if workspace is not None:
         modules = workspace / "node_modules"
         found.append(("npm-local", modules / "@jaguilar87" / "gaia", modules / ".bin"))
@@ -677,9 +676,8 @@ def run_live_smoke(version: str, workspace: Path | None) -> dict[str, Any]:
     if missing:
         detail = (
             f"{version} is not installed through {' and '.join(missing)} on this machine (found: "
-            f"{', '.join(names) or 'none'}). Install it as users do -- `/plugin marketplace add "
-            f"metraton/gaia#v{version}` and `/plugin install gaia@gaia-marketplace`; `npm install "
-            f"@jaguilar87/gaia@{version}` in --workspace, or `npm install -g` -- and re-run."
+            f"{', '.join(names) or 'none'}). Install it as users do, with the steps "
+            f"`gaia doctor --target {version}` names for this machine, and re-run."
         )
         return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": _now_ms() - t0}
     problems, passed = _install_smoke.smoke_installed(channels, version)

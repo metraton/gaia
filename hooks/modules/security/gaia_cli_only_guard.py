@@ -421,6 +421,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # ``doctor`` is read-only EXCEPT under --fix, which is why it also appears
     # in _READ_PHRASE_FORBIDDEN_FLAGS below (Design decision 4).
     ("doctor",),
+    ("migrate", "plan"),
     ("now",),
     ("map",),
     ("signals",),
@@ -1131,7 +1132,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
         "--field --draft-id --agent-id --harness-id --contract-id", "--row --json"),
     ("defects",): _flags(
         "--origin --type --severity --agent --since --until --limit --workspace", "--count --json"),
-    ("doctor",): _flags("--workspace", "--json"),
+    ("doctor",): _flags("--workspace --target", "--json --channels"),
     ("evidence", "list"): _flags("--brief --ac --workspace", "--json"),
     ("evidence", "show"): _flags("", "--json"),
     ("history",): _flags("--agent -a --limit -n --workspace", "--today -t --blocked -b --json"),
@@ -1173,6 +1174,7 @@ _FLAG_GRAMMAR: Dict[Tuple[str, ...], _FlagGrammar] = {
     ("notifications", "show"): _flags("", "--json"),
     ("notifications", "snooze"): _flags("--for --until", "--json"),
     ("lint", "comments"): _flags("--repo --head --base", "--json"),
+    ("migrate", "plan"): _flags("", "--json"),
     ("now",): _flags("", "--json"),
     ("open",): _flags("", "--line --json"),
     ("map",): _flags(""),
@@ -1222,7 +1224,7 @@ _FIXED_POSITIONALS: Dict[Tuple[str, ...], int] = {
         ("approvals", "stats"), ("brief", "list"), ("context", "get"), ("context", "get-contract"),
         ("context", "scan"), ("context", "show"), ("contract", "proposals", "list"),
         ("contract", "validate"), ("contract", "view"), ("defects",), ("doctor",),
-        ("evidence", "list"), ("history",), ("lint", "comments"), ("memory", "add"),
+        ("evidence", "list"), ("history",), ("lint", "comments"), ("migrate", "plan"), ("memory", "add"),
         ("memory", "checkpoint"), ("memory", "conflicts"), ("memory", "declare"), ("memory", "get-relevant"),
         ("memory", "list"), ("memory", "stats"), ("metrics",), ("notifications", "add"),
         ("notifications", "list"), ("now",), ("plan", "list"), ("query",),

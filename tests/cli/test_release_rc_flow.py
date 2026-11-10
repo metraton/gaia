@@ -41,6 +41,21 @@ def _record(version: str) -> None:
     record.write_text("{}")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX npm layout: <prefix>/lib/node_modules and <prefix>/bin")
+def test_the_live_smoke_finds_the_npm_global_copy_under_the_prefix(tmp_path, monkeypatch):
+    prefix = tmp_path / "npm-global"
+    package = prefix / "lib" / "node_modules" / "@jaguilar87" / "gaia"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"version": "5.8.0-rc.2"}))
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", str(prefix))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    channels = release.live_channels("5.8.0-rc.2", None)
+
+    assert [(c.name, c.root, c.path_dir) for c in channels] == [
+        ("npm-global", package.resolve(), prefix / "bin")]
+
+
 def test_a_stable_without_an_rc_tag_is_refused(repo):
     error = release._check_promoted_from_rc(repo, "5.8.0")
     assert "no v5.8.0-rc.N tag" in error

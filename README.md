@@ -119,7 +119,7 @@ Gaia reaches your host through one of three channels. The folder you install in 
 /plugin install gaia@gaia-marketplace      # terminal: claude plugin install gaia@gaia-marketplace
 ```
 
-That is the whole install, and it does not put `gaia` on your terminal's `PATH`. The first session merges Gaia's permission set into `.claude/settings.local.json`, and asks for `/reload-plugins` (or a restart); when the folder lies outside every declared workspace, the session says so and names the command that declares one. Auto-update is off for third-party marketplaces; take a new release with `claude plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace` and a restart.
+That is the whole install, and it does not put `gaia` on your terminal's `PATH`. The first session merges Gaia's permission set into `.claude/settings.local.json`, and asks for `/reload-plugins` (or a restart); when the folder lies outside every declared workspace, the session says so and names the command that declares one. Auto-update is off for third-party marketplaces; see "Taking a new version" below.
 
 **Package and OpenCode.** From the folder you install in:
 
@@ -130,7 +130,17 @@ npx gaia install --channel npm    # or: pnpm exec gaia install --channel npm
 npx gaia doctor                   # one line per check, PASS or FAIL
 ```
 
-`gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. It declares no workspace and scans nothing: it reports the declared workspace that holds the folder, or the command to declare one. `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can sit beside either Claude Code channel; `--path` also writes the `gaia` launcher to `~/.local/bin`. To take a new release: `npm install @jaguilar87/gaia@latest`, then `npx gaia update`, which re-wires the channels recorded in `.claude/gaia-manifest.json`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
+`gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. It declares no workspace and scans nothing: it reports the declared workspace that holds the folder, or the command to declare one. `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can sit beside either Claude Code channel; `--path` also writes the `gaia` launcher to `~/.local/bin`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
+
+**Taking a new version.** On one machine Gaia should be one version, from one declared source, in every channel, all on one database. Gaia reads that state and names the steps; you, or your agent, run them:
+
+```bash
+gaia doctor --channels               # every channel: declared, registered, installed, running; exit 0 aligned, 2 split
+gaia doctor --target 5.8.0           # the host commands and edits that bring this machine there; runs nothing
+gaia doctor --channels               # again, after running those steps
+```
+
+A release candidate and a stable take the same route. Install the exact version, never `@latest` or `@rc`, which can still name the previous release for minutes after a publish. Never update the plugin by removing its marketplace: that deletes the cache running sessions load from. Restart the host, or `/reload-plugins` for the plugin, to load the new version.
 
 **Then declare a workspace.** Installing is one step; declaring a workspace is another, and Gaia does not do it for you:
 
@@ -207,7 +217,7 @@ The other direction happens when two installs share one database: the newer one 
 ```
 Plugin     <installPath>/bin/gaia uninstall    # installPath: claude plugin list --json
            claude plugin uninstall gaia@gaia-marketplace
-           claude plugin marketplace remove gaia-marketplace   # optional
+           claude plugin marketplace remove gaia-marketplace   # optional, only to leave Gaia: deletes the cache
 Package    npx gaia uninstall            # --dry-run first shows what reverts
            npm uninstall @jaguilar87/gaia     # or: pnpm remove @jaguilar87/gaia
 OpenCode   npx gaia uninstall --channel opencode --workspace <folder>, then the npm step above
