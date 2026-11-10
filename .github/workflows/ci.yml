@@ -13,9 +13,7 @@ on:
 # complete runs between 06:24 and 09:17 on 2026-07-24 from stacked pushes), and
 # every superseded run was spending the whole matrix on a commit already
 # replaced. Cancelling in progress keeps only the run whose result can matter.
-# A push to a release branch is the exception: each merge there is a commit the
-# branch may be published from, so its group carries the commit and no run is
-# superseded. Pull requests and main keep one live run per ref.
+# A release-branch push carries its commit in the group, so no merge there is superseded.
 concurrency:
   group: ci-${{ github.ref }}${{ startsWith(github.ref, 'refs/heads/release/') && format('-{0}', github.sha) || '' }}
   cancel-in-progress: true
@@ -29,8 +27,8 @@ jobs:
   # build-plugins are exactly what a version-only commit can break. A pull
   # request is looked up by its head commit, but its jobs check out and test
   # the merge ref, and the run records the head's tree. The squash landing on
-  # main or a release branch therefore reuses the verdict only when its tree
-  # equals the head's, which holds when the branch already contained its base. A failed lookup reports
+  # main therefore reuses the verdict only when its tree equals the head's,
+  # which holds when the branch already contained main. A failed lookup reports
   # "not reusable", which runs everything.
   decide:
     name: Reuse decision
@@ -300,11 +298,6 @@ jobs:
       - name: Validate manifests (version drift check)
         run: npm run pre-publish:validate
 
-  # main is the marketplace's default channel, so a pre-release version on it
-  # reaches every plugin user who pins nothing (5.7.2-rc.1 did). The job runs
-  # for pull requests into main and pushes to main and is skipped on release
-  # branches, where pre-releases belong; a skipped job does not fail the
-  # verdict. It reads the tree it checks out, never the reuse decision.
   main-version-guard:
     name: No pre-release on main
     if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' }}
@@ -710,8 +703,7 @@ jobs:
 
   # The one check that summarizes the tree: green only when every job it
   # needs succeeded or was skipped by its own condition (l2-ci-subset outside
-  # push, main-version-guard outside main, the shards when decide found a
-# reusable verdict). A job that judges
+  # push, the shards when decide found a reusable verdict). A job that judges
   # the tree must be appended to `needs`, or its failure no longer reaches the
   # verdict; the checks below read `needs` whole and need no edit.
   #

@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a pre-release version is declared in a tree that is headed for `main`.
-
-`main` is the marketplace's default channel (`source: "."`, no ref), so whatever
-version it declares reaches every plugin user who pins nothing. A semver
-pre-release (any hyphen suffix, such as 5.7.2-rc.1) belongs on a release branch.
-
-Exit status: 0 every declared version is stable, 1 a pre-release was found.
-"""
+"""Exit 1 when package.json, plugin.json or pyproject.toml declares a pre-release (5.7.2-rc.1)."""
 
 import argparse
 import json
