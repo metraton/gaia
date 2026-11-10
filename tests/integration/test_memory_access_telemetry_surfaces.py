@@ -105,7 +105,7 @@ SEEDS: tuple[Seed, ...] = (
          initiative="beta", kind="pending"),
     Seed("a_anchor", "user", class_="anchor", audience="executor", kind="preference"),
     Seed("u_exec", "user", class_="log", audience="executor"),
-    Seed("atom_seeded", "atom", class_="anchor"),
+    Seed("atom_seeded", "atom", class_="anchor", kind="preference"),
     Seed("w_edit", "project"),
     Seed("w_append", "project"),
     Seed("w_reclass", "project"),

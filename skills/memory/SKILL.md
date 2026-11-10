@@ -102,9 +102,9 @@ Gaia delivers by kind and owner; no row is marked for a reader.
 | `## User memory`, at birth | the orchestrator only | the user's live facts and preferences, grouped by kind, conversation preferences first, each line its title, `surface=` and `until=` when it has them, and `ref=memory:user/<slug>` |
 | `~ Your conversation preferences:`, beside every prompt | the orchestrator only | the titles of the first four conversation preferences in full, within 660 characters; past four rows, the count of the rest with their coordinates |
 | `## Environment`, at birth and in every kernel | everyone | one `tool=<binary>` line per user tool whose binary is on PATH, with `replaces=` and its ref; a kernel carries at most five |
-| `# Scope memory`, in a kernel | a dispatched agent | the preferences, facts and lessons of its workspace > group > project chain, each line marked `scope=` |
+| `# Scope preferences`, in a kernel | a dispatched agent | every live preference of its workspace > group > project chain, each line its title, `scope=` and `ref=` |
+| `# Scope memory`, in a kernel | a dispatched agent | one line counting the chain's facts and lessons and the project's other standing notes, none preloaded, with the search and show verbs that read them |
 | The project card, `gaia context project <name>` | the orchestrator, once the project is named | the project's rows indexed by kind |
-| `# Standing notes`, in a kernel | a dispatched agent | the dispatch project's anchors, slug and one line |
 
 A user's row never reaches an agent's kernel. The user's preferences that touch
 an agent's output travel written in its goal, where a verifier can check them;
@@ -260,11 +260,12 @@ then are the parts lost. These earn a curated row:
 1. **Know what a session is born with, then sweep what you are about to
    touch.** A session opens with `## User memory`, `## Due`, `## Environment`
    (its tool lines included) and `## Workspaces I manage`, each project beside
-   its live-pending count. A dispatched specialist gets `# Scope memory`, its
-   project's standing notes and one Environment block, so a machine fact needs
+   its live-pending count. A dispatched specialist gets its scope's preferences
+   (`# Scope preferences`), one line counting the scope's facts, lessons and
+   notes (`# Scope memory`) and one Environment block, so a machine fact needs
    no row. Project memory bodies never load at birth: a count is a signal to
-   ask, not the corpus. Anything else a dispatched turn needs travels as a
-   reference in its goal. It arrives when that project is worked on: before
+   ask, not the corpus. A fact, lesson or decision a dispatched turn needs
+   travels as a reference in its goal. It arrives when that project is worked on: before
    writing into an initiative, or whenever the question is what it still owes,
    read its whole live-pending set with
    `gaia memory get-relevant --initiative=<key>`, uncapped and with bodies, and

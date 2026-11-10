@@ -103,6 +103,7 @@ _GRAMMARS = {
     "op": (_OP_RUN,),
     "aws-vault": (_AWS_VAULT_EXEC,),
 }
+EXECUTOR_PROGRAMS = frozenset(_GRAMMARS)
 
 TARGET_VARIABLES = {
     "kubectl": {"KUBECONFIG": "--kubeconfig"},

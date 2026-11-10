@@ -183,13 +183,14 @@ def workspace_worktrees_root(repo_path: Path | str) -> Path:
 def managed_root_containing(path: Path | str) -> Optional[Path]:
     """Return the managed worktrees root strictly containing *path*, or None.
 
-    The candidates are the workspace root of the repository *path* belongs to
-    and the legacy central root, both compared by realpath.
+    The candidates are the workspace root of the repository holding *path*'s nearest
+    existing directory and the legacy central root, both compared by realpath.
     """
     real = Path(os.path.realpath(path))
+    directory = next((d for d in (real, *real.parents) if d.is_dir()), real)
     roots = []
     try:
-        roots.append(Path(os.path.realpath(workspace_worktrees_root(real))))
+        roots.append(Path(os.path.realpath(workspace_worktrees_root(directory))))
     except WorktreePathError:
         pass
     roots.append(Path(os.path.realpath(worktrees_dir())))

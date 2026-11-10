@@ -8713,6 +8713,50 @@ def revoke_approval_grant(
         con.close()
 
 
+def holds_any(items: list[dict], commands: list[tuple[str | None, str]]) -> bool:
+    """Return whether a sealed item is one of ``commands``, ``(cwd, command)`` pairs; one sealed without a directory holds its command in all."""
+    return any(
+        item.get("command") == command and item.get("cwd") in (None, cwd)
+        for item in items
+        for cwd, command in commands
+    )
+
+
+def revoke_grants_holding(
+    commands: list[tuple[str | None, str]],
+    *,
+    session_id: str,
+    agent_id: str,
+    con: sqlite3.Connection,
+) -> list[str]:
+    """Revoke the requester's live command grants still holding one of ``commands``; return their ids.
+
+    A plan-first set holds its items from ``next_index`` on and a
+    single-command grant its one command (:func:`holds_any`). Runs inside the
+    caller's transaction.
+    """
+    now = _now_iso()
+    rows = con.execute(
+        "SELECT approval_id, scope, command_set_json, next_index, created_at, expires_at "
+        "FROM approval_grants WHERE status='PENDING' AND session_id=? AND agent_id=? "
+        "AND ((scope='COMMAND_SET' AND source='plan-first') OR scope='SCOPE_SEMANTIC_SIGNATURE')",
+        (session_id, agent_id),
+    ).fetchall()
+    revoked = []
+    for approval_id, scope, stored, next_index, created_at, expires_at in rows:
+        if not _plan_grant_is_live({"created_at": created_at, "expires_at": expires_at}, now):
+            continue
+        loaded = _json.loads(stored)
+        held = loaded[int(next_index or 0):] if scope == "COMMAND_SET" else [loaded]
+        if holds_any(held, commands):
+            con.execute(
+                "UPDATE approval_grants SET status='REVOKED', revoked_at=? WHERE approval_id=?",
+                (now, approval_id),
+            )
+            revoked.append(approval_id)
+    return revoked
+
+
 def list_approval_grants(
     *,
     agent_id: str | None = None,
@@ -8837,6 +8881,7 @@ def insert_semantic_grant(
     command: str,
     scope_signature: dict,
     *,
+    cwd: str | None = None,
     agent_id: str | None = None,
     session_id: str | None = None,
     ttl_minutes: int = APPROVAL_GRANT_TTL_MINUTES,
@@ -8851,9 +8896,14 @@ def insert_semantic_grant(
 
     Args:
         approval_id: The P-{hex} approval id that was activated.  Used as PK.
-        command: The exact command string approved by the user.
+        command: The exact command string approved by the user. The grant
+            authorises these bytes only: check_db_semantic_grant() compares
+            them and their fingerprint.
         scope_signature: Dict from ApprovalSignature.to_dict() -- stored in
-            command_set_json so check_db_semantic_grant() can match semantically.
+            command_set_json; check_db_semantic_grant() reads the approved
+            target from it.
+        cwd: The directory the request was sealed in; the grant matches only
+            there. None leaves the row unbound to a directory.
         agent_id: Requesting agent identifier.
         session_id: Session id of the subagent that will execute.
             Retained for audit only -- check_db_semantic_grant() matches
@@ -8876,10 +8926,12 @@ def insert_semantic_grant(
         datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # command_set_json stores the scope_signature dict so CHECK side can match.
-    # We also include the original command for audit trail.
+    from gaia.approvals.command_set import command_fingerprint
+
     grant_data = {
         "command": command,
+        "fingerprint": command_fingerprint(command),
+        "cwd": cwd,
         "scope_signature": scope_signature,
     }
 
@@ -8927,35 +8979,15 @@ def check_db_semantic_grant(
     requester: dict | None = None,
     db_path: Path | None = None,
 ) -> dict | None:
-    """Find an active SCOPE_SEMANTIC_SIGNATURE grant for command in the DB.
+    """Return the live single-command grant that authorises exactly ``command``, else None.
 
-    ``requester`` (``cwd``, ``session_id``, ``agent_id``) restricts the match to
-    grants whose sealed request names that directory and requester; a ``None``
-    value in it matches only grants sealed without one. Omitted, no requester
-    filter applies.
-
-    Called by check_approval_grant().
-
-    Matching uses the scope_signature stored in command_set_json:
-    - Deserializes the ApprovalSignature via ApprovalSignature.from_dict()
-    - Delegates to matches_approval_signature() for semantic comparison
-
-    Grant must:
-    - Have scope='SCOPE_SEMANTIC_SIGNATURE'
-    - Have status='PENDING'
-    - Not be past its expires_at timestamp
-
-    session_id is audit metadata only, NOT a match constraint: the approver's
-    session differs from the requester's, and the requester binding is carried
-    by ``requester`` against the sealed request, not by this argument.
-
-    Args:
-        command: The command string to check.
-        session_id: Accepted for signature compatibility, IGNORED for matching.
-        db_path: Optional explicit DB path (used by tests).
-
-    Returns:
-        Dict with grant row data when a matching grant is found, None otherwise.
+    The grant must be PENDING, inside its window, and carry these command
+    bytes, their fingerprint and, when it sealed one, the directory in
+    ``requester``; its approved target must still be the current one.
+    ``requester`` (``cwd``, ``session_id``, ``agent_id``) also restricts the
+    match to grants whose sealed request names that directory and requester; a
+    ``None`` value in it matches only grants sealed without one. ``session_id``
+    is ignored: the requester binding is ``requester``'s.
     """
     from datetime import datetime, timezone
     from pathlib import Path as _Path
@@ -8981,9 +9013,6 @@ def check_db_semantic_grant(
 
     con = _connect(db_path)
     try:
-        # The signature match binds the command bytes, status='PENDING' is the
-        # single-use replay guard, expires_at the window, and ``requester`` the
-        # sealed directory and requesting session and agent.
         clauses = [
             "g.scope = 'SCOPE_SEMANTIC_SIGNATURE'",
             "g.status = 'PENDING'",
@@ -9025,9 +9054,12 @@ def check_db_semantic_grant(
             if not sig_dict:
                 continue
 
+            cwd = (requester or {}).get("cwd")
+            if not _single_grant_binds(grant_data, command, cwd):
+                continue
             try:
                 signature = ApprovalSignature.from_dict(sig_dict)
-                if matches_approval_signature(signature, command, (requester or {}).get("cwd")):
+                if matches_approval_signature(signature, command, cwd):
                     return row_dict
             except Exception:
                 continue
@@ -9037,6 +9069,17 @@ def check_db_semantic_grant(
         return None
     finally:
         con.close()
+
+
+def _single_grant_binds(grant: dict, command: str, cwd: str | None) -> bool:
+    """Return whether a single-command grant covers these bytes here, as a sealed set item does."""
+    from gaia.approvals.command_set import command_fingerprint
+
+    return (
+        grant.get("command") == command
+        and grant.get("fingerprint") == command_fingerprint(command)
+        and grant.get("cwd") in (None, cwd)
+    )
 
 
 def _consumed_grant_exists(command: str, con) -> bool:

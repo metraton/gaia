@@ -192,7 +192,7 @@ Hook produced `approval_id` -- pass it through verbatim. The orchestrator presen
 
 ## 5. COMPLETE with `memory_delta` (propose gaia memory)
 
-The agent uncovered a fact worth persisting (a decision, an anchor) and proposes it in `memory_delta`, the one memory proposal channel. The orchestrator decides whether it lands in gaia memory. A `create` proposal carries the fields `gaia memory add --help` describes: `slug`, `type`, `description`, `body`.
+The agent uncovered a fact worth persisting (a decision, an anchor) and proposes it in `memory_delta`, the one memory proposal channel. The orchestrator decides whether it lands in gaia memory. A `create` proposal carries the fields `gaia memory add --help` describes: `slug`, `type`, `kind`, `description`, `body`.
 
 ```json
 {
@@ -227,6 +227,7 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and proposes
         "create": {
           "slug": "decision_gaia_rc_versioning",
           "type": "decision",
+          "kind": "decision",
           "description": "RC versioning convention for @jaguilar87/gaia",
           "body": "Versions matching X.Y.Z-rc.N publish to npm tag 'rc'; X.Y.Z publishes to 'latest'. Auto-detected by publish.yml on the GitHub Release event. No manual --tag flag is supported."
         }

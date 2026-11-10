@@ -22,16 +22,19 @@ in `reference.md`; one two-writer wave, end to end, is in `examples.md`.
 
 ## The eight principles
 
-1. **A goal completes the kernel; it never repeats it.** The kernel is data
-   only: it carries the turn's identity, the project and its declared workflow,
-   the read menu, a bound task's gates, an index (title + `ref=memory:`) of the
-   scope's preference, fact and lesson rows -- workspace, group and project,
-   never the user's -- the user's tool rows, `# Project context` whole or as
-   pointers, and an index of the project's standing notes. The index's tail is
-   the verb that opens the rest, so a budgeted kernel is still complete, and
-   what the kernel indexes the goal does not repeat. The contract
+1. **A goal completes the kernel: it names the rows that bear on the task and
+   never repeats what the kernel carries.** The kernel is data only: it carries
+   the turn's identity, the project and its declared workflow, the read menu, a
+   bound task's gates, the scope's preferences whole (title + `ref=memory:`)
+   -- workspace, group and project, never the user's -- the user's tool rows,
+   `# Project context` whole or as pointers, and the CLI index. The scope's
+   facts, lessons and other notes arrive as one counted line with the search
+   and show verbs, none of them preloaded. So the goal names, as coordinates,
+   the rows that bear on this task, because a specialist follows a row the goal
+   names and rarely searches: 60% of memory opens follow a slug the goal named,
+   and 1.6% of turns open one unprompted. The contract
    rules reach the specialist through the `agent-protocol` skill, not the kernel.
-   The goal carries what neither can: the references already opened, the
+   The goal also carries what neither can: the references already opened, the
    premise as a claim the specialist may refute, the user's preferences the
    orchestrator chose for this turn, and the acceptance. Where they
    change the work, it also names the rawest source, the trade's instrument, a
@@ -206,8 +209,8 @@ in `reference.md`; one two-writer wave, end to end, is in `examples.md`.
 - **The goal that re-narrates.** Retelling a sibling's findings or the kernel's
   contents: lossy where it is new, redundant where it is not, and the retelling
   is what the specialist trusts.
-- **The method line.** "On every command put X" retells a row the kernel
-  indexes or a user preference's body; the goal holds the sense line with its
+- **The method line.** "On every command put X" retells a preference the kernel
+  carries or a user preference's body; the goal holds the sense line with its
   `ref=` and the acceptance it implies.
 - **The composed check.** A gate written as a pipeline or an exit-code capture
   is refused or reclassified before it runs, and the turn reports on a check

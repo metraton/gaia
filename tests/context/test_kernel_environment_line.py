@@ -168,6 +168,18 @@ def test_line_is_capped_and_keeps_the_cli_path(env, monkeypatch):
     assert "tool00" in line and "tool79" not in line
 
 
+def test_tool_lines_past_the_kernel_cap_are_counted_with_the_verb_that_lists_them(env, tmp_path, monkeypatch):
+    binaries = [f"wrapper{n}" for n in range(kernel_builder.KERNEL_TOOL_LINES + 2)]
+    _path_with(monkeypatch, _make(tmp_path / "usr", *binaries))
+    for binary in binaries:
+        _register(binary)
+
+    block = kernel_builder.build_environment_block(db_path=env)
+
+    assert block.count("\ntool=") == kernel_builder.KERNEL_TOOL_LINES
+    assert block.endswith(f"+2 more — `gaia memory list --workspace {USER_WORKSPACE} --kind tool`")
+
+
 def test_kernel_places_the_line_after_scope_memory_and_before_the_cli_index(env, tmp_path):
     """Replaces "after user rows": the user's rows left the kernel, the scope memory heads the same slot."""
     con = sqlite3.connect(env)
@@ -191,7 +203,7 @@ def test_kernel_places_the_line_after_scope_memory_and_before_the_cli_index(env,
         agent_name="developer", agents_dir=tmp_path / "agents", db_path=env,
     )
 
-    user = kernel.index(kernel_builder.MEMORY_HEADING)
+    user = kernel.index(kernel_builder.PREFERENCES_HEADING)
     environment = kernel.index(kernel_builder.ENVIRONMENT_HEADING)
     cli = kernel.index(kernel_builder.CLI_HEADING)
     assert user < environment < cli

@@ -46,14 +46,15 @@ See `agent-protocol` for when in the turn's cycle this first write happens.
 The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
 role/surface, `project` with its declared `workflow` line when the project
 declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
-acceptance gates), `# Scope memory` (an index of the preferences, facts and
-lessons the dispatch's workspace, group and project hold, each line a title and
-its `ref=memory:...`; never the user's rows), `# Standing notes` (the project's live anchors, one line each, when
-it has any), `# Environment` (one line: OS, the gaia CLI path, the tools on
-PATH including the user's own executables), `# Project context` and
+acceptance gates), `# Scope preferences` (every live preference the dispatch's
+workspace, group and project hold, each line a title and its `ref=memory:...`;
+never the user's rows), `# Scope memory` (one line counting the chain's facts
+and lessons and the project's other standing notes, none preloaded, with the
+verbs that read them), `# Project context`, `# Environment` (one line: OS, the
+gaia CLI path, the tools on PATH including the user's own executables) and
 `# Your CLI`. `# Project context` carries the dispatch project's `can_read`
 sections whole when they fit, else one `get-contract` pointer per section,
-else a single count line; it is absent when the row's project does not
+else a single line naming them; it is absent when the row's project does not
 resolve, none of its `can_read` sections is stored, or the read fails
 (`hooks/modules/context/kernel_builder.py::build_project_context_block`).
 No surface routing arrives. Pull what the block only points at on demand
@@ -245,7 +246,10 @@ minted, `approval_id`, copied verbatim from the request's output.
   `{"version": 1, "proposals": [...]}`, each proposal an `operation` and its
   object (`create`, `append`, `reclassify`, `link`). A non-user `create` lands
   on the contract's project; a Gaia defect or lesson carries
-  `"initiative": "gaia_system"` and lands on owner gaia.
+  `"initiative": "gaia_system"` and lands on owner gaia. `gaia contract
+  set/add/fill` and `finalize` refuse a `memory_delta` whose shape would
+  record nothing, or a proposal `gaia memory add` would reject, naming the
+  repair (`gaia/store/proposals.py::refusal_message`).
 - `update_contracts`: `{contract, payload}` entries, a proposal for any
   section and never write authority: project context is written by the
   orchestrator alone. SubagentStop writes nothing for them, whatever
@@ -255,7 +259,9 @@ minted, `approval_id`, copied verbatim from the request's output.
   (`--dry-run` shows the target workspaces). Accepting deep-merges the
   payload; lists replace whole and no delete sentinel exists. A single
   `{section: payload}` object is read as the array it abbreviates, any other
-  shape is refused with a repair hint. A `project_identity` payload is split
+  shape is refused with a repair hint, at `gaia contract set/add/fill` and at
+  `finalize`, before the row is persisted
+  (`gaia/store/proposals.py::refusal_message`). A `project_identity` payload is split
   by project key: each key is written into the workspace that owns that
   project, underscore and hyphen spellings alike, and a key no workspace owns
   is refused, never written to the dispatch's workspace

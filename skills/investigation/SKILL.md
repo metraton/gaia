@@ -12,10 +12,11 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 
 1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
    `project` and its declared `workflow`, the `can_read` menu),
-   `# Scope memory`, and `# Project context`: the dispatch project's
+   `# Scope preferences`, the one counted line of `# Scope memory`, and
+   `# Project context`: the dispatch project's
    `can_read` sections, whole when they fit, else one
-   `gaia context get-contract` pointer per section, else a single count
-   line. Do not re-derive facts it
+   `gaia context get-contract` pointer per section, else a single line
+   naming them. Do not re-derive facts it
    already supplies. This is the first move, before any live query: when the
    goal names a component the block does not carry whole (a cluster, a
    namespace, a service, another project), fetch its section with
@@ -24,11 +25,15 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    `# Your Contract` resolved to no project, the turn has no `can_read`
    section, none of them is stored, or the read failed; record that in
    `open_gaps` instead of working as if the context were empty.
-2. Pull the rest of what the goal needs from the substrate on demand -- memory,
-   briefs and other contracts are not preloaded, and a coordinate in the goal (a contract id, a memory slug, a
-   brief) is an instruction to go read it. The verbs, their addressing, and the
-   workspace rule that decides whether they resolve are in
-   `agent-protocol/read-map.md`. Do not read Gaia's database directly.
+2. Pull what the kernel only titles, counts or points at -- memory, briefs and
+   other contracts are not preloaded. `agent-protocol` principle 3 names the
+   moments that earn the call and what skipping it costs; an investigation
+   meets two of them almost every time, so search memory for a lesson before
+   repeating a diagnosis, and treat a coordinate in the goal (a contract id, a
+   memory slug, a brief) as an instruction to go read it. The verbs, their
+   addressing, and the workspace rule that decides whether they resolve are in
+   `agent-protocol/read-map.md`; the store is read through them, since a
+   direct read of Gaia's database is refused.
    A fact a coordinate already holds is reused, cited in `key_outputs` by the
    handoff id it came from; measure again only what the coordinates leave
    uncovered, or a fact whose source changed after the commit or date it was

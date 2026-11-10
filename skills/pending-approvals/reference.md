@@ -14,7 +14,7 @@ Every reader derives one state from the stored rows
 | `pending` | Undecided, waiting for the user. |
 | `orphaned` | Undecided, but the session that requested it shows no sign of life. Withdraw it, or let it expire. |
 | `expired` | Undecided past the 24-hour pending lifetime. |
-| `replaced` | Withdrawn because the same requester asked again for the same command with its phrases. Not a user rejection. |
+| `replaced` | A pending request withdrawn because the same requester made a newer request holding one of its commands. Not a user rejection. An approved signature retired the same way keeps reading `approved`, with its grant `REVOKED` and the reason `reemplazada`. |
 | `rejected` | The user, or the orchestrator withdrawing it, rejected it. |
 | `revoked` | Its grant was revoked; it can no longer be used. |
 | `approved` | The user approved it; a grant exists. |

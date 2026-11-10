@@ -247,7 +247,7 @@ def test_reconstruction_recovers_a_fenceless_turns_update_contracts(db_path, cap
                 {k: [] for k in _EVIDENCE_KEYS}, verification=_VERIFICATION,
             ),
             "update_contracts": [
-                {"section": "architecture", "payload": {"note": "la propuesta"}},
+                {"contract": "architecture", "payload": {"note": "la propuesta"}},
             ],
         }),
     ]).returncode == 0
@@ -268,7 +268,7 @@ def test_reconstruction_recovers_a_fenceless_turns_update_contracts(db_path, cap
     )
     assert recon["reconstructed_from_finalized_draft"] == identity["contract_id"]
     assert recon["update_contracts"] == [
-        {"section": "architecture", "payload": {"note": "la propuesta"}},
+        {"contract": "architecture", "payload": {"note": "la propuesta"}},
     ], "the proposal the turn carried must survive reconstruction"
 
 

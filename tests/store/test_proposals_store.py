@@ -392,6 +392,18 @@ def test_proposals_store_literal_gaia_words_and_plain_reads_stay_free(command):
     ("env -u GAIA_DISPATCH_AGENT ls", True),
     ("env -i ls", False),
     ("env -S '-i FOO=1 ls'", False),
+    ("env -iS'gaia contract view'", True),
+    ("env -0iS 'gaia contract view'", True),
+    ("env -i -S 'gaia contract view'", True),
+    ("env -S '-i' gaia contract view", True),
+    ("env --ignore-environment --split-string 'gaia contract view'", True),
+    ("env --split-string='-i gaia contract view'", True),
+    ("env --ignore-env --split 'gaia contract view'", True),
+    ("env --ign -S 'gaia contract view'", True),
+    ("env -S 'gaia contract view' -i", False),
+    ("mytool --quiet env -iS 'gaia contract view'", True),
+    ("env -iS 'ls -l'", False),
+    ("grep -n env -i file", False),
 ])
 def test_proposals_store_clearing_the_environment_is_refused_only_around_gaia(command, refused):
     from modules.security.subagent_memory_write_guard import IDENTITY_REJECTION, check

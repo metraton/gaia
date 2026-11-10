@@ -1,10 +1,6 @@
-"""A specialist dispatched to a project is told which standing notes that project has.
+"""A specialist dispatched to a project is told how many standing notes it has and how to read them, never the notes.
 
-What the user feels: the facts the orchestrator curated about a project (a tool
-URL, a login method) reach every specialist dispatched there as an index it can
-open on demand; a project with no notes adds nothing to the dispatch, and the
-index never costs the scope memory its place. Runs against a temporary
-HOME, GAIA_DATA_DIR and GAIA_DB.
+Runs against a temporary HOME, GAIA_DATA_DIR and GAIA_DB.
 """
 
 from __future__ import annotations
@@ -22,14 +18,7 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "hooks"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from modules.context import kernel_builder  # noqa: E402
-from modules.context.kernel_builder import (  # noqa: E402
-    PROJECT_NOTES_BUDGET,
-    PROJECT_NOTES_HEADING,
-    build_kernel_context,
-)
-
-SCOPE_TITLE = "Versioned text is written in English."
+from modules.context.kernel_builder import MEMORY_HEADING, build_kernel_context  # noqa: E402
 
 
 @pytest.fixture()
@@ -44,34 +33,14 @@ def db(tmp_path, monkeypatch, bootstrapped_db_template):
     return db
 
 
-def _note(db: Path, name: str, description: str, *, initiative="alpha", cls="anchor",
-          updated_at="2026-10-01T00:00:00Z", deleted=False) -> None:
-    con = sqlite3.connect(db)
-    try:
-        con.execute(
-            "INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('me', 'me')"
-        )
-        con.execute(
-            "INSERT INTO memory (workspace, name, type, description, body, class, "
-            "initiative, updated_at, deleted_at) "
-            "VALUES ('me', ?, 'project', ?, 'the full body', ?, ?, ?, ?)",
-            (name, description, cls, initiative, updated_at,
-             "2026-10-02T00:00:00Z" if deleted else None),
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
-def _scope_row(db: Path) -> None:
+def _note(db: Path, name: str, description: str, *, initiative="alpha", cls="anchor", deleted=False) -> None:
     con = sqlite3.connect(db)
     try:
         con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('me', 'me')")
         con.execute(
-            "INSERT INTO memory (workspace, name, type, description, body, class, kind, "
-            "owner_level, updated_at) VALUES ('me', 'decision_me_english', 'decision', ?, ?, "
-            "'anchor', 'preference', 'workspace', '2026-09-01T00:00:00Z')",
-            (SCOPE_TITLE, SCOPE_TITLE),
+            "INSERT INTO memory (workspace, name, type, description, body, class, initiative, updated_at, "
+            "deleted_at) VALUES ('me', ?, 'project', ?, 'the full body', ?, ?, '2026-10-01T00:00:00Z', ?)",
+            (name, description, cls, initiative, "2026-10-02T00:00:00Z" if deleted else None),
         )
         con.commit()
     finally:
@@ -90,51 +59,17 @@ def _kernel(db: Path, project: str | None) -> str:
     return build_kernel_context(row, agent_name="developer", db_path=db)
 
 
-def test_project_with_notes_carries_an_index_without_bodies(db):
+def test_project_notes_are_counted_with_the_verbs_that_read_them_and_never_listed(db):
     _note(db, "atom_alpha_login_sso", "Fact: alpha signs in through the corporate SSO.")
-    _note(db, "atom_alpha_admin_url", "Fact: alpha admin lives at https://admin.alpha.test.",
-          updated_at="2026-10-05T00:00:00Z")
+    _note(db, "atom_alpha_admin_url", "Fact: alpha admin lives at https://admin.alpha.test.")
 
     kernel = _kernel(db, "alpha (/work/alpha)")
 
-    assert PROJECT_NOTES_HEADING in kernel
-    assert "- atom_alpha_admin_url: Fact: alpha admin lives at https://admin.alpha.test." in kernel
-    assert "- atom_alpha_login_sso: Fact: alpha signs in through the corporate SSO." in kernel
-    assert kernel.index("atom_alpha_admin_url") < kernel.index("atom_alpha_login_sso")
-    assert "the full body" not in kernel
-    assert "more —" not in kernel
-
-
-def test_a_long_kernel_loses_the_cli_index_before_the_notes_and_the_notes_before_the_scope_memory(db):
-    _scope_row(db)
-    _note(db, "atom_alpha_login_sso", "Fact: alpha signs in through the corporate SSO.")
-
-    kernel = _kernel(db, "alpha")
-
-    order = [
-        kernel.index(kernel_builder.KERNEL_HEADING),
-        kernel.index(SCOPE_TITLE),
-        kernel.index(PROJECT_NOTES_HEADING),
-        kernel.index(kernel_builder.CLI_HEADING),
-    ]
-    assert order == sorted(order)
-
-
-def test_index_is_capped_and_names_the_rest(db):
-    for i in range(40):
-        _note(db, f"atom_alpha_fact_number_{i:02d}", "Fact: " + "word " * 40,
-              updated_at=f"2026-10-{(i % 28) + 1:02d}T00:00:00Z")
-
-    block = kernel_builder.build_project_notes_block(
-        {"workspace": "me", "dispatch_project": "alpha"}, db_path=db,
-    )
-
-    assert 0 < len(block) <= PROJECT_NOTES_BUDGET
-    shown = block.count("\n- ")
-    assert 0 < shown < 40
-    assert block.endswith(
-        f"+{40 - shown} more — `gaia memory get-relevant --initiative alpha --sections anchor`"
-    )
+    assert (
+        f"{MEMORY_HEADING}: me > alpha (/work/alpha)\nother notes 2 — not preloaded: "
+        "`gaia memory search '<term>' --workspace me`; `gaia memory show <slug> --workspace me`\n"
+    ) in kernel
+    assert "atom_alpha_login_sso" not in kernel and "the full body" not in kernel
 
 
 def test_project_without_anchors_adds_nothing(db):
@@ -145,6 +80,5 @@ def test_project_without_anchors_adds_nothing(db):
     without_project = _kernel(db, None)
     kernel = _kernel(db, "alpha (/work/alpha)")
 
-    assert PROJECT_NOTES_HEADING not in kernel
-    assert "atom_beta_other" not in kernel
+    assert MEMORY_HEADING not in kernel
     assert kernel.replace("\nproject: alpha (/work/alpha)", "") == without_project

@@ -4,10 +4,13 @@ Approval scope builders and matching for T3 grants.
 The approval system supports three explicit scope shapes:
 
 - exact_command: tokenized command must match exactly
-- semantic_signature: same semantic command and normalized flags
+- semantic_signature: same operands in order, same flags as a set, same target
 - file_path: the exact resolved path of a Write/Edit
 
 Any other scope type, a stale ``verb_family`` row included, matches nothing.
+A semantic match is not a byte match: output redirects are dropped and flag
+order is ignored, so a grant is authorised by
+``gaia.store.writer.check_db_semantic_grant``, which also compares the bytes.
 """
 
 from dataclasses import asdict, dataclass
@@ -116,7 +119,7 @@ def build_approval_signature(
 
 
 def matches_approval_signature(signature: ApprovalSignature, command: str, cwd: Optional[str] = None) -> bool:
-    """Return True when a command falls inside an approved scope."""
+    """Return whether a command carries the signature's operands, flags and target; a grant also needs its bytes."""
     stripped = command.strip() if command else ""
     exact_tokens = tuple(tokenize_command(stripped))
     if not exact_tokens:
@@ -131,8 +134,7 @@ def matches_approval_signature(signature: ApprovalSignature, command: str, cwd: 
     # Identity comes from analyze_command at build and at match time, so the
     # comparison is reflexive for every command class, including those that
     # reach T3 only through the flag classifier (curl) and whose grant verb
-    # detect_mutative_command does not reproduce. Every non-flag token and
-    # every flag token is bound, so the grant stays byte-bound.
+    # detect_mutative_command does not reproduce.
     semantics = analyze_command(stripped)
     if semantics.base_cmd != signature.base_cmd:
         return False

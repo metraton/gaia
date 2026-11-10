@@ -38,7 +38,7 @@ Close    declare a state, finalize, degrade honestly
 ```
 
 Two doors open onto that arc. **A fresh dispatch** arrives with a kernel --
-`# Your Contract`, `# Scope memory`, `# Project context`, `# Standing notes`,
+`# Your Contract`, `# Scope preferences`, `# Scope memory`, `# Project context`,
 `# Environment`, `# Your CLI`. Your contract is named there, already open. Start at Ground.
 
 **A resumed turn** arrives as a message from the orchestrator inside a turn that
@@ -89,6 +89,27 @@ idiom -- a solution the system already decided differently about, which whoever
 reads it next now has to reconcile. Reading the injected memory sample as the
 whole archive is the ordinary form of this: the turn concludes something the
 substrate already recorded against.
+
+The three moments principle 3 names exist because the pull does not happen on
+its own. Measured over 1,114 dispatched turns (2026-10-23 to 2026-11-09): 60%
+of `gaia memory show` calls opened a slug the goal had named, 6.2% of turns ran
+a `gaia memory search`, and 1.6% opened an indexed row the goal did not name. A
+specialist follows a coordinate it is handed and almost never goes looking, so
+a kernel that preloads less is only a saving if the turn knows which moments
+are worth one call. The moments are stated as situations, not as a step,
+because a search with no question behind it returns rows nobody reads. The one
+release is a goal that names its rows: the orchestrator then made the search
+with the whole conversation in view, and the turn opens what it named. "The
+task looks fully specified" is not a release, since it is the judgment the
+numbers above show a turn making almost every time.
+
+The search verb is written with `--workspace` for a reason that was observed,
+not assumed: `gaia memory search` resolves its workspace from the directory it
+runs in. From a dispatch whose shell sat outside the project's workspace
+(2026-11-09), one query returned the on-topic project row first with the flag
+and did not return it at all without it, and both runs exited 0. A slug opened
+with `gaia memory show` does follow a project row into the workspace that holds
+it (`read-map.md`); a search does not.
 
 State no tool sequence and promise no reach. A sequence announced before the
 first read is a commitment made by the part of the turn that knows least, and
@@ -299,27 +320,32 @@ and as an on-disk draft -- before you run anything.
 | `can_read` / `can_write` | The menu of project-knowledge sections this turn may pull on demand and cite, and the ones it may propose updates to. The `can_read` sections the dispatch project holds also arrive in `# Project context`: whole when they fit the budget, else one `gaia context get-contract` pointer per section. |
 | `plan_task_id` + `acceptance` | Present only on a plan-task-bound turn: the binding and the verifiable floor the increment must clear -- the assertions principle 7 loops against. Such a turn cannot self-`COMPLETE`; it closes `NEEDS_VERIFICATION`. |
 
-Five blocks follow `# Your Contract`, in this order. `# Scope memory: <chain>`
-indexes the live preferences, facts and lessons of the dispatch's workspace,
-group and project, grouped by kind, each line a title, `scope=` and the
-`ref=memory:...` that `gaia memory show` opens
+Five blocks follow `# Your Contract`, in this order. `# Scope preferences:
+<chain> (N)` lists every live preference of the dispatch's workspace, group and
+project, each line a title, `scope=` and the `ref=memory:...` that `gaia open`
+opens. `# Scope memory: <chain>` is one line counting the chain's facts and
+lessons and the project's other standing notes, none of them preloaded, with
+the search and show verbs that read them
 (`hooks/modules/context/kernel_builder.py::build_memory_block`). The user's own
 rows never reach a kernel: the preferences that touch the output travel in the
-goal.
-`# Standing notes` is one line per live anchor of the dispatch project, absent
-when it has none. `# Project context` carries the dispatch project's `can_read`
+goal. `# Project context` carries the dispatch project's `can_read`
 sections: whole when they fit what the budget leaves, else one pointer line per
-section naming its `gaia context get-contract` verb, else a single count line
-(`hooks/modules/context/kernel_builder.py::_readable_project_sections`).
+section naming its `gaia context get-contract` verb, else a single line naming
+the sections
+(`hooks/modules/context/kernel_builder.py::build_project_context_block`).
 `# Environment` is one line capped at 400 chars, `<OS>; host <host>; gaia CLI
 <path>; tools on PATH: <names>`, with no cwd (`session_manifest.build_environment_line`).
 The names are Gaia's detected catalog, then the binaries of the user's detected
 `kind=tool` rows. Under the line come at most five of those rows, each as
 `tool=<binary> "<title>" [replaces=<cli>] ref=memory:user/<slug>`. `# Your CLI` is the index of what
-the turn can look up on its own, last because `gaia --help` rebuilds it. Beyond
-the standing notes nothing of the project's memory arrives, so a decision or
-thread the turn needs travels as a reference in the goal, or is read with `gaia
-memory get-relevant --initiative <k> --sections anchor`.
+the turn can look up on its own. A kernel still over the budget shrinks that
+index to its contract verbs and `gaia --help`, then the preferences from the
+end, counted as `+N more`; one that no shrink fits opens with a line saying
+what overflowed and which read prints the goal whole
+(`hooks/modules/context/kernel_builder.py::build_kernel_context`). Nothing else
+of the scope's memory arrives, so a decision or thread the turn needs travels
+as a reference in the goal; principle 3 names the moments that owe pulling the
+rest, and the verbs.
 
 ### The agent_id floor is measured
 

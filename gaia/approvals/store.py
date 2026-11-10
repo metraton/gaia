@@ -1071,12 +1071,16 @@ def activate_approval_atomically(
                 danger_verb = danger_verb.strip()
                 danger_category = left.strip().split()[0] if left.strip() else "MUTATIVE"
             items = payload.get("items")
+            sealed_cwd = (
+                items[0].get("cwd")
+                if isinstance(items, list) and items and isinstance(items[0], dict) else None
+            )
             signature = build_approval_signature(
                 command,
                 scope_type=SCOPE_SEMANTIC_SIGNATURE,
                 danger_verb=danger_verb,
                 danger_category=danger_category,
-                cwd=items[0].get("cwd") if isinstance(items, list) and items and isinstance(items[0], dict) else None,
+                cwd=sealed_cwd,
             )
             if signature is None:
                 rollback()
@@ -1253,6 +1257,7 @@ def activate_approval_atomically(
                 approval_id=approval_id,
                 command=command,
                 scope_signature=signature.to_dict(),
+                cwd=sealed_cwd,
                 agent_id=effective_agent,
                 session_id=stored_session or approver_session,
                 ttl_minutes=writer.APPROVAL_WINDOW_MINUTES if ttl_minutes is None else ttl_minutes,

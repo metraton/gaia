@@ -2086,62 +2086,16 @@ def _pending_requests_of(session_id: str, agent_id: str) -> list:
 
 
 def _find_pending_in_db(session_id: str, command: str, agent_id: str) -> Optional[str]:
-    """Return the requester's own pending approval matching this command, else None.
+    """Return the requester's newest pending request sealed for exactly these command bytes, else None.
 
-    Looks up the pending requests of this session and agent and matches each
-    one's stored command against the incoming command using the SAME semantic
-    matcher the consumption path uses (check_db_semantic_grant /
-    matches_approval_signature), after a byte-exact fast path.
-
-    Why semantic, not byte-exact:
-        The block-approve-retry flow can present the same operation under
-        cosmetically different strings -- most commonly a shell redirect that
-        the agent appends on the retry (``git push`` blocked, retried as
-        ``git push 2>&1``). A byte-exact dedup would MISS the existing pending
-        on that retry and mint a fresh approval_id, so the user is asked to
-        approve "the same command" twice. Matching on the semantic signature
-        makes the retry reuse the existing pending: the signature strips
-        output redirects (``command_semantics.strip_redirect_tokens``) while
-        still binding every identity-bearing token, so distinct operations are
-        NOT collapsed together.
-
-    Args:
-        session_id: Session of the host event that was blocked.
-        command: The Bash command that was blocked.
-        agent_id: Agent of the host event that was blocked.
-
-    Returns:
-        The approval_id (P-{hex}) if a matching pending exists, else None.
+    Byte for byte, as its grant will match: naming a request sealed for other
+    bytes would have the requester phrase, and the user sign, a command that
+    is not the one blocked.
     """
     try:
-        from ..security.approval_scopes import (
-            SCOPE_SEMANTIC_SIGNATURE,
-            build_approval_signature,
-            matches_approval_signature,
-        )
-        # Newest-first so a retry reuses the most recent matching pending,
-        # mirroring check_db_semantic_grant()'s ORDER BY created_at DESC.
         for row, payload in reversed(_pending_requests_of(session_id, agent_id)):
-            pending_command = payload.get("exact_content")
-            if not pending_command:
-                continue
-            # Fast path: byte-exact still reuses (covers the common no-decoration
-            # retry without building a signature).
-            if pending_command == command:
+            if payload.get("exact_content") == command:
                 return row.get("id")
-            # Semantic path: rebuild the pending's signature and compare against
-            # the incoming command with the same matcher the grant plane uses.
-            try:
-                pending_sig = build_approval_signature(
-                    pending_command,
-                    scope_type=SCOPE_SEMANTIC_SIGNATURE,
-                )
-                if pending_sig is not None and matches_approval_signature(
-                    pending_sig, command
-                ):
-                    return row.get("id")
-            except Exception:
-                continue
     except Exception as _err:
         logger.debug("_find_pending_in_db query failed (non-fatal): %s", _err)
     return None

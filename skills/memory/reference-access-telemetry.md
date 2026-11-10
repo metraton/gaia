@@ -63,7 +63,7 @@ list:
 | Call site | Symbol | Kind |
 |---|---|---|
 | `get-relevant` (no flag), `--sections=`, `--types=` | `_bump_injection_telemetry` (`bin/cli/memory.py`) | injection |
-| Subagent kernel's "Scope memory" block | `_record_kernel_telemetry` (`hooks/modules/context/kernel_builder.py`) | kernel |
+| Subagent kernel's "Scope preferences" block, the rows it lists | `_record_kernel_telemetry` (`hooks/modules/context/kernel_builder.py`) | kernel |
 | `memory show <slug>`, every mode including `--links`/`--history` | `_cmd_curated_show` (`bin/cli/memory.py`) | deliberate |
 | `memory story <slug>`, the seed row alone | `_cmd_story` (`bin/cli/memory_story.py`) | deliberate |
 | `get-relevant --initiative=<key>`, text and JSON alike | `_render_project_mode` (`bin/cli/memory.py`) | deliberate |
@@ -110,7 +110,7 @@ direct query against the `memory` table, never through `show` or `list`.
 
 Reading them back is their only consumer, for the two pairs that are read
 back at all. Automatic SessionStart selection -- `get-relevant`'s digest,
-`--sections=`, `--types=`, and the kernel's "Scope memory" block --
+`--sections=`, `--types=`, and the kernel's "Scope preferences" block --
 still ignores all three counters and orders by `updated_at` alone,
 unchanged. Wiring injection SELECTION itself to any counter remains a
 separate, undecided step.

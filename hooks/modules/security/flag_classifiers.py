@@ -27,7 +27,7 @@ from __future__ import annotations
 import posixpath
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 
@@ -366,41 +366,364 @@ def _classify_git_remote(tokens: List[str]) -> Optional[FlagClassifierResult]:
     return None
 
 
-def _classify_sed(tokens: List[str]) -> Optional[FlagClassifierResult]:
-    if not tokens or tokens[0] != "sed":
+@dataclass(frozen=True)
+class ReaderGrammar:
+    """Where a reader stops only reading: the options and operands through which it changes a file or starts a command."""
+
+    changes: FrozenSet[str] = frozenset()
+    runs: FrozenSet[str] = frozenset()
+    runs_rest: FrozenSet[str] = frozenset()
+    values: FrozenSet[str] = frozenset()
+    attached_values: FrozenSet[str] = frozenset()
+    read_operands: Optional[int] = None
+    word_options: bool = False
+    plus_formats: bool = False
+
+
+@dataclass(frozen=True)
+class ReaderEffect:
+    """The option or operand that makes a reader more than a reader, and the command it starts (None when it changes a file)."""
+
+    option: str
+    command: Optional[str]
+
+
+READER_GRAMMARS: Dict[str, ReaderGrammar] = {
+    "find": ReaderGrammar(
+        changes=frozenset({"-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}), word_options=True,
+    ),
+    "fd": ReaderGrammar(
+        runs_rest=frozenset({"-x", "-X", "--exec", "--exec-batch"}),
+        values=frozenset({"-d", "-t", "-e", "-E", "-c", "-j", "-S", "-o"}),
+    ),
+    "rg": ReaderGrammar(runs=frozenset({"--pre", "--hostname-bin"})),
+    "ag": ReaderGrammar(runs=frozenset({"--pager"})),
+    "ack": ReaderGrammar(runs=frozenset({"--pager"})),
+    "bat": ReaderGrammar(runs=frozenset({"--pager"})),
+    "less": ReaderGrammar(
+        changes=frozenset({"-o", "-O", "--log-file", "--LOG-FILE"}),
+        values=frozenset({"-b", "-h", "-j", "-k", "-p", "-P", "-t", "-T", "-x", "-y", "-z", "-D"}),
+    ),
+    "tree": ReaderGrammar(changes=frozenset({"-o", "-R"}), values=frozenset({"-L", "-P", "-I", "-H", "-T"})),
+    "sort": ReaderGrammar(
+        changes=frozenset({"-o", "--output"}), runs=frozenset({"--compress-program"}),
+        values=frozenset({"-k", "-t", "-S", "-T"}),
+    ),
+    "uniq": ReaderGrammar(
+        values=frozenset({"-f", "-s", "-w", "--skip-fields", "--skip-chars", "--check-chars"}), read_operands=1,
+    ),
+    "xxd": ReaderGrammar(
+        values=frozenset({
+            "-c", "-cols", "-g", "-groupsize", "-l", "-len", "-n", "-name", "-o", "-offset", "-R", "-s", "-seek",
+        }),
+        read_operands=1, word_options=True,
+    ),
+    "file": ReaderGrammar(
+        changes=frozenset({"-C", "--compile"}), values=frozenset({"-m", "-F", "-e", "-P", "-f"}),
+    ),
+    "date": ReaderGrammar(
+        changes=frozenset({"-s", "--set"}),
+        values=frozenset({"-d", "-f", "-r", "--date", "--file", "--reference", "--rfc-3339"}),
+        attached_values=frozenset({"-I"}), read_operands=0, plus_formats=True,
+    ),
+    "hostname": ReaderGrammar(changes=frozenset({"-F", "--file", "-b", "--boot"}), read_operands=0),
+}
+
+
+def reader_effect(program: str, args: List[str]) -> Optional[ReaderEffect]:
+    """The first option or operand through which reader *program* changes a file or starts a command, or None."""
+    grammar = READER_GRAMMARS.get(program)
+    if grammar is None:
         return None
-    args = tokens[1:]
+    effects = grammar.changes | grammar.runs | grammar.runs_rest
+    operands, index, options_open = 0, 0, True
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if options_open and word == "--" and not grammar.word_options:
+            options_open = False
+        elif not options_open or len(word) < 2 or word[0] != "-":
+            operands += not (grammar.plus_formats and word.startswith("+"))
+            if grammar.read_operands is not None and operands > grammar.read_operands:
+                return ReaderEffect(word, None)
+        elif word.startswith("--") or grammar.word_options:
+            name, has_value, value = word.partition("=")
+            abbreviates = len(name) > 2 and name.startswith("--")
+            option = next((o for o in sorted(effects) if o == name or (abbreviates and o.startswith(name))), None)
+            if option in grammar.runs_rest:
+                return ReaderEffect(option, shlex.join(args[index:]))
+            if option in grammar.runs:
+                return ReaderEffect(option, value if has_value else " ".join(args[index:index + 1]))
+            if option is not None:
+                return ReaderEffect(option, None)
+            index += not has_value and name in grammar.values
+        else:
+            for at, letter in enumerate(word[1:], 2):
+                option, rest = "-" + letter, word[at:]
+                if option in grammar.runs_rest:
+                    return ReaderEffect(option, shlex.join(([rest] if rest else []) + args[index:]))
+                if option in grammar.runs:
+                    return ReaderEffect(option, rest or " ".join(args[index:index + 1]))
+                if option in grammar.changes:
+                    return ReaderEffect(option, None)
+                if option in grammar.values | grammar.attached_values:
+                    index += not rest and option in grammar.values
+                    break
+    return None
 
-    flag = _has_flag(args, "-i", "-I", "--in-place")
-    if flag:
-        return FlagClassifierResult(
-            outcome=OUTCOME_MUTATIVE,
-            reason=f"sed {flag} edits files in-place",
-            matched_pattern=flag,
-            command_family="sed",
-        )
-    for a in args:
-        if a.startswith("-i") and a != "-i" and not a.startswith("--"):
-            return FlagClassifierResult(
-                outcome=OUTCOME_MUTATIVE,
-                reason=f"sed {a} edits files in-place (with backup suffix)",
-                matched_pattern=a,
-                command_family="sed",
-            )
-        if len(a) >= 2 and a[0] == "-" and a[1] != "-" and "i" in a[1:]:
-            return FlagClassifierResult(
-                outcome=OUTCOME_MUTATIVE,
-                reason=f"sed {a} contains -i (in-place editing)",
-                matched_pattern=a,
-                command_family="sed",
-            )
 
+_SED_BOOLEAN_LETTERS = frozenset("nErsuz")
+_SED_VALUE_LETTERS = frozenset("efl")
+_SED_LONG_OPTIONS = {
+    "--quiet": "n", "--silent": "n", "--regexp-extended": "E", "--separate": "s", "--unbuffered": "u",
+    "--null-data": "z", "--zero-terminated": "z", "--posix": "n", "--debug": "n", "--follow-symlinks": "n",
+    "--help": "n", "--version": "n", "--sandbox": "sandbox", "--expression": "e", "--file": "f",
+    "--line-length": "l", "--in-place": "i",
+}
+_SED_EFFECTS = {"e": "runs a shell command", "w": "writes a file", "W": "writes a file"}
+_SED_PLAIN_COMMANDS = frozenset("dDgGhHnNpPxzF={}")
+_SED_S_FLAGS = frozenset("gpiImM0123456789")
+_SED_WORD_END = frozenset(" \t\n;}")
+_EXPANSION = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?!$-])|`[^`]*`?")
+
+
+def _shown_word(raw: str) -> Optional[str]:
+    """The value bash gives *raw* with each expansion as one ``_UNPROVEN_WORD`` mark; None when its quoting cannot be read."""
+    out: List[str] = []
+    quote, index = "", 0
+    while index < len(raw):
+        char = raw[index]
+        if quote == "'":
+            quote = "" if char == "'" else quote
+            out.append(char if quote else "")
+        elif char == "\\" and index + 1 < len(raw) and (not quote or raw[index + 1] in '$`"\\\n'):
+            index += 1
+            out.append(raw[index])
+        elif char in "'\"" and (not quote or char == quote):
+            quote = "" if quote else char
+        elif char == "$" and raw[index + 1:index + 2] == "(":
+            index = _closing_parenthesis(raw, index + 1)
+            out.append(_UNPROVEN_WORD)
+        elif char == "$" and not quote and raw[index + 1:index + 2] in ("'", '"'):
+            return None
+        elif char in "$`" and _EXPANSION.match(raw, index):
+            index = _EXPANSION.match(raw, index).end() - 1
+            out.append(_UNPROVEN_WORD)
+        else:
+            out.append(char)
+        index += 1
+    return None if quote else "".join(out)
+
+
+def _closing_parenthesis(text: str, opened_at: int) -> int:
+    depth = 0
+    for index in range(opened_at, len(text)):
+        depth += (text[index] == "(") - (text[index] == ")")
+        if depth == 0:
+            return index
+    return len(text)
+
+
+def _sed_options(words: List[str]) -> Optional[Tuple[List[Tuple[str, str]], List[str]]]:
+    """sed's options as ``(letter, value)`` -- an in-place option carries its own word -- and its operands; None on an option sed does not document."""
+    options: List[Tuple[str, str]] = []
+    operands: List[str] = []
+    index, options_open = 0, True
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if not options_open or len(word) < 2 or word[0] != "-":
+            operands.append(word)
+        elif word == "--":
+            options_open = False
+        elif word.startswith("--"):
+            name, has_value, value = word.partition("=")
+            letters = {_SED_LONG_OPTIONS[name]} if name in _SED_LONG_OPTIONS else {
+                letter for option, letter in _SED_LONG_OPTIONS.items() if option.startswith(name)}
+            if len(letters) != 1:
+                return None
+            letter = letters.pop()
+            if letter in _SED_VALUE_LETTERS and not has_value:
+                value, index = " ".join(words[index:index + 1]), index + 1
+            options.append((letter, word if letter == "i" else value))
+        else:
+            for at, letter in enumerate(word[1:], 2):
+                if letter in "iI":
+                    options.append(("i", word))
+                elif letter in _SED_VALUE_LETTERS:
+                    value = word[at:] or " ".join(words[index:index + 1])
+                    index += not word[at:]
+                    options.append((letter, value))
+                elif letter in _SED_BOOLEAN_LETTERS:
+                    options.append((letter, ""))
+                    continue
+                else:
+                    return None
+                break
+    return options, operands
+
+
+def _sed_bracket_end(script: str, opened_at: int, escapes: bool) -> int:
+    index = opened_at + 1 + (script[opened_at + 1:opened_at + 2] == "^")
+    index += script[index:index + 1] == "]"
+    while index < len(script) and script[index] != "\n":
+        char = script[index]
+        if char == "]":
+            return index + 1
+        if char == "[" and script[index + 1:index + 2] in (":", ".", "="):
+            closed = script.find(script[index + 1] + "]", index + 2)
+            if closed == -1:
+                return 0
+            index = closed + 2
+        else:
+            index += 2 if char == "\\" and escapes else 1
+    return 0
+
+
+def _sed_section_end(script: str, at: int, delimiter: str, brackets: Optional[bool] = None) -> int:
+    """Index past the *delimiter* that closes the section starting at *at*, -1 when none does; *brackets* says whether a backslash escapes inside a bracket expression, None for a section with none."""
+    index = at
+    while index < len(script):
+        char = script[index]
+        if char == "\\":
+            index += 2
+        elif char == delimiter:
+            return index + 1
+        else:
+            closed = _sed_bracket_end(script, index, brackets) if char == "[" and brackets is not None else 0
+            index = closed or index + 1
+    return -1
+
+
+def _sed_regex_end(script: str, at: int, delimiter: str) -> int:
+    ends = {_sed_section_end(script, at, delimiter, escapes) for escapes in (True, False)}
+    return ends.pop() if len(ends) == 1 else -1
+
+
+def _sed_address_end(script: str, index: int) -> int:
+    char = script[index:index + 1]
+    if char.isdigit():
+        while script[index:index + 1].isdigit() or script[index:index + 1] == "~":
+            index += 1
+        return index
+    if char and char in "$" + _UNPROVEN_WORD:
+        return index + 1
+    if char == "/" or (char == "\\" and index + 1 < len(script)):
+        end = _sed_regex_end(script, index + 1 + (char == "\\"), script[index + (char == "\\")])
+        while end > 0 and script[end:end + 1] and script[end] in "IM":
+            end += 1
+        return end
+    return index
+
+
+def _skip_blanks(script: str, index: int) -> int:
+    while script[index:index + 1] and script[index] in " \t":
+        index += 1
+    return index
+
+
+def _sed_addresses_end(script: str, index: int) -> int:
+    end = _sed_address_end(script, index)
+    if end > index:
+        end = _skip_blanks(script, end)
+        if script[end:end + 1] == ",":
+            second = _skip_blanks(script, end + 1)
+            second += script[second:second + 1] in ("+", "~")
+            end = _sed_address_end(script, second)
+            end = -1 if end <= second else end
+    if end < 0:
+        return -1
+    end = _skip_blanks(script, end)
+    while script[end:end + 1] == "!":
+        end = _skip_blanks(script, end + 1)
+    return end
+
+
+def _sed_script_effect(script: str) -> Optional[str]:
+    """Why sed *script* is more than a filter -- a command that writes a file or runs one, or text that cannot be read as commands -- or None."""
+    index, size = 0, len(script)
+    while index < size:
+        if script[index] in " \t\n;":
+            index += 1
+            continue
+        index = _sed_addresses_end(script, index)
+        if index == size and script.endswith(_UNPROVEN_WORD):
+            break
+        if not 0 <= index < size:
+            return "cannot be read as commands, so its effect is unproven"
+        char = script[index]
+        index += 1
+        if char == _UNPROVEN_WORD:
+            continue
+        if char in _SED_EFFECTS:
+            return f"command {char!r} {_SED_EFFECTS[char]}"
+        if char in "sy":
+            delimiter = script[index:index + 1]
+            if not delimiter or delimiter in "\n\\":
+                return "cannot be read as commands, so its effect is unproven"
+            end = _sed_regex_end(script, index + 1, delimiter) if char == "s" else _sed_section_end(
+                script, index + 1, delimiter)
+            index = -1 if end < 0 else _sed_section_end(script, end, delimiter)
+            if index < 0:
+                return f"holds a {char!r} command that cannot be read whole, so its effect is unproven"
+            while char == "s" and script[index:index + 1] and script[index] in _SED_S_FLAGS:
+                index += 1
+            if char == "s" and script[index:index + 1] in ("e", "w"):
+                return f"substitution flag {script[index]!r} {_SED_EFFECTS[script[index]]}"
+        elif char in "aic":
+            while index < size and script[index] != "\n":
+                index += 2 if script[index] == "\\" else 1
+        elif char in "rR#":
+            newline = script.find("\n", index)
+            index = size if newline == -1 else newline
+        elif char in "btT:v" or char in "qQlL":
+            index = _skip_blanks(script, index)
+            while index < size and script[index] not in _SED_WORD_END:
+                index += 1
+        elif char not in _SED_PLAIN_COMMANDS:
+            return f"holds {char!r}, which is not read as a command, so its effect is unproven"
+    return None
+
+
+def _sed_signs(reason: str, matched_pattern: str) -> FlagClassifierResult:
     return FlagClassifierResult(
+        outcome=OUTCOME_MUTATIVE, reason=reason, matched_pattern=matched_pattern, command_family="sed",
+    )
+
+
+def _classify_sed(command: str) -> Optional[FlagClassifierResult]:
+    """sed runs free only when the line shows every script and each command in it is read and neither writes a file nor runs a command."""
+    from ..tools.shell_parser import drop_redirections
+
+    first_line = command.partition("\n")[0]
+    redirect = _unquoted_index(first_line, "<")
+    opens_heredoc = (
+        redirect != -1 and first_line[redirect:redirect + 2] == "<<" and first_line[redirect + 2:redirect + 3] != "<"
+    )
+    words = _raw_words(first_line if opens_heredoc else command)
+    shown = [_shown_word(word) for word in drop_redirections(words or [])[1:]]
+    if words is None or None in shown:
+        return _sed_signs("sed line cannot be read word by word, so its script is unproven", "sed")
+    parsed = _sed_options(shown)
+    if parsed is None:
+        return _sed_signs("sed takes an option the classifier does not model", "sed option")
+    options, operands = parsed
+    for letter, value in options:
+        if letter == "i":
+            return _sed_signs(f"sed {value} edits files in-place", value)
+    filters = FlagClassifierResult(
         outcome=OUTCOME_READ_ONLY,
-        reason="sed without -i writes to stdout, does not modify files",
+        reason="sed script is shown on the line and only filters its input",
         matched_pattern="sed",
         command_family="sed",
     )
+    if opens_heredoc:
+        return replace(filters, reason="sed fed a heredoc is judged by the validator's heredoc lane")
+    if any(letter == "f" for letter, _ in options):
+        return _sed_signs("sed reads its script from a file the line does not show", "-f")
+    scripts = [value for letter, value in options if letter == "e"] or operands[:1]
+    effect = None if ("sandbox", "") in options else _sed_script_effect("\n".join(scripts))
+    return filters if effect is None else _sed_signs(f"sed script {effect}", "sed script")
 
 
 _AWK_EFFECT_TOKENS = (">", "|", "system", "@", "/inet")
@@ -926,8 +1249,7 @@ def _classify_find(tokens: List[str]) -> Optional[FlagClassifierResult]:
     args = tokens[1:]
 
     # -exec/-execdir/-ok/-okdir are judged by their payload in detect_mutative_command's executor lane.
-    mutative_actions = ("-delete", "-fprint", "-fprint0", "-fprintf")
-    flag = _has_flag(args, *mutative_actions)
+    flag = _has_flag(args, *READER_GRAMMARS["find"].changes)
     if flag:
         return FlagClassifierResult(
             outcome=OUTCOME_MUTATIVE,
@@ -1291,6 +1613,8 @@ def classify_by_flags(
         return None
     if classifier is _classify_awk:
         return _classify_awk(command, caller, piped_from)
+    if classifier is _classify_sed:
+        return _classify_sed(command)
     if classifier is _classify_tar:
         return _classify_tar(tokens, caller)
     if classifier is _classify_curl:

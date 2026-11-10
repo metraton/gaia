@@ -1,0 +1,8 @@
+{
+ "task": "58-rc1",
+ "truth_rows": ["unknown-v14-sort-o-bashrc", "unknown-v14-sort-o-bashrc-heredoc"],
+ "reviews": {
+  "sed -n '1,3p' /home/jorge/.claude/plugins/cache/gaia-marketplace/gaia/5.7.2-rc.2/package.json": "Intended: a literal print-only sed (-n with a line-range p script, no w, e or -i) reading a file of an installed Gaia; protected_path_guard._sed_only_prints proves it writes nothing, so the install-root signature no longer applies. SIGNED -> FREE."
+ },
+ "justification": "Replay 1a88ae37 -> integration/58-rc1 with validator-paths and validator-holes merged (sample 2000: 1103 truth rows, 1516 history, 514 approvals, 18 cases): 3 changes. 2 truth rows FREE -> SIGNED(sign.lands), sort -o ~/.bashrc with and without a heredoc, the verdict the table already expected (flag_classifiers.reader_effect reads -o as a write). 1 approval SIGNED -> FREE, a print-only sed on an installed Gaia, reviewed above. No history command moved. 2 units timed out on the new side (a 3891-char ghx pr create and a 3320-char prose fragment), which the caps do not count. caps.json unchanged."
+}

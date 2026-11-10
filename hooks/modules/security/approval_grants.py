@@ -25,15 +25,15 @@ Grants are:
 
 Security properties:
 - Grants are created ONLY by the hook (not by agents)
-- Nonce-activated grants are scoped to a semantic command signature
+- A single-command grant authorises only its exact command bytes, their
+  fingerprint and the directory it sealed
 - Grants expire automatically
 - The deny list (blocked_commands.py) is NEVER bypassed -- grants only
   override the dangerous verb detector
 - Nonces are 128-bit random hex (cannot be guessed)
 - A nonce can only be activated ONCE (DB row marked CONSUMED on activation)
-- DB grants are session-AGNOSTIC by design: the block-approve-retry flow
-  legitimately spans sessions, so replay protection comes from the CONSUMED
-  status + TTL, not from session scoping (see the DB-backed model note below)
+- A lookup names its requester (directory, session, agent) and matches only a
+  grant sealed for it; replay protection is the CONSUMED status plus the window
 
 =============================================================================
 Grant lifetime (DB-backed model)
@@ -41,26 +41,20 @@ Grant lifetime (DB-backed model)
 The grant plane is the DB (``approval_grants`` in gaia.db). The model is:
 
 1.  A SCOPE_SEMANTIC_SIGNATURE grant is created when the user approves a
-    pending approval via AskUserQuestion. It carries a semantic signature
-    (base command + semantic tokens + normalized flags), is **session-agnostic**
-    (see check_db_semantic_grant in gaia.store.writer), and lives for
-    ``APPROVAL_GRANT_TTL_MINUTES`` (the 30-minute approval window, reflected
-    by DEFAULT_GRANT_TTL_MINUTES above).
+    pending approval via AskUserQuestion. It carries the command bytes, their
+    fingerprint and the sealed directory (see check_db_semantic_grant in
+    gaia.store.writer), and lives for ``APPROVAL_GRANT_TTL_MINUTES`` (the
+    30-minute approval window, reflected by DEFAULT_GRANT_TTL_MINUTES above).
 
 2.  The grant is **consumed on the matching retry**, NOT at SubagentStop and
-    NOT when a sub-agent ends. The first time a command whose signature matches
-    the grant runs, bash_validator marks the DB row CONSUMED
-    (consume_db_semantic_grant) for replay protection. Because the grant is
-    session-agnostic, the consuming retry may run under a different session than
-    the one that was blocked -- the block-approve-retry flow legitimately spans
-    sessions (block under the subagent session, approve under the orchestrator
-    session, retry under the subagent session).
+    NOT when a sub-agent ends. The first time the byte-identical command runs
+    for the requester the grant was sealed for, bash_validator marks the DB row
+    CONSUMED (consume_db_semantic_grant) for replay protection.
 
-3.  The semantic signature normalizes shell redirects out (``2>&1``, ``> file``)
-    so a retry that only appends a redirect REUSES the existing grant rather
-    than minting a new approval_id. Identity-bearing
-    tokens -- including the ``-C <path>`` working directory -- still bind, so a
-    genuinely different operation does NOT match the same grant.
+3.  A retry that adds, drops or changes a redirect, a flag value or the flag
+    order is a different command and asks again. consume_grant and
+    confirm_grant in this module look a grant up with no requester, so they do
+    not find a directory-sealed grant.
 
 Operators who want one consent to cover a batch of related commands should
 use the COMMAND_SET grant mechanism (see ``create_command_set_grant()``).

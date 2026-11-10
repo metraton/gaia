@@ -6,9 +6,10 @@ it, a ``bin/cli/<group>.py`` script (which runs as ``gaia <group>``), and
 others open, and the CLI cannot tell a subagent from the orchestrator once the
 subagent unsets ``GAIA_DISPATCH_AGENT``, so the guard is the only boundary.
 
-Every word of the component is considered, not only the command position:
-wrappers (``env -u``, ``timeout``, ``uv run``, ``xargs``) put the entry point
-anywhere, and the callers match literal group and verb words after it.
+A word is an entry point only where the line starts a program: the command
+word past assignments and wrappers, the script or module a Python interpreter
+is handed, and each command a carrier runs (``mutative_verbs.handed_commands``).
+An argument of a program that only reads its arguments is data.
 """
 
 from __future__ import annotations
@@ -104,6 +105,12 @@ _CAT_HEREDOC_WORD = re.compile(r'(?:^|(?<=[ \t]))"\$\([ \t]*cat[ \t]+(?=<<)')
 _CLOSING_WORD = re.compile(r'[ \t]*\)(")(?=[ \t\n;&|]|$)')
 _CLI_MODULES = frozenset(
     path.stem for path in (Path(__file__).resolve().parents[3] / "bin" / "cli").glob("*.py"))
+_PYTHON_CODE_FLAG = re.compile(r"^-[A-Za-z]*c$")
+_PYTHON_VALUE_OPTIONS = frozenset({"-W", "-X"})
+_MAX_CARRIER_DEPTH = 4
+_QUOTING = str.maketrans("", "", "'\"\\")
+_COMPUTING = _UNQUOTED_COMPUTED | {"{"}
+_IDENTITY_TOUCHING = re.compile(rf"{_IDENTITY}|\b(?:env|exec|{'|'.join(sorted(_DECLARERS))})\b")
 
 
 def literal_words(component: str) -> List[Tuple[str, bool]]:
@@ -188,17 +195,109 @@ def _is_gaia_entry(words: Sequence[str], index: int) -> bool:
     return _module_argv(words, index) is not None
 
 
+def _words(text: str) -> List[str]:
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def _program_index(words: Sequence[str]) -> Optional[int]:
+    """Index of the word naming what *words* run: the command word, or the script or ``-m`` flag a Python interpreter is handed."""
+    from .canonical_path import program_identity
+    from .mutative_verbs import _interpreter_family
+
+    if not words:
+        return None
+    if not _interpreter_family(program_identity(words[0]).lower()).startswith("python"):
+        return 0
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if _PYTHON_MODULE_FLAG.match(word) or not word.startswith("-"):
+            return index
+        if _PYTHON_CODE_FLAG.match(word):
+            return None
+        index += 2 if word in _PYTHON_VALUE_OPTIONS else 1
+    return None
+
+
+def _entry_argv(words: Sequence[str]) -> Optional[List[str]]:
+    """The argv the Gaia CLI receives when *words* start it, or None when they start another program."""
+    index = _program_index(words)
+    if index is None:
+        return None
+    module_argv = _module_argv(words, index)
+    if module_argv is not None:
+        return module_argv
+    group = entry_group(words[index])
+    return None if group is None else ([group] if group else []) + list(words[index + 1:])
+
+
+def _commands_run(component: str) -> List[Tuple[str, bool]]:
+    """Every command *component* runs as ``(text, fed)``: itself, and each command a carrier in it is handed; *fed* when xargs or parallel supplies arguments."""
+    from ..tools.shell_parser import parse_command
+    from .mutative_verbs import _peel_wrapper_readings, handed_commands
+
+    run: List[Tuple[str, bool]] = []
+    pending = [(part, False, 0) for part in parse_command(component) or [component]]
+    seen = {part for part, _, _ in pending}
+    offered = set()
+    while pending:
+        text, fed, depth = pending.pop()
+        run.append((text, fed))
+        for reading in _peel_wrapper_readings(text)[0] if depth < _MAX_CARRIER_DEPTH else ():
+            words = _words(reading)
+            index = _program_index(words)
+            if index is None or _is_gaia_entry(words, index):
+                continue
+            feeds = fed or os.path.basename(words[0]) in _ARGV_FEEDERS
+            for handed in handed_commands(reading, _may_start_command):
+                if handed in offered:
+                    continue
+                offered.add(handed)
+                for part in parse_command(handed) or [handed]:
+                    if part not in seen:
+                        seen.add(part)
+                        pending.append((part, feeds, depth + 1))
+    return run
+
+
+def _may_start_command(words: Sequence[str], index: int) -> bool:
+    """True when a command begun at ``words[index]`` can touch the identity or reach the CLI by more than the tails its caller already offers."""
+    from .canonical_path import program_identity
+    from .mutative_verbs import _interpreter_family, starts_carrier
+
+    word, name = words[index], program_identity(words[index])
+    respelled = name != word and _is_gaia_entry([name, *words[index + 1:index + 2]], 0)
+    return (starts_carrier(words, index) or bool(_ASSIGNMENT.match(word)) or word in _DECLARERS
+            or _interpreter_family(name.lower()).startswith("python") or _is_gaia_entry(words, index) or respelled)
+
+
+def _programs_started(component: str) -> List[Tuple[str, bool]]:
+    """``(reading, fed)`` for each command *component* runs, read past its assignments and wrappers."""
+    from .mutative_verbs import _peel_wrapper_readings
+
+    return [(reading, fed) for text, fed in _commands_run(component) for reading in _peel_wrapper_readings(text)[0]]
+
+
+def _unquoted(text: str) -> str:
+    return text.translate(_QUOTING)
+
+
 def computes_gaia_words(component: str) -> bool:
-    """True when a literally named Gaia CLI entry point in *component* takes computed or xargs-fed words."""
-    pairs = literal_words(component)
-    words = [word for word, _ in pairs]
-    if not any(computed or os.path.basename(word) in _ARGV_FEEDERS for word, computed in pairs):
+    """True when a literally named Gaia CLI entry point *component* starts takes computed or xargs-fed words."""
+    bare = _unquoted(component)
+    if not _COMPUTING & set(component) and not any(feeder in bare for feeder in _ARGV_FEEDERS):
         return False
-    fed = False
-    for index, (word, computed) in enumerate(pairs):
-        fed = fed or os.path.basename(word) in _ARGV_FEEDERS
-        if not computed and _is_gaia_entry(words, index) and (
-                fed or any(later for _, later in pairs[index + 1:])):
+    computed = {word for word, is_computed in literal_words(component) if is_computed}
+    for reading, fed in _programs_started(component):
+        pairs = [(word, is_computed or word in computed) for word, is_computed in literal_words(reading)]
+        words = [word for word, _ in pairs]
+        index = _program_index(words)
+        if index is None or pairs[index][1] or not _is_gaia_entry(words, index):
+            continue
+        if fed or any(later for _, later in pairs[index + 1:]):
             return True
     return False
 
@@ -208,19 +307,29 @@ _CLEARS_ENVIRONMENT = "clears"
 
 
 def clears_dispatch_identity(component: str) -> bool:
-    """True when *component* names ``GAIA_DISPATCH_AGENT``, or clears the environment around a Gaia CLI call."""
-    pairs = literal_words(component)
-    kind = _identity_touch(pairs)
-    return kind == _NAMES_IDENTITY or (kind == _CLEARS_ENVIRONMENT and _reaches_gaia(pairs))
+    """True when a command *component* runs names ``GAIA_DISPATCH_AGENT``, or clears the environment around a Gaia CLI call."""
+    if not _IDENTITY_TOUCHING.search(_unquoted(component)):
+        return False
+    kinds = {_identity_touch(text) for text, _ in _commands_run(component)}
+    return _NAMES_IDENTITY in kinds or (_CLEARS_ENVIRONMENT in kinds and _reaches_gaia(component))
 
 
-def _reaches_gaia(pairs: Sequence[Tuple[str, bool]]) -> bool:
-    words = [word for word, _ in pairs]
-    words += [inner for word in words if " " in word for inner, _ in literal_words(word)]
-    return any(_is_gaia_entry(words, index) for index in range(len(words)))
+def _reaches_gaia(component: str) -> bool:
+    for reading, _ in _programs_started(component):
+        words = _words(reading)
+        index = _program_index(words)
+        if index is not None and _is_gaia_entry(words, index):
+            return True
+    return False
 
 
-def _identity_touch(pairs: Sequence[Tuple[str, bool]]) -> Optional[str]:
+def _identity_touch(text: str) -> Optional[str]:
+    """How one command touches the dispatch identity: a leading assignment, a declarer, ``exec -c``, or an ``env`` among its wrappers."""
+    from .mutative_verbs import _expand_split_strings
+
+    dropped, expanded, wrapped_at, _ = _expand_split_strings(text)
+    pairs = literal_words(f"{dropped} {expanded}")
+    wrappers = len(literal_words(f"{dropped} {expanded[:wrapped_at]}"))
     words = [word for word, _ in pairs]
     leading = 0
     while leading < len(words) and _ASSIGNMENT.match(words[leading]):
@@ -236,7 +345,7 @@ def _identity_touch(pairs: Sequence[Tuple[str, bool]]) -> Optional[str]:
     if rest and rest[0][0] == "exec" and any(
             word.startswith("-") and "c" in word for word, _ in rest[1:2]):
         return _CLEARS_ENVIRONMENT
-    kinds = {_env_touch(pairs[index + 1:]) for index, (word, _) in enumerate(pairs)
+    kinds = {_env_touch(pairs[index + 1:]) for index, (word, _) in enumerate(pairs[:wrappers])
              if os.path.basename(word) == "env"}
     for kind in (_NAMES_IDENTITY, _CLEARS_ENVIRONMENT):
         if kind in kinds:
@@ -245,13 +354,15 @@ def _identity_touch(pairs: Sequence[Tuple[str, bool]]) -> Optional[str]:
 
 
 def _env_touch(args: Sequence[Tuple[str, bool]]) -> Optional[str]:
+    from .mutative_verbs import spells_long_option
+
     index = 0
     while index < len(args):
         word = args[index][0]
         value = args[index + 1] if index + 1 < len(args) else ("", False)
         if word.startswith(_IDENTITY + "="):
             return _NAMES_IDENTITY
-        if word in ("-", "-i", "--ignore-environment"):
+        if word in ("-", "-i") or spells_long_option(word, "--ignore-environment"):
             return _CLEARS_ENVIRONMENT
         if word.startswith("--unset"):
             named = word.partition("=")[2] if "=" in word else value[0]
@@ -281,14 +392,6 @@ def _env_touch(args: Sequence[Tuple[str, bool]]) -> Optional[str]:
 
 
 def gaia_cli_argvs(words: Sequence[str]) -> List[List[str]]:
-    """Every argv the Gaia CLI may receive from *words*, one per word that may be an entry point."""
-    argvs = []
-    for index, word in enumerate(words):
-        module_argv = _module_argv(words, index)
-        if module_argv is not None:
-            argvs.append(module_argv)
-            continue
-        group = entry_group(word)
-        if group is not None:
-            argvs.append(([group] if group else []) + list(words[index + 1:]))
-    return argvs
+    """Every argv the Gaia CLI may receive from *words*, one per command they run that starts an entry point."""
+    started = (_entry_argv(_words(reading)) for reading, _ in _programs_started(shlex.join(words)))
+    return [argv for argv in started if argv is not None]

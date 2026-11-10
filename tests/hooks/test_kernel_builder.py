@@ -9,10 +9,9 @@ The kernel is the data-only context a claimed turn starts with. Pinned here:
     ``acceptance:`` block read from ``task_gates``;
   * ``# Your CLI`` carries the base lines plus per-role frontmatter extras
     (``cli:`` key) when the agent declares them;
-  * ``# Scope memory`` indexes the scope chain's live preferences, facts and
-    lessons as a title and a ref, never a body and never a user row (the
-    user's rows are the birth block's ``## User memory``); omitted entirely
-    when there are none;
+  * ``# Scope preferences`` lists the scope chain's live preferences as a
+    title and a ref, never a body and never a user row, and ``# Scope memory``
+    counts its facts and lessons; both are omitted when there are none;
   * ``build_kernel_context`` joins the blocks and returns None without an
     identity (the CLI/memory blocks never ship without the contract).
 """
@@ -167,18 +166,28 @@ def test_kernel_renders_plan_task_binding_and_acceptance(tmp_path):
 
 
 def test_cli_block_base_lines_are_verbatim():
-    block = build_cli_block()
+    contract_id = "a0123456789abcdef.beefcafe0123"
+    from gaia.store.memory_placement import MEMORY_KINDS
+
+    block = build_cli_block(contract_id=contract_id, workspace=WORKSPACE)
     assert block.splitlines()[0] == "# Your CLI"
-    assert "  gaia context get --section <s>   # forma del workspace (apps/services/stack/git/...), a demanda" in block
-    assert "  gaia context get-contract --section <s>   # contratos de contexto (project_identity, stack, ...) -- namespace de can_read/can_write" in block
-    assert "  gaia memory search '<término>'   # memoria curada y episodios" in block
-    assert "  gaia memory list --type <t>      # t: project|user|feedback|atom|decision|negative" in block
-    assert "  gaia memory show <slug>          # cuerpo completo de una fila curada" in block
-    assert "  gaia memory get-relevant --initiative <k>   # pendientes vivos de UN proyecto" in block
+    assert "  gaia context get-contract --section <s>   # one context section; <s> is a name from can_read" in block
+    assert "  gaia open <ref>                  # a ref= coordinate from this kernel or the goal, as printed" in block
+    assert "  gaia memory search '<term>' --workspace me      # curated memory and episodes" in block
+    assert "  gaia memory show <slug> --workspace me          # one curated row, body whole; there is no `memory get`" in block
+    assert f"  gaia memory list --kind <k> --workspace me      # k: {'|'.join(MEMORY_KINDS)}" in block
+    assert "  gaia memory get-relevant --initiative <k>   # one project's live pendings" in block
+    assert "--sections anchor" not in block and "--type" not in block
     assert "  gaia memory get-relevant --sections <s>      # s: carry_forward|anchor|thread_open" in block
-    assert "  gaia contract view / list / validate         # tu contrato: lectura" in block
-    assert "  gaia contract set / add / fill / finalize    # tu contrato: llenado incremental y cierre" in block
-    assert "  gaia --help                      # todo lo demás" in block
+    assert f"  gaia contract view --draft-id {contract_id}   # your contract as it stands; also list, validate" in block
+    assert f"  gaia contract set --draft-id {contract_id} <dotted.field> <value>   #" in block
+    assert f"  gaia contract add --draft-id {contract_id} <dotted.list.field> <value>   #" in block
+    assert f"  gaia contract fill --draft-id {contract_id} --json '<object>'   #" in block
+    assert f"  gaia contract fill --draft-id {contract_id} --json-file -   #" in block
+    assert f"  gaia contract finalize --draft-id {contract_id}   #" in block
+    assert "  gaia --help                      # everything else" in block
+    assert "gaia context get --section" not in block
+    assert "--draft-id <contract_id>" in build_cli_block()
 
 
 def test_cli_block_announces_every_verb_required_by_the_contract():
@@ -192,10 +201,10 @@ def test_cli_block_announces_every_verb_required_by_the_contract():
         l for l in block.splitlines() if l.strip().startswith("gaia contract")
     )
     required_substrings = [
-        "gaia context get --section",
         "gaia context get-contract --section",
+        "gaia open <ref>",
         "gaia memory search",
-        "gaia memory list --type",
+        "gaia memory list --kind",
         "gaia memory show",
         "gaia memory get-relevant --initiative",
         "gaia memory get-relevant --sections",
@@ -211,7 +220,7 @@ def test_cli_block_announces_every_verb_required_by_the_contract():
 
     # And each announced verb is real -- --help must not error.
     for verb in (
-        ["context", "get"], ["context", "get-contract"],
+        ["context", "get-contract"], ["open"],
         ["memory", "search"], ["memory", "list"],
         ["memory", "show"], ["memory", "get-relevant"], ["contract", "view"],
         ["contract", "list"], ["contract", "validate"], ["contract", "set"],
@@ -242,7 +251,7 @@ def test_cli_block_renders_frontmatter_extras(tmp_path):
 
 def test_cli_block_without_extras_is_just_the_base(tmp_path):
     block = build_cli_block("no-such-agent", agents_dir=tmp_path)
-    assert len(block.splitlines()) == 13  # heading + blank + 11 base lines
+    assert len(block.splitlines()) == 16
 
 
 def test_cli_block_workspace_line_points_at_get_contract_not_get():
@@ -309,12 +318,13 @@ def test_memory_block_indexes_the_scope_chains_live_rows_by_title_and_ref_and_on
 
     block = build_memory_block(_base_row(), db_path=db)
     assert block.splitlines() == [
-        "# Scope memory: me",
-        "kind=preference",
+        "# Scope preferences: me (1)",
         '  "Live state and code outrank memory when they disagree."  scope=workspace'
         "  ref=memory:me/decision_me_live_verification",
-        "kind=fact",
-        '  "The team works in UTC."  scope=workspace  ref=memory:me/decision_me_team',
+        "",
+        "# Scope memory: me",
+        "facts 1 — not preloaded: `gaia memory search '<term>' --workspace me`; "
+        "`gaia memory show <slug> --workspace me`",
     ]
 
 

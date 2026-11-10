@@ -1787,9 +1787,9 @@ def cmd_request_file_write(args) -> int:
 
 
 def _print_replaced(replaced: list[str]) -> None:
-    """Tell the requester which automatic pendings its request withdrew, so none is withdrawn twice."""
+    """Tell the requester which of its requests and grants this request retired, so none is withdrawn twice."""
     for old in replaced:
-        print(f"Withdrew {old}: the automatic request left by the block, replaced by this one")
+        print(f"Withdrew {old}: replaced by this request")
 
 
 def _opencode_binding(

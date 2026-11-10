@@ -38,7 +38,7 @@ pre_tool_use.py  (PreToolUse hook)
     v
 subagent_start.py  (SubagentStart hook)
     |  Claim the born row and inject the dispatch kernel:
-    |  # Your Contract, # Scope memory, # Project context, # Standing notes, # Environment, # Your CLI
+    |  # Your Contract, # Scope preferences, # Scope memory, # Project context, # Environment, # Your CLI
     v
 Agent executes
     |  Pulls project context and memory on demand (gaia context, gaia memory),
@@ -170,11 +170,14 @@ which `gaia --help` can rebuild, comes last):
 # Your Contract       identity, goal, role and surface, the dispatch project and the
                       workflow it declared, can_read / can_write section scope, and the
                       acceptance gates when the turn is bound to a plan task
-# Scope memory       an index of the preferences, facts and lessons the dispatch's
-                      workspace, group and project hold, each line scope= and ref=;
-                      never the user's rows
-# Standing notes      the dispatch project's live anchors, one line each, freshest
-                      first, under PROJECT_NOTES_BUDGET; absent when the project has none
+# Scope preferences   every live preference the dispatch's workspace, group and
+                      project hold, each line a title, scope= and ref=; never the
+                      user's rows
+# Scope memory        one line counting the chain's facts and lessons and the project's
+                      other standing notes, none preloaded, with the search and show
+                      verbs that read them
+# Project context     the dispatch project's can_read sections: whole when they fit,
+                      else one get-contract pointer each, else one line naming them
 # Environment         one capped line (ENVIRONMENT_LINE_MAX): OS (WSL named), the gaia
                       CLI path, and the tools on PATH: the known-tool probe, then the
                       user's own executables from PATH entries under $HOME that are
@@ -184,9 +187,13 @@ which `gaia --help` can rebuild, comes last):
 ```
 
 `can_read` is the menu of `project_context_contracts` sections the turn pulls on
-demand. A fourth block, `# Your skills`, is rendered only for a host that
-preloads no skill body (OpenCode). Every builder is fail-safe: a failed read
-shrinks the block and never fails SubagentStart.
+demand. A further block, `# Your skills`, is rendered only for a host that
+preloads no skill body (OpenCode). A kernel still over the budget once the
+project context is down to one line shrinks the CLI index to its contract verbs
+and `gaia --help`, then the preferences from the end, counted as `+N more`; one
+that no shrink fits opens with a line naming what overflowed
+(`build_kernel_context`). Every builder is fail-safe: a failed read shrinks the
+block and never fails SubagentStart.
 
 ## Approval Flow
 

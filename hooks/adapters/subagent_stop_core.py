@@ -648,6 +648,63 @@ def resolve_dispatch_row(
     return None
 
 
+HOST_FORK_EVENT = "agent.host_fork"
+
+
+def is_undispatched_host_fork(
+    agent_type: str, task_info: dict, agent_output: str, session_id: Optional[str],
+) -> bool:
+    """Whether a stop carries the main thread's own type, no contract of its own, and no dispatch row born for it."""
+    from gaia.agent_identity import ORCHESTRATOR
+    from modules.agents.contract_validator import parse_contract
+
+    harness_agent_id = str(task_info.get("agent_id") or "")
+    if agent_type != ORCHESTRATOR or harness_agent_id in ("", "unknown"):
+        return False
+    if task_info.get("minted_agent_id") or parse_contract(agent_output) is not None:
+        return False
+    try:
+        from gaia.store.writer import list_agent_contract_handoffs
+
+        db = Path(task_info["db_path"]) if task_info.get("db_path") else None
+        unclaimed = {"session_id": session_id, "agent_state": "DISPATCHED", "limit": 1, "db_path": db}
+        born = (
+            list_agent_contract_handoffs(harness_agent_id=harness_agent_id, limit=1, db_path=db)
+            or list_agent_contract_handoffs(agent_name=ORCHESTRATOR, **unclaimed)
+            or list_agent_contract_handoffs(agent_id=ORCHESTRATOR, **unclaimed)
+        )
+    except Exception:
+        logger.warning("Host-fork check could not read the store; gating %s", agent_type, exc_info=True)
+        return False
+    return not born
+
+
+def _host_fork_outcome(
+    agent_type: str, task_info: dict, session_id: Optional[str],
+) -> SubagentStopOutcome:
+    """Close an undispatched host fork: one ``agent.host_fork`` event, no gate, episode, anomaly or backstop row."""
+    from modules.session.compaction_bracket import is_compaction_summarizer
+
+    result = {"success": True, "host_fork": True, "agent": agent_type}
+    if is_compaction_summarizer(agent_type, session_id):
+        result["compaction_summarizer"] = True
+    try:
+        from modules.events.event_writer import EventWriter
+
+        EventWriter().write_event(
+            HOST_FORK_EVENT, "hook", agent_type,
+            "host fork Gaia never dispatched ended without a contract gate",
+            meta={
+                "harness_agent_id": task_info.get("agent_id"),
+                "session_id": session_id,
+                "compaction_summarizer": bool(result.get("compaction_summarizer")),
+            },
+        )
+    except Exception as exc:
+        logger.debug("host fork event write failed (non-fatal): %s", exc)
+    return SubagentStopOutcome(result=result, rejected=False)
+
+
 def reconstruct_contract_from_finalized_draft(
     *,
     task_info: dict,
@@ -1038,9 +1095,12 @@ def run_subagent_stop(
             result={"success": True, "native_agent": True, "agent": _native_agent_type},
             rejected=False,
         )
-    from modules.session.compaction_bracket import is_compaction_summarizer
-
-    _compaction_summarizer = is_compaction_summarizer(_native_agent_type, event_session_id)
+    if is_undispatched_host_fork(_native_agent_type, task_info, agent_output, event_session_id):
+        logger.info(
+            "Host fork '%s' (harness_agent_id=%s) was never dispatched -- no contract to gate",
+            _native_agent_type, task_info.get("agent_id"),
+        )
+        return _host_fork_outcome(_native_agent_type, task_info, event_session_id)
     if not _gaia_agents:
         logger.error(
             "Agent roster did not resolve on any lane; gating '%s' instead "
@@ -1172,16 +1232,6 @@ def run_subagent_stop(
             )
             _gate = ContractGateVerdict(False, "", (), _gate_mode)
             _gate_source = GATE_SOURCE_GATE_ERROR
-
-        # The host's summarizer never has a row; a turn that finalized one is gated.
-        _summarizer_without_row = (
-            _compaction_summarizer and _gate_source == GATE_SOURCE_ROW_MISSING
-        )
-        if _summarizer_without_row:
-            logger.info(
-                "Compaction summarizer (session=%s) -- no contract to gate", session_id,
-            )
-            _gate = ContractGateVerdict(False, "", (), _gate_mode)
 
         # Rejection circuit: counting here, where the verdict is known, numbers
         # each retry and lets the limit end the turn instead of looping. A
@@ -1509,25 +1559,24 @@ def run_subagent_stop(
             )
 
         _captured_contract_id = None
-        if not _summarizer_without_row:
-            try:
-                from modules.agents.handoff_persister import persist_handoff
-                _capture = persist_handoff(
-                    parsed_contract=parsed_contract,
-                    agent_output=agent_output,
-                    task_info=task_info,
-                    session_id=session_id,
-                    # The CLI finalize path cannot read the dispatch binding, so
-                    # attribution is supplied here.
-                    plan_task_id=_bound_plan_task_id,
-                )
-                if isinstance(_capture, dict):
-                    _captured_contract_id = _capture.get("contract_id")
-            except Exception as _handoff_exc:
-                logger.warning(
-                    "M4: handoff persistence call failed (non-blocking): %s",
-                    _handoff_exc,
-                )
+        try:
+            from modules.agents.handoff_persister import persist_handoff
+            _capture = persist_handoff(
+                parsed_contract=parsed_contract,
+                agent_output=agent_output,
+                task_info=task_info,
+                session_id=session_id,
+                # The CLI finalize path cannot read the dispatch binding, so
+                # attribution is supplied here.
+                plan_task_id=_bound_plan_task_id,
+            )
+            if isinstance(_capture, dict):
+                _captured_contract_id = _capture.get("contract_id")
+        except Exception as _handoff_exc:
+            logger.warning(
+                "M4: handoff persistence call failed (non-blocking): %s",
+                _handoff_exc,
+            )
 
         try:
             from modules.events.event_writer import EventWriter, AGENT_COMPLETE
@@ -1732,8 +1781,6 @@ def run_subagent_stop(
 
         if _update_contracts_refused:
             result["update_contracts_refused"] = _update_contracts_refused
-        if _summarizer_without_row:
-            result["compaction_summarizer"] = True
 
         # The repair message replaces the rejected one in everything the
         # orchestrator receives, so the rejected turn's work is preserved and
@@ -1774,7 +1821,7 @@ def run_subagent_stop(
                     result["contract_degraded_close_reason"] += (
                         f"\nEvidencia preservada en: {_relay['path']}"
                     )
-            elif not _summarizer_without_row:
+            else:
                 _closed = rejected_turn_relay.on_accepted(agent_output, key=_relay_key)
                 if _circuit_key:
                     rejection_circuit.reset(_circuit_key)

@@ -67,6 +67,7 @@ from urllib.parse import unquote, urlsplit
 
 from .canonical_path import command_name
 from .data_heredoc import _literal_words, is_gaia_cli
+from .flag_classifiers import AWK_PROGRAMS, OUTCOME_READ_ONLY, classify_by_flags
 from .mutative_verbs import UNKNOWN_CWD, cwd_after_component, detect_mutative_command
 from .protected_paths import (
     install_roots_ignored,
@@ -259,12 +260,35 @@ _READ_ONLY_COMMANDS = frozenset({
     "fgrep", "rg", "diff", "cmp", "du", "df", "readlink", "realpath", "tree", "jq",
     "echo", "printf", "pwd", "test", "[", "true", "md5sum", "sha1sum", "sha256sum",
     "basename", "dirname", "which", "type", "cd", "pushd", "popd", "find",
-    "export", "declare", "local", "readonly", "typeset",
+    "export", "declare", "local", "readonly", "typeset", "cut", "tr", "nl",
 })
+# Filters that only read as listed, options first: (switches, options taking the next word, operands read or None for any).
+_OPTION_PROVEN_READERS = {
+    "sort": (
+        re.compile(
+            r"-[bdfghiMnRrVcCmsuz]+|-k[\d.,bdfghiMnRrV]+|-t."
+            r"|--(?:reverse|unique|numeric-sort|human-numeric-sort|version-sort|ignore-case|stable|check)"
+        ),
+        frozenset({"-k", "-t"}), None,
+    ),
+    "uniq": (
+        re.compile(r"-[cdDiuz]+|-[fsw]\d+|--(?:count|repeated|unique|ignore-case)"),
+        frozenset({"-f", "-s", "-w"}), 1,
+    ),
+}
+_SED_ADDRESS = r"(?:\d+(?:~\d+)?|\$|/(?:[^/\\\n]|\\.)*/[IM]*)"
+_SED_PRINT_COMMAND = rf"\s*(?:{_SED_ADDRESS}(?:\s*,\s*(?:{_SED_ADDRESS}|[+~]\d+))?)?\s*!?\s*[pdq=]\s*"
+_SED_PRINT_ONLY = re.compile(rf"{_SED_PRINT_COMMAND}(?:[;\n]{_SED_PRINT_COMMAND})*")
+_SED_SWITCHES = re.compile(
+    r"-[nErsuz]+|--(?:quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|sandbox)"
+)
+_SED_EXPRESSION = re.compile(r"-[nErsuz]*e|--expression")
 _GIT_READ_SUBCOMMANDS = frozenset({
     "status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse",
-    "cat-file", "describe", "shortlog", "grep",
+    "cat-file", "describe", "shortlog", "grep", "rev-list", "merge-base",
+    "for-each-ref", "show-ref", "name-rev", "check-ignore", "check-attr", "count-objects",
 })
+_GIT_WRITES_OBJECT = re.compile(r"-[A-Za-z]*w[A-Za-z]*")
 _GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
 _FIND_RUNS_OR_WRITES = frozenset({
     "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
@@ -285,12 +309,64 @@ def _git_subcommand(tokens: List[str]) -> str:
     return ""
 
 
+def _options_prove_reader(tokens: List[str]) -> bool:
+    switches, value_options, operands_read = _OPTION_PROVEN_READERS[command_name(tokens[0])]
+    operands: List[str] = []
+    arguments = iter(tokens[1:])
+    for token in arguments:
+        if token == "--" and not operands:
+            operands += arguments
+        elif token == "-" or not token.startswith("-"):
+            operands.append(token)
+        elif operands:
+            return False
+        elif token in value_options:
+            next(arguments, None)
+        elif not switches.fullmatch(token):
+            return False
+    return operands_read is None or len(operands) <= operands_read
+
+
+def _sed_only_prints(tokens: List[str]) -> bool:
+    """True for a sed with known options whose every script command is p, d, q or = on an address: it writes and runs nothing."""
+    scripts: List[str] = []
+    operands: List[str] = []
+    arguments = iter(tokens[1:])
+    for token in arguments:
+        if token == "--":
+            operands += arguments
+        elif _SED_EXPRESSION.fullmatch(token):
+            scripts.append(next(arguments, ""))
+        elif token.startswith("--expression="):
+            scripts.append(token.split("=", 1)[1])
+        elif token == "-" or not token.startswith("-"):
+            operands.append(token)
+        elif not _SED_SWITCHES.fullmatch(token):
+            return False
+    scripts = scripts or operands[:1]
+    return bool(scripts) and all(_SED_PRINT_ONLY.fullmatch(script) for script in scripts)
+
+
+def _program_only_prints(tokens: List[str], component: str) -> bool:
+    base = command_name(tokens[0])
+    if base in AWK_PROGRAMS:
+        result = classify_by_flags(component)
+        return result is not None and result.outcome == OUTCOME_READ_ONLY
+    words = _literal_words(component) if base == "sed" else None
+    return words is not None and _sed_only_prints([word for word, _ in words])
+
+
 def _is_read_only(tokens: List[str]) -> bool:
     base = command_name(tokens[0])
     if base == "git":
-        return _git_subcommand(tokens) in _GIT_READ_SUBCOMMANDS
+        subcommand = _git_subcommand(tokens)
+        if subcommand == "hash-object":
+            return not any(_GIT_WRITES_OBJECT.fullmatch(token) for token in tokens)
+        return subcommand in _GIT_READ_SUBCOMMANDS
     if base == "find":
         return not any(token in _FIND_RUNS_OR_WRITES for token in tokens)
+    if base in _OPTION_PROVEN_READERS:
+        return _options_prove_reader(tokens)
     return base in _READ_ONLY_COMMANDS
 
 
@@ -455,13 +531,14 @@ def _install_root_spelling(word: str, cwd: Optional[str]) -> Optional[str]:
 def _names_install_root_unread(command: str, cwd: Optional[str]) -> Optional[str]:
     """The install-root path a line names or runs in when the line is not provably read-only."""
     for line in _substituted_lines(command):
-        hit = _line_names_install_root_unread(line, cwd)
+        hit = _line_names_install_root_unread(line, cwd, literal=line == command)
         if hit is not None:
             return hit
     return None
 
 
-def _line_names_install_root_unread(command: str, cwd: Optional[str]) -> Optional[str]:
+def _line_names_install_root_unread(command: str, cwd: Optional[str], literal: bool) -> Optional[str]:
+    """`literal` is False once a variable was substituted into the line: a sed or awk program is then not the text the shell passes."""
     named: List[str] = []
     read_only = True
     programs: List[str] = []
@@ -477,7 +554,8 @@ def _line_names_install_root_unread(command: str, cwd: Optional[str]) -> Optiona
         if tokens:
             redirects, _ = _write_targets(tokens, command_name(tokens[0]))
             writes_root = any(_install_root_spelling(target, running_cwd) for target in redirects)
-            read_only = read_only and not writes_root and _is_read_only(tokens)
+            reads = _is_read_only(tokens) or (literal and _program_only_prints(tokens, component))
+            read_only = read_only and not writes_root and reads
             programs += _program_words(tokens)
             words += _named_words(tokens) + downloader_paths(tokens)
             if command_name(tokens[0]) not in ("cd", "pushd", "popd") and running_cwd \
@@ -570,7 +648,9 @@ def _holds_protected_tree(target: str, cwd: Optional[str]) -> Optional[str]:
         return None
 
 
-def _component_writes_protected_path(component: str, cwd: Optional[str] = None) -> Optional[str]:
+def _component_writes_protected_path(
+    component: str, cwd: Optional[str] = None, literal: bool = False,
+) -> Optional[str]:
     """Return the offending protected path if `component` writes to one.
 
     The component is unwrapped before tokenization: the write capability is
@@ -583,7 +663,13 @@ def _component_writes_protected_path(component: str, cwd: Optional[str] = None) 
     tokens = _tokenize(strip_grouping_wrappers(component))
     if not tokens:
         return None
+    if literal and command_name(tokens[0]) == "sed" and _program_only_prints(tokens, component):
+        with install_roots_ignored():
+            return _tokens_write_protected_path(tokens, cwd)
+    return _tokens_write_protected_path(tokens, cwd)
 
+
+def _tokens_write_protected_path(tokens: List[str], cwd: Optional[str]) -> Optional[str]:
     base = command_name(tokens[0])
     redirects, operands = _write_targets(tokens, base)
     subcommand = operands.pop(0) if base == "git" and operands else ""
@@ -657,7 +743,7 @@ def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[
             component = component.strip()
             if not component:
                 continue
-            hit = _component_writes_protected_path(component, running_cwd)
+            hit = _component_writes_protected_path(component, running_cwd, literal=line == command)
             if hit is not None:
                 return hit
             running_cwd = _fold_cwd(component, running_cwd)
