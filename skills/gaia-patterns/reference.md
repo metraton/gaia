@@ -273,7 +273,7 @@ contract.
 
 | File | What it tests |
 |------|---------------|
-| `tests/layer3_e2e/test_installation_smoke.py` | npm install in /tmp/, symlinks, settings, hooks |
+| `tests/layer3_e2e/test_installation_smoke.py` | npm install in a pytest `tmp_path`, symlinks, settings, hooks |
 | `tests/layer3_e2e/test_hook_lifecycle.py` | Full hook lifecycle: pre/post tool use, session |
 
 ### Which Tests for Which Changes
@@ -351,7 +351,8 @@ npm install @jaguilar87/gaia
 ### Test Isolation
 
 ```bash
-cd /tmp
+mkdir ~/.gaia/scratch/<contract_id>   # your scratch entry, named by your contract_id
+cd ~/.gaia/scratch/<contract_id>
 mkdir test-project && cd test-project
 npm init -y
 npm install <gaia-source-checkout>  # installs from local source

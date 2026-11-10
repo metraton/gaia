@@ -64,7 +64,7 @@ The route that installed it is `gaia-release`'s concern, and it decides which co
 
 Validates the npm surface of exactly what a registry publish would ship: pack, install into a clean sandbox, run the harness, clean up. No accumulated install-folder state takes part.
 
-`gaia release check` runs it as gate 2 (`gaia:verify-install:local`). On its own, `npm run gaia:verify-install:local` packs, installs into `/tmp/gaia-sandbox-<ts>-<pid>/`, runs the harness and cleans up; the manual sequence is in `reference.md`.
+`gaia release check` runs it as gate 2 (`gaia:verify-install:local`). On its own, `npm run gaia:verify-install:local` packs, installs into `gaia-sandbox-<ts>-<pid>/` under the first exec-capable of `$TMPDIR`, `/tmp` and `$HOME/.cache/gaia-sandbox` (`bin/validate-sandbox.sh::select_sandbox_prefix`), runs the harness and cleans up; the manual sequence is in `reference.md`.
 
 ## Mode: plugin
 

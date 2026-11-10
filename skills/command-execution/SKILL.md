@@ -103,7 +103,22 @@ instruction to use one and record the refusal, as rule 6 below does for writes.
    own (pytest's `tmp_path`, build caches, sockets) are neither: a dispatched
    agent's shell already carries `TMPDIR` under `~/.gaia/tmp`, so leave it in
    place instead of pointing a tool at `/tmp`.
-8. Work against a SCRATCH DATABASE by setting `GAIA_DB` to a file under the
+8. A command whose output grows with what it walks -- a recursive listing, a
+   search over a root, a checksum of every file, a remote enumeration -- sends
+   its detail to a file in your scratch entry and prints only a count or a
+   bounded summary. Use the command's own output option (`-o`, `--output`,
+   `--log-file`), since rule 3 keeps redirects out; where it has none, bound
+   the walk itself with a depth, a result cap and the exclusion of trees that
+   loop back on themselves (junctions, symlink cycles, profile folders such as
+   `AppData`). The host spools everything a command prints with no cap, on a
+   volume that is often small: one unbounded remote search printed 2 GB and
+   filled it, and every session on the machine lost its tool output. A command
+   started in the background is the turn's own, finished or stopped before the
+   turn closes, because the host keeps it running and keeps spooling its output
+   after the turn that started it is gone; the closing record says which of the
+   two it was. Reach for the background only when the foreground cannot hold
+   the work.
+9. Work against a SCRATCH DATABASE by setting `GAIA_DB` to a file under the
    scratch directory, named by `contract_id` like any other scratch entry
    (`~/.gaia/scratch/<contract_id>.db`). `GAIA_DB` is FILE-scoped: it relocates
    the database and nothing else. `GAIA_DATA_DIR` is ROOT-scoped and relocates
