@@ -95,6 +95,7 @@ alias of this command.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import re
@@ -931,6 +932,48 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
     return {"rc": result.returncode, "detail": detail}
 
 
+def _stranding_refusal(workspace: Path, db_path: str, rewrites_launcher: bool) -> str | None:
+    """Why the pending chain may not run: the copies on this machine it would leave unable to write *db_path*, with the steps that upgrade each; None when it strands none."""
+    if not Path(db_path).is_file():
+        return None
+    from cli import _install_state  # noqa: PLC0415
+
+    try:
+        store_report = migrate.plan_report(db_path)
+    except (OSError, RuntimeError):
+        return None
+    if store_report.get("direction") != "behind":
+        return None
+    machine = _install_state.Machine.current(workspace, Path("~/.claude/settings.json").expanduser(),
+                                             Path("~/.claude/plugins").expanduser())
+    report = _install_state.read(dataclasses.replace(machine, db_path=Path(db_path)),
+                                 store_plan=lambda _path: store_report)
+    stranded = [copy for copy in _install_state.stranded_copies(report)
+                if not (rewrites_launcher and copy["channel"] == "launcher")]
+    if not stranded:
+        return None
+    version = _install_helpers._read_plugin_version(_PACKAGE_ROOT) or "<version>"
+    lines = [f"the migration chain {store_report['chain']} lets only builds of schema v{stranded[0]['needs']} or "
+             f"later write {db_path}, and these copies on this machine would be left unable to write it:"]
+    lines += [f"  {copy['label']} {copy['version']} ({copy['root']}) writes schema v{copy['expects']}" for copy in stranded]
+    lines += ["", f"Upgrade them first. `gaia doctor --target {version}` lists every step; these are theirs:"]
+    channels = {copy["channel"] for copy in stranded}
+    for step in _install_state.plan(report, version)["steps"]:
+        if step["channel"] not in channels or step["migrates"]:
+            continue
+        if step["command"]:
+            lines.append(f"  {step['command']}" + (f"   (in {step['cwd']})" if step["cwd"] else ""))
+        elif step["file"]:
+            lines.append(f"  edit {step['file']}: {step['detail']}")
+        else:
+            lines.append(f"  {step['detail']}")
+    if "launcher" in channels:
+        lines.append("  add --path to this command: the `gaia` launcher then runs this copy")
+    lines += ["", "Then re-run this command. To migrate anyway and leave those copies unable to write, "
+              "re-run it with --accept-stranding. Nothing changed."]
+    return "\n".join(lines)
+
+
 def _install_db_path(db_path: str | None) -> str:
     """The database install bootstraps and seeds: ``--db-path`` when given, else the one every gaia call resolves.
 
@@ -1285,7 +1328,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "The database step backs the database up, verifies the copy, then\n"
             "applies the whole chain in one transaction -- including a chain\n"
             "that reaches existing rows. A database newer than this package is\n"
-            "refused untouched. One install runs at a time (install.lock).\n"
+            "refused untouched. A chain that would leave another Gaia copy on\n"
+            "this machine unable to write is refused before anything changes,\n"
+            "naming the steps that upgrade that copy (--accept-stranding overrides).\n"
+            "One install runs at a time (install.lock).\n"
             "\n"
             "Install declares no workspace and scans nothing. It reports the\n"
             "declared workspace holding the folder (or --workspace), or, when\n"
@@ -1383,6 +1429,17 @@ def add_install_arguments(p: argparse.ArgumentParser) -> None:
         "--strict-wiring",
         action="store_true",
         help="Fail if any requested host or required wiring step fails or is skipped",
+    )
+    p.add_argument(
+        "--accept-stranding",
+        dest="accept_stranding",
+        action="store_true",
+        default=False,
+        help=(
+            "Apply a migration chain that leaves older Gaia copies on this machine unable to write the "
+            "database. Without it the install refuses before changing anything, naming each such copy "
+            "and the `gaia doctor --target` steps that upgrade it."
+        ),
     )
 
 
@@ -1489,6 +1546,14 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
             if conflict:
                 print(f"{command}: {conflict}", file=sys.stderr)
                 return 1
+    if not getattr(args, "accept_stranding", False):
+        stranding = _stranding_refusal(workspace, db_path, rewrites_launcher=opt_path)
+        if stranding:
+            print(f"{command}: refused, {stranding}", file=sys.stderr)
+            if postinstall:
+                _write_install_error_marker(workspace=workspace, step="stranding", detail=stranding)
+                return 0
+            return 1
 
     _print_header(command=command, postinstall=postinstall, quiet=quiet, workspace=workspace)
     hook_shell = resolve_hook_shell(workspace) if "claude_code" in hosts and not quiet else None

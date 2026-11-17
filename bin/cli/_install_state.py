@@ -580,13 +580,15 @@ def _store(m: Machine, live: list, findings: list, store_plan) -> "dict | None":
             continue
         seen.add((root, label))
         verdict = "creates" if fresh else _store_verdict(m, label, version, root, expects, ledger, minimum, findings)
-        copies.append({"label": label, "version": version, "root": root, "expects": expects, "verdict": verdict})
+        copies.append({"label": label, "version": version, "root": root, "expects": expects, "verdict": verdict,
+                       "kind": _origin_kind(m, root)})
     if report.get("direction") == "missing-migrations":
         _finding(findings, "warning", "store", f"this doctor's build lacks migrations {', '.join(report['missing'])} "
                  f"for {m.db_path}")
     floor = minimum if minimum is not None else "?"
     return {"channel": "store", "path": str(m.db_path), "schema": None if fresh else ledger,
-            "min_code_version": minimum, "direction": report.get("direction"), "chain": report.get("chain"),
+            "min_code_version": minimum, "min_code_version_after": report.get("min_code_version_after"),
+            "direction": report.get("direction"), "chain": report.get("chain"),
             "consent_command": report.get("consent_command"), "backups": report.get("backups") or [],
             "copies": copies, "declared": None, "registered": None, "running": None,
             "installed": {"version": "absent (fresh)" if fresh else f"schema v{ledger}",
@@ -632,6 +634,19 @@ def read(m: Machine, store_plan=None) -> dict:
     }
 
 
+_UPGRADED_BY = {"plugin-cache": "plugin", "npm-local": "npm-local", "npm-global": "npm-global"}
+
+
+def stranded_copies(report: dict) -> "list[dict]":
+    """The copies in *report* that write the store today and could not once its pending chain applies, each with the schema it ``needs`` and the plan ``channel`` that upgrades it; reads *report* alone."""
+    store = next((c for c in report["channels"] if c["channel"] == "store"), None)
+    after = store.get("min_code_version_after") if store else None
+    if after is None or store["direction"] != "behind":
+        return []
+    return [{**copy, "needs": after, "channel": _UPGRADED_BY.get(copy.get("kind"), copy["label"].split(" ", 1)[0])}
+            for copy in store["copies"] if copy["verdict"] != "refused" and copy["expects"] < after]
+
+
 def _arg(value) -> str:
     from gaia.subprocess_text import command_arg  # noqa: PLC0415
 
@@ -639,9 +654,11 @@ def _arg(value) -> str:
     return text if _PLAIN_ARG.fullmatch(text) else command_arg(text)
 
 
-def _step(steps: list, channel: str, kind: str, gap: str, *, command=None, cwd=None, file=None, detail=None) -> None:
+def _step(steps: list, channel: str, kind: str, gap: str, *, command=None, cwd=None, file=None, detail=None,
+          migrates: bool = False) -> None:
+    """Append one plan step; ``migrates`` marks a step that runs gaia install or update, which applies the store's chain."""
     steps.append({"channel": channel, "kind": kind, "gap": gap, "command": command, "cwd": cwd,
-                  "file": file, "detail": detail})
+                  "file": file, "detail": detail, "migrates": migrates, "stranded": []})
 
 
 def _plugin_steps(channel: dict, target: str, ref: str, steps: list) -> None:
@@ -682,14 +699,14 @@ def _npm_steps(report: dict, channel, target: str, steps: list, windows: bool) -
     _step(steps, "npm-local", "command", gap, command=f"npm install {PACKAGE}@{target} --save-exact", cwd=ws)
     gaia = (f"{ws}\\node_modules\\.bin\\gaia.cmd" if windows else f"{ws}/node_modules/.bin/gaia")
     _step(steps, "npm-local", "command", "the new copy re-wires the channels this workspace recorded",
-          command=f"{_arg(gaia)} update --workspace {_arg(ws)}", cwd=ws,
+          command=f"{_arg(gaia)} update --workspace {_arg(ws)}", cwd=ws, migrates=True,
           detail="it also regenerates opencode.json's agent block (each agent's permissions and scratch path), "
                  "so a diff of that file shows more than the plugin entry; `--dry-run` previews only the "
                  "Claude Code wiring, so read the result with `gaia doctor --channels` instead")
 
 
 def plan(report: dict, target: str) -> dict:
-    """The gaps between *report*'s machine and *target*, each with the host command or edit that closes it; runs nothing."""
+    """The gaps between *report*'s machine and *target*, each with the host command or edit that closes it, every step that migrates the store after the steps that upgrade a copy; runs nothing."""
     target = target[1:] if target.startswith("v") else target
     ref = f"v{target}"
     windows = report.get("windows", False)
@@ -728,16 +745,23 @@ def plan(report: dict, target: str) -> dict:
     launcher = by_kind.get("launcher")
     if launcher and launcher["running"]["version"] != target and launcher["kind"] not in ("npm-global", "plugin-cache"):
         _step(steps, "launcher", "command", f"`gaia` on PATH runs {launcher['running']['version']}",
-              command="gaia install --path", cwd=report["workspace"],
+              command="gaia install --path", cwd=report["workspace"], migrates=True,
               detail="run it with the gaia of the new copy, from the workspace")
+    migrating = [s for s in steps if s["migrates"]]
+    steps = [s for s in steps if not s["migrates"]]
     store = by_kind.get("store")
-    if store and steps:
+    if store and (steps or migrating):
         _step(steps, "store", "check",
               f"the store {store['path']} is at {store['installed']['version']}, writable by builds of schema "
               f"v{store['min_code_version'] if store['min_code_version'] is not None else '?'}+",
               command="gaia migrate plan",
               detail="run it with the gaia of the new copy once installed: it shows the chain the data goes through, "
                      "whether apply needs --consent-chain, and the backups on hand")
+    stranded = stranded_copies(report)
+    for step in migrating:
+        steps.append(step)
+        upgraded = {s["channel"] for s in steps}
+        step["stranded"] = [copy["label"] for copy in stranded if copy["channel"] not in upgraded]
     if any(s["channel"] == "plugin" for s in steps):
         _step(steps, "plugin", "session", "a running session keeps the version it loaded",
               detail="start a new Claude Code session in each install's project, or run /reload-plugins")
@@ -826,5 +850,9 @@ def format_plan(target_plan: dict) -> "list[str]":
             lines.append(f"       edit {step['file']}")
         if step["detail"]:
             lines.append(f"       {step['detail']}")
+        if step["migrates"]:
+            lines.append("       this step migrates the store; every copy above is upgraded first")
+        if step["stranded"]:
+            lines.append(f"       still unable to write the store after it: {', '.join(step['stranded'])}")
     lines += ["", f"  Then read: {target_plan['verify']}", ""]
     return lines
