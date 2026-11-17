@@ -643,8 +643,9 @@ def _revoke_grant(args, approval_id: str | None = None, *, verb: str = "revoke")
     approval_id = (approval_id or args.approval_id).strip()
 
     try:
-        writer = _import_writer()
-        result = writer.revoke_approval_grant(approval_id)
+        from gaia.approvals import core
+        core.require_own_turn(approval_id)
+        result = _import_writer().revoke_approval_grant(approval_id)
     except Exception as exc:
         _print_error(f"Failed to revoke grant: {exc}", args)
         return 1
@@ -808,7 +809,7 @@ def _withdraw(args, approval_id: str, action: str, *, verb: str, reason: str | N
 
 
 def _cmd_reject_all(args, reason: str | None) -> int:
-    """Reject all pending approvals across all sessions.
+    """Reject all pending approvals across all sessions, or a dispatched turn's own.
 
     Each pending is rejected through the core's withdrawal. Exits 0 when the
     queue is empty.
@@ -827,15 +828,10 @@ def _cmd_reject_all(args, reason: str | None) -> int:
             print("No pending approvals to reject.")
         return 0
 
-    rejected_ids = []
-    failed_ids = []
-    for pending in raw:
-        approval_id = pending.get("approval_id") or f"P-{pending.get('nonce', '')}"
-        try:
-            _withdraw(args, approval_id, "reject", verb="reject --all", reason=reason)
-            rejected_ids.append(approval_id)
-        except Exception:
-            failed_ids.append(approval_id)
+    rejected_ids, left, failed_ids = _reject_each(
+        args, [pending.get("approval_id") or f"P-{pending.get('nonce', '')}" for pending in raw],
+        verb="reject --all", reason=reason,
+    )
 
     n = len(rejected_ids)
     if getattr(args, "json", False):
@@ -846,6 +842,8 @@ def _cmd_reject_all(args, reason: str | None) -> int:
         }
         if reason:
             payload["reason"] = reason
+        if left:
+            payload.update(left=sum(left.values()), left_by=left, note=_left_note(left))
         if failed_ids:
             payload["failed"] = failed_ids
         print(json.dumps(payload))
@@ -854,10 +852,37 @@ def _cmd_reject_all(args, reason: str | None) -> int:
         if reason:
             summary += f" (reason: {reason})"
         print(summary)
+        if left:
+            print(_left_note(left))
         if failed_ids:
             _print_error(f"Failed to reject: {', '.join(failed_ids)}", args)
 
     return 0 if not failed_ids else 1
+
+
+def _reject_each(args, approval_ids: list, *, verb: str, reason: str | None = None) -> tuple[list, dict, list]:
+    from gaia.approvals import core
+
+    rejected, left, failed = [], {}, []
+    for approval_id in approval_ids:
+        try:
+            _withdraw(args, approval_id, "reject", verb=verb, reason=reason)
+            rejected.append(approval_id)
+        except core.ForeignRequestError as exc:
+            left[exc.owner] = left.get(exc.owner, 0) + 1
+        except Exception:
+            failed.append(approval_id)
+    return rejected, left, failed
+
+
+def _left_note(left: dict) -> str:
+    whose = ", ".join(f"{count} of {owner}" for owner, count in sorted(left.items()))
+    return (
+        f"Left {sum(left.values())} pending request(s) this turn did not make ({whose}): rejecting "
+        "them is the user's or the orchestrator's. A request of your own you withdraw by its id "
+        "(gaia approvals reject <approval_id>); one you still need you hand to the user by closing "
+        "APPROVAL_REQUEST with its approval_id."
+    )
 
 
 def _grants_dir_for_workspace(workspace: str | None):
@@ -913,26 +938,33 @@ def cmd_reject_all(args) -> int:
         return 0
 
     if dry_run:
-        print("[dry-run] would reject:")
+        from gaia.approvals import core
+
+        own, left = [], {}
         for item in raw:
+            try:
+                core.require_own_turn(item["approval_id"])
+                own.append(item)
+            except core.ForeignRequestError as exc:
+                left[exc.owner] = left.get(exc.owner, 0) + 1
+        print("[dry-run] would reject:")
+        for item in own:
             cmd_preview = item["command"][:60]
             print(f"  {item['approval_id']}  {cmd_preview}")
-        print(f"\n{len(raw)} pending(s) would be rejected.")
+        print(f"\n{len(own)} pending(s) would be rejected.")
+        if left:
+            print(_left_note(left))
         return 0
 
-    rejected_ids = []
-    failed_ids = []
-    for item in raw:
-        approval_id = item["approval_id"]
-        try:
-            _withdraw(args, approval_id, "reject", verb="reject-all")
-            rejected_ids.append(approval_id)
-        except Exception:
-            failed_ids.append(approval_id)
+    rejected_ids, left, failed_ids = _reject_each(
+        args, [item["approval_id"] for item in raw], verb="reject-all",
+    )
 
     n = len(rejected_ids)
     if n > 0:
         print(f"{n} pending(s) rejected: {', '.join(rejected_ids)}")
+    if left:
+        print(_left_note(left))
     if failed_ids:
         _print_error(f"Failed to reject: {', '.join(failed_ids)}", args)
 
@@ -1607,6 +1639,12 @@ def _requester_identity(args) -> tuple[str, str]:
     return session_id, agent_id
 
 
+def _requesting_turn() -> str:
+    from gaia.agent_identity import dispatch_agent_from_env, dispatch_turn_from_env
+
+    return dispatch_turn_from_env() if dispatch_agent_from_env() else ""
+
+
 def _sealed_elsewhere_lines(steps: list, requested_from: str) -> list[dict]:
     from gaia.approvals.core import is_signed, sealed_invocation
 
@@ -1731,6 +1769,7 @@ def cmd_request_set(args) -> int:
             shared_state=getattr(args, "shared_state", None),
             rationale=args.rationale,
             requested_from=os.getcwd(),
+            turn=_requesting_turn(),
         )
         sealed = json.loads(_import_approval_store().get_by_id(approval_id)["payload_json"])
         replaced = core.replaced_by(approval_id)
@@ -1786,6 +1825,7 @@ def cmd_request_file_write(args) -> int:
             impact=args.impact,
             rollback=args.rollback,
             verification=args.verification,
+            turn=_requesting_turn(),
         )
         replaced = core.replaced_by(approval_id)
     except Exception as exc:
@@ -2696,7 +2736,10 @@ def register(subparsers) -> None:
         description=(
             "Reject a pending T3 approval.\n\n"
             "Single reject: provide the complete canonical APPROVAL_ID.\n"
-            "Bulk reject:   use --all to reject every pending approval in one call."
+            "Bulk reject:   use --all to reject every pending approval in one call.\n\n"
+            "Bulk rejection is the user's and the orchestrator's. From a dispatched\n"
+            "specialist both forms withdraw only what its own turn requested, and\n"
+            "--all says how many requests it left and whose."
         ),
     )
     p_reject.add_argument(
@@ -2709,7 +2752,7 @@ def register(subparsers) -> None:
         "--all",
         action="store_true",
         dest="all",
-        help="Reject ALL pending approvals (ignores NONCE)",
+        help="Reject ALL pending approvals (ignores NONCE); a dispatched specialist's own turn's only",
     )
     p_reject.add_argument("--reason", metavar="REASON", help="Rejection reason applied to all rejected approvals")
     p_reject.add_argument("--json", action="store_true", help="JSON output")
@@ -2723,6 +2766,9 @@ def register(subparsers) -> None:
             "Mark every active (non-expired, non-rejected) pending approval as rejected.\n\n"
             "Functionally equivalent to 'reject --all' but exposed as a first-class\n"
             "subcommand matching the pending-approvals skill's documented interface.\n\n"
+            "Bulk rejection is the user's and the orchestrator's: from a dispatched\n"
+            "specialist it rejects only what its own turn requested and says how\n"
+            "many requests it left and whose.\n\n"
             "Use --dry-run to preview what would be rejected without writing changes.\n"
             "Use --workspace to operate on a different workspace's approval cache."
         ),

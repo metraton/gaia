@@ -562,8 +562,8 @@ def test_approval_core_contract_claude_adapter_delegates_protected_write(monkeyp
 
     calls = []
 
-    def fake_verdict(path, *, session_id, agent_id):
-        calls.append((path, session_id, agent_id))
+    def fake_verdict(path, *, session_id, agent_id, turn):
+        calls.append((path, session_id, agent_id, turn))
         return {"decision": "allow", "path": path}
 
     monkeypatch.setattr(core, "protected_write_verdict", fake_verdict)
@@ -572,5 +572,5 @@ def test_approval_core_contract_claude_adapter_delegates_protected_write(monkeyp
         "Write", {"file_path": target}, session_id=SESSION, is_subagent=True,
         agent_id="a123", agent_type=AGENT,
     )
-    assert calls and calls[0][1:] == (SESSION, AGENT)
+    assert calls and calls[0][1:] == (SESSION, AGENT, "a123")
     assert response.exit_code == 0

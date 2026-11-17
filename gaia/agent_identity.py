@@ -32,6 +32,8 @@ PLUGIN_NAMESPACE = "gaia"
 
 DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
 
+DISPATCH_TURN_ENV = "GAIA_DISPATCH_TURN"
+
 HOST_SESSION_ENVS = ("GAIA_HOST_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID")
 
 
@@ -53,6 +55,11 @@ def canonical_agent_name(name: object) -> str:
 def dispatch_agent_from_env() -> str:
     """Return the canonical dispatched-agent name, or "" for a human CLI caller."""
     return canonical_agent_name(os.environ.get(DISPATCH_AGENT_ENV))
+
+
+def dispatch_turn_from_env() -> str:
+    """Return the dispatched turn's harness id, or "" when the shell carries none."""
+    return (os.environ.get(DISPATCH_TURN_ENV) or "").strip()
 
 
 def host_session_from_env() -> str:

@@ -21,6 +21,7 @@ import pytest
 from gaia.store import writer
 
 AGENT = "gaia-operator"
+TURN = "a0123456789abcdef"
 HOSTS = {
     "claude_code": ("CLAUDE_CODE_SESSION_ID", "ses-claude-code"),
     "opencode": ("GAIA_HOST_SESSION_ID", "ses_opencode"),
@@ -36,6 +37,7 @@ def host(request, tmp_path, monkeypatch):
     variable, session = HOSTS[request.param]
     monkeypatch.setenv(variable, session)
     monkeypatch.setenv("GAIA_DISPATCH_AGENT", AGENT)
+    monkeypatch.setenv("GAIA_DISPATCH_TURN", TURN)
     con = sqlite3.connect(tmp_path / "gaia.db")
     con.executescript(writer._SCHEMA_PATH.read_text())
     con.commit()
@@ -48,7 +50,7 @@ def _pending(command: str) -> str:
 
     return store.insert_requested(
         {"commands": [command], "exact_content": command,
-         "operation": "MUTATIVE command intercepted: push"},
+         "operation": "MUTATIVE command intercepted: push", "requested_turn": TURN},
         agent_id="developer", session_id="ses-requester",
     )
 
