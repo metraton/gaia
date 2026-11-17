@@ -1607,6 +1607,16 @@ def _requester_identity(args) -> tuple[str, str]:
     return session_id, agent_id
 
 
+def _sealed_elsewhere_lines(steps: list, requested_from: str) -> list[dict]:
+    from gaia.approvals.core import is_signed, sealed_invocation
+
+    return [
+        {"index": index, "invocation": sealed_invocation(step["cwd"], step["command"])}
+        for index, step in enumerate(steps)
+        if is_signed(step) and step.get("cwd") and step["cwd"] != requested_from
+    ]
+
+
 def _per_command(args, flag: str, commands: list) -> list:
     """Align an optional per-command flag with the commands: one value per --command."""
     values = list(getattr(args, flag, None) or [])
@@ -1696,7 +1706,8 @@ def cmd_request_set(args) -> int:
     command carries its ``--cwd`` and ``--expect-exit`` declarations, and the
     requester is the explicit ``--session-id``/``--agent-id`` or the dispatch
     environment. ``steps`` in the output lists every step in order, an
-    unsigned one marked ``"signed": false``; ``command_set`` only the signed.
+    unsigned one marked ``"signed": false``; ``command_set`` only the signed;
+    ``run_as`` the cd line of each signed step sealed outside the requester's folder.
 
     ``--rollback`` is required too: how to undo the set, or a sentence
     saying it cannot be undone; so are ``--verification``, how the result is
@@ -1728,9 +1739,10 @@ def cmd_request_set(args) -> int:
         return 1
     items = sealed["command_set"]
     steps = sealed["items"]
+    elsewhere = _sealed_elsewhere_lines(steps, sealed.get("requested_from") or os.getcwd())
     result = {
         "status": "pending", "approval_id": approval_id, "command_set": items,
-        "steps": steps, "replaced": replaced,
+        "steps": steps, "replaced": replaced, "run_as": elsewhere,
     }
     if args.json:
         print(json.dumps(result))
@@ -1740,6 +1752,8 @@ def cmd_request_set(args) -> int:
             f"Requested {approval_id} for {len(items)} ordered T3 commands"
             + (f" and {unsigned} unsigned steps shown in position" if unsigned else "")
         )
+        for line in elsewhere:
+            print(f"  step [{line['index']}] is sealed for another folder; run it as: {line['invocation']}")
         _print_replaced(replaced)
     return 0
 

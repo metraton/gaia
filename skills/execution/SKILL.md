@@ -25,8 +25,11 @@ source changes. The same prohibition applies to fixtures and bulk operations.
 2. Run exactly one command per tool call using `command-execution`, byte for
    byte as requested, in its sealed directory. When that directory is not the
    one your Bash runs in, run exactly `cd <sealed directory> && <sealed command>`,
-   the only compound accepted. Never join commands otherwise, skip an index,
-   substitute an equivalent spelling, or add an unapproved command. A
+   the only compound accepted. `request-set` prints that line for each such
+   step, and a call refused for running in another folder names it; copy it as
+   printed, since the directory is shell-quoted when it needs quoting. Never
+   join commands otherwise, skip an index, substitute an equivalent spelling,
+   or add an unapproved command. A
    still-pending approval is not a reason to stop: attempt the command. If
    Gaia refuses it because the user has not answered yet, end the turn with
    `APPROVAL_REQUEST` and the same approval id; the orchestrator asks the

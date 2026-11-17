@@ -1090,23 +1090,12 @@ class BashValidator:
         # A shell-authored write (redirect, `tee`, `sed -i`, `dd of=`) into a git
         # tree is refused as a channel: the same edit through Write/Edit is
         # permitted. Before the sanitizer, which strips a trailing redirect.
-        shell_write_allowed, shell_write_reason = check_shell_write(
-            write_guard_scope, cwd=cwd,
-        )
-        if not shell_write_allowed:
+        shell_write_refusal = _shell_write_floor(write_guard_scope, cwd)
+        if shell_write_refusal is not None:
             logger.warning(
                 "BLOCKED shell-authored working-tree write: %s", command[:120]
             )
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=shell_write_reason,
-                rule="floor.shell-write",
-                suggestions=[
-                    "Use the Write or Edit tool on the file instead; a "
-                    "throwaway dump belongs under ~/.gaia/scratch.",
-                ],
-            )
+            return shell_write_refusal
 
         # A sensitive read is refused before any check that can ask, and before the
         # sanitizer, which would strip a `< file` input with the trailing redirect.
@@ -1249,17 +1238,9 @@ class BashValidator:
                 return commit_validation
 
         # 3d. Cloud pipe/redirect/chaining check.
-        pipe_block = validate_cloud_pipe(classified)
-        if pipe_block is not None:
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=read_permission_reason(pipe_block),
-                suggestions=[],
-                modified_input=None,
-                block_response=pipe_block,
-                rule="floor.shell-write" if violation_kind(classified) == "redirect" else "floor.cloud-pipe",
-            )
+        pipe_refusal = _pipe_floor(classified)
+        if pipe_refusal is not None:
+            return pipe_refusal
 
         # PHASE 4: CHECK COMPOSITION of pipe-connected stages; &&/; stages are
         # independent (exfiltration, RCE, decode-to-exec, file-to-exec).
@@ -1522,8 +1503,7 @@ class BashValidator:
         # ``cwd`` is the directory folded from a preceding ``cd`` component (see
         # _validate_compound_command), against which a relative script resolves.
         signed = run_form or command
-        result = detect_mutative_command(command, cwd=cwd, caller=caller)
-        result = privilege_verdict(command, result) or production_target_verdict(command, result, cwd=cwd) or result
+        result = command_verdict(command, cwd=cwd, caller=caller)
         if result.is_mutative:
             granted = _granted_result(
                 signed, session_id=session_id, agent_type=agent_type, cwd=cwd, tool_use_id=tool_use_id,
@@ -2071,6 +2051,58 @@ def _scratch_owner(harness_agent_id: str) -> str:
     return str((row or {}).get("agent_id") or harness_agent_id)
 
 
+def command_verdict(command: str, *, cwd: Optional[str], caller: Optional[LocalWorkCaller]):
+    """The mutative verdict the gate gives one command: the verb scan under *caller*'s local-work relief, then the privilege and production-target walls."""
+    result = detect_mutative_command(command, cwd=cwd, caller=caller)
+    return privilege_verdict(command, result) or production_target_verdict(command, result, cwd=cwd) or result
+
+
+def gate_forms(command: str) -> Tuple[str, str]:
+    """What the gate makes of *command*: (the form the host runs, the form it classifies, trailing redirect stripped too)."""
+    validator = BashValidator()
+    sanitized = validator._try_sanitize_command(command)
+    return validator._strip_run_decorators(command)[0], sanitized[0] if sanitized else command
+
+
+def _shell_write_floor(write_guard_scope: str, cwd: Optional[str]) -> Optional[BashValidationResult]:
+    allowed, reason = check_shell_write(write_guard_scope, cwd=cwd)
+    if allowed:
+        return None
+    return BashValidationResult(
+        allowed=False,
+        tier=SecurityTier.T3_BLOCKED,
+        reason=reason,
+        rule="floor.shell-write",
+        suggestions=[
+            "Use the Write or Edit tool on the file instead; a "
+            "throwaway dump belongs under ~/.gaia/scratch.",
+        ],
+    )
+
+
+def _pipe_floor(classified: str) -> Optional[BashValidationResult]:
+    pipe_block = validate_cloud_pipe(classified)
+    if pipe_block is None:
+        return None
+    return BashValidationResult(
+        allowed=False,
+        tier=SecurityTier.T3_BLOCKED,
+        reason=read_permission_reason(pipe_block),
+        suggestions=[],
+        modified_input=None,
+        block_response=pipe_block,
+        rule="floor.shell-write" if violation_kind(classified) == "redirect" else "floor.cloud-pipe",
+    )
+
+
+def run_time_floor(command: str, cwd: Optional[str]) -> Optional[BashValidationResult]:
+    """The refusal the gate's shell-write and redirect floors give *command*, in the order validate() applies them, else None."""
+    refusal = _shell_write_floor(data_heredoc_header(command) or command, cwd)
+    if refusal is not None:
+        return refusal
+    return _pipe_floor(_scan_heredocs(gate_forms(command)[1])[0])
+
+
 def _pending_requests_of(session_id: str, agent_id: str) -> list:
     """Return the pending requests, oldest first, whose sealed requester is this session and agent.
 
@@ -2502,7 +2534,7 @@ def _reserve_signed_item_run_free(
     return result
 
 
-def _unreserved_item_cause(held: dict, tool_use_id: str | None) -> str:
+def _unreserved_item_cause(held: dict, tool_use_id: str | None, command: str) -> str:
     refusal = held.get("refusal") or {}
     approval_id, check = held["approval_id"], refusal.get("check")
     if check == "order":
@@ -2517,9 +2549,12 @@ def _unreserved_item_cause(held: dict, tool_use_id: str | None) -> str:
             f"`gaia approvals revoke {approval_id}` and request it again over the file as it is now."
         )
     if check == "directory":
+        from gaia.approvals.core import sealed_invocation
+
         return (
-            f"it is sealed for {refusal['sealed']} and this call runs in {refusal['call']}: run it "
-            "from the sealed directory. Do not request it again."
+            f"it is sealed for {refusal['sealed']} and this call runs in {refusal['call']}: run "
+            f"`{sealed_invocation(refusal['sealed'], command)}` as one call, which the same "
+            "signature covers. Do not request it again."
         )
     if check == "call_reused":
         return (
@@ -2563,7 +2598,7 @@ def _approved_signature_denial(
         return None
     reason = (
         f"T3 command denied: {held['approval_id']} is approved and signs this exact command as "
-        f"item [{held['index']}], but this call cannot run it: {_unreserved_item_cause(held, tool_use_id)} "
+        f"item [{held['index']}], but this call cannot run it: {_unreserved_item_cause(held, tool_use_id, command)} "
         "Nothing was consumed and no new request was sealed."
     )
     return BashValidationResult(
