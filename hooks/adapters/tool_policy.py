@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # agent (gaia.store.writer, gaia.state.permissions, gaia.evidence.store,
 # gaia.briefs.store). Defined here as the single injection-side constant.
 GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
+GAIA_DISPATCH_TURN_ENV = "GAIA_DISPATCH_TURN"
 
 SHELL_TOOLS = frozenset({"bash", "powershell", "monitor"})
 FILE_WRITE_TOOLS = frozenset({"write", "edit", "multiedit", "notebookedit"})
@@ -101,11 +102,11 @@ def dispatch_tmpdir(agent_id: str) -> str:
     return str(path)
 
 
-def build_dispatch_identity_command(command: str, agent_type: str, tmpdir: str = "") -> str:
+def build_dispatch_identity_command(command: str, agent_type: str, tmpdir: str = "", turn: str = "") -> str:
     """Prefix a subagent Bash command so ``GAIA_DISPATCH_AGENT`` reaches the CLI.
 
     ``tmpdir``, when given, is exported as ``TMPDIR`` in the same statement, so
-    the agent's tool temporaries follow the same scope as its identity.
+    the agent's tool temporaries follow the same scope as its identity; ``turn`` as ``GAIA_DISPATCH_TURN``.
 
     The DB guards fail OPEN when ``GAIA_DISPATCH_AGENT`` is unset (that is the
     human-CLI / orchestrator-main-session path). To make them fail CLOSED for a
@@ -138,20 +139,24 @@ def build_dispatch_identity_command(command: str, agent_type: str, tmpdir: str =
     agent = (agent_type or "").strip()
     if not agent:
         return command
-    exports = f"{GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}"
-    if tmpdir:
-        exports += f" TMPDIR={shlex.quote(tmpdir)}"
+    exports = " ".join(f"{name}={shlex.quote(value)}" for name, value in _identity_assignments(agent, tmpdir, turn))
     return f"export {exports}; {command}"
 
 
-def build_powershell_identity_command(command: str, agent_type: str, tmpdir: str = "") -> str:
+def build_powershell_identity_command(command: str, agent_type: str, tmpdir: str = "", turn: str = "") -> str:
     """Prefix a subagent PowerShell command with the same exports ``build_dispatch_identity_command`` makes."""
     agent = (agent_type or "").strip()
     if not agent:
         return command
-    assignments = [(GAIA_DISPATCH_AGENT_ENV, agent)] + ([("TMPDIR", tmpdir)] if tmpdir else [])
+    assignments = _identity_assignments(agent, tmpdir, turn)
     exports = "; ".join(f"$env:{name}={_powershell_literal(value)}" for name, value in assignments)
     return f"{exports}; {command}"
+
+
+def _identity_assignments(agent: str, tmpdir: str, turn: str) -> list[tuple[str, str]]:
+    return [(GAIA_DISPATCH_AGENT_ENV, agent)] + [
+        (name, value) for name, value in (("TMPDIR", tmpdir), (GAIA_DISPATCH_TURN_ENV, turn)) if value
+    ]
 
 
 def strip_dispatch_identity_prefix(command: str, agent_type: str) -> str:
@@ -160,11 +165,14 @@ def strip_dispatch_identity_prefix(command: str, agent_type: str) -> str:
     if not agent:
         return command
     bash_word = r"(?:[\w@%+=:,./-]+|'[^']*'(?:\"'\"'[^']*')*)"
+    powershell_word = r"'(?:[^']|'')*'"
     bash_prefix = (
-        re.escape(f"export {GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}") + f"(?: TMPDIR={bash_word})?; "
+        re.escape(f"export {GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}")
+        + f"(?: TMPDIR={bash_word})?(?: {GAIA_DISPATCH_TURN_ENV}={bash_word})?; "
     )
     powershell_prefix = (
-        re.escape(f"$env:{GAIA_DISPATCH_AGENT_ENV}={_powershell_literal(agent)}; ") + r"(?:\$env:TMPDIR='(?:[^']|'')*'; )?"
+        re.escape(f"$env:{GAIA_DISPATCH_AGENT_ENV}={_powershell_literal(agent)}; ")
+        + rf"(?:\$env:TMPDIR={powershell_word}; )?(?:\$env:{GAIA_DISPATCH_TURN_ENV}={powershell_word}; )?"
     )
     prefix = re.match(f"{bash_prefix}|{powershell_prefix}", command)
     return command[prefix.end():] if prefix else command
@@ -546,7 +554,7 @@ class ToolPolicy:
             )
             final_command = build_identity(
                 final_command, agent_type,
-                tmpdir=dispatch_tmpdir(hook_data["agent_id"]),
+                tmpdir=dispatch_tmpdir(hook_data["agent_id"]), turn=hook_data["agent_id"],
             )
 
         if final_command != command:
@@ -987,7 +995,7 @@ class ToolPolicy:
             )
         try:
             verdict = core.protected_write_verdict(
-                file_path, session_id=session_id, agent_id=agent_type,
+                file_path, session_id=session_id, agent_id=agent_type, turn=agent_id,
             )
         except Exception as exc:
             logger.warning(

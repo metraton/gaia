@@ -215,6 +215,7 @@ def seal_request(
     operation: Optional[str] = None,
     risk_level: str = "medium",
     requested_from: Optional[str] = None,
+    turn: Optional[str] = None,
 ) -> dict:
     """Build the sealed payload for any request kind: ``command``, ``command_set`` or ``file_write``.
 
@@ -222,7 +223,8 @@ def seal_request(
     may carry ``does`` and ``impact``. All four are checked against the
     signature surface limits here, when the request is made
     (``surface.SurfaceLimitError``). ``requested_from`` is the requester's shell
-    folder: the surface names an item's folder only when it differs.
+    folder: the surface names an item's folder only when it differs. ``turn``
+    is sealed as ``requested_turn``: :func:`require_own_turn` reads it.
 
     ``operation`` is required for ``command`` (the reactive Bash block): it is
     the ``<CATEGORY> command intercepted: <verb>`` line activation reads to
@@ -262,6 +264,8 @@ def seal_request(
         if not os.path.isabs(requested_from):
             raise SealError("requested_from must be an absolute directory")
         payload["requested_from"] = requested_from
+    if _optional_text(turn):
+        payload["requested_turn"] = turn.strip()
     if kind == "command_set":
         # Unsigned steps stay in ``items``, shown in their position; the grant
         # is built from ``command_set`` alone, so only signed steps are reserved.
@@ -533,6 +537,7 @@ def request_command_set(
     shared_state: Optional[str] = None,
     rationale: Optional[str] = None,
     requested_from: Optional[str] = None,
+    turn: Optional[str] = None,
 ) -> str:
     """Validate a plan-first set, seal it and persist the pending request; return its approval_id.
 
@@ -565,7 +570,7 @@ def request_command_set(
     payload = seal_request(
         "command_set", sealed_items, what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, rationale=rationale,
-        shared_state=shared_state, requested_from=requested_from,
+        shared_state=shared_state, requested_from=requested_from, turn=turn,
     )
     return _persist_replacing(payload)
 
@@ -604,6 +609,7 @@ def request_file_write(
     impact: Optional[str],
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
+    turn: Optional[str] = None,
 ) -> str:
     """Seal and persist a phrased protected-path write request; return its approval_id.
 
@@ -614,7 +620,7 @@ def request_file_write(
     _require_phrases(what, question, [item], rollback)
     payload = seal_request(
         _FILE_KIND, [item], what=what, session_id=session_id, agent_id=agent_id,
-        question=question, rollback=rollback, verification=verification, impact=impact,
+        question=question, rollback=rollback, verification=verification, impact=impact, turn=turn,
     )
     existing = _pending_file_request(path, payload["requested_by"])
     if existing and not missing_phrases(existing[1]):
@@ -622,7 +628,9 @@ def request_file_write(
     return _persist_replacing(payload)
 
 
-def _reactive_file_request(path: str, *, session_id: str, agent_id: str) -> tuple[str, dict]:
+def _reactive_file_request(
+    path: str, *, session_id: str, agent_id: str, turn: Optional[str],
+) -> tuple[str, dict]:
     """Name the requester's open write request for ``path``, else seal one without phrases."""
     from gaia.approvals import store
 
@@ -631,12 +639,14 @@ def _reactive_file_request(path: str, *, session_id: str, agent_id: str) -> tupl
         return existing
     payload = seal_request(
         _FILE_KIND, [{"path": path}], what=file_write_title(path),
-        session_id=session_id, agent_id=agent_id,
+        session_id=session_id, agent_id=agent_id, turn=turn,
     )
     return store.insert_requested(payload, agent_id=agent_id, session_id=session_id), payload
 
 
-def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -> dict:
+def protected_write_verdict(
+    file_path: str, *, session_id: str, agent_id: str, turn: Optional[str] = None,
+) -> dict:
     """Decide a Write/Edit on ``file_path``: ``allow`` or ``block`` with the approval to decide.
 
     Gaia's hook tree and the user's account paths are protected. A protected
@@ -659,7 +669,7 @@ def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -
         return {"decision": "allow", "path": consent_path, "protected": True,
                 "approval_id": grant.get("approval_id")}
     approval_id, payload = _reactive_file_request(
-        consent_path, session_id=session_id, agent_id=agent_id,
+        consent_path, session_id=session_id, agent_id=agent_id, turn=turn,
     )
     return {"decision": "block", "path": consent_path, "protected": True,
             "approval_id": approval_id, "window_minutes": WINDOW_MINUTES,
@@ -1226,6 +1236,7 @@ def withdraw(
     if action not in _WITHDRAW_ACTIONS:
         raise WithdrawError(f"withdraw accepts reject, revoke or expire, not {action!r}")
     row = store.get_by_id(approval_id)
+    require_own_turn(approval_id, row)
     if row is not None and row.get("status") == "pending":
         if action == "expire":
             reason = EXPIRED_REASON
@@ -1243,3 +1254,38 @@ def withdraw(
     if result.get("status") != "applied":
         raise WithdrawError(f"{approval_id} has no pending request or live grant to withdraw")
     return "revoked"
+
+
+class ForeignRequestError(WithdrawError):
+    """Raised when a dispatched turn withdraws a request it did not make; ``owner`` says whose it is."""
+
+    def __init__(self, approval_id: str, owner: str, *, shell_has_turn: bool):
+        self.owner = owner
+        detail = "" if shell_has_turn else "; this shell carries no GAIA_DISPATCH_TURN, so it owns none"
+        super().__init__(
+            f"{approval_id} was not made by this turn but by {owner}{detail}. A dispatched "
+            "specialist withdraws only its own turn's requests; this one stays for the user or the orchestrator"
+        )
+
+
+def require_own_turn(approval_id: str, row: Optional[Mapping[str, Any]] = None) -> None:
+    """Refuse a dispatched shell's withdrawal of anything not sealed under its GAIA_DISPATCH_TURN; a shell with no GAIA_DISPATCH_AGENT (user, orchestrator) keeps the full scope."""
+    from gaia.agent_identity import dispatch_agent_from_env, dispatch_turn_from_env, host_session_from_env
+    from gaia.approvals import store
+
+    if not dispatch_agent_from_env():
+        return
+    row = row if row is not None else store.get_by_id(approval_id)
+    payload = _row_payload(row) if row is not None else {}
+    sealed_turn = payload.get("requested_turn")
+    turn = dispatch_turn_from_env()
+    if turn and sealed_turn == turn:
+        return
+    requester = payload.get("requested_by") if isinstance(payload.get("requested_by"), dict) else {}
+    if not sealed_turn:
+        owner = "an unknown turn"
+    elif requester.get("session_id") == host_session_from_env():
+        owner = "another turn in this session"
+    else:
+        owner = "another session"
+    raise ForeignRequestError(approval_id, owner, shell_has_turn=bool(turn))

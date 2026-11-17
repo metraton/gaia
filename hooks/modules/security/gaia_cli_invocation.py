@@ -98,7 +98,7 @@ def _module_argv(words: Sequence[str], index: int) -> Optional[List[str]]:
 _UNQUOTED_COMPUTED = set("$`()*?[")
 _BRACE_EXPANSION = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")
 _ARGV_FEEDERS = frozenset({"xargs", "parallel"})
-_IDENTITY = "GAIA_DISPATCH_AGENT"
+_IDENTITIES = ("GAIA_DISPATCH_AGENT", "GAIA_DISPATCH_TURN")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
 _DECLARERS = frozenset({"export", "declare", "typeset", "local", "readonly", "unset"})
 _CAT_HEREDOC_WORD = re.compile(r'(?:^|(?<=[ \t]))"\$\([ \t]*cat[ \t]+(?=<<)')
@@ -110,7 +110,11 @@ _PYTHON_VALUE_OPTIONS = frozenset({"-W", "-X"})
 _MAX_CARRIER_DEPTH = 4
 _QUOTING = str.maketrans("", "", "'\"\\")
 _COMPUTING = _UNQUOTED_COMPUTED | {"{"}
-_IDENTITY_TOUCHING = re.compile(rf"{_IDENTITY}|\b(?:env|exec|{'|'.join(sorted(_DECLARERS))})\b")
+_IDENTITY_TOUCHING = re.compile(rf"{'|'.join(_IDENTITIES)}|\b(?:env|exec|{'|'.join(sorted(_DECLARERS))})\b")
+
+
+def _assigns_identity(word: str) -> bool:
+    return "=" in word and word.partition("=")[0] in _IDENTITIES
 
 
 def literal_words(component: str) -> List[Tuple[str, bool]]:
@@ -307,7 +311,7 @@ _CLEARS_ENVIRONMENT = "clears"
 
 
 def clears_dispatch_identity(component: str) -> bool:
-    """True when a command *component* runs names ``GAIA_DISPATCH_AGENT``, or clears the environment around a Gaia CLI call."""
+    """True when a command *component* runs names ``GAIA_DISPATCH_AGENT`` or ``GAIA_DISPATCH_TURN``, or clears the environment around a Gaia CLI call."""
     if not _IDENTITY_TOUCHING.search(_unquoted(component)):
         return False
     kinds = {_identity_touch(text) for text, _ in _commands_run(component)}
@@ -333,12 +337,12 @@ def _identity_touch(text: str) -> Optional[str]:
     words = [word for word, _ in pairs]
     leading = 0
     while leading < len(words) and _ASSIGNMENT.match(words[leading]):
-        if words[leading].startswith(_IDENTITY + "="):
+        if _assigns_identity(words[leading]):
             return _NAMES_IDENTITY
         leading += 1
     rest = pairs[leading:]
     if rest and rest[0][0] in _DECLARERS:
-        if any(word == _IDENTITY or word.startswith(_IDENTITY + "=") for word, _ in rest[1:]):
+        if any(word in _IDENTITIES or _assigns_identity(word) for word, _ in rest[1:]):
             return _NAMES_IDENTITY
         if any(computed for _, computed in rest[1:]):
             return _CLEARS_ENVIRONMENT
@@ -360,13 +364,13 @@ def _env_touch(args: Sequence[Tuple[str, bool]]) -> Optional[str]:
     while index < len(args):
         word = args[index][0]
         value = args[index + 1] if index + 1 < len(args) else ("", False)
-        if word.startswith(_IDENTITY + "="):
+        if _assigns_identity(word):
             return _NAMES_IDENTITY
         if word in ("-", "-i") or spells_long_option(word, "--ignore-environment"):
             return _CLEARS_ENVIRONMENT
         if word.startswith("--unset"):
             named = word.partition("=")[2] if "=" in word else value[0]
-            if named == _IDENTITY:
+            if named in _IDENTITIES:
                 return _NAMES_IDENTITY
             if args[index][1] or ("=" not in word and value[1]):
                 return _CLEARS_ENVIRONMENT
@@ -377,7 +381,7 @@ def _env_touch(args: Sequence[Tuple[str, bool]]) -> Optional[str]:
             continue
         if word.startswith("-") and not word.startswith("--"):
             before, unset, attached = word[1:].partition("u")
-            if unset and (attached or value[0]) == _IDENTITY:
+            if unset and (attached or value[0]) in _IDENTITIES:
                 return _NAMES_IDENTITY
             if "i" in before or (not unset and "i" in word[1:]):
                 return _CLEARS_ENVIRONMENT

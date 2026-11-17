@@ -886,6 +886,7 @@ class BashValidator:
         clear_classification()
         self.last_warning = ""
         cwd = (hook_payload or {}).get("cwd") or cwd
+        turn = str((hook_payload or {}).get("agent_id") or "")
 
         # Phase 0 runs ahead of every transformation of `command`, because the
         # role closure must judge the string exactly as the harness sent it.
@@ -1136,6 +1137,7 @@ class BashValidator:
                 tool_use_id=call_id,
                 guidance=guarded.guidance,
                 rule=guarded.rule,
+                turn=turn,
             ), run_command, submitted)
         fed_unknown = redirected_into_unknown(write_guard_scope)
 
@@ -1252,6 +1254,7 @@ class BashValidator:
             tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
             cwd=(hook_payload or {}).get("cwd") or None,
             run_form=run_command,
+            turn=turn,
         )
         if _composition_result is not None:
             return self._runs(_composition_result, run_command, submitted)
@@ -1270,19 +1273,19 @@ class BashValidator:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
-                caller=LocalWorkCaller(agent_id, payload_cwd), run_form=run_command,
+                caller=LocalWorkCaller(agent_id, payload_cwd), run_form=run_command, turn=turn,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=payload_cwd,
-                command=command, tool_use_id=tool_use_id, agent_id=agent_id, run_form=run_command,
+                command=command, tool_use_id=tool_use_id, agent_id=agent_id, run_form=run_command, turn=turn,
             )
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
-                caller=LocalWorkCaller(agent_id, payload_cwd), run_form=run_command,
+                caller=LocalWorkCaller(agent_id, payload_cwd), run_form=run_command, turn=turn,
             )
         if code_heredocs:
             result = self._fail_closed_on_code_heredoc(
@@ -1291,7 +1294,7 @@ class BashValidator:
         if result.allowed and (fed_unknown or fed_unknown_program(build_composition_stages(decomposed.stages))):
             result = decide_t3_outcome(
                 run_command, verb="unknown_sink", category="MUTATIVE", has_orchestrator_above=is_subagent,
-                session_id=session_id, agent_type=agent_type, rule=UNKNOWN_SPAN,
+                session_id=session_id, agent_type=agent_type, rule=UNKNOWN_SPAN, turn=turn,
             )
         result = _reserve_signed_item_run_free(
             result, run_command, session_id=session_id, agent_type=agent_type,
@@ -1471,8 +1474,9 @@ class BashValidator:
         caller: Optional[LocalWorkCaller] = None,
         piped_from: Optional[str] = None,
         run_form: Optional[str] = None,
+        turn: str = "",
     ) -> BashValidationResult:
-        """Validate a single command (no operators); *caller* is what the local-work relief needs, *piped_from* the stage feeding its stdin, *run_form* what the host runs, which grants are matched and sealed against (default: *command*).
+        """Validate a single command (no operators); *caller* is what the local-work relief needs, *piped_from* the stage feeding its stdin, *run_form* what the host runs, which grants are matched and sealed against (default: *command*), *turn* the subagent turn a request is sealed under.
 
         Simplified pipeline:
         0. Indirect execution detection (for compound command components)
@@ -1526,6 +1530,7 @@ class BashValidator:
                 cwd=cwd,
                 tool_use_id=tool_use_id,
                 rule=result.rule,
+                turn=turn,
             )
 
         # Flag-dependent mutations a verb scan misses ("sed" has no mutative verb,
@@ -1561,6 +1566,7 @@ class BashValidator:
                         agent_type=agent_type,
                         cwd=cwd,
                         tool_use_id=tool_use_id,
+                        turn=turn,
                     )
 
         # Not blocked, not mutative -> SAFE by elimination
@@ -1581,8 +1587,9 @@ class BashValidator:
         tool_use_id: str = "",
         agent_id: str = "",
         run_form: Optional[str] = None,
+        turn: str = "",
     ) -> BashValidationResult:
-        """Validate a compound command (multiple components); a signed pipeline is matched by *run_form*, the bytes the host runs.
+        """Validate a compound command (multiple components); a signed pipeline is matched by *run_form*, the bytes the host runs, and a component's request is sealed under *turn*.
 
         Compound T3 execution is REFUSED here, never grouped. If ANY component
         classifies T3 the whole chain is denied (subagent) or asked (primary):
@@ -1687,6 +1694,7 @@ class BashValidator:
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=running_cwd, caller=callers[i - 1], piped_from=feeders[i - 1],
+                turn=turn,
             )
             # Advance the cwd AFTER classifying this component, so a `cd` only
             # affects subsequent components (POSIX chain semantics).
@@ -1803,8 +1811,9 @@ class BashValidator:
         tool_use_id: str = "",
         cwd: Optional[str] = None,
         run_form: Optional[str] = None,
+        turn: str = "",
     ) -> Optional[BashValidationResult]:
-        """Check cross-stage composition patterns (Phase 4); an escalation is matched and sealed as *run_form*, the bytes the host runs.
+        """Check cross-stage composition patterns (Phase 4); an escalation is matched and sealed as *run_form*, the bytes the host runs, under *turn*.
 
         Detects dangerous pipe compositions:
         - Exfiltration: sensitive_read | network_write  -> permanent block
@@ -1853,6 +1862,7 @@ class BashValidator:
                 has_orchestrator_above=is_subagent,
                 session_id=session_id,
                 agent_type=agent_type,
+                turn=turn,
             )
 
         return None
@@ -2338,6 +2348,7 @@ def _build_sealed_payload(
     *,
     cwd: str | None = None,
     session_id: str = "",
+    turn: str = "",
 ) -> dict:
     """Build a sealed_payload dict from hook-intercepted command context.
 
@@ -2345,7 +2356,7 @@ def _build_sealed_payload(
     each item carries the directory it was attempted in (``cwd``, else this
     process's), no declared non-zero exit, its position and fingerprint, and
     the payload names the requesting session and agent exactly as the host
-    event gave them (``core.RequesterError`` when either is missing).
+    event gave them (``core.RequesterError`` when either is missing), and ``turn``.
 
     Called by decide_t3_outcome before it stores the request through
     gaia.approvals.store.insert_requested.
@@ -2419,6 +2430,7 @@ def _build_sealed_payload(
         what=f"Run {base} {verb} ({category.lower()})",
         session_id=session_id,
         agent_id=agent_type,
+        turn=turn,
         rollback=authored.get("rollback"),
         verification=authored.get("verification"),
         impact=authored.get("impact"),
@@ -2634,11 +2646,12 @@ def decide_t3_outcome(
     guidance: str = "",
     cwd: str | None = None,
     tool_use_id: str | None = None,
+    turn: str = "",
 ) -> BashValidationResult:
     """Single decision point for the outcome of a T3 (state-mutating) command.
 
     ``cwd`` is the directory the command was attempted in; it is sealed into
-    the pending request so the grant matches only there.
+    the pending request so the grant matches only there; ``turn`` likewise.
 
     Every T3 classifier -- mutative verbs, pipe composition (file_to_exec), and
     flag-dependent mutations -- converges here, and every caller gets the same
@@ -2775,6 +2788,7 @@ def decide_t3_outcome(
         command_set=_normalized_set if is_chain_command_set else None,
         cwd=cwd,
         session_id=session_id,
+        turn=turn,
     )
     try:
         from gaia.approvals.store import insert_requested

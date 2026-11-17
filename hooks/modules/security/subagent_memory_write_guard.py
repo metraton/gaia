@@ -21,7 +21,7 @@ The memory-write block fires only when BOTH are true:
 
 Three further refusals apply to every subagent, ``ALLOWED_AGENTS`` included:
 a `gaia contract proposals accept|dismiss`, a command that touches
-``GAIA_DISPATCH_AGENT`` or clears the environment around a Gaia CLI call, and
+``GAIA_DISPATCH_AGENT`` or ``GAIA_DISPATCH_TURN`` or clears the environment around a Gaia CLI call, and
 a Gaia CLI call whose words the shell computes.
 
 The orchestrator (``is_subagent`` False) is never blocked here; ``gaia-operator``
@@ -88,7 +88,7 @@ DECLARATION_REJECTION = (
 )
 
 IDENTITY_REJECTION = (
-    "A subagent does not unset, empty or override GAIA_DISPATCH_AGENT, nor clear its "
+    "A subagent does not unset, empty or override GAIA_DISPATCH_AGENT or GAIA_DISPATCH_TURN, nor clear its "
     "environment (env -i). Run the command without touching your identity. Do NOT "
     "retry -- this is not approvable."
 )
