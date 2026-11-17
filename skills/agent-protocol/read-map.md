@@ -129,6 +129,7 @@ with exactly one verb.
 | `gaia status` | `--json` | What Gaia has wired into this workspace: last agent, pending context updates, contract success rate. |
 | `gaia doctor` | `--workspace <path>`, `--json`, `--channels`, `--target <version>` | Health checks, read-only. `--channels` is the install state of every channel (declared, registered, installed, running) and exits with the install verdict alone: 0 aligned, 1 leftovers, 2 split. `--target <version>` lists the host steps that would bring this machine to that version and runs none. `--fix` MUTATES and is a different verb in every sense that matters. |
 | `gaia migrate plan` | `--json` | The store's pending schema change: direction, chain, what each migration reaches, the consent `apply` would need, and the backups on hand. Opens the database read-only. |
+| `gaia migrate diagnose` | `--json` | Why a migration fails: replays the pending chain on a verified scratch copy inside a transaction that is always rolled back, and prints each step's result, the failing step and its file, the SQLite error and the commands left. Opens the database read-only; exits non-zero when the chain cannot apply. |
 | `gaia lint comments` | `--repo`, `--head`, `--base`, `--json` | Net comment and docstring lines a branch adds over its merge-base against max(2, 2% of added code); lists each offender as file:line. The check a `git push` of the branch is gated on. |
 
 ## Consent state, and the channels that outlive the turn

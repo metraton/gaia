@@ -10,8 +10,9 @@ import sys
 import pytest
 
 from tests.integration.test_opencode_consent_retry_e2e import (
-    GAIA_CLI, DRIVER, db_env, _approval_status, _request_set,
+    GAIA_CLI, DRIVER, _approval_status, _request_set,
 )
+from tests.opencode.test_opencode_orchestrator_t3_signature_path import db_env
 
 ROOT = "ses-own-root"
 CHILD_A, CHILD_B = "ses-own-a", "ses-own-b"
@@ -85,6 +86,10 @@ def held(db_env):
         _shell_env("env-root", ROOT, "call-root-read"),
         _bash("forge-turn", CHILD_A, "call-a-forge", f"GAIA_DISPATCH_TURN={DISPATCH_B} gaia approvals reject-all"),
     ])
+    for label in ("read-a", "env-a", "read-root", "env-root"):
+        assert _step(driven, label)["allowed"], _step(driven, label)
+    for label in ("block-a", "block-b"):
+        assert _step(driven, label).get("requiresApproval"), _step(driven, label)
     ids = {"a": _received(driven, "call-a-push")["approval_id"],
            "b": _received(driven, "call-b-push")["approval_id"],
            "other": _request_set(env, (PUSH_ELSEWHERE,), session_id="ses-own-elsewhere")}
