@@ -10,7 +10,7 @@ Think of it as the system's model layer: the CLI and the hooks are two views ove
 
 Consumed. `bin/gaia` and `bin/cli/*.py` import it after putting the repository root on `sys.path`; the hooks do the same from `hooks/`. The database schema is `store/schema.sql`, applied by `scripts/bootstrap_database.py`, and every later change to it is a migration under `scripts/migrations/` paired with `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py`.
 
-What breaks if you get it wrong here: a module that imports from `hooks/` or a third-party package breaks every CLI command that loads it outside the hook process; a column added to `schema.sql` without its migration leaves every existing database behind the code that reads it. A script that writes the account's real `gaia.db` directly is refused: `store/writer.py::real_store_refusal` admits only Gaia's entry points (`bin/gaia` and its children, a `hooks/*.py` script, the OpenCode bridge) and never a pytest run, so a tool or test points `GAIA_DB` or `GAIA_DATA_DIR` at its own copy.
+What breaks if you get it wrong here: a module that imports from `hooks/` or a third-party package breaks every CLI command that loads it outside the hook process; a column added to `schema.sql` without its migration leaves every existing database behind the code that reads it. A script that writes the account's real `gaia.db` directly is refused: `store/writer.py::real_store_refusal` admits only Gaia's entry points (`bin/gaia` and its children, a `hooks/*.py` script, anything started through `hooks/launch.sh`, the OpenCode bridge) and never a pytest run, so a tool or test points `GAIA_DB` or `GAIA_DATA_DIR` at its own copy.
 
 ## What's here
 
