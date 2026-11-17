@@ -89,9 +89,10 @@ def test_sanitizer_redirect_no_longer_evades_t3_block():
         result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
     )
     assert result.approval_id
-    # The classified command inside the block carries the CLEANED form --
-    # confirming the redirect was stripped and re-classified, not ignored.
-    assert result.modified_input == {"command": BARE_COMMAND}
+    # The redirect is stripped only for classification: the signature asked for
+    # is the command as written, which is what the host runs.
+    assert result.modified_input is None
+    assert f"command: {REDIRECTED_COMMAND}" in result.reason
 
 
 @pytest.mark.parametrize(

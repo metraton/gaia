@@ -164,7 +164,8 @@ def _file_operands(stage: str) -> list[tuple[str, bool]]:
 
     A file the stage surely runs or reads must exist: an interpreter's script,
     a program given as a path, and the value of a ``--<name>-file`` flag. A
-    ``-f``-style value may be a file or a word, so it need not.
+    ``-f``-style value may be a file or a word, so it need not; nor need a
+    ``< file`` stdin, which a missing file only seals as absent.
     """
     tokens = shlex.split(stage)
     while tokens and (tokens[0] == "sudo" or _ASSIGNMENT.match(tokens[0])):
@@ -191,7 +192,19 @@ def _file_operands(stage: str) -> list[tuple[str, bool]]:
             operands.append((value, True))
         elif name in _MAYBE_FILE_FLAGS and (has_value or not value.startswith("-")):
             operands.append((value, False))
+    operands.extend((target, False) for target in _stdin_files(stage))
     return operands
+
+
+def _stdin_files(stage: str) -> list[str]:
+    """The file each unquoted ``< file`` of ``stage`` feeds to stdin; heredocs, here-strings, ``<>``, ``<&`` and ``<(`` name none."""
+    projection = _blank_quoted(stage)
+    files: list[str] = []
+    for position, char in enumerate(projection):
+        before, after = projection[position - 1:position], projection[position + 1:position + 2]
+        if char == "<" and before != "<" and after not in ("<", ">", "&", "("):
+            files.extend(shlex.split(stage[position + 1:])[:1])
+    return files
 
 
 def _content_digest(path: str) -> str:

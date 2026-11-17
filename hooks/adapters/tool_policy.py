@@ -497,13 +497,9 @@ class ToolPolicy:
                 return self._verdict_from_block_response(result)
             return PolicyVerdict(refusal=self._format_blocked_message(result))
 
-        # The grant is consumed here, so the call's terminal event can only
-        # find the approval through this state.
+        # The grant is consumed here, so the call's terminal event can only find it through
+        # this state; the host runs the validator's run form, the bytes its grants matched.
         effective_command = result.modified_input.get("command", command) if result.modified_input else command
-        stripped_tail = command[len(effective_command):].strip() if command.startswith(effective_command) else ""
-        if stripped_tail and not stripped_tail.endswith("&"):
-            # The sanitizer's trailing-redirect strip would send a vetted redirect back to the spool.
-            effective_command = command
         state = create_pre_hook_state(
             tool_name=tool_name,
             command=effective_command,

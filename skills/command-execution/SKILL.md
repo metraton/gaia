@@ -122,7 +122,9 @@ instruction to use one and record the refusal, as rule 6 below does for writes.
    the work, and then send both streams to your scratch entry,
    `<command> &> ~/.gaia/scratch/<contract_id>.log`, the one redirect rule 3
    admits and the route the background guard's denial names; read the file
-   with `Read`. A CI wait is either that,
+   with `Read`. The redirect is part of what a signature covers: a T3 command
+   run this way is requested with it, byte for byte, and a signature for the
+   bare command does not run it. A CI wait is either that,
    `ghx -C <repo> run watch <run-id> --exit-status --compact --interval 30 &> ~/.gaia/scratch/<contract_id>.ci.log`
    with `run_in_background`, or a foreground
    `ghx -C <repo> run view <run-id> --json status,conclusion` repeated; a
