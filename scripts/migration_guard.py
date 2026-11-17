@@ -379,5 +379,10 @@ def format_chain_block(
         "",
         "  The consent names this chain only: a backup is taken first, and it",
         "  approves nothing that ships later.",
+        "",
+        "  To rehearse the chain first, with no signature, on a verified scratch",
+        "  copy that is always rolled back:",
+        "",
+        "      gaia migrate diagnose",
     ]
     return "\n".join(lines)

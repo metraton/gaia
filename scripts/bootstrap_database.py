@@ -6,11 +6,13 @@ this code expects, and is what ``gaia install``, ``gaia update`` and the lazy
 first-run bootstrap reach through ``gaia migrate``. Cross-platform: it uses
 Python's built-in ``sqlite3`` module, never the ``sqlite3`` CLI or ``bash``.
 
-Three actions:
+Five actions:
   (default) apply -- run the pending chain.
   --plan [--json] -- print the chain, what each step reaches, and what apply
                      would require; writes nothing, creates nothing.
   --restore FILE  -- put a backup back, keeping the current DB as a backup.
+  --backup        -- write one verified manual backup, never pruned.
+  --diagnose [--json] -- replay the chain on a scratch copy, rolled back; reads the DB only.
 
 How a run treats the database:
   * Fresh (no file, or no tables): ``schema.sql`` builds it, the ledger is
@@ -45,14 +47,17 @@ The bootstrap never registers a workspace: only `gaia workspace declare` does.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import gzip
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,7 +90,8 @@ FRESH, SEALED, UNSEALED = "fresh", "sealed", "unsealed"
 AFTER_BACKUP_FLAG = "--apply-after-backup"
 
 BACKUPS_KEPT = 3
-_BACKUP_STAMP_RE = re.compile(r"-pre-(migrate|restore)-(\d{8}T\d{12}Z)\.db\.gz$")
+MANUAL = "manual"
+_BACKUP_STAMP_RE = re.compile(r"-(pre-migrate|pre-restore|manual)-(\d{8}T\d{12}Z)\.db\.gz$")
 
 
 def _log(msg: str) -> None:
@@ -96,20 +102,63 @@ def _err(msg: str) -> None:
     print(f"[bootstrap] {msg}", file=sys.stderr)
 
 
+def _reinstall_hint() -> str:
+    try:
+        version = json.loads((_SCRIPT_DIR.parent / "package.json").read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError):
+        version = "<version>"
+    return (
+        f"This Gaia package at {_SCRIPT_DIR.parent} is incomplete. Reinstall it: "
+        f"`npm install -g @jaguilar87/gaia@{version}` (plugin: `claude plugin update gaia@gaia-marketplace`), "
+        "then run `gaia doctor`."
+    )
+
+
+def _migrate_command(action: str, *args: str) -> str:
+    data = os.environ.get("GAIA_DATA_DIR")
+    default = (Path(data) / "gaia.db") if data else _DEFAULT_DB
+    words = ["gaia", "migrate", action, *args]
+    if GAIA_DB.resolve() != default.expanduser().resolve():
+        words += ["--db", f'"{GAIA_DB}"' if " " in str(GAIA_DB) else str(GAIA_DB)]
+    return " ".join(words)
+
+
+def _diagnose_next() -> str:
+    return (
+        f"Next: `{_migrate_command('diagnose')}` replays the chain on a verified scratch copy and names the "
+        f"failing step and the route left (it needs no signature); `{_migrate_command('backup')}` keeps a "
+        "verified copy of the store."
+    )
+
+
 def _gaia_sha256(value: str | None) -> str:
     """Scalar SHA-256 the ai_approval_events_hash trigger calls; registered so
     this connection matches gaia.store.writer._connect."""
     return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
 
 
-def _connect() -> sqlite3.Connection:
-    """Autocommit connection, foreign_keys OFF (table-rebuild migrations need
-    it), with gaia_sha256 registered."""
-    GAIA_DB.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(GAIA_DB))
+def _connect(path: Path | None = None) -> sqlite3.Connection:
+    """Autocommit connection to *path* (default GAIA_DB), foreign_keys OFF
+    (table-rebuild migrations need it), with gaia_sha256 registered."""
+    path = path or GAIA_DB
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path))
     con.isolation_level = None
     con.create_function("gaia_sha256", 1, _gaia_sha256, deterministic=True)
     return con
+
+
+class ChainStepError(sqlite3.Error):
+    """A statement of one chain step failed in SQLite; carries the step so apply and diagnose can name it."""
+
+    def __init__(self, step: dict, cause: sqlite3.Error):
+        super().__init__(f"{_step_label(step)} ({step['file']}) failed: {type(cause).__name__}: {cause}")
+        self.step = step
+        self.cause = cause
+
+
+def _step_label(step: dict) -> str:
+    return "schema.sql" if step["from"] is None else f"v{step['from']}->v{step['to']}"
 
 
 def _scalar(con: sqlite3.Connection, sql: str, params: tuple = ()) -> int:
@@ -124,6 +173,7 @@ def _read_expected_schema_version() -> int:
             f"ERROR: doctor.py no encontrado en {DOCTOR_PY} "
             "(no puedo leer EXPECTED_SCHEMA_VERSION)"
         )
+        _err(_reinstall_hint())
         sys.exit(1)
     m = re.search(
         r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)",
@@ -132,6 +182,7 @@ def _read_expected_schema_version() -> int:
     )
     if not m:
         _err(f"ERROR: no pude parsear EXPECTED_SCHEMA_VERSION desde {DOCTOR_PY}")
+        _err(_reinstall_hint())
         sys.exit(1)
     return int(m.group(1))
 
@@ -247,13 +298,31 @@ def _stamp(
     )
 
 
+def _scratch_dir() -> Path:
+    data = os.environ.get("GAIA_DATA_DIR")
+    return (Path(data).resolve() if data else Path.home() / ".gaia") / "scratch"
+
+
 def _backup_dir() -> Path:
     """The folder gaia/paths/resolver.py::db_backup_dir names for GAIA_DB, resolved with the stdlib alone."""
-    data = os.environ.get("GAIA_DATA_DIR")
-    scratch = (Path(data).resolve() if data else Path.home() / ".gaia") / "scratch"
-    if GAIA_DB.parent.resolve() == scratch.resolve():
+    if GAIA_DB.parent.resolve() == _scratch_dir().resolve():
         return GAIA_DB.parent / f"{GAIA_DB.stem}.backups"
     return GAIA_DB.parent / "backups"
+
+
+def _copy_verified(con: sqlite3.Connection, copy: Path, census: dict[str, int], label: str) -> None:
+    """Copy *con* (only read) to *copy*; sqlite3.DatabaseError unless it passes integrity_check and holds *census*."""
+    dest = sqlite3.connect(str(copy))
+    try:
+        con.backup(dest)
+        verdict = dest.execute("PRAGMA integrity_check").fetchone()[0]
+        copied = migration_guard.take_census(dest)
+    finally:
+        dest.close()
+    if verdict != "ok" or copied != census:
+        raise sqlite3.DatabaseError(
+            f"{label} did not verify (integrity_check={verdict!r}, rows match={copied == census})"
+        )
 
 
 def _backup(
@@ -267,29 +336,19 @@ def _backup(
 
     Raises sqlite3.DatabaseError unless the copy passes integrity_check and
     holds exactly the rows *census* counted, so nothing runs without one.
-    Only the newest BACKUPS_KEPT backups of the same *kind* are kept.
+    Only the newest BACKUPS_KEPT backups of a *kind* other than MANUAL are kept.
     Stdlib only: the engine runs without the gaia package beside it.
     """
     backup_dir = _backup_dir()
+    tag = MANUAL if kind == MANUAL else f"pre-{kind}"
     target = backup_dir / (
-        f"{GAIA_DB.stem}-v{ledger}-pre-{kind}-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db.gz"
+        f"{GAIA_DB.stem}-v{ledger}-{tag}-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db.gz"
     )
     copy = target.with_name(f".{target.name}.copy")
     part = target.with_name(f".{target.name}.part")
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
-        dest = sqlite3.connect(str(copy))
-        try:
-            con.backup(dest)
-            verdict = dest.execute("PRAGMA integrity_check").fetchone()[0]
-            copied = migration_guard.take_census(dest)
-        finally:
-            dest.close()
-        if verdict != "ok" or copied != census:
-            raise sqlite3.DatabaseError(
-                f"backup {target} did not verify (integrity_check={verdict!r}, "
-                f"rows match={copied == census})"
-            )
+        _copy_verified(con, copy, census, f"backup {target}")
         with open(copy, "rb") as src, open(part, "wb") as raw:
             with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6) as packed:
                 shutil.copyfileobj(src, packed, 1 << 20)
@@ -310,14 +369,17 @@ def _stamped_backups(backup_dir: Path, kind: str | None = None) -> list[Path]:
         return []
     stamped = sorted(
         (match.group(2), path)
-        for path in backup_dir.glob("*-pre-*.db.gz")
-        if (match := _BACKUP_STAMP_RE.search(path.name)) and kind in (None, match.group(1))
+        for path in backup_dir.glob("*.db.gz")
+        if (match := _BACKUP_STAMP_RE.search(path.name))
+        and kind in (None, match.group(1).split("-")[-1])
     )
     return [path for _stamp_text, path in stamped]
 
 
 def _prune_backups(backup_dir: Path, kind: str = "migrate") -> None:
-    """Delete all but the newest BACKUPS_KEPT backups of *kind*, by the stamp in their name."""
+    """Delete all but the newest BACKUPS_KEPT backups of *kind*, by the stamp in their name; MANUAL ones stay."""
+    if kind == MANUAL:
+        return
     for path in _stamped_backups(backup_dir, kind)[:-BACKUPS_KEPT]:
         try:
             path.unlink()
@@ -380,16 +442,20 @@ def _restore_from(source: Path, expected: int) -> int:
     """Put the backup *source* back as GAIA_DB once it and a pre-restore backup of GAIA_DB verify.
 
     Pages go through SQLite's backup API under GAIA_DB's lock, so another process never sees a swapped file."""
+    retry = _migrate_command("restore", "--from", str(source))
     if not source.is_file():
         _err(f"ERROR: backup {source} does not exist. Nothing was restored.")
+        _err(f"Next: `{_migrate_command('plan')}` lists the backups on hand.")
         return 1
     staged = _staged_restore_path()
+    kept = None
     try:
         try:
             _unpack(source, staged)
             ledger, census = _verified(staged)
         except (OSError, EOFError, sqlite3.DatabaseError) as exc:
             _err(f"ERROR: backup {source} did not verify ({exc}). Nothing was restored.")
+            _err(f"Next: `{_migrate_command('plan')}` lists the other backups on hand; restore one of those.")
             return 1
         con = _connect()
         try:
@@ -400,6 +466,10 @@ def _restore_from(source: Path, expected: int) -> int:
                     kept = _backup(con, live_ledger, datetime.now(timezone.utc), live_census, "restore")
                 except sqlite3.Error as exc:
                     _err(f"ERROR: {exc}. Nothing was restored; the DB is unchanged.")
+                    _err(
+                        f"Next: `{_migrate_command('diagnose')}` says whether the live store itself verifies; "
+                        f"once it does and {_backup_dir()} has room, re-run `{retry}`."
+                    )
                     return 1
                 _log(f"the database being replaced (v{live_ledger}) is kept, verified, at {kept}")
             src = sqlite3.connect(f"file:{staged}?mode=ro", uri=True)
@@ -407,11 +477,16 @@ def _restore_from(source: Path, expected: int) -> int:
                 src.backup(con)
             except sqlite3.Error as exc:
                 _err(f"ERROR: could not copy {source} into {GAIA_DB} ({exc}). Nothing was restored.")
+                _err(f"Next: close the other Gaia sessions holding {GAIA_DB}, then re-run `{retry}`.")
                 return 1
             finally:
                 src.close()
             if migration_guard.take_census(con) != census:
                 _err(f"ERROR: {GAIA_DB} does not hold the rows {source} holds after the restore.")
+                if kept:
+                    _err(f"Next: put the database it replaced back: `{_migrate_command('restore', '--from', str(kept))}`.")
+                else:
+                    _err(f"Next: re-run `{retry}` once nothing else writes {GAIA_DB}.")
                 return 1
         finally:
             con.close()
@@ -435,20 +510,29 @@ def _apply_chain(
     start: int,
     chain: list[tuple[int, Path]],
     now_utc: str,
+    commit: bool = True,
 ) -> None:
     """Schema (fresh/unsealed only), every migration and every seal, in one
-    transaction. Any exception rolls the whole chain back."""
+    transaction; any exception rolls it back, a step's SQLite error as
+    ChainStepError. With *commit* False it rolls back even on success."""
     if state != SEALED:
         con.execute("PRAGMA journal_mode = WAL")
     con.execute("BEGIN IMMEDIATE")
     try:
         if state != SEALED:
-            _run_script(con, SCHEMA_FILE.read_text(encoding="utf-8"))
+            step = {"from": None, "to": start, "file": str(SCHEMA_FILE)}
+            try:
+                _run_script(con, SCHEMA_FILE.read_text(encoding="utf-8"))
+            except sqlite3.Error as exc:
+                raise ChainStepError(step, exc) from exc
             _stamp(con, start, f"baseline floor: schema.sql at v{start}", now_utc)
         for n, mig_file in chain:
             _log(f"migration v{n - 1}->v{n}: applying {mig_file}")
             sql = mig_file.read_text(encoding="utf-8")
-            _run_script(con, sql)
+            try:
+                _run_script(con, sql)
+            except sqlite3.Error as exc:
+                raise ChainStepError({"from": n - 1, "to": n, "file": str(mig_file)}, exc) from exc
             _stamp(
                 con,
                 n,
@@ -456,7 +540,7 @@ def _apply_chain(
                 now_utc,
                 breaking=migration_guard.is_breaking(sql),
             )
-        con.execute("COMMIT")
+        con.execute("COMMIT" if commit else "ROLLBACK")
     except BaseException:
         if con.in_transaction:
             con.execute("ROLLBACK")
@@ -603,9 +687,158 @@ def _plan(expected: int, as_json: bool = False) -> int:
     return report["exit"]
 
 
+def _backup_now() -> int:
+    con = _open_for_plan()
+    if con is None:
+        _err(f"ERROR: there is no database at {GAIA_DB} to back up. Nothing was written.")
+        _err(f"Next: `{_migrate_command('plan')}` says what apply would build there.")
+        return 1
+    try:
+        census = migration_guard.take_census(con)
+        ledger = _ledger_version(con)
+        try:
+            kept = _backup(con, ledger, datetime.now(timezone.utc), census, MANUAL)
+        except sqlite3.Error as exc:
+            _err(f"ERROR: {exc}. No backup was kept; the DB is unchanged.")
+            _err(
+                f"Next: `{_migrate_command('diagnose')}` says whether the store itself verifies; "
+                f"if it does, make room in {_backup_dir()} and re-run `{_migrate_command('backup')}`."
+            )
+            return 1
+    finally:
+        con.close()
+    _log(f"backup written and verified (schema v{ledger}, {sum(census.values())} rows): {kept}")
+    _log(f"it is never pruned; put it back with `{_migrate_command('restore', '--from', str(kept))}`")
+    return 0
+
+
+def _replay_on_copy(state: str, ledger: int, chain: list[tuple[int, Path]], report: dict) -> None:
+    """Fill *report* from replaying *chain*, rolled back, on a verified copy of GAIA_DB in a scratch folder it removes."""
+    source = _open_for_plan()
+    if source is None:
+        raise sqlite3.DatabaseError(f"{GAIA_DB} disappeared before it could be copied")
+    scratch = _scratch_dir()
+    scratch.mkdir(parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix="migrate-diagnose-", dir=scratch))
+    copy = workdir / GAIA_DB.name
+    start = ledger if state == SEALED else SCHEMA_FLOOR
+    steps = [{"from": n - 1, "to": n, "file": str(path), "result": "not-run"} for n, path in chain]
+    report["steps"] = steps
+    try:
+        try:
+            _copy_verified(source, copy, migration_guard.take_census(source), f"the copy of {GAIA_DB}")
+        finally:
+            source.close()
+        report["copy_verified"] = True
+        con = _connect(copy)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                _apply_chain(con, state, start, chain, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             commit=False)
+        except ChainStepError as exc:
+            report["failed_step"] = {key: exc.step[key] for key in ("from", "to", "file")}
+            report["error"] = f"{type(exc.cause).__name__}: {exc.cause}"
+        finally:
+            con.close()
+        failed = report["failed_step"]
+        for step in steps:
+            if failed and (failed["from"] is None or step["to"] == failed["to"]):
+                step["result"] = "not-run" if failed["from"] is None else "failed"
+                break
+            step["result"] = "ok"
+        report["replay"] = "fails" if failed else "passes"
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def diagnose_report(expected: int) -> dict:
+    """The failing step and the route left, from a rolled-back replay on a scratch copy; the live DB is only read."""
+    report = plan_report(expected)
+    report.update(live="opened read-only; unchanged", copy_verified=False, replay="not-run", steps=[],
+                  failed_step=None, error=None, route=[], note="")
+    direction = report["direction"]
+    backup = _migrate_command("backup")
+    if direction == FRESH:
+        report.update(note="No database yet: apply builds it from schema.sql.", route=[_migrate_command("apply")])
+        return report
+    if direction in ("current", "ahead-compatible"):
+        report.update(note=f"Nothing is pending: the store at v{report['ledger']} is usable by this code.",
+                      route=["gaia doctor"])
+        return report
+    if direction == "ahead-refused":
+        minimum = report["min_code_version"] if report["min_code_version"] is not None else report["ledger"]
+        report.update(note=f"The store is at v{report['ledger']}, newer than this code (v{expected}), and only "
+                           f"a Gaia whose schema version is v{minimum} or later may write it. Install that "
+                           "release; the store is left as it is.", route=["gaia doctor"])
+        return report
+    if direction == "missing-migrations":
+        report.update(note=_reinstall_hint(), route=["gaia doctor"])
+        return report
+    state, ledger = report["state"], report["ledger"]
+    chain = _chain(ledger if state == SEALED else SCHEMA_FLOOR, expected)
+    try:
+        _replay_on_copy(state, ledger, chain, report)
+    except (OSError, sqlite3.Error) as exc:
+        report.update(
+            exit=1, error=f"{type(exc).__name__}: {exc}", route=[_migrate_command("plan")],
+            note=f"No automatic route: the store could not be copied and verified ({exc}). Keep {GAIA_DB} "
+                 f"and the backups `{_migrate_command('plan')}` lists; do not move or delete them.",
+        )
+        return report
+    if report["failed_step"] is None:
+        apply = _migrate_command("apply", "--consent-chain", report["chain"]) if report["consent_command"] \
+            else _migrate_command("apply")
+        report["route"] = [backup, apply]
+        report["note"] = (
+            f"The chain {report['chain']} applies cleanly on a copy of this store. Keep a verified copy, then "
+            "apply it. If apply failed anyway, the cause was outside the chain (a full disk, another process "
+            "holding the store): re-run it once that is cleared."
+        )
+        return report
+    report["exit"] = 1
+    report["route"] = [backup, _migrate_command("diagnose", "--json")]
+    report["note"] = (
+        f"No automatic route: migration {_step_label(report['failed_step'])} fails on this store "
+        f"({report['error']}). "
+        f"The store is unchanged at v{ledger}. Keep a verified copy with `{backup}` and keep the backups "
+        f"`{_migrate_command('plan')}` lists; no Gaia verb recovers this store yet. Report the failure with "
+        f"the output of `{_migrate_command('diagnose', '--json')}`."
+    )
+    return report
+
+
+def _print_diagnosis(report: dict) -> None:
+    print(f"database: {report['database']} (opened read-only; nothing in it changes)")
+    if report["steps"]:
+        verified = "a verified scratch copy" if report["copy_verified"] else "a scratch copy"
+        print(f"chain {report['chain']} replayed on {verified}, then rolled back:")
+        for step in report["steps"]:
+            print(f"  v{step['from']}->v{step['to']}  {step['file']}  {step['result']}")
+    if report["failed_step"]:
+        failed = report["failed_step"]
+        print(f"failing step: {_step_label(failed)} ({failed['file']})")
+    if report["error"]:
+        print(f"sqlite error: {report['error']}")
+    print(report["note"])
+    if report["route"]:
+        print("next:")
+        for command in report["route"]:
+            print(f"  {command}")
+
+
+def _diagnose(expected: int, as_json: bool = False) -> int:
+    report = diagnose_report(expected)
+    if as_json:
+        print(json.dumps(report, indent=2))
+    else:
+        _print_diagnosis(report)
+    return report["exit"]
+
+
 def _apply(expected: int, consent_chain: str | None, after_backup: bool = False) -> int:
     if not SCHEMA_FILE.is_file():
         _err(f"ERROR: schema.sql no encontrado en {SCHEMA_FILE}")
+        _err(_reinstall_hint())
         return 1
 
     _log(f"Initializing Gaia DB at {GAIA_DB}")
@@ -630,8 +863,8 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                 f"In-place upgrade from pre-v{SCHEMA_FLOOR} databases is no longer supported."
             )
             _err(
-                f"Recreate the DB: back up any data you need, delete {GAIA_DB}, "
-                "then re-run `gaia install`."
+                f"Recreate the DB: keep a verified copy with `{_migrate_command('backup')}`, "
+                f"move {GAIA_DB} aside, then re-run `gaia install`."
             )
             return 1
 
@@ -670,6 +903,7 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                     f"When bumping EXPECTED_SCHEMA_VERSION to v{n}, add "
                     f"scripts/migrations/v{n - 1}_to_v{n}.sql in the same commit."
                 )
+                _err(_reinstall_hint())
                 return 1
 
         if state == SEALED and not chain:
@@ -691,6 +925,10 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                     backup = _backup(con, ledger, now, census)
                 except sqlite3.Error as exc:
                     _err(f"ERROR: {exc}. Nothing was migrated; the DB is unchanged.")
+                    _err(
+                        f"Next: `{_migrate_command('diagnose')}` says whether the store itself verifies "
+                        f"and replays the chain on a scratch copy; once {_backup_dir()} has room, re-run this command."
+                    )
                     return 1
                 _log(f"backup written and verified: {backup}")
             if reaching:
@@ -709,12 +947,18 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                     except OSError as restore_exc:
                         _err(
                             f"ERROR: could not restore {backup} over {GAIA_DB} ({restore_exc}). "
-                            f"The restored copy is kept at {_staged_restore_path()}; "
-                            "move it over the database once nothing holds it."
+                            f"The restored copy is kept at {_staged_restore_path()}."
+                        )
+                        _err(
+                            "Next: once nothing holds the database, put the backup back: "
+                            f"`{_migrate_command('restore', '--from', str(backup))}`."
                         )
                         return 1
                     _err(f"the journal mode changed before the chain; {GAIA_DB} restored from {backup}.")
+                if isinstance(exc, ChainStepError):
+                    _err(f"failing step: {_step_label(exc.step)} ({exc.step['file']})")
                 _err(f"schema_version ledger remains at v{ledger}; no object changed.")
+                _err(_diagnose_next())
                 if not isinstance(exc, sqlite3.Error):
                     raise
                 return 1
@@ -818,6 +1062,7 @@ def _seed_and_check(con: sqlite3.Connection) -> int:
         _log(f"Done. DB at {GAIA_DB} ready for `gaia` CLI operations.")
         return 0
     _err("Done WITH FAILURES. Revisa los checks marcados FAIL arriba.")
+    _err("Next: `gaia doctor` grades the store and names the repair for each failed check.")
     return 1
 
 
@@ -830,7 +1075,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--plan", action="store_true", help="print the pending chain; write nothing"
     )
     parser.add_argument(
-        "--json", action="store_true", help="with --plan, print the plan as one JSON object"
+        "--json", action="store_true", help="with --plan or --diagnose, print the report as one JSON object"
+    )
+    parser.add_argument(
+        "--backup", action="store_true", help="write one verified manual backup, never pruned"
+    )
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="replay the pending chain on a verified scratch copy, rolled back; the DB is only read",
     )
     parser.add_argument(
         "--restore",
@@ -860,6 +1113,10 @@ def main(argv: list[str] | None = None) -> int:
     expected = _read_expected_schema_version()
     if args.plan:
         return _plan(expected, args.json)
+    if args.diagnose:
+        return _diagnose(expected, args.json)
+    if args.backup:
+        return _backup_now()
     if args.restore:
         return _restore_from(args.restore.expanduser(), expected)
     return _apply(expected, args.consent_chain, args.after_backup)
