@@ -494,11 +494,18 @@ already-known context closes `COMPLETE` with short evidence lists, and that is
 honest: only `COMPLETE_SHAPE` and `VERIFICATION_RESULT` gate it. `finalize`
 still runs.
 
-**No contract at dispatch.** A dispatch outside this harness, or one whose born
-row could not be claimed, arrives with no `# Your Contract` block. Then and only
-then: run bare `gaia contract init` (no `--agent-id`), reuse the identity it
-mints, and work the protocol identically. An unclaimed born row, if one exists,
-is closed by the stop-hook persister, never by the agent.
+**An unresolved contract at dispatch.** Turns of one type dispatched in one
+message share every key their start can see, so each arrives with a
+`# Your Contract (unresolved)` block naming the candidate contracts. The first
+tool call claims the turn's own row by the host's call id and brings
+`# Your Contract` with it; adopt that. If it does not come, adopt with
+`--draft-id` the candidate whose goal is yours, and never mint one with `init`.
+
+**No contract at dispatch.** A dispatch outside this harness arrives with no
+contract block at all. Then and only then: run bare `gaia contract init` (no
+`--agent-id`), reuse the identity it mints, and work the protocol identically.
+An unclaimed born row, if one exists, is closed by the stop-hook persister,
+never by the agent.
 
 **A failed COMMAND_SET is frozen.** Stop on the first non-zero or mismatched
 result. Preserve the completed, failed and untouched indexes with the exact

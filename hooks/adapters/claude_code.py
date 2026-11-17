@@ -651,9 +651,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         if str(tool_name).lower() not in _POLICY_TOOLS:
             from .tool_policy import ungated_command_verdict
 
-            return self._format_pre_tool_verdict(
-                ungated_command_verdict(tool_name, event.payload.get("tool_input")),
-            )
+            return self._format_pre_tool_verdict(self._with_late_claim(
+                event, ungated_command_verdict(tool_name, event.payload.get("tool_input")),
+            ))
         verdict = self.pre_tool_verdict(
             event, dispatch_identity_in_env=_dispatch_identity_in_env,
         )
@@ -668,6 +668,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                     return self._adapt_ask_user_question(tool_input, hook_data=event.payload)
             except Exception as e:
                 verdict = failure_verdict(e)
+        verdict = self._with_late_claim(event, verdict)
         return self._format_pre_tool_verdict(self._with_ceiling_notice(event, verdict))
 
     @staticmethod
@@ -1414,20 +1415,30 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             return None
 
     @staticmethod
-    def _maybe_claim_dispatch_kernel(raw: dict) -> Optional[str]:
-        """Translate a start event into the host-neutral dispatch-lifecycle
-        claim and return its rendered kernel (or None).
+    def _subagent_meta(raw: dict) -> dict:
+        """The host's undocumented meta file of the Agent call that started this subagent, or {}.
 
-        All orchestration (claim -> stamp -> render) lives in the host-neutral
-        facade ``modules.agents.dispatch_lifecycle.claim_dispatch_kernel``;
-        this method only maps this host's own start-event fields onto that
-        facade's neutral arguments (``prompt_id`` -> ``dispatch_prompt_id``,
-        ``task_description`` -> ``dispatch_description``, ``agent_type`` ->
-        ``agent_name``, ``agent_id`` -> ``host_agent_id``, ``tool_use_id`` ->
-        ``dispatch_tool_use_id``). See the facade's own docstring for why the
-        stamp seam sits at the claim. ``tool_use_id`` is mapped for hosts
-        whose start event carries one; it resolves to ``None`` when the payload
-        has no such key.
+        Written just after SubagentStart returns, so a start rarely finds it and a first tool call does.
+        """
+        agent_id = str(raw.get("agent_id") or "")
+        session_id = str(raw.get("session_id") or "")
+        transcript = str(raw.get("transcript_path") or "")
+        if not (agent_id and session_id and transcript):
+            return {}
+        path = (
+            Path(transcript).parent / session_id / "subagents" / f"agent-{agent_id}.meta.json"
+        )
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return meta if isinstance(meta, dict) else {}
+
+    @classmethod
+    def _maybe_claim_dispatch_kernel(cls, raw: dict) -> Optional[str]:
+        """Map a start event onto ``dispatch_lifecycle.claim_dispatch_kernel`` and return its text, or None.
+
+        SubagentStart carries no call id or description; both come from ``_subagent_meta`` when present.
         """
         try:
             from modules.agents.dispatch_lifecycle import claim_dispatch_kernel
@@ -1435,13 +1446,46 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             logger.debug("dispatch claim/kernel failed (non-fatal): %s", exc)
             return None
 
+        meta = cls._subagent_meta(raw)
         agent_type = raw.get("agent_type", "")
         return claim_dispatch_kernel(
             agent_name=agent_type or None,
             dispatch_prompt_id=raw.get("prompt_id") or None,
-            dispatch_description=raw.get("task_description") or None,
+            dispatch_description=meta.get("description") or None,
             host_agent_id=raw.get("agent_id", "") or None,
-            dispatch_tool_use_id=raw.get("tool_use_id") or None,
+            dispatch_tool_use_id=meta.get("toolUseId") or None,
+        )
+
+    @classmethod
+    def _with_late_claim(cls, event: HookEvent, verdict: PolicyVerdict) -> PolicyVerdict:
+        """Claim a subagent's born row by call id at the first call the policy lets run, adding its kernel."""
+        if verdict.refusal is not None or verdict.consent is not None:
+            return verdict
+        if verdict.decision not in (None, "allow"):
+            return verdict
+        agent_id = event.payload.get("agent_id")
+        if not agent_id:
+            return verdict
+        tool_use_id = cls._subagent_meta(event.payload).get("toolUseId")
+        if not tool_use_id:
+            return verdict
+        try:
+            from modules.agents.dispatch_lifecycle import claim_dispatch_kernel
+        except Exception as exc:
+            logger.debug("late dispatch claim failed (non-fatal): %s", exc)
+            return verdict
+        kernel = claim_dispatch_kernel(
+            agent_name=event.payload.get("agent_type") or None,
+            dispatch_prompt_id=None,
+            dispatch_description=None,
+            host_agent_id=str(agent_id),
+            dispatch_tool_use_id=str(tool_use_id),
+        )
+        if not kernel:
+            return verdict
+        logger.info("Late dispatch claim at first tool call: harness_agent_id=%s", agent_id)
+        return replace(
+            verdict, context="\n\n".join(text for text in (kernel, verdict.context) if text),
         )
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
@@ -1468,15 +1512,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         is what joins the CLI-minted contract identity with the harness's own
         ``agent_id`` (see ``_maybe_claim_dispatch_kernel``).
 
-        CLAIM-FAILURE FALLBACK (explicit, by design): when no kernel can be
-        injected -- the claim found no row, refused an ambiguous correlation,
-        or lost a race -- the turn starts WITHOUT a ``# Your Contract`` block.
-        That is the agent-protocol skill's documented fallback shape: the
-        agent runs a bare ``gaia contract init`` and works under the identity
-        it mints. The born row (if one exists) stays unadopted and is closed
-        by the SubagentStop persister -- superseded when the turn finalized
-        its own row, reaped otherwise -- so no path leaves the turn without a
-        contract or the row without a closure.
+        Same-type siblings of one message get the unresolved block and their kernel at the first tool call
+        (``_with_late_claim``); a resume, whose ``agent_id`` a row already carries, claims nothing.
         """
         session_id = raw.get("session_id", "")
 
@@ -1495,8 +1532,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 cached.get("agent_type", "unknown"),
                 session_id,
             )
-            # A failed or refused claim leaves only the cached digest -- the
-            # turn then follows the bare-init fallback (see docstring).
             context_text = cached["context"]
             kernel_context = self._maybe_claim_dispatch_kernel(raw)
             if kernel_context:
@@ -1527,9 +1562,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             )
             resume_parts.append(draft_context)
 
-        # The born row outlives the context cache, so a start that lost the
-        # cache race can still claim it. A resume never matches (its row is
-        # already claimed or was never born), so the claim is a no-op there.
         kernel_context = self._maybe_claim_dispatch_kernel(raw)
         if kernel_context:
             resume_parts.append(kernel_context)
