@@ -163,9 +163,9 @@ def _file_operands(stage: str) -> list[tuple[str, bool]]:
     """Name each file ``stage`` runs or reads, with whether it must already exist.
 
     A file the stage surely runs or reads must exist: an interpreter's script,
-    a program given as a path, and the value of a ``--<name>-file`` flag. A
-    ``-f``-style value may be a file or a word, so it need not; nor need a
-    ``< file`` stdin, which a missing file only seals as absent.
+    a program given as a path, the value of a ``--<name>-file`` flag and a
+    ``< file`` stdin, which the shell fails to open before the program starts.
+    A ``-f``-style value may be a file or a word, so it need not.
     """
     tokens = shlex.split(stage)
     while tokens and (tokens[0] == "sudo" or _ASSIGNMENT.match(tokens[0])):
@@ -192,7 +192,7 @@ def _file_operands(stage: str) -> list[tuple[str, bool]]:
             operands.append((value, True))
         elif name in _MAYBE_FILE_FLAGS and (has_value or not value.startswith("-")):
             operands.append((value, False))
-    operands.extend((target, False) for target in _stdin_files(stage))
+    operands.extend((target, True) for target in _stdin_files(stage))
     return operands
 
 
@@ -319,13 +319,34 @@ def _hooks_importable() -> None:
         sys.path.insert(0, hooks_dir)
 
 
+def requester_scratch_owner() -> str:
+    """The agent id the gate's local-work relief reads for this shell's requester: its sole live Claude Code dispatch row's, else ""."""
+    from gaia.agent_identity import PLUGIN_NAMESPACE, dispatch_agent_from_env
+
+    session_id, agent = os.environ.get("CLAUDE_CODE_SESSION_ID"), dispatch_agent_from_env()
+    if os.environ.get("GAIA_HOST_SESSION_ID") or not (session_id and agent):
+        return ""
+    from gaia.store.writer import find_dispatched_row_by_agent_name
+
+    try:
+        for name in (agent, f"{PLUGIN_NAMESPACE}:{agent}"):
+            row = find_dispatched_row_by_agent_name(session_id, name)
+            if row is not None:
+                return str(row.get("agent_id") or "")
+    except Exception:
+        return ""
+    return ""
+
+
 def validate_request_set(
     commands: list[str], *, cwd: str | None = None, cwds: list[str] | None = None,
+    scratch_owner: str | None = None,
 ) -> list[dict]:
     """Validate and normalize a plan-first set without minting or consuming grants.
 
     ``cwds`` gives each command the directory it will run in, so a relative
     script is read where it will execute; ``cwd`` applies one to all.
+    ``scratch_owner`` defaults to :func:`requester_scratch_owner`.
     """
     if not isinstance(commands, list) or len(commands) < 1:
         raise CommandSetValidationError("COMMAND_SET requires at least one command")
@@ -340,14 +361,15 @@ def validate_request_set(
     from modules.security.mutative_verbs import detect_mutative_command
     from modules.security.protected_path_guard import check as check_protected
     from modules.security.sensitive_read_guard import check as check_sensitive_read
-    from modules.security.signing_guards import signing_guard
+    from modules.tools.bash_validator import gate_forms, run_time_floor
 
+    if scratch_owner is None:
+        scratch_owner = requester_scratch_owner()
     normalized: list[dict] = []
     for index, raw in enumerate(commands):
         if not isinstance(raw, str) or not raw or raw != raw.strip():
             raise CommandSetValidationError(f"command[{index}] must be a non-empty exact string")
         bodies, program = split_assignment_prefix(raw)
-        assignments = raw[: len(raw) - len(program)]
         try:
             if _SUBSTITUTION.search(program) or _CHAIN.search(_blank_quoted(program)):
                 raise CommandSetValidationError("must be one atomic program or pipeline, not a chain")
@@ -371,10 +393,20 @@ def validate_request_set(
             raise CommandSetValidationError(f"command[{index}] targets a protected path")
         if any(is_blocked_command(part).is_blocked for part in [raw, *stages]):
             raise CommandSetValidationError(f"command[{index}] is permanently blocked")
-        if len(stages) > 1:
-            _require_executable_pipeline(index, raw)
-
+        run_form, classified = gate_forms(raw)
+        if run_form != raw:
+            raise CommandSetValidationError(
+                f"command[{index}] runs as {run_form!r}: the host drops nohup and a trailing &, "
+                "so request that form -- the signed bytes are the bytes that run"
+            )
         stage_cwd = cwds[index] if cwds else cwd
+        floor = run_time_floor(raw, stage_cwd)
+        if floor is not None:
+            raise CommandSetValidationError(
+                f"command[{index}] is refused at run time by {floor.rule}: {floor.reason.splitlines()[0]}"
+            )
+        escalates = len(stages) > 1 and _require_executable_pipeline(index, raw)
+
         for body in bodies:
             body_flag = classify_by_flags(body)
             if (
@@ -386,17 +418,10 @@ def validate_request_set(
                 raise CommandSetValidationError(
                     f"command[{index}] assignment substitution $({body}) must be a read-only command"
                 )
-        is_t3 = signing_guard(raw, stage_cwd, is_subagent=True) is not None
-        for position, stage in enumerate(stages):
-            stage = assignments + stage if position == 0 else stage
-            flag = classify_by_flags(stage)
-            if flag is not None and flag.outcome == OUTCOME_BLOCKED:
-                raise CommandSetValidationError(f"command[{index}] is permanently blocked")
-            is_t3 = is_t3 or detect_mutative_command(stage, cwd=stage_cwd).is_mutative or (
-                flag is not None
-                and flag.outcome == OUTCOME_MUTATIVE
-                and not flag.command_family.startswith("git_")
-            )
+        try:
+            is_t3 = escalates or _signed_by_gate(raw, classified, stage_cwd, scratch_owner)
+        except CommandSetValidationError as exc:
+            raise CommandSetValidationError(f"command[{index}] {exc}") from exc
         item = {"command": raw, "fingerprint": command_fingerprint(raw), "rationale": "",
                 "signed": bool(is_t3)}
         if is_t3:
@@ -412,8 +437,47 @@ def validate_request_set(
     return normalized
 
 
-def _require_executable_pipeline(index: int, command: str) -> None:
-    """Refuse a pipeline the Bash policy refuses before any grant is consulted.
+def _signed_by_gate(raw: str, classified: str, cwd: str | None, scratch_owner: str) -> bool:
+    """Whether the gate signs ``raw``; raises CommandSetValidationError for a stage the flag classifier blocks."""
+    from modules.security.composition_rules import (
+        build_composition_stages,
+        fed_unknown_program,
+        redirected_into_unknown,
+    )
+    from modules.security.flag_classifiers import OUTCOME_BLOCKED, OUTCOME_MUTATIVE, classify_by_flags
+    from modules.security.mutative_verbs import LocalWorkCaller, local_work_callers
+    from modules.security.signing_guards import signing_guard
+    from modules.tools.bash_validator import command_verdict
+    from modules.tools.stage_decomposer import StageDecomposer
+
+    _, program = split_assignment_prefix(classified)
+    assignments = classified[: len(classified) - len(program)]
+    stages = [assignments + stage if position == 0 else stage
+              for position, stage in enumerate(pipe_stages(program))]
+    decomposer = StageDecomposer()
+    if len(stages) == 1:
+        callers = [LocalWorkCaller(scratch_owner, cwd)]
+    else:
+        callers = local_work_callers(classified, stages, cwd, scratch_owner)
+    signed = (
+        signing_guard(raw, cwd, is_subagent=True) is not None
+        or bool(redirected_into_unknown(raw))
+        or bool(fed_unknown_program(build_composition_stages(decomposer.decompose(classified).stages)))
+    )
+    for stage, caller, feeder in zip(stages, callers, decomposer.pipe_feeders(classified, stages)):
+        flag = classify_by_flags(stage, caller, piped_from=feeder)
+        if flag is not None and flag.outcome == OUTCOME_BLOCKED:
+            raise CommandSetValidationError("is permanently blocked")
+        signed = signed or command_verdict(stage, cwd=cwd, caller=caller).is_mutative or (
+            flag is not None
+            and flag.outcome == OUTCOME_MUTATIVE
+            and not flag.command_family.startswith("git_")
+        )
+    return signed
+
+
+def _require_executable_pipeline(index: int, command: str) -> bool:
+    """Refuse a pipeline the Bash policy refuses before any grant is consulted; return whether its composition escalates to a signature.
 
     The Bash policy denies a piped cloud CLI output, a blocked stage
     composition and a secret read ahead of its COMMAND_SET match, so signing
@@ -443,3 +507,4 @@ def _require_executable_pipeline(index: int, command: str) -> None:
         raise CommandSetValidationError(
             f"command[{index}] reads a secret, which the Bash policy refuses"
         )
+    return composition.decision == CompositionDecision.ESCALATE
