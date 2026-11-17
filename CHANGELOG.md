@@ -53,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gaia doctor` checks the temp space and lists the sweep's refusals.** `Temp space` reports the size, free space and medium (in memory or on disk) of the folder the host spools to and of Gaia's own tmp. It warns under 1 GiB free, over 80% full, or in memory under 4 GiB, and names the remedy for Linux, WSL, macOS, Windows or a container; Gaia never changes the machine's temp. Session start shows the same warning as one line, only when it fires. `Sweep leftovers` lists what the last sweep refused, each with size and reason.
 - **Host-persisted tool output is read-only evidence.** Inspecting `~/.claude/projects/*/tool-results` with a viewing filter (`grep`, `rg`, `head`, `tail`, `cat`, `wc`, a print-only `sed -n`) stays free; copying it out or feeding it to a program (`jq`, an interpreter, `awk`, `sed`, `xargs`) is refused. A subagent's `mkdir` or `touch` in the home folder outside scratch and every git worktree asks for a signature (`stranded-creation`).
 
+## [5.8.0-rc.3] - 2026-11-17
+
 ## [5.8.0-rc.2] - 2026-11-10
 
 ## [5.8.0-rc.1] - 2026-11-10
