@@ -239,12 +239,7 @@ def _stamp(
             (version, now_utc, description),
         )
         return
-    if breaking:
-        minimum = version
-    else:
-        minimum = _ledger_minimum(con)
-        if minimum is None:
-            minimum = migration_guard.last_breaking_version(MIG_DIR, version)
+    minimum = migration_guard.next_minimum(_ledger_minimum(con), version, breaking, MIG_DIR)
     con.execute(
         "INSERT OR IGNORE INTO schema_version "
         "(version, applied_at, description, min_code_version) VALUES (?, ?, ?, ?)",
@@ -502,6 +497,7 @@ def plan_report(expected: int) -> dict:
         "ledger": ledger,
         "expected": expected,
         "min_code_version": minimum,
+        "min_code_version_after": minimum,
         "direction": "current",
         "chain": None,
         "migrations": [],
@@ -529,6 +525,12 @@ def plan_report(expected: int) -> dict:
         report.update(direction="missing-migrations", exit=1)
         return report
     report["direction"] = "behind"
+    after = minimum
+    for n, path in chain:
+        after = migration_guard.next_minimum(
+            after, n, migration_guard.is_breaking(path.read_text(encoding="utf-8")), MIG_DIR
+        )
+    report["min_code_version_after"] = after
     verdicts = _assess_chain(chain, census)
     report["migrations"] = [
         {
@@ -577,6 +579,9 @@ def _print_plan(report: dict) -> None:
                     f"  {step['migration']:<15} reaches data: {reach['verb']} on "
                     f"`{reach['table']}` ({reach['rows']} rows)"
                 )
+        after = report["min_code_version_after"]
+        if after is not None and after != minimum:
+            print(f"after the chain only builds of schema v{after} or later may write (today v{minimum if minimum is not None else '?'})")
         print(f"backup: written to {report['backup_dir']} before anything changes")
         if report["consent_command"]:
             print(f"consent: required once for the whole chain -> {report['consent_command']}")
