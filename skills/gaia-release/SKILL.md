@@ -82,13 +82,17 @@ The database is always upgradable:
 - Every migration runs in one transaction, after a verified backup (`scripts/bootstrap_database.py::_apply_chain`, `scripts/bootstrap_database.py::_backup`).
 - An install never runs code older than the store.
 
-`gaia migrate plan` shows the chain the data goes through, whether `apply` needs `--consent-chain vA..vB`, and the backups on hand. Run it with the new copy's `gaia` once installed.
+Who applies which chain is one rule, the one `gaia migrate --help` prints (`bin/cli/migrate.py::MIGRATION_RULE`):
 
-When a change is risky, the route is: back up, install, and bring the data over. A change is risky when the plan shows a chain that rewrites existing rows, when the target's `CHANGELOG.md` names a breaking migration, or when the user is going back to an older version.
+Every upgrade of gaia.db first writes a verified backup, then runs the whole chain in one transaction. A chain that only adds structure applies on its own. A chain that reaches rows that already exist applies on its own under `gaia install` and `gaia update` once the backup verifies; the plugin's session start and a plain `gaia migrate apply` stop on it and name `gaia migrate apply --consent-chain vA..vB`. A chain with a breaking migration is refused by `gaia install` and `gaia update` while another Gaia copy on the machine would be left unable to write the database; the refusal names each copy and the `gaia doctor --target <version>` steps that upgrade it, and `--accept-stranding` migrates anyway.
 
-1. Note the backup the plan lists. A `pre-migrate` backup is written on its own, verified, and the newest 3 are kept.
-2. Install.
-3. Bring the data over: `gaia migrate apply` (with the consent the plan names) moves it forward, and `gaia migrate restore --from <backup>` puts an older store back for the version it came from.
+`gaia migrate plan` shows the chain the data goes through, whether a plain `apply` needs `--consent-chain vA..vB`, and the backups on hand; `--json` adds `min_code_version_after`, the oldest schema a copy may write once the chain has run. Run it with the new copy's `gaia` once installed. `gaia doctor --target` puts every copy upgrade before the step that migrates the store and marks that step, so following its order strands nothing.
+
+When a change is risky, the route is: back up, install, and let the install bring the data over. A change is risky when the plan shows a chain that rewrites existing rows, when the target's `CHANGELOG.md` names a breaking migration, or when the user is going back to an older version.
+
+1. Keep a verified copy: `gaia migrate backup` writes one that is never pruned, prints its path and asks for a signature. Each install also writes its own `pre-migrate` backup, and the newest 3 of those are kept.
+2. Install. `gaia install` or `gaia update` applies the chain after its backup verifies.
+3. Going back, `gaia migrate restore --from <backup>`, run with the newer copy before it is removed, puts the older store back for the version it came from.
 
 Never copy `gaia.db` by hand: live sessions hold it open, and `restore` copies under the store's lock so none of them sees a half-swapped file.
 
@@ -109,7 +113,17 @@ Each row is a failure seen on a real machine, and what `gaia doctor --channels` 
 
 ### When it does not come out right
 
-Reason from three sources, read this turn:
+The agent installing Gaia owns the outcome: a failed install, update or migration is where its work continues, and the user receives signatures and a report, never a bare "it failed". Every failure of `gaia install`, `gaia update` and `gaia migrate` names the next command; run it.
+
+1. **A refusal to strand another copy.** Run the `gaia doctor --target <version>` steps it names for each copy, then re-run the refused command. `--accept-stranding` is the user's decision, never the agent's way past the refusal.
+2. **A failure on the database: diagnose.** `gaia migrate diagnose` needs no signature. It opens the store read-only, replays the pending chain on a verified scratch copy inside a transaction that is always rolled back, and prints each step's result, the failing step (`vN-1->vN` and its file), the SQLite error and the commands left; `--json` prints the same as one object.
+3. **Back up.** `gaia migrate backup` keeps one verified copy that is never pruned. Request it with the route's other signed steps as one set (`subagent-request-approval`).
+4. **Take the route diagnose printed.** `gaia migrate apply`, with the `--consent-chain` it names, when the chain applies on the copy; a Gaia at the schema it names, through `gaia doctor --target <version>`, when the store is ahead; `gaia migrate restore --from <backup>` where a failure names a backup to put back.
+5. **Check, then report.** `gaia doctor --channels` again. The report names what ran, where each channel ended, and the backup's path.
+
+When diagnose finds no automatic route, the store is left as it was. Keep the backup from step 3 and the ones `gaia migrate plan` lists, and report with the output of `gaia migrate diagnose --json`, saying plainly that no Gaia verb yet rebuilds a clean store from a backup. Do not improvise a recovery around that: a raw write to the store is refused by design, and the missing verb is a Gaia defect to report in `open_gaps`.
+
+For anything the instruments do not explain, reason from three sources, read this turn:
 
 - what the instruments report: `gaia doctor --channels`, `--target`, `gaia migrate plan`;
 - the target version's `CHANGELOG.md`;

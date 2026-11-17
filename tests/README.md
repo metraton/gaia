@@ -69,6 +69,7 @@ tests/
 ├── retention/                       # Layer 1: scratch/tmp/cache + worktree/branch retention rules
 ├── snapshots/                       # Layer 1: scanner output snapshot tests
 ├── skills/                          # Layer 1: the read-map verbs a skill names are real CLI verbs
+├── docs/                            # Layer 1: the texts that state the migration rule carry it word for word, and install commands pin a version
 ├── evals/                           # grader / trace tests of the eval harness (some nightly)
 ├── layer1_prompt_regression/        # Layer 1: routing-table regression
 ├── layer2_llm_evaluation/           # Layer 2: LLM behavior evaluation (manual, uses LLM tokens)
