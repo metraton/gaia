@@ -115,6 +115,39 @@ def test_signed_set_runs_whole_with_a_local_commit_and_a_sealed_folder(host, tmp
     assert _pending_count(host["db"]) == 0, "no second signature was asked"
 
 
+def test_signed_steps_with_a_redirect_between_unsigned_steps_run_to_the_last(host, tmp_path):
+    """The rc.2 shape of feedback_set_firmado_pierde_el_grant_tras_el_primer_paso_20261117 runs on one signature."""
+    repo = host["repo"]
+    (tmp_path / "repo" / "report.sh").write_text('#!/bin/sh\ngh workflow run report.yml -f day="$1"\n')
+    out = tmp_path / "out"
+    out.mkdir()
+    report = "bash report.sh 2026-11-{day}"
+    steps = [
+        report.format(day=15),
+        f"date > {out}/d1.txt",
+        f"{report.format(day=16)} > {out}/r2.txt",
+        f"date > {out}/d3.txt",
+        f"{report.format(day=17)} > {out}/r4.txt",
+        f"cmp {out}/r2.txt {out}/r4.txt",
+        f"{report.format(day=18)} > {out}/r6.txt",
+        f"diff {out}/r2.txt {out}/r6.txt",
+    ]
+    signed = [steps[0], steps[2], steps[4], steps[6]]
+    approval_id = _requested(host, [(command, repo) for command in steps])
+    _approve(approval_id)
+    adapter = _adapter()
+
+    for position, command in enumerate(steps):
+        tool_use_id = f"toolu_report_{position}"
+        ran = _pre(adapter, command, tool_use_id, repo)
+        assert ran is not None, f"step {position} ({command}) must run under the one signature"
+        _post_success(adapter, ran, tool_use_id, repo)
+
+    assert _grant(host["db"], approval_id)["status"] == "CONSUMED"
+    assert [payload["command"] for _, payload in _outcomes(approval_id)] == signed
+    assert _pending_count(host["db"]) == 0, "no second signature was asked"
+
+
 def test_the_questions_the_user_answers_show_every_unsigned_step_in_order(host):
     repo = host["repo"]
     log, status = "git log --oneline -1", "git status --short"
