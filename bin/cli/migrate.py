@@ -36,6 +36,16 @@ Move the Gaia database to the schema version this code expects.
   restore Put a backup back as the database (--from <backup>). The database
           it replaces is first kept as a verified pre-restore backup, and
           nothing changes unless the backup passes integrity_check.
+  backup  Write one verified copy of the database now, read through a
+          read-only connection. Manual backups are never pruned; `plan` lists
+          them and `restore --from` takes them.
+  diagnose
+          When a migration failed: copy the database, read-only, into scratch,
+          verify the copy, replay the pending chain on it in a transaction that
+          is always rolled back, and print the failing step (vN-1->vN and file),
+          the SQLite error and the commands that remain. The database itself is
+          never written. Exits non-zero when the chain cannot apply. --json
+          prints the same as one object.
 
 How apply treats a database:
   - Before anything changes on an existing database, a full copy is written
@@ -75,14 +85,14 @@ def engine_command(
     as_json: bool = False,
     backup: str | None = None,
 ) -> list[str]:
-    """The engine invocation for ``action`` ('plan', 'apply' or 'restore').
+    """The engine invocation for ``action`` ('plan', 'apply', 'restore', 'backup' or 'diagnose').
 
     *after_backup* lets a verified backup stand in for the chain consent; only
     `gaia install` passes it (D140).
     """
     cmd = [sys.executable or "python3", str(ENGINE)]
-    if action == "plan":
-        cmd.append("--plan")
+    if action in ("plan", "diagnose", "backup"):
+        cmd.append(f"--{action}")
         if as_json:
             cmd.append("--json")
     if action == "restore":
@@ -140,12 +150,15 @@ def register(subparsers):
         description=_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    actions = p.add_subparsers(dest="migrate_action", metavar="{plan,apply,restore}")
+    actions = p.add_subparsers(dest="migrate_action", metavar="{plan,apply,restore,backup,diagnose}")
     actions.required = True
     for name, help_text in (
         ("plan", "Show the pending chain and what apply would need; writes nothing"),
         ("apply", "Back up, then apply the chain in one transaction"),
         ("restore", "Put a backup back as the database, keeping the current one as a verified backup"),
+        ("backup", "Write one verified backup of the database now; manual backups are never pruned"),
+        ("diagnose", "Replay the pending chain on a verified scratch copy, always rolled back, and print the "
+                     "failing step, its SQLite error and the commands that remain; the database is only read"),
     ):
         sub = actions.add_parser(name, help=help_text, description=help_text)
         sub.add_argument(
@@ -168,6 +181,11 @@ def register(subparsers):
                 "--json", dest="as_json", action="store_true",
                 help="Print the plan as one JSON object (direction, chain, migrations, backups)",
             )
+        if name == "diagnose":
+            sub.add_argument(
+                "--json", dest="as_json", action="store_true",
+                help="Print the diagnosis as one JSON object (failed_step, error, steps, route, note)",
+            )
         if name == "restore":
             sub.add_argument(
                 "--from", dest="backup", required=True, metavar="BACKUP",
@@ -178,7 +196,12 @@ def register(subparsers):
 
 def cmd_migrate(args) -> int:
     if not ENGINE.is_file():
-        print(f"gaia migrate: engine not found at {ENGINE}", file=sys.stderr)
+        try:
+            version = json.loads((_PACKAGE_ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+        except (OSError, ValueError, KeyError):
+            version = "<version>"
+        print(f"gaia migrate: engine not found at {ENGINE}; this Gaia package is incomplete. Reinstall it: "
+              f"`npm install -g @jaguilar87/gaia@{version}`, then run `gaia doctor`.", file=sys.stderr)
         return 1
     return run(
         args.migrate_action,

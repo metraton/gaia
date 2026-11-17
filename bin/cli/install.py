@@ -899,14 +899,16 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
     """
     if not _BOOTSTRAP_SCRIPT.is_file():
         msg = f"bootstrap script not found at {_BOOTSTRAP_SCRIPT}"
-        print(f"gaia install: {msg}", file=sys.stderr)
+        print(f"gaia install: {msg}; this Gaia package is incomplete. Reinstall it: `{_reinstall_command()}`, "
+              "then run `gaia doctor`.", file=sys.stderr)
         return {"rc": 1, "detail": msg}
 
     try:
         result = migrate.run("apply", db_path=db_path, capture=True, after_backup=True)
     except OSError as exc:
         msg = f"failed to invoke python bootstrapper -- {exc}"
-        print(f"gaia install: {msg}", file=sys.stderr)
+        print(f"gaia install: {msg}. Next: `gaia doctor` checks the Python the hooks and the CLI start with.",
+              file=sys.stderr)
         return {"rc": 1, "detail": msg}
 
     # Without --verbose, --quiet shows the output only when bootstrap fails.
@@ -930,6 +932,18 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
         stderr=result.stderr or "",
     )
     return {"rc": result.returncode, "detail": detail}
+
+
+def _reinstall_command() -> str:
+    return f"npm install -g @jaguilar87/gaia@{_install_helpers._read_plugin_version(_PACKAGE_ROOT) or '<version>'}"
+
+
+def _bootstrap_next_step(db_path: str) -> str:
+    shown = f'"{db_path}"' if " " in db_path else db_path
+    db = "" if Path(db_path) == Path(_resolved_db_path()) else f" --db {shown}"
+    return (f"the database step failed and nothing after it ran. Next: `gaia migrate diagnose{db}` names the "
+            "failing step and the route left (no signature needed); keep a verified copy first with "
+            f"`gaia migrate backup{db}`.")
 
 
 def _stranding_refusal(workspace: Path, db_path: str, rewrites_launcher: bool) -> str | None:
@@ -1216,7 +1230,8 @@ def _configure_host(
 
     identity_res = _install_helpers.verify_orchestrator_artifact()
     if identity_res["action"] == "error":
-        print(f"gaia install: {identity_res['details']}", file=sys.stderr)
+        print(f"gaia install: {identity_res['details']}. Reinstall the package: `{_reinstall_command()}`, "
+              "then re-run this command.", file=sys.stderr)
         return False
 
     claude_dir = workspace / ".claude"
@@ -1228,7 +1243,8 @@ def _configure_host(
         except OSError as exc:
             if not quiet:
                 print(
-                    f"  [!] workspace: failed to create {claude_dir}: {exc}",
+                    f"  [!] workspace: failed to create {claude_dir}: {exc}. Make {workspace} writable, "
+                    f"or pass --workspace <a writable folder>, then re-run this command.",
                     file=sys.stderr,
                 )
             return False
@@ -1484,7 +1500,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         channel = resolve_channel(getattr(args, "channel", None), getattr(args, "host", None),
                                   tuple(PACKAGE_CHANNELS))
     except ValueError as exc:
-        print(f"gaia install: {exc}", file=sys.stderr)
+        print(f"gaia install: {exc}\nNext: gaia install --channel <one of those>", file=sys.stderr)
         return 1
     return install_channels(args, (channel,))
 
@@ -1504,8 +1520,8 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
     workspace = _install_workspace(args)
     exempt = getattr(args, "skip_workspace", False) or getattr(args, "postinstall", False)
     if not exempt and not workspace.is_dir():
-        print(f"{command}: refused, workspace folder {workspace} does not exist; nothing changed",
-              file=sys.stderr)
+        print(f"{command}: refused, workspace folder {workspace} does not exist; nothing changed. "
+              f"Next: {command} --workspace <an existing folder>", file=sys.stderr)
         return 1
     lock_path = Path(_install_db_path(getattr(args, "db_path", None))).parent / INSTALL_LOCK_NAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1513,7 +1529,8 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
         with exclusive_file_lock(lock_path, timeout=INSTALL_LOCK_TIMEOUT_SECONDS):
             return _install_channels(args, channels, command=command)
     except LockTimeout:
-        print(f"{command}: refused, another install holds {lock_path}; nothing changed", file=sys.stderr)
+        print(f"{command}: refused, another install holds {lock_path}; nothing changed. "
+              f"Next: re-run `{command}` once that install has finished.", file=sys.stderr)
         return 1
 
 
@@ -1525,7 +1542,7 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
     hosts = tuple(PACKAGE_CHANNELS[channel] for channel in channels)
     shell_problem = missing_hook_shell(hosts, _install_workspace(args))
     if shell_problem:
-        print(f"{command}: refused, {shell_problem}", file=sys.stderr)
+        print(f"{command}: refused, {shell_problem} Then re-run `{command}`.", file=sys.stderr)
         return 1
     # No documented signal names the host that will load the plugin, so an
     # old version only warns here; doctor grades the running host.
@@ -1580,11 +1597,11 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
             )
             if not quiet:
                 print(
-                    f"\n  gaia install: bootstrap exited {rc} -- run `gaia doctor` "
-                    "to diagnose.\n",
+                    f"\n  gaia install: bootstrap exited {rc} -- {_bootstrap_next_step(db_path)}\n",
                     file=sys.stderr,
                 )
             return 0
+        print(f"{command}: {_bootstrap_next_step(db_path)}", file=sys.stderr)
         return rc
 
     if skip_workspace:
@@ -1593,7 +1610,8 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
 
     if not workspace.exists():
         if not quiet:
-            print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
+            print(f"  workspace {workspace} does not exist -- skipping configuration. "
+                  f"Next: {command} --workspace <an existing folder>", file=sys.stderr)
         return 1 if strict_wiring else 0
 
     opt_path = opt_path or _legacy_launcher(workspace)
@@ -1631,7 +1649,8 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
                  quiet=quiet, verbose=verbose)
 
     if failed and not quiet:
-        print(f"  [!] channel configuration failed: {', '.join(failed)}", file=sys.stderr)
+        print(f"  [!] channel configuration failed: {', '.join(failed)}. Next: `{command} --verbose` "
+              "prints every step and its error; `gaia doctor` names the repair.", file=sys.stderr)
 
     if strict_wiring and failed:
         return 1
