@@ -32,6 +32,7 @@ TRUSTED = "/trusted/node_modules/gaia/bin/gaia"
 WITHHELD = {
     ("doctor",): {"--fix"},
     ("migrate", "plan"): {"--db"},
+    ("migrate", "diagnose"): {"--db"},
     ("memory", "add"): {"--replace"},
     ("memory", "link"): {"--delete"},
     ("approvals", "reject"): {"--all"},
@@ -271,6 +272,18 @@ def test_flags_the_orchestrator_uses_today_still_pass(run_guard, argline) -> Non
 ])
 def test_the_kind_model_writes_and_reads_pass_the_lane(run_guard, argline) -> None:
     assert run_guard(argline) == (True, None)
+
+
+@pytest.mark.parametrize("argline, admitted", [
+    ("migrate diagnose", True),
+    ("migrate diagnose --json", True),
+    ("migrate backup", False),
+    ("migrate apply", False),
+    ("migrate apply --consent-chain v1..v2", False),
+    ("migrate restore --from backup.db.gz", False),
+])
+def test_the_orchestrator_diagnoses_a_migration_and_writes_none(run_guard, argline, admitted) -> None:
+    assert run_guard(argline)[0] is admitted
 
 
 @pytest.mark.parametrize("argline", [

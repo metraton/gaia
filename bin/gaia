@@ -223,9 +223,11 @@ READ -- changes nothing. The orchestrator runs these itself.
                  health checks, read-only. `--channels` is the install state
                  per channel, `--target <version>` the steps to reach a version.
                  `doctor --fix` MUTATES and is NOT in this lane.
-  migrate        plan
-                 the pending schema change and the backups on hand; `apply` and
-                 `restore` write and are not in this lane.
+  migrate        plan | diagnose
+                 the pending schema change and the backups on hand; diagnose
+                 replays that chain on a scratch copy and names the failing
+                 step and the route. `apply`, `backup` and `restore` write and
+                 are not in this lane.
   status
                  workspace status: agents, hooks, contracts.
   history
@@ -308,7 +310,8 @@ WRITE a specialist owns -- DELEGATE; do not run it here.
                  project move |
                  usage ingest (load transcripts into token_usage)
   gaia-system    install | update | uninstall | cleanup | dev | release |
-                 migrate plan|apply (install, update and dev run apply)
+                 migrate apply|backup|restore (install, update and dev run
+                 apply; when it fails, diagnose names the route)
   consent flow   approvals approve|reject-all|clean|replay|request-set --
                  consent is granted by the user, not by a CLI call
   owning agent   ac | milestone | evidence add | plan save|delete |

@@ -72,7 +72,9 @@ def _migrate(db_file: Path, live: int | None, expected: int) -> tuple[bool, str]
     reason = lines[-1].strip() if lines else f"exit {result.returncode}"
     return False, (
         f"gaia.db could not be migrated from {start} to v{expected} ({reason}); it was "
-        f"left as it was. Run `gaia migrate plan` to see the chain."
+        f"left as it was. Run `gaia migrate diagnose` to replay the chain on a scratch copy "
+        f"and name the failing step and the route; `gaia migrate backup` keeps a verified "
+        f"copy of the database before that route runs."
     )
 
 
