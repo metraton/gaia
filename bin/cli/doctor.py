@@ -732,15 +732,16 @@ def check_claude_code() -> dict:
 
 
 @register_check("Hook shell", order=25)
-def check_hook_shell() -> dict:
-    """Error when the host cannot resolve the `sh` every hook command starts with."""
-    from gaia.hook_shell import hook_shell_path, missing_hook_shell  # noqa: PLC0415
+def check_hook_shell(project_root: Path | None = None) -> dict:
+    """Error when the host cannot resolve the `sh` every hook command starts with; name it and its source."""
+    from gaia.hook_shell import GIT_BASH_OVERRIDE, describe_hook_shell, missing_hook_shell, resolve_hook_shell  # noqa: PLC0415
 
-    problem = missing_hook_shell()
+    problem = missing_hook_shell(workspace=project_root)
     if problem:
-        return _result("Hook shell", "error", problem, "Install Git for Windows so `sh` resolves on PATH")
-    sh = hook_shell_path()
-    return _result("Hook shell", "pass", f"hooks start with {sh}" if sh else "sh not required")
+        return _result("Hook shell", "error", problem,
+                       f"Install Git for Windows, or set {GIT_BASH_OVERRIDE} to its bash.exe")
+    found = resolve_hook_shell(project_root)
+    return _result("Hook shell", "pass", f"hooks start with {describe_hook_shell(found)}" if found else "sh not required")
 
 
 @register_check("Hook Python", order=27)
@@ -1814,9 +1815,12 @@ def check_symlinks_freshness(project_root: Path) -> dict:
                     f".claude/hooks is a copy of gaia {stamped_ver} but {installed_ver} is installed",
                     "Run `gaia update` to refresh the copied hooks",
                 )
+            copies = ", ".join(sorted(stamps))
             return _result(
-                name, "pass",
-                f"hooks copy at v{stamped_ver} matches installed {installed_ver}",
+                name, "warning",
+                f".claude copies of gaia {stamped_ver}, not links: {copies}",
+                "Allow symbolic links (Windows Developer Mode, or the Create symbolic links privilege), "
+                "then run `gaia update` to turn the copies into links",
             )
 
     try:

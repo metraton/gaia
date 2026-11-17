@@ -901,6 +901,23 @@ def _create_link_or_copy(
     return "symlink", None
 
 
+_LINK_PROBE = ".gaia-link-probe"
+
+
+def _can_create_link(claude_dir: Path, target: Path) -> bool:
+    probe = claude_dir / _LINK_PROBE
+    try:
+        _remove_link_entry(probe)
+        probe.symlink_to(target)
+    except OSError:
+        return False
+    try:
+        probe.unlink()
+    except OSError:
+        pass
+    return True
+
+
 def _symlink_is_stale(link: Path, plugin_root: Path) -> tuple[bool, str | None]:
     """Return (stale, reason).
 
@@ -980,6 +997,7 @@ def manage_symlinks(
     fixed: list[str] = []
     valid: list[str] = []
     failed: list[dict] = []
+    can_link: bool | None = None
 
     for name in _SYMLINK_NAMES + _SYMLINK_FILES:
         link = claude_dir / name
@@ -1030,14 +1048,16 @@ def manage_symlinks(
             valid.append(name)
             continue
 
-        # Gaia-managed copy: refresh when the stamped version drifts from the
-        # package version, so a copy never goes silently stale on reinstall.
-        if stamp.get("version") == version:
-            valid.append(name)
-            continue
+        drifted = stamp.get("version") != version
+        if not drifted:
+            if can_link is None:
+                can_link = _can_create_link(claude_dir, target)
+            if not can_link:
+                valid.append(name)
+                continue
 
         if dry_run:
-            fixed.append(f"{name} (stale copy)")
+            fixed.append(f"{name} ({'stale copy' if drifted else 'copy to link'})")
             continue
         try:
             _remove_link_entry(link)
@@ -1047,8 +1067,10 @@ def manage_symlinks(
         kind, err = _create_link_or_copy(target, link, claude_dir, version)
         if err:
             failed.append({"name": name, "error": err})
-        else:
+        elif drifted or kind == "copy":
             fixed.append(f"{name} (refreshed copy)")
+        else:
+            fixed.append(f"{name} (copy to link)")
 
     total = len(fixed) + len(valid)
     if failed:
