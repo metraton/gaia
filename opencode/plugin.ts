@@ -12,7 +12,7 @@ type BridgeResponse = {
   presentable?: boolean
   updated_input?: Record<string, unknown>
   attestation?: string
-  shell_env?: { session_id: string; call_id: string; agent_type: string }
+  shell_env?: { session_id: string; call_id: string; agent_type: string; turn?: string }
   sections_provided?: string[]
   additional_context?: string
   contract_valid?: boolean
@@ -2401,8 +2401,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (normalized.tool === "Bash" || normalized.tool === "bash") {
           const context = roleContext(call.sessionID)
           const delivery = response.shell_env
+          const turn = dispatchHandle(call.sessionID)
           if (!delivery || delivery.session_id !== call.sessionID || delivery.call_id !== call.callID
-            || delivery.agent_type !== agent || !context?.attestation) {
+            || delivery.agent_type !== agent || (delivery.turn || undefined) !== turn || !context?.attestation) {
             throw new Error("Gaia bridge did not confirm authenticated shell environment delivery")
           }
           const directory = output.args?.workdir ?? input.directory
@@ -2411,7 +2412,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           }
           shellIdentities.remember({
             sessionID: call.sessionID, callID: call.callID,
-            agent: delivery.agent_type, attestation: context.attestation,
+            agent: delivery.agent_type, attestation: context.attestation, turn,
             cwd: resolve(directory), args: output.args,
           })
         }
@@ -2514,14 +2515,20 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       // under a host-neutral name read ahead of Claude Code's variables.
       output.env.GAIA_HOST_SESSION_ID = call.sessionID
       const context = roleContext(call.sessionID)
-      if (!call.callID && isPrimarySession(call.sessionID)
-        && context?.attestation && context.role === "gaia-orchestrator") return
+      const orchestrator = isPrimarySession(call.sessionID)
+        && Boolean(context?.attestation) && context?.role === "gaia-orchestrator"
+      if (!call.callID && orchestrator) return
       if (!call.callID) throw new Error("Gaia dispatched shell environment lacks call identity")
-      output.env.GAIA_DISPATCH_AGENT = shellIdentities.take({
+      const turn = dispatchHandle(call.sessionID)
+      if (!turn && !isPrimarySession(call.sessionID)) throw new Error("Gaia dispatched shell environment lacks its turn")
+      const agent = shellIdentities.take({
         sessionID: call.sessionID, callID: call.callID, cwd: resolve(call.cwd),
         agent: agentBySession.get(call.sessionID),
-        attestation: context?.attestation,
+        attestation: context?.attestation, turn,
       })
+      // Gaia's CLI reads a shell without GAIA_DISPATCH_AGENT as the main session, as on Claude Code.
+      if (!orchestrator) output.env.GAIA_DISPATCH_AGENT = agent
+      if (turn) output.env.GAIA_DISPATCH_TURN = turn
       // Tool temporaries (pytest's tmp_path above all) otherwise fill the
       // host's /tmp, a small tmpfs where this runs.
       const tmpdir = dispatchTmpDir(call.sessionID)
