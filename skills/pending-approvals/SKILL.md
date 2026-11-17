@@ -40,9 +40,18 @@ The orchestrator withdraws but never approves. It may run
 `gaia approvals reject <approval_id>` (a pending request becomes `rejected`) and
 `gaia approvals revoke <approval_id>` (an armed grant can no longer be used) --
 for example to retire an orphaned request. Both accept `--reason <text>`, which
-the withdrawal event records. Approving, replaying, and the bulk
-verbs (`reject --all`, `reject-all`, `clean`) are the user's, or a specialist's
-when the user asks for them.
+the withdrawal event records. Approving, replaying and `clean` are the user's.
+Bulk rejection is the user's and the orchestrator's: the user runs
+`reject --all` or `reject-all`, and the orchestrator, whose CLI lane admits only
+the single verbs (`hooks/modules/security/gaia_cli_only_guard.py`), rejects a
+batch one `reject <approval_id>` at a time. A dispatched specialist withdraws only the
+requests its own turn made: the approvals core checks the turn its shell carries
+(`GAIA_DISPATCH_TURN`, exported by the hook on Claude Code and by the plugin on
+OpenCode; `gaia/approvals/core.py::require_own_turn`), so from a
+specialist `reject <id>` and `revoke <id>` on another turn's request fail
+naming whose it is, and the bulk verbs reject its own and say how many they
+left and whose. A request sealed without a turn stays for the user or the
+orchestrator.
 
 A set that ended `failed` is frozen: show its completed, failed and untouched
 commands as history; anything still needed is a new request.

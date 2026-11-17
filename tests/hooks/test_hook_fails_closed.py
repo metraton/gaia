@@ -180,10 +180,12 @@ def test_a_broken_gate_does_not_make_other_events_block(tmp_path, event, entry):
 
 
 @pytest.fixture
-def windows_without_sh(monkeypatch):
-    real_which = shutil.which
+def windows_without_sh(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(shutil, "which", lambda cmd, *a, **k: None if cmd in ("sh", "sh.exe") else real_which(cmd, *a, **k))
+    monkeypatch.setattr(shutil, "which", lambda cmd, *a, **k: None)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for variable in ("CLAUDE_CODE_GIT_BASH_PATH", "ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        monkeypatch.delenv(variable, raising=False)
     for path in (REPO_ROOT / "bin", REPO_ROOT):
         if str(path) not in sys.path:
             monkeypatch.syspath_prepend(str(path))
@@ -198,7 +200,7 @@ def test_install_refuses_a_windows_host_without_sh(windows_without_sh, tmp_path,
     monkeypatch.setattr(install, "_run_bootstrap", _bootstrap_reached)
     args = Namespace(workspace=str(tmp_path), db_path=str(tmp_path / "gaia.db"), quiet=True)
 
-    assert install.install_channels(args, ()) == 1
+    assert install.install_channels(args, ("npm",)) == 1
     assert "sh" in capsys.readouterr().err
 
 

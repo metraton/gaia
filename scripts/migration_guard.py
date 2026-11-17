@@ -324,6 +324,15 @@ def last_breaking_version(migrations_dir: Path, version: int) -> int | None:
     return max(targets, default=None)
 
 
+def next_minimum(minimum: int | None, version: int, breaking: bool, migrations_dir: Path) -> int | None:
+    """The min_code_version the seal of ``version`` records after a seal that recorded ``minimum``."""
+    if breaking:
+        return version
+    if minimum is None:
+        return last_breaking_version(migrations_dir, version)
+    return minimum
+
+
 def chain_label(current: int, expected: int) -> str:
     """The name a consent must carry: the exact span of versions it approves."""
     return f"v{current}..v{expected}"
@@ -370,5 +379,10 @@ def format_chain_block(
         "",
         "  The consent names this chain only: a backup is taken first, and it",
         "  approves nothing that ships later.",
+        "",
+        "  To rehearse the chain first, with no signature, on a verified scratch",
+        "  copy that is always rolled back:",
+        "",
+        "      gaia migrate diagnose",
     ]
     return "\n".join(lines)

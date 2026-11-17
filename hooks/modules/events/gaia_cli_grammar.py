@@ -35,7 +35,7 @@ SUBCOMMANDS = {
         'add append checkpoint conflicts declare delete edit episode-show get-relevant link '
         'list move reclassify search show stats story'
     ),
-    'migrate': 'apply plan restore',
+    'migrate': 'apply backup diagnose plan restore',
     'milestone': 'add edit remove set-status',
     'notifications': 'ack add cancel list show snooze',
     'paths': 'data db',
@@ -185,8 +185,8 @@ OPTIONS = {
     'evidence show': '--help --json -h',
     'history': '--agent --blocked --help --json --limit --today --workspace -a -b -h -n -t',
     'install': (
-        '--channel --db-path --help --host --no-path --path --postinstall --quiet '
-        '--skip-workspace --strict-wiring --verbose --workspace -h -v'
+        '--accept-stranding --channel --db-path --help --host --no-path --path --postinstall '
+        '--quiet --skip-workspace --strict-wiring --verbose --workspace -h -v'
     ),
     'lint': '--help -h',
     'lint comments': '--base --head --help --json --repo -h',
@@ -231,6 +231,8 @@ OPTIONS = {
     'metrics': '--agent --help --json --range --since --until --workspace -h',
     'migrate': '--help -h',
     'migrate apply': '--consent-chain --db --help -h',
+    'migrate backup': '--db --help -h',
+    'migrate diagnose': '--db --help --json -h',
     'migrate plan': '--db --help --json -h',
     'migrate restore': '--db --from --help -h',
     'milestone': '--help --workspace -h',
@@ -311,8 +313,9 @@ OPTIONS = {
         '--snapshot-dir --workspace -h'
     ),
     'update': (
-        '--channel --db-path --dry-run --help --host --json --no-path --path --postinstall '
-        '--quiet --skip-workspace --strict-wiring --verbose --workspace -h -v'
+        '--accept-stranding --channel --db-path --dry-run --help --host --json --no-path '
+        '--path --postinstall --quiet --skip-workspace --strict-wiring --verbose --workspace '
+        '-h -v'
     ),
     'usage': '--help -h',
     'usage ingest': '--help --json --projects-dir --session -h',

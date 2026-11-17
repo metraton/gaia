@@ -717,8 +717,9 @@ def install_update_command(live: int) -> Optional[str]:
         holder = own.parents[2]
         if (holder / "package.json").is_file():
             where = shlex.quote(str(holder))
-            return f"npm install --prefix {where} @jaguilar87/gaia@latest, then gaia update --workspace {where}"
-        return "npm install -g @jaguilar87/gaia@latest"
+            return (f"npm install --prefix {where} @jaguilar87/gaia@<version> --save-exact, "
+                    f"then gaia update --workspace {where}")
+        return "npm install -g @jaguilar87/gaia@<version>"
     if (own / ".git").exists():
         return f"gaia dev (from a Gaia checkout at schema v{live} or newer; this install runs {own})"
     return None
@@ -729,7 +730,9 @@ def install_behind_line(live: int, expected: int, refused: bool) -> str:
     state = ("it refuses every write until updated" if refused
              else "it still writes, until a breaking migration stops it")
     command = install_update_command(live)
-    fix = (f"Deliver to the user: run `{command}`; it takes effect next session."
+    pick = (f" <version> is a release at schema v{live} or newer; `gaia doctor --target <version>` "
+            "lists every step." if command and "<version>" in command else "")
+    fix = (f"Deliver to the user: run `{command}`; it takes effect next session.{pick}"
            if command else
            "Its install channel is unknown: deliver to the user that it needs a Gaia "
            f"at schema v{live} or newer through the channel that installed it.")
@@ -753,11 +756,15 @@ def build_schema_direction_block() -> str:
         if live is None or expected is None or live == expected:
             return ""
         if live < expected:
+            from .plugin_upgrade import _cli_module
+
             fix = (
                 f"gaia.db at {db_file} is at schema v{live}; this Gaia expects "
                 f"v{expected}. Writes that need the newer structure will fail "
-                f"until it is migrated. Run `gaia migrate plan` to see the chain, "
-                f"then `gaia migrate apply`."
+                f"until it is migrated. {_cli_module('migrate').MIGRATION_RULE} "
+                f"Here: `gaia migrate plan` shows the chain and what it reaches, then "
+                f"`gaia migrate apply --consent-chain v{live}..v{expected}` applies it. "
+                f"If that fails, `gaia migrate diagnose` names the failing step and the route left."
             )
         else:
             fix = install_behind_line(live, expected, writes_refused(live, expected, minimum))

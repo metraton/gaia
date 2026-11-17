@@ -788,6 +788,18 @@ class BashValidator:
                 continue
         return None
 
+    def _strip_run_decorators(self, command: str) -> tuple[str, List[str]]:
+        """Strip a ``nohup`` prefix and a trailing background ``&``: the command the host runs, with the parts removed."""
+        cleaned, stripped_parts = command, []
+        if self._NOHUP_PREFIX_RE.match(cleaned):
+            cleaned = self._NOHUP_PREFIX_RE.sub("", cleaned).strip()
+            stripped_parts.append("nohup")
+        # fd duplications are masked first so `>&` is never read as a trailing `&`.
+        if self._TRAILING_BG_RE.search(self._FD_DUP_RE.sub("", cleaned)):
+            cleaned = self._TRAILING_BG_RE.sub("", cleaned).strip()
+            stripped_parts.append("&")
+        return cleaned, stripped_parts
+
     def _try_sanitize_command(self, command: str) -> Optional[tuple[str, List[str]]]:
         """Strip a decorator that changes nothing about WHAT will run.
 
@@ -815,20 +827,7 @@ class BashValidator:
             else None (nothing to sanitize).
         """
         original = command
-        cleaned = command
-        stripped_parts = []
-
-        # Strip nohup prefix
-        if self._NOHUP_PREFIX_RE.match(cleaned):
-            cleaned = self._NOHUP_PREFIX_RE.sub("", cleaned).strip()
-            stripped_parts.append("nohup")
-
-        # Strip trailing & (background) but not && or >&
-        # Mask fd duplications first to avoid false matching
-        test_str = self._FD_DUP_RE.sub("", cleaned)
-        if self._TRAILING_BG_RE.search(test_str):
-            cleaned = self._TRAILING_BG_RE.sub("", cleaned).strip()
-            stripped_parts.append("&")
+        cleaned, stripped_parts = self._strip_run_decorators(command)
 
         # Strip one trailing file redirect. Quoted and escaped operators are data.
         redirect_start = self._trailing_redirect_start(cleaned)
@@ -887,6 +886,7 @@ class BashValidator:
         clear_classification()
         self.last_warning = ""
         cwd = (hook_payload or {}).get("cwd") or cwd
+        turn = str((hook_payload or {}).get("agent_id") or "")
 
         # Phase 0 runs ahead of every transformation of `command`, because the
         # role closure must judge the string exactly as the harness sent it.
@@ -940,11 +940,15 @@ class BashValidator:
 
         # EARLY NORMALIZATION: footers are stripped first so every later check
         # and the pending-approval lookup see the same string on retry.
+        submitted = command
         command_was_modified = False
         if self._detect_claude_footers(command):
             command = self._strip_claude_footers(command)
             command_was_modified = True
             logger.info("Auto-stripped Claude Code footer from commit command")
+        # What the host runs, redirects included: every grant lookup and seal reads
+        # it, so a signature never covers a redirect it was not shown.
+        run_command = self._strip_run_decorators(command)[0]
 
         # Refuses a publishing command whose text or named body file still
         # carries Claude attribution after the strip; ahead of tier
@@ -1087,23 +1091,12 @@ class BashValidator:
         # A shell-authored write (redirect, `tee`, `sed -i`, `dd of=`) into a git
         # tree is refused as a channel: the same edit through Write/Edit is
         # permitted. Before the sanitizer, which strips a trailing redirect.
-        shell_write_allowed, shell_write_reason = check_shell_write(
-            write_guard_scope, cwd=cwd,
-        )
-        if not shell_write_allowed:
+        shell_write_refusal = _shell_write_floor(write_guard_scope, cwd)
+        if shell_write_refusal is not None:
             logger.warning(
                 "BLOCKED shell-authored working-tree write: %s", command[:120]
             )
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=shell_write_reason,
-                rule="floor.shell-write",
-                suggestions=[
-                    "Use the Write or Edit tool on the file instead; a "
-                    "throwaway dump belongs under ~/.gaia/scratch.",
-                ],
-            )
+            return shell_write_refusal
 
         # A sensitive read is refused before any check that can ask, and before the
         # sanitizer, which would strip a `< file` input with the trailing redirect.
@@ -1130,11 +1123,11 @@ class BashValidator:
         guarded = signing_guard(command, cwd, is_subagent)
         if guarded is not None:
             call_id = str((hook_payload or {}).get("tool_use_id", ""))
-            return _granted_result(
-                command, session_id=session_id, agent_type=agent_type, cwd=cwd,
+            return self._runs(_granted_result(
+                run_command, session_id=session_id, agent_type=agent_type, cwd=cwd,
                 tool_use_id=call_id,
             ) or decide_t3_outcome(
-                command,
+                run_command,
                 verb=guarded.verb,
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
@@ -1144,7 +1137,8 @@ class BashValidator:
                 tool_use_id=call_id,
                 guidance=guarded.guidance,
                 rule=guarded.rule,
-            )
+                turn=turn,
+            ), run_command, submitted)
         fed_unknown = redirected_into_unknown(write_guard_scope)
 
         # After the write guards, so their refusals win; the operator splitter
@@ -1163,7 +1157,7 @@ class BashValidator:
         # SMART SANITIZATION strips nohup, a trailing `&` or a trailing redirect.
         # It runs after the write guards, which must see a redirect into a
         # guarded target, and returns no verdict: the cleaned command flows
-        # into phase 1 (tests/hooks/test_sanitizer_redirect_t3_evasion.py).
+        # into classification only (tests/hooks/test_sanitizer_redirect_t3_evasion.py).
         sanitize_result = self._try_sanitize_command(command)
         if sanitize_result is not None:
             cleaned_command, stripped_parts = sanitize_result
@@ -1173,7 +1167,6 @@ class BashValidator:
                 ", ".join(stripped_parts), command[:80], cleaned_command[:80],
             )
             command = cleaned_command
-            command_was_modified = True
 
         # PHASE 1: UNWRAP
         unwrap_result = self._unwrapper.unwrap(command)
@@ -1247,17 +1240,9 @@ class BashValidator:
                 return commit_validation
 
         # 3d. Cloud pipe/redirect/chaining check.
-        pipe_block = validate_cloud_pipe(classified)
-        if pipe_block is not None:
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=read_permission_reason(pipe_block),
-                suggestions=[],
-                modified_input=None,
-                block_response=pipe_block,
-                rule="floor.shell-write" if violation_kind(classified) == "redirect" else "floor.cloud-pipe",
-            )
+        pipe_refusal = _pipe_floor(classified)
+        if pipe_refusal is not None:
+            return pipe_refusal
 
         # PHASE 4: CHECK COMPOSITION of pipe-connected stages; &&/; stages are
         # independent (exfiltration, RCE, decode-to-exec, file-to-exec).
@@ -1268,9 +1253,11 @@ class BashValidator:
             agent_type=agent_type,
             tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
             cwd=(hook_payload or {}).get("cwd") or None,
+            run_form=run_command,
+            turn=turn,
         )
         if _composition_result is not None:
-            return _composition_result
+            return self._runs(_composition_result, run_command, submitted)
 
         # PHASE 5: AGGREGATE (3e). The invocation directory seeds the cwd fold; a
         # fold from None would resolve a relative script against the hook's own
@@ -1286,19 +1273,19 @@ class BashValidator:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
-                caller=LocalWorkCaller(agent_id, payload_cwd),
+                caller=LocalWorkCaller(agent_id, payload_cwd), run_form=run_command, turn=turn,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=payload_cwd,
-                command=command, tool_use_id=tool_use_id, agent_id=agent_id,
+                command=command, tool_use_id=tool_use_id, agent_id=agent_id, run_form=run_command, turn=turn,
             )
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
-                caller=LocalWorkCaller(agent_id, payload_cwd),
+                caller=LocalWorkCaller(agent_id, payload_cwd), run_form=run_command, turn=turn,
             )
         if code_heredocs:
             result = self._fail_closed_on_code_heredoc(
@@ -1306,24 +1293,22 @@ class BashValidator:
             )
         if result.allowed and (fed_unknown or fed_unknown_program(build_composition_stages(decomposed.stages))):
             result = decide_t3_outcome(
-                command, verb="unknown_sink", category="MUTATIVE", has_orchestrator_above=is_subagent,
-                session_id=session_id, agent_type=agent_type, rule=UNKNOWN_SPAN,
+                run_command, verb="unknown_sink", category="MUTATIVE", has_orchestrator_above=is_subagent,
+                session_id=session_id, agent_type=agent_type, rule=UNKNOWN_SPAN, turn=turn,
             )
+        result = _reserve_signed_item_run_free(
+            result, run_command, session_id=session_id, agent_type=agent_type,
+            cwd=payload_cwd, tool_use_id=tool_use_id,
+        )
+        return self._runs(result, run_command, submitted)
 
-        # Attach cleaned command for hook to emit via updatedInput.
-        # Set regardless of result.allowed so the ask path can include it too.
-        if command_was_modified:
-            result.modified_input = {"command": command}
-            # If the result is an "ask" block_response, inject updatedInput
-            # so the modification survives the native permission dialog. The
-            # host shape is read/augmented via adapter accessors, never indexed
-            # directly here.
-            if (
-                result.block_response is not None
-                and read_permission_decision(result.block_response) == "ask"
-            ):
-                inject_updated_input(result.block_response, {"command": command})
-
+    @staticmethod
+    def _runs(result: BashValidationResult, run_command: str, submitted: str) -> BashValidationResult:
+        """Name *run_command* as the host's input when it differs from what was submitted, the ask dialog included."""
+        if run_command != submitted:
+            result.modified_input = {"command": run_command}
+            if result.block_response is not None and read_permission_decision(result.block_response) == "ask":
+                inject_updated_input(result.block_response, {"command": run_command})
         return result
 
     def _fail_closed_on_code_heredoc(
@@ -1488,8 +1473,10 @@ class BashValidator:
         tool_use_id: str = "",
         caller: Optional[LocalWorkCaller] = None,
         piped_from: Optional[str] = None,
+        run_form: Optional[str] = None,
+        turn: str = "",
     ) -> BashValidationResult:
-        """Validate a single command (no operators); *caller* is what the local-work relief needs, *piped_from* the stage feeding its stdin.
+        """Validate a single command (no operators); *caller* is what the local-work relief needs, *piped_from* the stage feeding its stdin, *run_form* what the host runs, which grants are matched and sealed against (default: *command*), *turn* the subagent turn a request is sealed under.
 
         Simplified pipeline:
         0. Indirect execution detection (for compound command components)
@@ -1519,21 +1506,21 @@ class BashValidator:
 
         # ``cwd`` is the directory folded from a preceding ``cd`` component (see
         # _validate_compound_command), against which a relative script resolves.
-        result = detect_mutative_command(command, cwd=cwd, caller=caller)
-        result = privilege_verdict(command, result) or production_target_verdict(command, result, cwd=cwd) or result
+        signed = run_form or command
+        result = command_verdict(command, cwd=cwd, caller=caller)
         if result.is_mutative:
             granted = _granted_result(
-                command, session_id=session_id, agent_type=agent_type, cwd=cwd, tool_use_id=tool_use_id,
+                signed, session_id=session_id, agent_type=agent_type, cwd=cwd, tool_use_id=tool_use_id,
             )
             if granted is not None:
                 return granted
             _record_plan_command_denial(
-                _plan_grant_for_denial(command), "plan_command_not_reserved",
+                _plan_grant_for_denial(signed), "plan_command_not_reserved",
                 session_id=session_id, tool_use_id=tool_use_id,
                 agent_type=agent_type,
             )
             return decide_t3_outcome(
-                command,
+                signed,
                 verb=result.verb,
                 category=result.category,
                 has_orchestrator_above=is_subagent,
@@ -1543,6 +1530,7 @@ class BashValidator:
                 cwd=cwd,
                 tool_use_id=tool_use_id,
                 rule=result.rule,
+                turn=turn,
             )
 
         # Flag-dependent mutations a verb scan misses ("sed" has no mutative verb,
@@ -1564,13 +1552,13 @@ class BashValidator:
                     pass  # Fall through to safe-by-elimination
                 else:
                     granted = _granted_result(
-                        command, session_id=session_id, agent_type=agent_type, cwd=cwd,
+                        signed, session_id=session_id, agent_type=agent_type, cwd=cwd,
                         tool_use_id=tool_use_id,
                     )
                     if granted is not None:
                         return granted
                     return decide_t3_outcome(
-                        command,
+                        signed,
                         verb=flag_result.matched_pattern or flag_result.command_family,
                         category="MUTATIVE",
                         has_orchestrator_above=is_subagent,
@@ -1578,6 +1566,7 @@ class BashValidator:
                         agent_type=agent_type,
                         cwd=cwd,
                         tool_use_id=tool_use_id,
+                        turn=turn,
                     )
 
         # Not blocked, not mutative -> SAFE by elimination
@@ -1597,8 +1586,10 @@ class BashValidator:
         command: str = "",
         tool_use_id: str = "",
         agent_id: str = "",
+        run_form: Optional[str] = None,
+        turn: str = "",
     ) -> BashValidationResult:
-        """Validate a compound command (multiple components).
+        """Validate a compound command (multiple components); a signed pipeline is matched by *run_form*, the bytes the host runs, and a component's request is sealed under *turn*.
 
         Compound T3 execution is REFUSED here, never grouped. If ANY component
         classifies T3 the whole chain is denied (subagent) or asked (primary):
@@ -1671,7 +1662,7 @@ class BashValidator:
             has_t3 = self._has_mutative_substitution_outside_components(command, components, cwd)
         if has_t3:
             signed = self._match_signed_pipeline(
-                command, components, session_id=session_id, agent_type=agent_type,
+                run_form or command, components, session_id=session_id, agent_type=agent_type,
                 tool_use_id=tool_use_id, cwd=cwd,
             )
             if signed is not None:
@@ -1703,6 +1694,7 @@ class BashValidator:
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=running_cwd, caller=callers[i - 1], piped_from=feeders[i - 1],
+                turn=turn,
             )
             # Advance the cwd AFTER classifying this component, so a `cd` only
             # affects subsequent components (POSIX chain semantics).
@@ -1818,8 +1810,10 @@ class BashValidator:
         agent_type: str = "",
         tool_use_id: str = "",
         cwd: Optional[str] = None,
+        run_form: Optional[str] = None,
+        turn: str = "",
     ) -> Optional[BashValidationResult]:
-        """Check cross-stage composition patterns (Phase 4).
+        """Check cross-stage composition patterns (Phase 4); an escalation is matched and sealed as *run_form*, the bytes the host runs, under *turn*.
 
         Detects dangerous pipe compositions:
         - Exfiltration: sensitive_read | network_write  -> permanent block
@@ -1856,18 +1850,19 @@ class BashValidator:
             # first would leave the signed set item unreachable.
             if check_sensitive_read(decomposed.raw, cwd)[0]:
                 signed = self._match_signed_pipeline(
-                    decomposed.raw, decomposed.stages, session_id=session_id,
+                    run_form or decomposed.raw, decomposed.stages, session_id=session_id,
                     agent_type=agent_type, tool_use_id=tool_use_id, cwd=cwd,
                 )
                 if signed is not None:
                     return signed
             return decide_t3_outcome(
-                decomposed.raw,
+                run_form or decomposed.raw,
                 verb=result.pattern,
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
                 session_id=session_id,
                 agent_type=agent_type,
+                turn=turn,
             )
 
         return None
@@ -2064,6 +2059,58 @@ def _scratch_owner(harness_agent_id: str) -> str:
         logger.debug("scratch owner lookup failed: %s", exc)
         row = None
     return str((row or {}).get("agent_id") or harness_agent_id)
+
+
+def command_verdict(command: str, *, cwd: Optional[str], caller: Optional[LocalWorkCaller]):
+    """The mutative verdict the gate gives one command: the verb scan under *caller*'s local-work relief, then the privilege and production-target walls."""
+    result = detect_mutative_command(command, cwd=cwd, caller=caller)
+    return privilege_verdict(command, result) or production_target_verdict(command, result, cwd=cwd) or result
+
+
+def gate_forms(command: str) -> Tuple[str, str]:
+    """What the gate makes of *command*: (the form the host runs, the form it classifies, trailing redirect stripped too)."""
+    validator = BashValidator()
+    sanitized = validator._try_sanitize_command(command)
+    return validator._strip_run_decorators(command)[0], sanitized[0] if sanitized else command
+
+
+def _shell_write_floor(write_guard_scope: str, cwd: Optional[str]) -> Optional[BashValidationResult]:
+    allowed, reason = check_shell_write(write_guard_scope, cwd=cwd)
+    if allowed:
+        return None
+    return BashValidationResult(
+        allowed=False,
+        tier=SecurityTier.T3_BLOCKED,
+        reason=reason,
+        rule="floor.shell-write",
+        suggestions=[
+            "Use the Write or Edit tool on the file instead; a "
+            "throwaway dump belongs under ~/.gaia/scratch.",
+        ],
+    )
+
+
+def _pipe_floor(classified: str) -> Optional[BashValidationResult]:
+    pipe_block = validate_cloud_pipe(classified)
+    if pipe_block is None:
+        return None
+    return BashValidationResult(
+        allowed=False,
+        tier=SecurityTier.T3_BLOCKED,
+        reason=read_permission_reason(pipe_block),
+        suggestions=[],
+        modified_input=None,
+        block_response=pipe_block,
+        rule="floor.shell-write" if violation_kind(classified) == "redirect" else "floor.cloud-pipe",
+    )
+
+
+def run_time_floor(command: str, cwd: Optional[str]) -> Optional[BashValidationResult]:
+    """The refusal the gate's shell-write and redirect floors give *command*, in the order validate() applies them, else None."""
+    refusal = _shell_write_floor(data_heredoc_header(command) or command, cwd)
+    if refusal is not None:
+        return refusal
+    return _pipe_floor(_scan_heredocs(gate_forms(command)[1])[0])
 
 
 def _pending_requests_of(session_id: str, agent_id: str) -> list:
@@ -2301,6 +2348,7 @@ def _build_sealed_payload(
     *,
     cwd: str | None = None,
     session_id: str = "",
+    turn: str = "",
 ) -> dict:
     """Build a sealed_payload dict from hook-intercepted command context.
 
@@ -2308,7 +2356,7 @@ def _build_sealed_payload(
     each item carries the directory it was attempted in (``cwd``, else this
     process's), no declared non-zero exit, its position and fingerprint, and
     the payload names the requesting session and agent exactly as the host
-    event gave them (``core.RequesterError`` when either is missing).
+    event gave them (``core.RequesterError`` when either is missing), and ``turn``.
 
     Called by decide_t3_outcome before it stores the request through
     gaia.approvals.store.insert_requested.
@@ -2382,6 +2430,7 @@ def _build_sealed_payload(
         what=f"Run {base} {verb} ({category.lower()})",
         session_id=session_id,
         agent_id=agent_type,
+        turn=turn,
         rollback=authored.get("rollback"),
         verification=authored.get("verification"),
         impact=authored.get("impact"),
@@ -2462,7 +2511,42 @@ def _granted_result(
     )
 
 
-def _unreserved_item_cause(held: dict, tool_use_id: str | None) -> str:
+def _reserve_signed_item_run_free(
+    result: BashValidationResult, command: str, *, session_id: str, agent_type: str, cwd: str | None,
+    tool_use_id: str,
+) -> BashValidationResult:
+    """Reserve an allowed *command* that is this requester's next signed item sealed for *cwd*, so its set advances.
+
+    A step signed at request can classify free at run time; left unreserved,
+    every later item of its set is refused as out of order. A store failure
+    leaves the free verdict unreserved, as it was before.
+    """
+    if not (result.allowed and result.consumed_approval_id is None and session_id and tool_use_id and cwd):
+        return result
+    try:
+        from gaia.approvals.core import match_command
+        from gaia.store.writer import find_unconsumed_plan_item
+
+        held = find_unconsumed_plan_item(
+            command, session_id=session_id, agent_id=agent_type, cwd=cwd, tool_use_id=tool_use_id,
+        )
+        if held is None or held["refusal"] is not None or held["cwd"] != cwd:
+            return result
+        reserved = match_command(
+            command, cwd=cwd, session_id=session_id, agent_id=agent_type or None, tool_use_id=tool_use_id,
+        )
+    except Exception as exc:
+        logger.warning("free-step reservation failed (left unreserved): %s", exc)
+        return result
+    if reserved is None:
+        return result
+    result.consumed_approval_id = reserved["approval_id"]
+    result.command_set_reservation = reserved
+    result.reason = f"{result.reason}; reserved as item [{reserved['index']}] of {reserved['approval_id']}"
+    return result
+
+
+def _unreserved_item_cause(held: dict, tool_use_id: str | None, command: str) -> str:
     refusal = held.get("refusal") or {}
     approval_id, check = held["approval_id"], refusal.get("check")
     if check == "order":
@@ -2477,9 +2561,12 @@ def _unreserved_item_cause(held: dict, tool_use_id: str | None) -> str:
             f"`gaia approvals revoke {approval_id}` and request it again over the file as it is now."
         )
     if check == "directory":
+        from gaia.approvals.core import sealed_invocation
+
         return (
-            f"it is sealed for {refusal['sealed']} and this call runs in {refusal['call']}: run it "
-            "from the sealed directory. Do not request it again."
+            f"it is sealed for {refusal['sealed']} and this call runs in {refusal['call']}: run "
+            f"`{sealed_invocation(refusal['sealed'], command)}` as one call, which the same "
+            "signature covers. Do not request it again."
         )
     if check == "call_reused":
         return (
@@ -2523,7 +2610,7 @@ def _approved_signature_denial(
         return None
     reason = (
         f"T3 command denied: {held['approval_id']} is approved and signs this exact command as "
-        f"item [{held['index']}], but this call cannot run it: {_unreserved_item_cause(held, tool_use_id)} "
+        f"item [{held['index']}], but this call cannot run it: {_unreserved_item_cause(held, tool_use_id, command)} "
         "Nothing was consumed and no new request was sealed."
     )
     return BashValidationResult(
@@ -2559,11 +2646,12 @@ def decide_t3_outcome(
     guidance: str = "",
     cwd: str | None = None,
     tool_use_id: str | None = None,
+    turn: str = "",
 ) -> BashValidationResult:
     """Single decision point for the outcome of a T3 (state-mutating) command.
 
     ``cwd`` is the directory the command was attempted in; it is sealed into
-    the pending request so the grant matches only there.
+    the pending request so the grant matches only there; ``turn`` likewise.
 
     Every T3 classifier -- mutative verbs, pipe composition (file_to_exec), and
     flag-dependent mutations -- converges here, and every caller gets the same
@@ -2700,6 +2788,7 @@ def decide_t3_outcome(
         command_set=_normalized_set if is_chain_command_set else None,
         cwd=cwd,
         session_id=session_id,
+        turn=turn,
     )
     try:
         from gaia.approvals.store import insert_requested

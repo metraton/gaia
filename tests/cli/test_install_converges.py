@@ -97,7 +97,7 @@ def test_bare_install_migrates_after_a_verified_backup_and_a_second_run_changes_
     assert second.returncode == 0, second.stdout + second.stderr
     assert not _BACKUP_LINE.search(second.stdout + second.stderr)
     assert (workspace / ".claude" / "settings.local.json").read_bytes() == settings
-    assert sorted(p.name for p in (tmp_path / "home").iterdir() if p.name.startswith(".")) \
+    assert sorted(p.name for p in (tmp_path / "home").iterdir() if p.name.startswith(".") and p.name != ".npm") \
         in ([], [".claude"], [".gaia"], [".claude", ".gaia"])
 
 

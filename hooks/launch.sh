@@ -6,6 +6,9 @@
 # UTF-8 mode, inherited by every child Python: the locale codec (cp1252 on
 # Windows) would mangle non-ASCII payloads, paths and git output.
 export PYTHONUTF8=1
+# Every hook started here is a store entry point; a copied .claude/hooks sits
+# beside no package root, which the store wall would refuse.
+export GAIA_STORE_ENTRY_POINT=hooks
 for candidate in python3 python; do
   if command -v "$candidate" >/dev/null 2>&1 &&
      "$candidate" -c 'import sys; sys.exit(sys.version_info[0] != 3)' >/dev/null 2>&1; then

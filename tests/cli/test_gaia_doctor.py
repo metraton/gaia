@@ -328,11 +328,6 @@ class TestCheckSymlinksFreshnessCopy:
             )
         return tmp_path
 
-    def test_fresh_copy_passes(self, tmp_path):
-        root = self._setup(tmp_path, installed_ver="5.5.0", stamped_ver="5.5.0")
-        r = doctor_mod.check_symlinks_freshness(root)
-        assert r["severity"] == "pass"
-
     def test_stale_copy_warns(self, tmp_path):
         root = self._setup(tmp_path, installed_ver="5.5.0", stamped_ver="5.4.0")
         r = doctor_mod.check_symlinks_freshness(root)

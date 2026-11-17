@@ -546,6 +546,7 @@ class OpenCodeAdapter(HookAdapter):
                 "session_id": event.session_id,
                 "call_id": event.call_id,
                 "agent_type": env_identity.role,
+                "turn": payload["agent_id"],
             }
         return translated
 

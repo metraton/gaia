@@ -299,7 +299,8 @@ _RELEASE_COMMAND_LINE = re.compile(
 
 def _release_commands_in(text):
     found = _RELEASE_COMMAND_LINE.findall(text)
-    return [cmd.strip().replace("<version>", "5.5.0-rc.4").replace("<worktree>", str(_REPO_ROOT)) for cmd in found]
+    return [cmd.strip().replace("<version>", "5.5.0-rc.4").replace("<worktree>", str(_REPO_ROOT))
+            .replace("<wrapper>", "ghx") for cmd in found]
 
 
 def _documented_release_commands():

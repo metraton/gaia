@@ -26,15 +26,17 @@ Your shell profile is never edited, and only one install runs at a time (`instal
 
 ### Surface 1: npm / pnpm
 
-Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). From the folder you install in, install the package, then wire that folder with `gaia install --channel npm`. Installing is one step; declaring a workspace is another, run afterwards (see [Declare a workspace, then scan it](#declare-a-workspace-then-scan-it)). A local install puts the CLI in `node_modules/.bin/`, not on your `PATH`, so it is invoked through the package manager:
+Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). On Windows, Claude Code's hooks also need Git for Windows, whose `sh` starts them. Gaia finds it even when `sh` is not on the PowerShell `PATH`: `CLAUDE_CODE_GIT_BASH_PATH` (in the environment or a settings file's `env`), `git` on `PATH`, or the standard Git for Windows folders; `gaia install`, `gaia update` and `gaia doctor` print the `sh` they found and how. An OpenCode-only install does not need Git Bash.
+
+From the folder you install in, install the package, then wire that folder with `gaia install --channel npm`. Installing is one step; declaring a workspace is another, run afterwards (see [Declare a workspace, then scan it](#declare-a-workspace-then-scan-it)). A local install puts the CLI in `node_modules/.bin/`, not on your `PATH`, so it is invoked through the package manager:
 
 ```bash
-npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
+npm install @jaguilar87/gaia@<version> --save-exact   # or: pnpm add @jaguilar87/gaia@<version> --save-exact
 npx gaia install --channel npm    # or: pnpm exec gaia install --channel npm
                                   #   add --path to also write the gaia launcher to ~/.local/bin
 ```
 
-With `--path`, a bare `gaia` works from any terminal afterwards; the examples below write `npx gaia` because that form works either way.
+`<version>` is the exact release, such as `5.8.0`; `--save-exact` keeps `package.json` on it instead of a range. With `--path`, a bare `gaia` works from any terminal afterwards; the examples below write `npx gaia` because that form works either way.
 
 **There is no `postinstall` hook.** The install is deliberately non-invasive (npm and pnpm both handle it identically — pnpm ignores lifecycle scripts by default, so relying on `postinstall` would have been fragile). Two things bootstrap on demand instead:
 
@@ -72,7 +74,7 @@ On the plugin surface, Claude Code reads hooks from the package root's `hooks/ho
 OpenCode runs on the same package as Surface 1. From the folder you install in (declaring a workspace is a separate step afterwards):
 
 ```bash
-npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
+npm install @jaguilar87/gaia@<version> --save-exact   # or: pnpm add @jaguilar87/gaia@<version> --save-exact
 npx gaia install --channel opencode
 ```
 
@@ -105,7 +107,8 @@ Outside every declared workspace, `gaia install` and the session start print `<f
 ### Installation Flow
 
 ```
-User runs: npm install @jaguilar87/gaia   (or: pnpm add @jaguilar87/gaia)
+User runs: npm install @jaguilar87/gaia@<version> --save-exact
+           (or: pnpm add @jaguilar87/gaia@<version> --save-exact)
         ↓
 (no postinstall — nothing runs automatically)
         ↓
@@ -145,7 +148,7 @@ and index its repositories: npx gaia scan --workspace <name> <path>
 ```
 Example: Install + scan in a project with GitOps and Terraform
 
-1. User: pnpm add @jaguilar87/gaia   (no postinstall runs)
+1. User: pnpm add @jaguilar87/gaia@5.8.0 --save-exact   (no postinstall runs)
    ↓
 2. User: pnpm exec gaia install --channel npm
    ✅ ~/.gaia/gaia.db bootstrapped (lazy, on first `gaia` use)
@@ -209,7 +212,7 @@ your-project/
 
 ~/.gaia/                           ← The data home (GAIA_DATA_DIR relocates it; `gaia paths` prints it)
 ├── gaia.db                        ← Canonical context, memory, approvals and contracts (SQLite)
-├── backups/                       ← Copies `gaia migrate apply` takes before a migration
+├── backups/                       ← Verified copies: before a migration or restore, and `gaia migrate backup`
 ├── snapshots/                     ← gzip snapshots: uninstall, and SessionStart at most once per 24 h
 └── logs/                          ← Hook audit logs, shared by every channel
 ```
@@ -313,20 +316,32 @@ gaia doctor --channels --workspace <folder>        # exit 0 aligned, 1 leftovers
 - **One route for a release candidate and a stable.** The plugin is pinned to the tag `v<version>` and npm installs the exact `<version>` (`--save-exact`). Never use `@latest` or `@rc`: for several minutes after a publish they still name the previous release.
 - **The plugin moves by its declared ref.** The view names the settings edit and a `claude plugin marketplace add` spelled exactly as declared, then `claude plugin update` at each install's scope from its project folder. Never remove the marketplace to update it: that deletes the cache running sessions load from and uninstalls the plugin.
 - **npm and OpenCode.** After the exact install, the new copy's own `gaia update` re-wires the channels recorded in `.claude/gaia-manifest.json`. For OpenCode that regenerates `opencode.json`'s agent block as well as the plugin entry.
-- **The data.** Every migration runs after a verified backup. `gaia migrate plan` shows the chain, the consent it needs and the backups on hand, and `gaia migrate restore --from <backup>` puts one back.
+- **The data.** Every upgrade of gaia.db first writes a verified backup, then runs the whole chain in one transaction. A chain that only adds structure applies on its own. A chain that reaches rows that already exist applies on its own under `gaia install` and `gaia update` once the backup verifies; the plugin's session start and a plain `gaia migrate apply` stop on it and name `gaia migrate apply --consent-chain vA..vB`. A chain with a breaking migration is refused by `gaia install` and `gaia update` while another Gaia copy on the machine would be left unable to write the database; the refusal names each copy and the `gaia doctor --target <version>` steps that upgrade it, and `--accept-stranding` migrates anyway. `gaia migrate plan` shows the chain, the consent it needs and the backups on hand, and `gaia migrate restore --from <backup>` puts one back.
 
 Then restart the host, or `/reload-plugins` for the plugin.
+
+### When the update fails
+
+Usually the reader here is an agent installing Gaia for a user. A failed step is where its work continues, not where it ends: every failure of `gaia install`, `gaia update` and `gaia migrate` names the next command, and the agent runs it.
+
+1. **A refusal to strand another copy.** Run the `gaia doctor --target <version>` steps it names for each copy, then re-run the refused command.
+2. **A failure on the database: diagnose, with no signature.** `gaia migrate diagnose` opens the database read-only, replays the pending chain on a verified scratch copy inside a transaction that is always rolled back, and prints each step's result, the failing step (`vN-1->vN` and its file), the SQLite error and the commands left. It exits non-zero when the chain cannot apply; `--json` prints the same as one object.
+3. **Back up.** `gaia migrate backup` writes one verified copy that is never pruned and prints its path; it asks for a signature, like `apply` and `restore`.
+4. **Take the route diagnose printed.** `gaia migrate apply`, with `--consent-chain vA..vB` when it names one, when the chain applies on the copy. A Gaia at the schema it names when the database is ahead of this install, through `gaia doctor --target <version>`. `gaia migrate restore --from <backup>` where a failure names a backup to put back.
+5. **Check and report.** `gaia doctor --channels` shows where each channel ended. The report says what ran, where each channel is now and where the backup is.
+
+When diagnose finds no automatic route, the database is left as it was. Keep the backup from step 3 and the ones `gaia migrate plan` lists, and report with the output of `gaia migrate diagnose --json`. No Gaia command yet rebuilds a clean database from a backup; until one does, the backup is what holds the data, and the report says so.
 
 ### Upgrading from an older Gaia
 
 Moving from an older release, take it out cleanly and install the new one fresh. Your memory, briefs and plans live in the database and carry over.
 
-1. Copy the database, `~/.gaia/gaia.db`, somewhere safe.
+1. Keep a verified copy of the database: `gaia migrate backup` prints where it wrote it (`backup written and verified (...): <path>`). A Gaia older than this command has none: its next `gaia install` writes the `pre-migrate` backup in step 4 instead.
 2. In each folder Gaia is wired into, run `gaia uninstall`. Then remove the old package with `npm uninstall -g @jaguilar87/gaia` (or `npm uninstall @jaguilar87/gaia` in the folder where you installed it). On the plugin, run `claude plugin uninstall gaia@gaia-marketplace` instead.
 3. Install the new version, exactly: `npm install -g @jaguilar87/gaia@<version>`, or `claude plugin install gaia@gaia-marketplace` on the plugin with the marketplace pinned to `v<version>`.
 4. In each folder, run `gaia install`. It backs up the database, checks the backup, updates the database to the new version and prints where the backup is (`backup written and verified: <path>`).
 
-To go back, put your copy of `gaia.db` back in `~/.gaia/`, install the old version (`npm install -g @jaguilar87/gaia@<old version>`) and run `gaia install` in the folder.
+To go back, put the backup back while the new version is still installed: `gaia migrate restore --from <backup>` checks it with `integrity_check` and keeps the database it replaces as a verified `pre-restore` backup. Then install the old version exactly (`npm install -g @jaguilar87/gaia@<old version>`) and run `gaia install` in the folder. Never copy `gaia.db` by hand: live sessions hold it open, and `restore` copies under the database's lock.
 
 ---
 
@@ -478,7 +493,7 @@ Gaia is designed with these principles:
 A: Yes. Every git repository is a project, and one install serves them all. Gather them under workspaces you declare (`npx gaia workspace declare <name> <path>`) and index each with `npx gaia scan --workspace <name> <path>`; a repository belongs to the nearest declared workspace that contains it. One database, `~/.gaia/gaia.db`, holds every workspace. See [README.md, Workspaces, groups and projects](./README.md#workspaces-groups-and-projects).
 
 **Q: Do symlinks work on Windows?**  
-A: Symlinks need Windows developer mode or an administrator shell. Without that privilege, `gaia install` copies each directory into `.claude/` instead and records the package version of each copy in `.claude/.gaia-symlink-fallback.json`; the next `gaia install` or `gaia update` refreshes a copy whose recorded version differs from the package, and `gaia doctor` checks it. A Windows junction is treated as a link.
+A: Symlinks need Windows developer mode, the Create symbolic links privilege, or an administrator shell. Without them, `gaia install` copies each directory into `.claude/` instead and records the package version of each copy in `.claude/.gaia-symlink-fallback.json`. On that layout the hooks still reach the database: `hooks/launch.sh` declares every hook it starts a writer of the store, so approvals, the specialists' contracts and the session record work as on a linked install. The next `gaia install` or `gaia update` refreshes a copy whose recorded version differs from the package. `gaia update` also tries a link first for a copy at the package version: once links can be created it replaces the copy with a link and clears its record (`--dry-run` lists it as `copy to link`). While copies remain, `gaia doctor`'s `Symlinks freshness` check warns, naming them and `gaia update`. A Windows junction is treated as a link.
 
 **Q: How do I update only documentation without changing code?**
 A: Take the new version as in [Update Process](#update-process); the `.claude/` links point at the new copy once its `gaia update` runs.

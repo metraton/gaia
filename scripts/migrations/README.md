@@ -92,7 +92,7 @@ never bundled.
 
 ---
 
-## 1b. A chain that reaches DATA is not applied unattended
+## 1b. A chain that reaches DATA runs only after a verified backup or a consent
 
 The engine applies whatever it finds in this directory on any install, update
 or dev run, so committing a file is what schedules it. That is safe for
@@ -100,7 +100,17 @@ structure and unsafe for data: `v49_to_v50.sql` was the first file here that
 also rewrote rows, and the next arbitrary CLI call erased a counter on 1359
 live curated rows before anyone was asked.
 
-`scripts/migration_guard.py` now classifies every pending file before the
+Who applies which chain is one rule, `bin/cli/migrate.py::MIGRATION_RULE`,
+which `gaia migrate --help` prints:
+
+Every upgrade of gaia.db first writes a verified backup, then runs the whole chain in one transaction. A chain that only adds structure applies on its own. A chain that reaches rows that already exist applies on its own under `gaia install` and `gaia update` once the backup verifies; the plugin's session start and a plain `gaia migrate apply` stop on it and name `gaia migrate apply --consent-chain vA..vB`. A chain with a breaking migration is refused by `gaia install` and `gaia update` while another Gaia copy on the machine would be left unable to write the database; the refusal names each copy and the `gaia doctor --target <version>` steps that upgrade it, and `--accept-stranding` migrates anyway.
+
+`gaia install`, and `gaia update` through it, pass `--apply-after-backup` to
+the engine (`bin/cli/install.py::_run_bootstrap`,
+`scripts/bootstrap_database.py::AFTER_BACKUP_FLAG`), which lets the verified
+backup stand in for the consent; nothing else passes it.
+
+`scripts/migration_guard.py` classifies every pending file before the
 chain opens.
 **This gate needs nothing declared** (the compatibility mark in section 1c is a
 separate rule) -- the classification reads the SQL itself, and the number of rows at risk is read from the target
@@ -118,7 +128,9 @@ What this means when you author one:
 * **Fresh installs and test databases are never gated**, because their census
   is empty. Do not add a flag to skip the guard for them; there is nothing to
   skip.
-* **A data-reaching file stops the whole chain once.** The refusal lists
+* **A data-reaching file stops the whole chain once** where no backup stands
+  in for the consent (a plain `gaia migrate apply`, the plugin's session
+  start). The refusal lists
   every reaching statement of every file in the chain, with table and row
   count, and names the one command that continues --
   `gaia migrate apply --consent-chain vA..vB`. The consent names the chain, so

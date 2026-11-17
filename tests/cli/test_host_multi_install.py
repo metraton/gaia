@@ -64,7 +64,7 @@ def isolated_host_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
                         lambda *a, **k: pytest.fail("unexpected external runner"))
     # The host preconditions read the developer's own claude and sh; they have their own probes.
     monkeypatch.setattr("gaia.hook_shell.claude_code_version_finding", lambda: None)
-    monkeypatch.setattr("gaia.hook_shell.missing_hook_shell", lambda: None)
+    monkeypatch.setattr("gaia.hook_shell.missing_hook_shell", lambda *_a: None)
 
 
 @pytest.mark.parametrize("host", ["codex", "unknown", "all"])

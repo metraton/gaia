@@ -766,7 +766,7 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 # Value: {verb: category}.
 SUBCOMMAND_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
     ("gaia", "approvals"): dict.fromkeys(("request-set", "request-file-write", "question", "show"), CATEGORY_READ_ONLY),
-    ("gaia", "migrate"): {"plan": CATEGORY_SIMULATION},
+    ("gaia", "migrate"): {"plan": CATEGORY_SIMULATION, "diagnose": CATEGORY_SIMULATION},
     ("gh", "label"): {"list": CATEGORY_READ_ONLY},
 }
 
