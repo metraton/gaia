@@ -1462,11 +1462,11 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
 
 def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str) -> int:
     """Bootstrap the DB once, then wire each of *channels* into the workspace and record them."""
-    from gaia.hook_shell import claude_code_version_finding, missing_hook_shell
+    from gaia.hook_shell import claude_code_version_finding, describe_hook_shell, missing_hook_shell, resolve_hook_shell
     from modules.core.plugin_setup import enabled_gaia_plugins, sync_workspace_hooks  # type: ignore
 
     hosts = tuple(PACKAGE_CHANNELS[channel] for channel in channels)
-    shell_problem = missing_hook_shell()
+    shell_problem = missing_hook_shell(hosts, _install_workspace(args))
     if shell_problem:
         print(f"{command}: refused, {shell_problem}", file=sys.stderr)
         return 1
@@ -1491,6 +1491,9 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
                 return 1
 
     _print_header(command=command, postinstall=postinstall, quiet=quiet, workspace=workspace)
+    hook_shell = resolve_hook_shell(workspace) if "claude_code" in hosts and not quiet else None
+    if hook_shell:
+        print(f"  hook shell: {describe_hook_shell(hook_shell)}\n")
 
     bootstrap_res = _run_bootstrap(db_path=db_path, verbose=verbose, quiet=quiet)
     rc = bootstrap_res["rc"]
