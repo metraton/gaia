@@ -144,7 +144,7 @@ def configure_opencode_plugin(
             config_path,
             f"this gaia runs from the Claude Code plugin cache ({config_root}), which Claude Code removes "
             f"after the next plugin update; install the package in {workspace} (`npm install "
-            f"@jaguilar87/gaia@{cached[1]}`) and run its own `npx gaia install --channel opencode`",
+            f"@jaguilar87/gaia@{cached[1]} --save-exact`) and run its own `npx gaia install --channel opencode`",
         )
     if not plugin_path.is_file():
         return _result("error", config_path, f"OpenCode plugin not found: {plugin_path}")

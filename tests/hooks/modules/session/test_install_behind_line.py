@@ -38,15 +38,16 @@ def test_a_workspace_package_updates_with_npm_into_that_workspace(monkeypatch, t
     command = install_update_command(80)
 
     assert command == (
-        f"npm install --prefix '{workspace}' @jaguilar87/gaia@latest, "
+        f"npm install --prefix '{workspace}' @jaguilar87/gaia@<version> --save-exact, "
         f"then gaia update --workspace '{workspace}'"
     )
+    assert "`gaia doctor --target <version>` lists every step" in install_behind_line(80, 73, refused=True)
 
 
 def test_a_global_package_updates_with_npm_global(monkeypatch, tmp_path):
     _runs_from(monkeypatch, tmp_path / "prefix" / "lib" / "node_modules" / "@jaguilar87" / "gaia")
 
-    assert install_update_command(80) == "npm install -g @jaguilar87/gaia@latest"
+    assert install_update_command(80) == "npm install -g @jaguilar87/gaia@<version>"
 
 
 def test_an_unknown_channel_still_produces_a_line(monkeypatch, tmp_path):

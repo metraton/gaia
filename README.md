@@ -96,6 +96,7 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 
 - One host: Claude Code >= 2.1.295 (the floor declared in [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)) or OpenCode. No OpenCode floor is declared or checked; the plugin was measured on OpenCode 1.18.32, which runs subagents in the background only with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` in its environment ([INSTALL.md](./INSTALL.md), Surface 3).
 - Python >= 3.12 on `PATH` (the `engines` in [`package.json`](./package.json)); the CLI and the hooks are Python. On the plugin the hooks start through [`hooks/launch.sh`](./hooks/launch.sh), which needs `sh` and takes the first of `python3`, `python` or `py -3` that is really Python 3, so the python.org Windows install, which has no `python3`, works too.
+- On Windows with Claude Code, Git for Windows: the hooks start with its `sh`. Gaia finds it even when `sh` is not on the PowerShell `PATH` -- through `CLAUDE_CODE_GIT_BASH_PATH` (in the environment or a settings file's `env`), `git` on `PATH`, or the standard Git for Windows folders -- and `gaia install`, `gaia update` and `gaia doctor` print the `sh` they found and how. An OpenCode-only install does not need Git Bash.
 - Node.js >= 18 and npm or pnpm, only for the package channels below.
 - git, for the per-turn worktrees.
 - Nothing is installed behind your back: there is no `postinstall`, and the database is created lazily on the first `gaia` command (`_ensure_db_bootstrapped` in [`bin/gaia`](./bin/gaia)).
@@ -124,11 +125,13 @@ That is the whole install, and it does not put `gaia` on your terminal's `PATH`.
 **Package and OpenCode.** From the folder you install in:
 
 ```bash
-npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
+npm install @jaguilar87/gaia@<version> --save-exact   # or: pnpm add @jaguilar87/gaia@<version> --save-exact
 npx gaia install --channel npm    # or: pnpm exec gaia install --channel npm
                                   #   --channel opencode for OpenCode; --path
 npx gaia doctor                   # one line per check, PASS or FAIL
 ```
+
+`<version>` is the exact release you want, such as `5.8.0`; `--save-exact` keeps `package.json` on it instead of a range.
 
 `gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. It declares no workspace and scans nothing: it reports the declared workspace that holds the folder, or the command to declare one. `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can sit beside either Claude Code channel; `--path` also writes the `gaia` launcher to `~/.local/bin`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
 
@@ -141,6 +144,21 @@ gaia doctor --channels               # again, after running those steps
 ```
 
 A release candidate and a stable take the same route. Install the exact version, never `@latest` or `@rc`, which can still name the previous release for minutes after a publish. Never update the plugin by removing its marketplace: that deletes the cache running sessions load from. Restart the host, or `/reload-plugins` for the plugin, to load the new version.
+
+**When an install or an update fails.** Whoever runs it -- you, or the agent installing Gaia for you -- does not stop at the error: every failure of `gaia install`, `gaia update` and `gaia migrate` names the next command to run. A refusal to strand another copy names the `gaia doctor --target <version>` steps that upgrade that copy first. A failure on the database takes this route:
+
+```bash
+gaia migrate diagnose     # no signature; replays the pending chain on a verified scratch copy, always rolled back,
+                          #   and prints the failing step, its SQLite error and the commands left
+gaia migrate backup       # one verified copy, never pruned; asks for a signature
+# then the route diagnose printed:
+#   gaia migrate apply [--consent-chain vA..vB]   the chain applies on the copy, so it applies here
+#   a Gaia at the schema it names                 the database is ahead of this install
+#   gaia migrate restore --from <backup>          puts a backup back, where a failure names it
+gaia doctor --channels    # where the machine ended
+```
+
+The report says what ran, where each channel ended and where the backup is. When diagnose finds no automatic route, the database is left as it was: keep that backup and the ones `gaia migrate plan` lists, and report with the output of `gaia migrate diagnose --json`. No Gaia command yet rebuilds a clean database from a backup; until one does, the backup is what holds the data.
 
 **What Gaia cleans up on its own.** At session start Gaia removes the temp folders, scratch files and clean worktrees its own runs left after their session ended. It never removes work that is not committed and pushed. The first sweep after installing only lists what it would remove, and the next session start says so; `GAIA_SESSION_SWEEP=list` keeps it listing, `off` stops it, and `gaia cleanup --sweep --dry-run` shows the list.
 
@@ -202,17 +220,19 @@ gaia project move <project> --into <workspace>
 
 The project goes in one step, with its briefs (those created for it with `gaia brief new --project`; an existing brief can be tagged with its project, `gaia brief set-project <brief> <project> [--dry-run]`) and its profile: what Gaia knows about it, its declared workflow included. Its memory belongs to the project and is read from any workspace, so it moves with it without being copied. Briefs written for the workspace as a whole stay where they are. A workspace that is not declared is refused as the target, and a name found in two workspaces asks for `--from <workspace>`.
 
-**Database migrations.** A new release may move `~/.gaia/gaia.db` to a newer schema. `gaia install` and `gaia update` do it on their own, and so does the plugin at SessionStart when the database is behind. On its own means without asking: a backup goes to `backups/` beside the database, and the whole chain runs in one transaction. What decides whether it can go on alone is what the chain reaches:
+**Database migrations.** A new release may move `~/.gaia/gaia.db` to a newer schema. Every upgrade of gaia.db first writes a verified backup, then runs the whole chain in one transaction. A chain that only adds structure applies on its own. A chain that reaches rows that already exist applies on its own under `gaia install` and `gaia update` once the backup verifies; the plugin's session start and a plain `gaia migrate apply` stop on it and name `gaia migrate apply --consent-chain vA..vB`. A chain with a breaking migration is refused by `gaia install` and `gaia update` while another Gaia copy on the machine would be left unable to write the database; the refusal names each copy and the `gaia doctor --target <version>` steps that upgrade it, and `--accept-stranding` migrates anyway.
 
 ```
-chain only adds structure       -> applied on its own
-chain reaches rows that exist   -> stops, and the message (or the plugin's
-                                   startup notice) names the command to run:
+chain only adds structure        -> applied by install, update, the plugin's session start and migrate apply
+chain reaches rows that exist    -> applied by install and update after the verified backup;
+                                    the plugin's session start and migrate apply stop and name:
      gaia migrate plan                          # the chain and what it reaches
      gaia migrate apply --consent-chain vA..vB  # consent once, for that chain
+breaking chain, older copy left  -> refused by install and update, naming the
+                                    gaia doctor --target <version> steps (--accept-stranding overrides)
 ```
 
-The other direction happens when two installs share one database: the newer one migrates it, and the older one is now behind. Each of the older install's sessions opens with a `## Database schema` line saying so, whether it still writes or already refuses every write, and the update command for its channel.
+The backups go to `backups/` beside the database. The other direction happens when two installs share one database: the newer one migrates it, and the older one is now behind. Each of the older install's sessions opens with a `## Database schema` line saying so, whether it still writes or already refuses every write, and the update command for its channel.
 
 **Uninstall.** Each channel takes back only what it wrote. `~/.gaia/gaia.db` is never touched: delete `~/.gaia/` yourself if you want the memory gone too.
 
