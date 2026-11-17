@@ -54,14 +54,25 @@ def claim_dispatch_kernel(
     lose it; both the stamp and the render are best-effort and never block the
     start.
 
-    Returns the joined kernel blocks, or ``None`` when nothing was claimed or
-    rendering failed -- callers read ``None`` as "keep the legacy path",
-    never as an error.
+    Returns the joined kernel blocks, the unresolved block when several unclaimed
+    rows share the keys, or ``None`` -- also for a ``host_agent_id`` a row already carries.
     """
     try:
-        from gaia.store.writer import claim_dispatch_row, stamp_harness_agent_id
-        from ..context.kernel_builder import build_kernel_context
+        from gaia.store.writer import (
+            claim_dispatch_row,
+            list_agent_contract_handoffs,
+            stamp_harness_agent_id,
+            unclaimed_dispatch_rows,
+        )
+        from ..context.kernel_builder import (
+            build_kernel_context,
+            build_unresolved_contract_block,
+        )
 
+        if host_agent_id and list_agent_contract_handoffs(
+            harness_agent_id=str(host_agent_id), limit=1,
+        ):
+            return None
         row = claim_dispatch_row(
             agent_name=agent_name or None,
             dispatch_prompt_id=dispatch_prompt_id or None,
@@ -69,6 +80,11 @@ def claim_dispatch_kernel(
             dispatch_tool_use_id=dispatch_tool_use_id or None,
         )
         if row is None:
+            candidates = unclaimed_dispatch_rows(
+                agent_name=agent_name, dispatch_prompt_id=dispatch_prompt_id,
+            )
+            if len(candidates) > 1:
+                return build_unresolved_contract_block(agent_name or "", candidates)
             return None
         try:
             _stamp = stamp_harness_agent_id(

@@ -66,6 +66,7 @@ from .user_sections import CONTEXT_BUDGET, memory_line, tool_lines
 logger = logging.getLogger(__name__)
 
 KERNEL_HEADING = "# Your Contract"
+UNRESOLVED_HEADING = "# Your Contract (unresolved)"
 CLI_HEADING = "# Your CLI"
 PREFERENCES_HEADING = "# Scope preferences"
 MEMORY_HEADING = "# Scope memory"
@@ -356,6 +357,29 @@ def build_dispatch_kernel(
             parts.extend(acceptance)
 
     return "\n".join(parts)
+
+
+def build_unresolved_contract_block(agent_name: str, candidates: list) -> str:
+    """The block for a start that cannot tell which of ``unclaimed_dispatch_rows``'s *candidates* is its own."""
+    lines = [
+        UNRESOLVED_HEADING,
+        "",
+        f"{len(candidates)} {agent_name} turns were dispatched together and this start "
+        "cannot tell which one is yours. Candidates:",
+    ]
+    for row in candidates:
+        goal = unwrap_injected_prompt(str(row.get("dispatch_prompt") or ""))
+        first = next((line.strip() for line in goal.splitlines() if line.strip()), "")
+        label = f" ({row['dispatch_description']})" if row.get("dispatch_description") else ""
+        lines.append(f"  {row.get('contract_id')}{label}  goal: {first}")
+    lines.extend([
+        "",
+        f"Your contract arrives with your first tool call, as additionalContext headed "
+        f"`{KERNEL_HEADING}`: make that call a read and adopt the contract it names. "
+        "Never run a bare `gaia contract init`: it mints a second identity and leaves "
+        "your born row unfinalized.",
+    ])
+    return "\n".join(lines)
 
 
 def _frontmatter(path: Path) -> dict:

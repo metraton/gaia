@@ -10677,13 +10677,13 @@ def find_dispatched_row_by_agent_name(
 #       refused (None) instead of guessed -- a host capable of exact
 #       correlation that missed is a stronger ambiguity signal than a host that
 #       never reports one, and guessing here risks binding the wrong sibling.
-#       A claim that supplies no call id at all (today's Claude Code) never
+#       A claim that supplies no call id at all (a Claude Code start) never
 #       enters this exception and keeps resolving FIFO exactly as before;
 #   (c) GUARD -- several candidates whose material signatures DIVERGE mean the
 #       correlation would be a guess between genuinely different turns. Nothing
 #       is claimed; a critical `dispatch_correlation_ambiguous` anomaly and a
 #       warning harness_event are written so the miss is loud, and the turn
-#       starts without a kernel (the protocol's bare-init fallback).
+#       starts with the unresolved block until a claim by call id resolves it.
 #
 # A signature is (kind, plan_task_id, plan_id, parent_handoff_id, brief_id,
 # sha256(dispatch_prompt)) -- the coordinates that make two dispatches
@@ -10812,14 +10812,13 @@ def claim_dispatch_row(
     Requires at least one correlation key (``dispatch_tool_use_id``,
     ``dispatch_prompt_id`` or ``dispatch_description``): with none of them
     there is nothing exact to match and a claim would be a guess, so the
-    function returns None and the turn starts without a kernel (the
-    protocol's bare-init fallback).
+    function returns None.
 
     Args:
         agent_name:           The dispatched agent's NAME (birth-envelope
                               coordinate); scopes every layer when provided.
         dispatch_prompt_id:   Host prompt_id observed at SubagentStart.
-        dispatch_description: Host task_description observed at SubagentStart.
+        dispatch_description: The starting Agent call's description, when the host reports it.
         dispatch_tool_use_id: Host call id of the Task/Agent call that started
                               this turn, when the host reports one at start
                               (layer 0); a host that reports none passes None
@@ -10967,6 +10966,30 @@ def claim_dispatch_row(
             con.close()
 
     return _retry_on_locked(_work)
+
+
+def unclaimed_dispatch_rows(
+    *,
+    agent_name: "str | None",
+    dispatch_prompt_id: "str | None",
+    db_path: "Path | None" = None,
+) -> "list[dict]":
+    """The ``contract_id``, ``dispatch_description`` and ``dispatch_prompt`` of each claimable row, oldest first."""
+    if not agent_name or not dispatch_prompt_id:
+        return []
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT contract_id, dispatch_description, dispatch_prompt "
+            "FROM agent_contract_handoffs "
+            "WHERE agent_state = 'DISPATCHED' AND claimed_at IS NULL "
+            f"AND dispatch_prompt_id = ? AND {_BIRTH_AGENT_NAME_SQL} = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (dispatch_prompt_id, str(agent_name)),
+        ).fetchall()
+    finally:
+        con.close()
+    return [dict(row) for row in rows]
 
 
 def is_born_at_dispatch_row(

@@ -208,7 +208,10 @@ def test_unresolvable_binding_degrades_to_an_unbound_row(db_path):
 # The identity REACHES the subagent
 # ---------------------------------------------------------------------------
 
-def _dispatch(adapter, session_id, agent_type, description, prompt):
+PROMPT_ID = "prompt-adoption"
+
+
+def _dispatch(adapter, session_id, agent_type, description, prompt, tool_use_id=""):
     """Run the real PreToolUse:Task path and return the born contract_id."""
     born = {}
     original = adapter._maybe_birth_dispatched_row
@@ -229,10 +232,27 @@ def _dispatch(adapter, session_id, agent_type, description, prompt):
                 "prompt": prompt,
             },
             session_id,
+            hook_data={
+                "session_id": session_id, "prompt_id": PROMPT_ID,
+                "tool_use_id": tool_use_id or f"toolu_{os.urandom(4).hex()}",
+                "hook_event_name": "PreToolUse", "tool_name": "Task",
+            },
         )
     finally:
         adapter._maybe_birth_dispatched_row = original
     return born
+
+
+def _start(adapter, session_id, agent_type, agent_id="", transcript=None):
+    payload = {
+        "session_id": session_id, "prompt_id": PROMPT_ID,
+        "transcript_path": str(transcript or "/nonexistent/session.jsonl"),
+        "cwd": "/nonexistent", "hook_event_name": "SubagentStart",
+        "agent_type": agent_type,
+    }
+    if agent_id:
+        payload["agent_id"] = agent_id
+    return adapter.adapt_subagent_start(payload)
 
 
 def test_injected_subagent_context_carries_the_born_contract_id(
@@ -252,11 +272,7 @@ def test_injected_subagent_context_carries_the_born_contract_id(
     )
     assert born, "the dispatch must have birthed a row to inject"
 
-    result = adapter.adapt_subagent_start({
-        "session_id": "sess-inject",
-        "agent_type": "gaia-system",
-        "task_description": "adopt the seam",
-    })
+    result = _start(adapter, "sess-inject", "gaia-system")
 
     assert result.context_injected
     assert born["contract_id"] in result.additional_context, (
@@ -283,24 +299,26 @@ def test_concurrent_same_type_dispatches_do_not_cross_identities(
 
     first = _dispatch(
         adapter, "sess-conc", "gaia-system", "first increment",
-        f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}",
+        f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}", tool_use_id="toolu_first",
     )
     second = _dispatch(
         adapter, "sess-conc", "gaia-system", "second increment",
-        f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}",
+        f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}", tool_use_id="toolu_second",
     )
     assert first["contract_id"] != second["contract_id"]
 
-    ctx_first = adapter.adapt_subagent_start({
-        "session_id": "sess-conc",
-        "agent_type": "gaia-system",
-        "task_description": "first increment",
-    }).additional_context
-    ctx_second = adapter.adapt_subagent_start({
-        "session_id": "sess-conc",
-        "agent_type": "gaia-system",
-        "task_description": "second increment",
-    }).additional_context
+    transcript = tmp_path / "projects" / "sess-conc.jsonl"
+    meta_dir = transcript.parent / "sess-conc" / "subagents"
+    meta_dir.mkdir(parents=True)
+    for harness_id, call_id in (("harness-first", "toolu_first"), ("harness-second", "toolu_second")):
+        (meta_dir / f"agent-{harness_id}.meta.json").write_text(json.dumps({"toolUseId": call_id}))
+
+    ctx_second = _start(
+        adapter, "sess-conc", "gaia-system", "harness-second", transcript,
+    ).additional_context
+    ctx_first = _start(
+        adapter, "sess-conc", "gaia-system", "harness-first", transcript,
+    ).additional_context
 
     assert first["contract_id"] in ctx_first
     assert second["contract_id"] not in ctx_first
@@ -329,11 +347,7 @@ def test_dispatches_of_different_agent_types_do_not_cross_identities(
         f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}",
     )
 
-    ctx_sys = adapter.adapt_subagent_start({
-        "session_id": "sess-types",
-        "agent_type": "gaia-system",
-        "task_description": "meta work",
-    }).additional_context
+    ctx_sys = _start(adapter, "sess-types", "gaia-system").additional_context
 
     assert sysagent["contract_id"] in ctx_sys
     assert devagent["contract_id"] not in ctx_sys
@@ -391,12 +405,7 @@ def test_cache_miss_start_still_stamps_harness_agent_id(
         "precondition: no cache entry for this start"
     )
 
-    result = adapter.adapt_subagent_start({
-        "session_id": "sess-stamp-miss",
-        "agent_type": "gaia-system",
-        "task_description": "stamp on miss",
-        "agent_id": "harness-run-0001",
-    })
+    result = _start(adapter, "sess-stamp-miss", "gaia-system", "harness-run-0001")
 
     assert result.context_injected
     assert _harness_id_for(db_path, born["contract_id"]) == "harness-run-0001"
@@ -426,12 +435,7 @@ def test_cache_hit_start_stamps_through_the_same_claim(
         task_description="stamp on hit",
     )
 
-    result = adapter.adapt_subagent_start({
-        "session_id": "sess-stamp-hit",
-        "agent_type": "gaia-system",
-        "task_description": "stamp on hit",
-        "agent_id": "harness-run-0002",
-    })
+    result = _start(adapter, "sess-stamp-hit", "gaia-system", "harness-run-0002")
 
     assert result.context_injected
     assert "# Recent Session Events" in result.additional_context
@@ -459,11 +463,7 @@ def test_start_without_harness_agent_id_claims_without_stamping(
     )
     assert born
 
-    result = adapter.adapt_subagent_start({
-        "session_id": "sess-stamp-none",
-        "agent_type": "gaia-system",
-        "task_description": "no harness id",
-    })
+    result = _start(adapter, "sess-stamp-none", "gaia-system")
 
     assert result.context_injected
     assert born["contract_id"] in result.additional_context
@@ -841,7 +841,7 @@ def test_same_type_same_description_still_crosses_injected_identities(
     Two concurrent dispatches of the SAME type with the SAME description are
     identical under every cache-correlation tier, and the cache used to hand
     the first start the SECOND dispatch's identity. The DB-backed claim now
-    resolves this deterministically: both born rows match the description key,
+    resolves this deterministically: both born rows match the prompt_id key,
     their material signatures agree (identical dispatches), so
     ``claim_dispatch_row`` claims the OLDEST (FIFO) and the start is handed
     the FIRST identity through the ``# Your Contract`` kernel -- exactly one
@@ -871,11 +871,7 @@ def test_same_type_same_description_still_crosses_injected_identities(
         "birth-side uniqueness holds even when the dispatches are indistinguishable"
     )
 
-    ctx = adapter.adapt_subagent_start({
-        "session_id": "sess-residual",
-        "agent_type": "gaia-system",
-        "task_description": same_description,
-    }).additional_context
+    ctx = _start(adapter, "sess-residual", "gaia-system").additional_context
 
     assert "# Your Contract" in ctx
     assert first["contract_id"] in ctx, "FIFO claims the oldest sibling"
