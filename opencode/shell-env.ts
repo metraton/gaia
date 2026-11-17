@@ -4,6 +4,7 @@ export class ShellEnvDelivery {
     sessionID: string
     agent: string
     attestation: string
+    turn?: string
     cwd: string
     args: Record<string, unknown>
     snapshot: string
@@ -15,7 +16,7 @@ export class ShellEnvDelivery {
 
   /** Record only a bridge-confirmed identity after successful policy processing. */
   remember(input: {
-    sessionID: string; callID: string; agent: string; attestation: string
+    sessionID: string; callID: string; agent: string; attestation: string; turn?: string
     cwd: string; args: Record<string, unknown>
   }): void {
     if (!input.sessionID || !input.callID || !input.agent || !input.attestation || !input.cwd) {
@@ -27,11 +28,14 @@ export class ShellEnvDelivery {
   }
 
   /** Deliver once, refusing changed arguments, identity, attestation or directory. */
-  take(input: { sessionID: string; callID: string; agent?: string; attestation?: string; cwd: string }): string {
+  take(input: {
+    sessionID: string; callID: string; agent?: string; attestation?: string; turn?: string; cwd: string
+  }): string {
     const key = this.key(input.sessionID, input.callID)
     const record = this.pending.get(key)
     this.pending.delete(key)
     if (!record || record.agent !== input.agent || record.attestation !== input.attestation
+      || (record.turn ?? "") !== (input.turn ?? "")
       || record.cwd !== input.cwd || record.snapshot !== JSON.stringify(record.args)) {
       throw new Error("Gaia shell environment correlation missing or changed")
     }
